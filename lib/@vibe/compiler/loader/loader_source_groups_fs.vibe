@@ -1,11 +1,15 @@
+import @vibe/compiler/config {
+  Config, TargetCfg, target_cfg_ambient, target_cfg_capture, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+
 import ./loader_contract_source_fs.vibe {
-  vpkg_types_registry_texts
+  vpkg_types_registry_cfgs, vpkg_types_registry_texts
 }
 
 // lib/@vibe/compiler/loader/loader.vibe — source groups fs.
 
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, parse_program_with_cfg
 }
 
 import @vibe/core {
@@ -52,7 +56,11 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./header_cache.vibe {
-  contract_sibling_impl_raws, contract_sibling_impl_raws_source, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, source_answer
+  contract_sibling_impl_raws,
+  contract_sibling_impl_raws_source,
+  load_or_parse_module_header_fs_impl_with_config,
+  merge_impl_raws_dedupe,
+  source_answer
 }
 
 import @vibe/compiler/contract {
@@ -88,8 +96,8 @@ import ./manifest_sources.vibe {
   build_grouped_sources_from_manifest_rows,
   is_vpkg_companion_basename,
   load_manifest_full_sources,
-  try_collect_manifest_source_groups_fs,
-  try_collect_manifest_sources_fs,
+  try_collect_manifest_source_groups_fs_with_config,
+  try_collect_manifest_sources_fs_with_config,
   try_load_manifest_rows
 }
 
@@ -103,18 +111,18 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo,
   fingerprint_file_fs,
   normalize_persistent_cache_text,
-  persistent_source_group_cache_path,
-  persistent_source_list_cache_path
+  persistent_source_group_cache_path_in_namespace,
+  persistent_source_list_cache_path_in_namespace
 }
 
 import ./loader_contract_source_fs.vibe {
-  apply_vpkg_directory_shared_imports_fs,
+  apply_vpkg_directory_shared_imports_fs_with_config,
   copy_source_specs,
-  desugar_contract_source_fs,
+  desugar_contract_source_fs_with_config,
   empty_source_specs,
   group_cache_row_paths,
   grouped_source_paths,
-  ingest_source_text_fs,
+  ingest_source_text_fs_with_config,
   load_source_if_cached_file_spec_matches,
   loader_empty_grouped_sources,
   loader_join_path,
@@ -132,7 +140,7 @@ import ./loader_contract_source_fs.vibe {
   source_paths,
   validate_index_layout,
   validate_index_layout_fs,
-  validate_vibex_entry_source,
+  validate_vibex_entry_source_with_config,
   vpkg_types_registry_contracts,
   vpkg_types_registry_paths
 }
@@ -169,14 +177,14 @@ fn grouped_sources_group_for_path(groups: Array[(String, Array[(String, String)]
 /// in header deps and missing from the coordinator env cache.
 /// Attach the stub to the contract's existing group so manifest group order
 /// (entry last) stays intact.
-fn append_registered_vpkg_types_sources(_ groups: Array[(String, Array[(String, String)])]) -> Unit {
+fn append_registered_vpkg_types_sources(_ groups: Array[(String, Array[(String, String)])], cfg: TargetCfg) -> Unit {
   let mut ri = 0
   while ri < Array::length(vpkg_types_registry_paths) {
     let r_contract = Array::get(vpkg_types_registry_contracts, at = ri)
     let r_path = Array::get(vpkg_types_registry_paths, at = ri)
     let contract_group = grouped_sources_group_for_path(groups = groups, path = r_contract)
     let types_group = grouped_sources_group_for_path(groups = groups, path = r_path)
-    if contract_group != "" && types_group == "" {
+    if contract_group != "" && types_group == "" && Array::get(vpkg_types_registry_cfgs, at = ri) == target_cfg_identity(cfg) {
       push_grouped_source(groups = groups, group_name = contract_group, path = r_path, source = Array::get(vpkg_types_registry_texts, at = ri))
     } else {
       ()
@@ -185,7 +193,7 @@ fn append_registered_vpkg_types_sources(_ groups: Array[(String, Array[(String, 
   }
 }
 
-fn ingest_grouped_sources_fs(_ groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
+fn ingest_grouped_sources_fs(_ groups: Array[(String, Array[(String, String)])], cfg: TargetCfg) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
   let out = loader_empty_grouped_sources()
   let mut gi = 0
   while gi < Array::length(groups) {
@@ -193,39 +201,39 @@ fn ingest_grouped_sources_fs(_ groups: Array[(String, Array[(String, String)])])
     let mut si = 0
     while si < Array::length(gsources) {
       let (spath, stext) = Array::get(gsources, at = si)
-      push_grouped_source(groups = out, group_name = gname, path = spath, source = ingest_source_text_fs(path = spath, raw = stext))
+      push_grouped_source(groups = out, group_name = gname, path = spath, source = ingest_source_text_fs_with_config(path = spath, raw = stext, cfg = cfg))
       si = si + 1
     }
     gi = gi + 1
   }
-  append_registered_vpkg_types_sources(out)
+  append_registered_vpkg_types_sources(out, cfg = cfg)
   out
 }
 
-fn load_cached_sources_rec(specs: Array[(String, String, String)], index: Int, out: Array[(String, String)]) -> Option[Array[(String, String)]] with Env + Exception + Fs {
+fn load_cached_sources_rec(specs: Array[(String, String, String)], index: Int, out: Array[(String, String)], cfg: TargetCfg) -> Option[Array[(String, String)]] with Env + Exception + Fs {
   if index >= Array::length(specs) {
     Some(out)
   } else {
     let (path, stat_token_text, source_fingerprint) = Array::get(specs, at = index)
     match load_source_if_cached_file_spec_matches(path = path, stat_token_text = stat_token_text, source_fingerprint = source_fingerprint) {
       Some(source) => {
-        Array::push(out, value = (path, ingest_source_text_fs(path = path, raw = source)))
-        load_cached_sources_rec(specs = specs, index = index + 1, out = out)
+        Array::push(out, value = (path, ingest_source_text_fs_with_config(path = path, raw = source, cfg = cfg)))
+        load_cached_sources_rec(specs = specs, index = index + 1, out = out, cfg = cfg)
       },
       None => None
     }
   }
 }
 
-fn load_cached_grouped_sources_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])]) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
+fn load_cached_grouped_sources_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])], cfg: TargetCfg) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
   if index >= Array::length(rows) {
     Some(out)
   } else {
     let (group_name, path, stat_token_text, source_fingerprint) = Array::get(rows, at = index)
     match load_source_if_cached_file_spec_matches(path = path, stat_token_text = stat_token_text, source_fingerprint = source_fingerprint) {
       Some(source) => {
-        push_grouped_source(groups = out, group_name = group_name, path = path, source = ingest_source_text_fs(path = path, raw = source))
-        load_cached_grouped_sources_rec(rows = rows, index = index + 1, out = out)
+        push_grouped_source(groups = out, group_name = group_name, path = path, source = ingest_source_text_fs_with_config(path = path, raw = source, cfg = cfg))
+        load_cached_grouped_sources_rec(rows = rows, index = index + 1, out = out, cfg = cfg)
       },
       None => None
     }
@@ -254,8 +262,8 @@ fn manifest_cache_is_valid(_ manifest: Option[(String, String, String)]) -> Bool
   }
 }
 
-fn load_persistent_sources_cache_if_valid(_ entry_path: String) -> Option[Array[(String, String)]] with Env + Exception + Fs {
-  let cache_path = persistent_source_list_cache_path(entry_path)
+fn load_persistent_sources_cache_if_valid(_ entry_path: String, cfg: TargetCfg) -> Option[Array[(String, String)]] with Env + Exception + Fs {
+  let cache_path = persistent_source_list_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg))
   if !(Fs::exists(cache_path)) {
     None
   } else {
@@ -265,13 +273,13 @@ fn load_persistent_sources_cache_if_valid(_ entry_path: String) -> Option[Array[
     } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
-      load_cached_sources_rec(specs = specs, index = 0, out = empty_source_specs())
+      load_cached_sources_rec(specs = specs, index = 0, out = empty_source_specs(), cfg = cfg)
     }
   }
 }
 
-fn load_persistent_source_groups_cache_if_valid(_ entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
-  let cache_path = persistent_source_group_cache_path(entry_path)
+fn load_persistent_source_groups_cache_if_valid(_ entry_path: String, cfg: TargetCfg) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
+  let cache_path = persistent_source_group_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg))
   if !(Fs::exists(cache_path)) {
     None
   } else {
@@ -281,7 +289,7 @@ fn load_persistent_source_groups_cache_if_valid(_ entry_path: String) -> Option[
     } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
-      load_cached_grouped_sources_rec(rows = rows, index = 0, out = loader_empty_grouped_sources())
+      load_cached_grouped_sources_rec(rows = rows, index = 0, out = loader_empty_grouped_sources(), cfg = cfg)
     }
   }
 }
@@ -293,8 +301,8 @@ fn manifest_path_of(_ manifest: Option[(String, String, String)]) -> Option[Stri
   }
 }
 
-fn load_persistent_source_groups_from_source_list_cache_if_valid(_ entry_path: String) -> Option[(Option[String], Array[(String, Array[(String, String)])])] with Env + Exception + Fs {
-  let cache_path = persistent_source_list_cache_path(entry_path)
+fn load_persistent_source_groups_from_source_list_cache_if_valid(_ entry_path: String, cfg: TargetCfg) -> Option[(Option[String], Array[(String, Array[(String, String)])])] with Env + Exception + Fs {
+  let cache_path = persistent_source_list_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg))
   if !(Fs::exists(cache_path)) {
     None
   } else {
@@ -304,7 +312,7 @@ fn load_persistent_source_groups_from_source_list_cache_if_valid(_ entry_path: S
     } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
-      match load_cached_sources_rec(specs = specs, index = 0, out = empty_source_specs()) {
+      match load_cached_sources_rec(specs = specs, index = 0, out = empty_source_specs(), cfg = cfg) {
         Some(sources) =>
         match try_load_manifest_rows(entry_path) {
           Some((base_dir, rows)) => {
@@ -347,7 +355,12 @@ fn load_persistent_source_groups_from_source_list_cache_if_valid(_ entry_path: S
 }
 
 export fn load_persistent_source_group_fingerprint_if_valid(_ entry_path: String) -> Option[String] with Env + Exception + Fs {
-  let cache_path = persistent_source_group_cache_path(entry_path)
+  load_persistent_source_group_fingerprint_if_valid_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn load_persistent_source_group_fingerprint_if_valid_with_config(_ entry_path: String, cfg: TargetCfg) -> Option[String] with Env + Exception + Fs {
+  let cache_path = persistent_source_group_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg))
   if !(Fs::exists(cache_path)) {
     None
   } else {
@@ -397,7 +410,7 @@ export fn build_persistent_sources_cache_text(entry_path: String, manifest_path:
     // (ENOENT stat ''), and a pathless row could never be validated on reload
     // anyway. Empty paths have been observed reaching this writer through the
     // recursive-collection lane (cache_probe_loader_manifest_groups_bench /
-    // collect_source_groups_fs on some entries); the row origin is tracked
+    // collect_source_groups_fs_with_config on some entries); the row origin is tracked
     // separately, but the writer must never crash the whole compile over it.
     if String::length(path) == 0 {
       ()
@@ -463,15 +476,20 @@ fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: 
 }
 
 export fn load_or_parse_module_header_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
-  load_or_parse_module_header_fs_impl(path = path, source = source, parse_count = parse_count)
+  load_or_parse_module_header_fs_with_config(path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient())
 }
 
-fn store_persistent_sources_cache(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> Unit with Env + Exception + Fs {
-  Fs::write_file(persistent_source_list_cache_path(entry_path), contents = build_persistent_sources_cache_text(entry_path = entry_path, manifest_path = manifest_path, sources = sources))
+/// The same operation with caller-owned target flags and cache identity.
+export fn load_or_parse_module_header_fs_with_config(path: String, source: String, parse_count: Int, cfg: TargetCfg) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
+  load_or_parse_module_header_fs_impl_with_config(path = path, source = source, parse_count = parse_count, cfg = cfg)
 }
 
-fn store_persistent_source_groups_cache(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> Unit with Env + Exception + Fs {
-  Fs::write_file(persistent_source_group_cache_path(entry_path), contents = build_persistent_source_groups_cache_text(entry_path = entry_path, manifest_path = manifest_path, groups = groups))
+fn store_persistent_sources_cache(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)], cfg: TargetCfg) -> Unit with Env + Exception + Fs {
+  Fs::write_file(persistent_source_list_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg)), contents = build_persistent_sources_cache_text(entry_path = entry_path, manifest_path = manifest_path, sources = sources))
+}
+
+fn store_persistent_source_groups_cache(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])], cfg: TargetCfg) -> Unit with Env + Exception + Fs {
+  Fs::write_file(persistent_source_group_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg)), contents = build_persistent_source_groups_cache_text(entry_path = entry_path, manifest_path = manifest_path, groups = groups))
 }
 
 fn copy_grouped_sources(_ groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] {
@@ -585,6 +603,11 @@ fn bind_checked_imports(names: Array[ImportItem], i: Int, env: TypeEnv, mod_env:
 /// Check a module and return its TypeEnv, resolving imports recursively.
 /// resolve_imports is inlined to avoid mutual recursion (vibe has no forward references).
 export fn check_module(source: String, path: String, sources: Array[(String, String)], loading: Array[String], checked_cache: Array[(String, TypeEnv)]) -> TypeEnv with Env + Exception {
+  check_module_with_config(source = source, path = path, sources = sources, loading = loading, checked_cache = checked_cache, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn check_module_with_config(source: String, path: String, sources: Array[(String, String)], loading: Array[String], checked_cache: Array[(String, TypeEnv)], cfg: TargetCfg) -> TypeEnv with Env + Exception {
   // Check cache first
   let cached = cache_lookup(cache = checked_cache, path = path)
   match cached {
@@ -595,7 +618,7 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
         throw(String::concat("import cycle detected: ", path))
       }
       let tokens = lex(source)
-      let stmts = parse_program(tokens)
+      let stmts = parse_program_with_cfg(tokens, cfg_flags = target_cfg_flags(cfg))
       let base_dir = dir_of_path(path)
       // Cycle-detection stack: push self before recursing through this
       // module's imports, truncate back when done. O(1) per frame vs.
@@ -617,7 +640,7 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
             match resolve_path_in_sources(base_dir = base_dir, raw_path = raw_path, sources = sources) {
               None => throw(String::concat("module not found: ", resolve_import_path(base_dir = base_dir, raw_path = raw_path))),
               Some((resolved, mod_source)) => {
-                let mod_env = check_module(source = mod_source, path = resolved, sources = sources, loading = loading, checked_cache = checked_cache)
+                let mod_env = check_module_with_config(source = mod_source, path = resolved, sources = sources, loading = loading, checked_cache = checked_cache, cfg = cfg)
                 bind_checked_imports(names = names, i = 0, env = import_env, mod_env = mod_env)
               }
             }
@@ -626,7 +649,7 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
             match resolve_path_in_sources(base_dir = base_dir, raw_path = raw_path, sources = sources) {
               None => throw(String::concat("module not found: ", resolve_import_path(base_dir = base_dir, raw_path = raw_path))),
               Some((resolved, mod_source)) => {
-                let mod_env = check_module(source = mod_source, path = resolved, sources = sources, loading = loading, checked_cache = checked_cache)
+                let mod_env = check_module_with_config(source = mod_source, path = resolved, sources = sources, loading = loading, checked_cache = checked_cache, cfg = cfg)
                 bind_checked_imports(names = names, i = 0, env = import_env, mod_env = mod_env)
               }
             }
@@ -720,14 +743,19 @@ fn collect_package_hash_inputs(_ path: String) -> (Array[(String, String)], Arra
   (sources, decls, opaques, type_defs)
 }
 
-fn collect_package_hash_inputs_fs(_ path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Fs {
+fn collect_package_hash_inputs_fs(_ path: String, cfg: TargetCfg) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Fs {
   handle {
     collect_package_hash_inputs(path)
-  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(path = p, source = text)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(path = p, pin_blanked = text)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(path = p, pin_blanked = text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(path = p, source = text, cfg = cfg)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(path = p, pin_blanked = text, cfg = cfg)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(path = p, pin_blanked = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 export fn contract_package_hashes_fs(_ path: String) -> (String, String) with Env + Exception + Fs {
-  contract_package_hashes_fs_algo(path = path, algo = "b3")
+  contract_package_hashes_fs_with_config(path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn contract_package_hashes_fs_with_config(_ path: String, cfg: TargetCfg) -> (String, String) with Env + Exception + Fs {
+  contract_package_hashes_fs_algo_with_config(path = path, algo = "b3", cfg = cfg)
 }
 
 /// #1872: both content-addressing hashes of the package whose contract is
@@ -739,7 +767,12 @@ export fn contract_package_hashes_source(path: String, algo: String) -> (String,
 }
 
 export fn contract_package_hashes_fs_algo(path: String, algo: String) -> (String, String) with Env + Exception + Fs {
-  let (sources, decls, opaques, type_defs) = collect_package_hash_inputs_fs(path)
+  contract_package_hashes_fs_algo_with_config(path = path, algo = algo, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn contract_package_hashes_fs_algo_with_config(path: String, algo: String, cfg: TargetCfg) -> (String, String) with Env + Exception + Fs {
+  let (sources, decls, opaques, type_defs) = collect_package_hash_inputs_fs(path, cfg = cfg)
   (package_hash_from_sources_with(algo = algo, sources = sources), contract_hash_with(algo = algo, fn_decls = decls, opaque_names = opaques, type_defs = type_defs))
 }
 
@@ -763,7 +796,12 @@ fn verify_recorded_package_id(importer: String, name: String, pin_hash: String, 
 /// Idempotent: re-running against the written-back file recomputes and
 /// returns the identical hash.
 export fn write_generated_hash_fs(_ path: String) -> String with Env + Exception + Fs {
-  let (pkg_hash, _ct_hash) = contract_package_hashes_fs(path)
+  write_generated_hash_fs_with_config(path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn write_generated_hash_fs_with_config(_ path: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
+  let (pkg_hash, _ct_hash) = contract_package_hashes_fs_with_config(path, cfg = cfg)
   replace_generated_hash_directive(source = Fs::read_file(path), new_value = "#\{pkg_hash}")
 }
 
@@ -773,7 +811,12 @@ export fn write_generated_hash_fs(_ path: String) -> String with Env + Exception
 /// error (network fetch belongs to `vibe add`/`update`, never to fmt).
 /// Pinned lines pass through untouched, so the rewrite is idempotent.
 export fn fill_require_pins_fs(_ source: String) -> String with Env + Exception + Fs {
-  fill_require_pins_fs_mode(source = source, repin = false)
+  fill_require_pins_fs_with_config(source, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn fill_require_pins_fs_with_config(_ source: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
+  fill_require_pins_fs_mode_with_config(source = source, repin = false, cfg = cfg)
 }
 
 /// repin=true rewrites EVERY require line to the store's current hash —
@@ -782,7 +825,12 @@ export fn fill_require_pins_fs(_ source: String) -> String with Env + Exception 
 /// by-name store there is one installed version per package, so repinning
 /// IS conflict resolution.
 export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with Env + Exception + Fs {
-  fill_require_pins_impl(source = source, repin = repin, lenient = false)
+  fill_require_pins_fs_mode_with_config(source = source, repin = repin, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn fill_require_pins_fs_mode_with_config(source: String, repin: Bool, cfg: TargetCfg) -> String with Env + Exception + Fs {
+  fill_require_pins_impl(source = source, repin = repin, lenient = false, cfg = cfg)
 }
 
 /// The `vibe fmt` lane's fill (#730 D-3): the same offline store lookup as
@@ -796,8 +844,13 @@ export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with 
 /// strict lane (VIBE_FILL_PINS, above) keeps the loud answer for callers
 /// who asked for pins specifically.
 export fn fill_require_pins_lenient(_ source: String) -> String with Env + Fs {
+  fill_require_pins_lenient_with_config(source, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn fill_require_pins_lenient_with_config(_ source: String, cfg: TargetCfg) -> String with Env + Fs {
   handle {
-    fill_require_pins_impl(source = source, repin = false, lenient = true)
+    fill_require_pins_impl(source = source, repin = false, lenient = true, cfg = cfg)
   } with { Exception::Throw(_) => source }
 }
 
@@ -870,7 +923,7 @@ fn require_constraint_satisfied(constraint: String, version: String) -> Bool {
 // `index.vpkg` header, which a "stop at the first non-require line" scan
 // (this function's previous shape) never reached. A `require`-looking line
 // the scanner did NOT blank (i.e. body text) is left alone.
-fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String with Env + Exception + Fs {
+fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool, cfg: TargetCfg) -> String with Env + Exception + Fs {
   let (_, blanked) = extract_require_pins(source)
   let sb = StringBuilder::new()
   let len = String::length(source)
@@ -907,7 +960,7 @@ fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String 
             // add`/`update` (lenient) or reports both versions (strict).
             let store_version = extract_package_version(Fs::read_file(store_index))
             if require_constraint_satisfied(constraint = pver, version = store_version) {
-              let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+              let (pkg_hash, _) = contract_package_hashes_fs_with_config(store_index, cfg = cfg)
               // #2676: keep the `from <source>` clause `vibe add` recorded.
               StringBuilder::push(sb, value = String::concat("require \{pname} \{pver} = #\{pkg_hash}", require_line_source_clause(trimmed)))
               emitted = true
@@ -1245,7 +1298,7 @@ fn collect_package_hash_source_closure(package_contract: String, package_dir: St
 /// it (`source_answer`; see `ModuleParse` for why an arm must not throw).
 export effect SourceIngest {
   // The resolved dependency paths of `path` whose ingested text is the
-  // second argument (`module_header_source`'s deps).
+  // second argument (`module_header_source_with_config`'s deps).
   Header(String, String) -> (Array[String], Option[String])
   // A contract's facade, from its pin-blanked text (without the facade
   // marker, which the core adds).
@@ -1349,36 +1402,41 @@ export fn collect_sources_source(_ entry_path: String) -> Array[(String, String)
 /// The filesystem provider of `SourceIngest` for the collection walk: each
 /// request is the cache-backed filesystem step the walk used to call
 /// directly, with its failure handed back rather than thrown.
-fn ingest_header_answer_fs(path: String, source: String) -> (Array[String], Option[String]) with Env + Fs {
+fn ingest_header_answer_fs(path: String, source: String, cfg: TargetCfg) -> (Array[String], Option[String]) with Env + Fs {
   handle {
-    let (deps, _, _) = load_or_parse_module_header_fs(path = path, source = source, parse_count = 0)
+    let (deps, _, _) = load_or_parse_module_header_fs_with_config(path = path, source = source, parse_count = 0, cfg = cfg)
     (deps, None)
   } with { Exception::Throw(message) => (array_empty(), Some(message)) }
 }
 
-fn ingest_contract_answer_fs(path: String, pin_blanked: String) -> (String, Option[String]) with Env + Fs {
+fn ingest_contract_answer_fs(path: String, pin_blanked: String, cfg: TargetCfg) -> (String, Option[String]) with Env + Fs {
   handle {
-    (desugar_contract_source_fs(path = path, source = pin_blanked), None)
+    (desugar_contract_source_fs_with_config(path = path, source = pin_blanked, cfg = cfg), None)
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
 
-fn ingest_shared_imports_answer_fs(path: String, pin_blanked: String) -> (String, Option[String]) with Env + Fs {
+fn ingest_shared_imports_answer_fs(path: String, pin_blanked: String, cfg: TargetCfg) -> (String, Option[String]) with Env + Fs {
   handle {
-    (apply_vpkg_directory_shared_imports_fs(path = path, pin_blanked = pin_blanked), None)
+    (apply_vpkg_directory_shared_imports_fs_with_config(path = path, pin_blanked = pin_blanked, cfg = cfg), None)
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
 
 /// The filesystem adapter of the collection core. Source reads take the
 /// stat-token text memo (`cache_read_source_fs`), as the walk always did.
-fn collect_sources_walk_fs(_ entry_path: String) -> Array[(String, String)] with Env + Exception + Fs {
+fn collect_sources_walk_fs(_ entry_path: String, cfg: TargetCfg) -> Array[(String, String)] with Env + Exception + Fs {
   handle {
     collect_sources_source(entry_path)
-  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(path = p, source = text)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(path = p, pin_blanked = text)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(path = p, pin_blanked = text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(path = p, source = text, cfg = cfg)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(path = p, pin_blanked = text, cfg = cfg)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(path = p, pin_blanked = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// Recursively collect all source files from filesystem, following imports and re-exports.
 /// Returns Array[(path, source)] in dependency order (dependencies first).
 export fn collect_all_sources_fs(_ entry_path: String) -> Array[(String, String)] with Env + Exception + Fs {
+  collect_all_sources_fs_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn collect_all_sources_fs_with_config(_ entry_path: String, cfg: TargetCfg) -> Array[(String, String)] with Env + Exception + Fs {
   match special_manifest_sources(entry_path) {
     Some((manifest_path, sources)) => {
       let _ = manifest_path
@@ -1386,7 +1444,7 @@ export fn collect_all_sources_fs(_ entry_path: String) -> Array[(String, String)
     },
     None => {
       ingestion_pipeline_telemetry_add(index = 0, amount = 1)
-      match load_persistent_sources_cache_if_valid(entry_path) {
+      match load_persistent_sources_cache_if_valid(entry_path, cfg = cfg) {
         Some(sources) => {
           ingestion_pipeline_telemetry_add(index = 1, amount = 1)
           sources
@@ -1396,9 +1454,9 @@ export fn collect_all_sources_fs(_ entry_path: String) -> Array[(String, String)
           // Every source-list miss enters exactly one cold collection attempt,
           // whether a fresh manifest wins or recursion is ultimately required.
           ingestion_pipeline_telemetry_add(index = 9, amount = 1)
-          match try_collect_manifest_sources_fs(entry_path) {
+          match try_collect_manifest_sources_fs_with_config(entry_path, cfg = cfg) {
             Some((manifest_path, sources)) => {
-              store_persistent_sources_cache(entry_path = entry_path, manifest_path = Some(manifest_path), sources = sources)
+              store_persistent_sources_cache(entry_path = entry_path, manifest_path = Some(manifest_path), sources = sources, cfg = cfg)
               sources
             },
             None => {
@@ -1406,12 +1464,12 @@ export fn collect_all_sources_fs(_ entry_path: String) -> Array[(String, String)
                 Some((base_dir, rows)) => {
                   let manifest_path = loader_join_path(base_dir = base_dir, rel_path = "compiler_sources_manifest.tsv")
                   let preloaded_sources = load_manifest_full_sources(base_dir = base_dir, rows = rows)
-                  store_persistent_sources_cache(entry_path = entry_path, manifest_path = Some(manifest_path), sources = preloaded_sources)
+                  store_persistent_sources_cache(entry_path = entry_path, manifest_path = Some(manifest_path), sources = preloaded_sources, cfg = cfg)
                   preloaded_sources
                 },
                 None => {
-                  let sources = collect_sources_walk_fs(entry_path)
-                  store_persistent_sources_cache(entry_path = entry_path, manifest_path = None, sources = sources)
+                  let sources = collect_sources_walk_fs(entry_path, cfg = cfg)
+                  store_persistent_sources_cache(entry_path = entry_path, manifest_path = None, sources = sources, cfg = cfg)
                   sources
                 }
               }
@@ -1494,9 +1552,14 @@ fn move_entry_last_grouped(groups: Array[(String, Array[(String, String)])], ent
 }
 
 export fn collect_source_groups_fs(_ entry_path: String) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
+  collect_source_groups_fs_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn collect_source_groups_fs_with_config(_ entry_path: String, cfg: TargetCfg) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
   if String::ends_with(entry_path, suffix = ".vibex") {
     ensure_regular_source_fs(entry_path)
-    validate_vibex_entry_source(path = entry_path, source = Fs::read_file(entry_path))
+    validate_vibex_entry_source_with_config(path = entry_path, source = Fs::read_file(entry_path), cfg = cfg)
   } else {
     ()
   }
@@ -1507,7 +1570,7 @@ export fn collect_source_groups_fs(_ entry_path: String) -> Array[(String, Array
     },
     None => {
       ingestion_pipeline_telemetry_add(index = 3, amount = 1)
-      match load_persistent_source_groups_cache_if_valid(entry_path) {
+      match load_persistent_source_groups_cache_if_valid(entry_path, cfg = cfg) {
         Some(groups) => {
           ingestion_pipeline_telemetry_add(index = 4, amount = 1)
           groups
@@ -1516,19 +1579,19 @@ export fn collect_source_groups_fs(_ entry_path: String) -> Array[(String, Array
           ingestion_pipeline_telemetry_add(index = 5, amount = 1)
           ingestion_pipeline_telemetry_add(index = 6, amount = 1)
           ingestion_pipeline_telemetry_add(index = 0, amount = 1)
-          match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path) {
+          match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path, cfg = cfg) {
             Some((manifest_path, groups)) => {
               ingestion_pipeline_telemetry_add(index = 1, amount = 1)
               ingestion_pipeline_telemetry_add(index = 7, amount = 1)
-              store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = manifest_path, groups = groups)
+              store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = manifest_path, groups = groups, cfg = cfg)
               groups
             },
             None => {
               ingestion_pipeline_telemetry_add(index = 2, amount = 1)
               ingestion_pipeline_telemetry_add(index = 8, amount = 1)
-              match try_collect_manifest_source_groups_fs(entry_path) {
+              match try_collect_manifest_source_groups_fs_with_config(entry_path, cfg = cfg) {
                 Some((manifest_path, groups)) => {
-                  store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = Some(manifest_path), groups = groups)
+                  store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = Some(manifest_path), groups = groups, cfg = cfg)
                   groups
                 },
                 None =>
@@ -1559,14 +1622,14 @@ export fn collect_source_groups_fs(_ entry_path: String) -> Array[(String, Array
                       }
                       j = j + 1
                     }
-                    store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = Some(manifest_path), groups = groups)
+                    store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = Some(manifest_path), groups = groups, cfg = cfg)
                     groups
                   },
                   None => {
                     let groups = loader_empty_grouped_sources()
-                    let recursive_sources = collect_all_sources_fs(entry_path)
+                    let recursive_sources = collect_all_sources_fs_with_config(entry_path, cfg = cfg)
                     Array::push(groups, value = ("recursive", recursive_sources))
-                    store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = None, groups = groups)
+                    store_persistent_source_groups_cache(entry_path = entry_path, manifest_path = None, groups = groups, cfg = cfg)
                     groups
                   }
                 }
@@ -1577,7 +1640,7 @@ export fn collect_source_groups_fs(_ entry_path: String) -> Array[(String, Array
       }
     }
   }
-  move_entry_last_grouped(groups = ingest_grouped_sources_fs(collected), entry_path = entry_path)
+  move_entry_last_grouped(groups = ingest_grouped_sources_fs(collected, cfg = cfg), entry_path = entry_path)
 }
 
 //# Module bundling — merge stmts from all modules in dependency order
@@ -1593,6 +1656,11 @@ export fn collect_source_groups_fs(_ entry_path: String) -> Array[(String, Array
 /// per-statement rewrite only suppresses the map inside the declaring
 /// statement), so those aliases are dropped from the map up front.
 export fn collect_merged_stmts(_ sources: Array[(String, String)]) -> Array[Stmt] with Exception {
+  collect_merged_stmts_with_config(sources, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn collect_merged_stmts_with_config(_ sources: Array[(String, String)], cfg: TargetCfg) -> Array[Stmt] with Exception {
   // #1840: a fixed source set that contains an ingested contract's FACADE
   // but not its materialized types module would lose the contract's type
   // family entirely (the facade re-exports it; this merge skips
@@ -1626,7 +1694,7 @@ export fn collect_merged_stmts(_ sources: Array[(String, String)]) -> Array[Stmt
       }
       pi = pi + 1
     }
-    if has_contract && !has_types {
+    if has_contract && !has_types && Array::get(vpkg_types_registry_cfgs, at = ri) == target_cfg_identity(cfg) {
       Array::push(sources_all, value = (r_path, Array::get(vpkg_types_registry_texts, at = ri)))
     } else {
       ()
@@ -1637,8 +1705,8 @@ export fn collect_merged_stmts(_ sources: Array[(String, String)]) -> Array[Stmt
   let mut si = 0
   while si < Array::length(sources_all) {
     let (_, src) = Array::get(sources_all, at = si)
-    // Use lex+parse_program directly (skip resolve_interp_stmt to reduce heap pressure)
-    let stmts = parse_program(lex(src))
+    // Use lex+parse_program_with_cfg directly (skip resolve_interp_stmt to reduce heap pressure)
+    let stmts = parse_program_with_cfg(lex(src), cfg_flags = target_cfg_flags(cfg))
     let top_level_value_names = array_empty()
     let mut ti = 0
     while ti < Array::length(stmts) {
@@ -1806,4 +1874,16 @@ export fn check_deps_missing(_ root: String) -> Int with Env + Exception + Fs {
   } else {
     throw(String::concat("deps missing for imports (#1128/#1145): ", String::join(missing, sep = "; ")))
   }
+}
+
+/// Collect the complete source closure under one invocation's target flags.
+export fn collect_all_sources_fs_configured(_ entry_path: String) -> Array[(String, String)] with Config + Env + Exception + Fs {
+  let cfg = target_cfg_capture()
+  collect_all_sources_fs_with_config(entry_path, cfg = cfg)
+}
+
+/// Source groups, ingestion and their persistent caches share this snapshot.
+export fn collect_source_groups_fs_configured(_ entry_path: String) -> Array[(String, Array[(String, String)])] with Config + Env + Exception + Fs {
+  let cfg = target_cfg_capture()
+  collect_source_groups_fs_with_config(entry_path, cfg = cfg)
 }

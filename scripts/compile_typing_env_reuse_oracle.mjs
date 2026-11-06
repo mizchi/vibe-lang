@@ -131,9 +131,7 @@ function build(stage2, project, cache, reuse, name) {
       VIBE_PREOPEN_DIR: project,
       VIBE_CODEGEN_BODY_CACHE: "off",
       VIBE_CHECKED_MODULE_CACHE: "off",
-      // Both spellings, so the answer does not depend on which one the
-      // compile lane's default is: on opts in, off disables.
-      VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE: reuse ? "1" : "",
+      // Reuse is the default; the control opts out.
       VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: reuse ? "" : "1",
       VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryOut,
     },

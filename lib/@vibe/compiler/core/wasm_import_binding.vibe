@@ -1459,27 +1459,41 @@ fn wib_component_sig_text(params: Array[Int], labels: Array[String], results: Ar
   }
 }
 
-/// The public type of an integer component parameter, and the argument the
-/// wrapper hands the raw `Int` stub: `s32` / `u32` are `Int32` / `UInt32`,
-/// widened exactly; every other width stays an `Int` the runner range-checks.
-fn wib_cv_int_wrapper(code: Int, arg: String) -> (String, String) {
-  if code == 0x7a {
-    ("Int32", "Int32::to_int(\{arg})")
-  } else if code == 0x79 {
-    ("UInt32", "UInt32::to_int(\{arg})")
+/// The 32-bit vibe type a WIT integer width is offered as: `s8` / `s16` /
+/// `s32` as `Int32`, `u8` / `u16` / `u32` as `UInt32` (#3730, #3826); `""`
+/// for `s64` / `u64`, which stay `Int`. A narrow width's values all fit, so
+/// a result is exact; an argument outside the narrow range is a valid
+/// `Int32` / `UInt32` that the runner refuses at the call, naming the range
+/// (`int_to_cval` in viberun's foreign_link.rs), rather than truncating it.
+fn wib_cv_int32_type(_ code: Int) -> String {
+  if code == 0x7a || code == 0x7c || code == 0x7e {
+    "Int32"
+  } else if code == 0x79 || code == 0x7b || code == 0x7d {
+    "UInt32"
   } else {
+    ""
+  }
+}
+
+/// The public type of an integer component parameter, and the argument the
+/// wrapper hands the raw `Int` stub: a width offered as `Int32` / `UInt32`
+/// is widened exactly; `s64` / `u64` stay an `Int` the runner range-checks.
+fn wib_cv_int_wrapper(code: Int, arg: String) -> (String, String) {
+  let t = wib_cv_int32_type(code)
+  if t == "" {
     ("Int", arg)
+  } else {
+    (t, "\{t}::to_int(\{arg})")
   }
 }
 
 /// The public type of an integer component result.
 fn wib_cv_int_result_type(_ code: Int) -> String {
-  if code == 0x7a {
-    "Int32"
-  } else if code == 0x79 {
-    "UInt32"
-  } else {
+  let t = wib_cv_int32_type(code)
+  if t == "" {
     "Int"
+  } else {
+    t
   }
 }
 
@@ -1520,13 +1534,16 @@ fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: S
   }
   let wrapped_call = "\{raw}\{vibe_name}(\{String::join(wrap_args, sep = ", ")})"
   // The runner checks the component's signature against the one compiled
-  // in before any call, so an `s32` / `u32` result is in range and keeping
-  // its low 32 bits is exact.
-  let result_expr = if !has_result || result_is_string {
-    wrapped_call
-  } else if Array::get(results, at = 0) == 0x7a {
+  // in before any call, so a result of a width offered as `Int32` /
+  // `UInt32` is in range and keeping its low 32 bits is exact.
+  let result_ty = if !has_result || result_is_string {
+    ""
+  } else {
+    wib_cv_int32_type(Array::get(results, at = 0))
+  }
+  let result_expr = if result_ty == "Int32" {
     "Int::wrap_int32(\{wrapped_call})"
-  } else if Array::get(results, at = 0) == 0x79 {
+  } else if result_ty == "UInt32" {
     "Int::wrap_uint32(\{wrapped_call})"
   } else {
     wrapped_call

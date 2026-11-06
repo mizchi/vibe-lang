@@ -37,6 +37,7 @@ import @vibe/compiler/cache {
 }
 import @vibe/compiler/checker {
   aliased_builtin_import_type,
+  builtin_alias_marker,
   import_item_kind_errors,
   import_item_namespace_alias_errors,
   import_keeps_builtin_signature,
@@ -54,7 +55,9 @@ import @vibe/compiler/core {
   Type,
   TypeDef,
   TypeEnv,
+  canonical_builtin_name,
   env_bind,
+  env_bind_trait_definition_origin,
   env_bind_with_origin,
   env_flat_bindings,
   env_lookup,
@@ -63,6 +66,7 @@ import @vibe/compiler/core {
   env_selectable_type_defs,
   env_show_wrapper_facts,
   env_trait_def_names_into,
+  env_trait_definition_origin,
   env_type_defs,
   env_value_binding,
   env_with_show_wrapper_facts,
@@ -296,12 +300,17 @@ fn engine_prepend_dependency_type_defs(view: DependencyInterfaceView, names: Arr
     env_preserve_type_definition_origins(env = EnvTypeDefs(defs, selectable, tail), source = view.env)
   }
 }
-fn engine_prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, String)], tail: TypeEnv) -> TypeEnv {
+/// `origin_path` is the import spelling the dependency was reached through
+/// (#3824): each projected trait definition carries it, or the origin the
+/// dependency itself recorded for that trait, as a marker just above it
+/// (`env_trait_definition_origin`). `""` records nothing.
+fn engine_prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, String)], tail: TypeEnv, origin_path: String) -> TypeEnv {
   // Preserve every generic implementation in source order. Its parameters and
   // bounds are semantic payload, so deduplicating by target alone could
   // silently change obligation satisfaction.
   let retained = array_empty()
   let seen_defs = array_empty()
+  let def_origins: Array[(String, String, String)] = []
   let mut cur = dep_env
   let mut done = false
   while !done {
@@ -330,6 +339,11 @@ fn engine_prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(Stri
             }
             Array::push(retained, value = EnvTraitDef(local_name, local_supers, is_auto, methods, EnvEmpty, params, engine_trait_projection_map_method_gens(method_gens = method_gens, mappings = mappings)))
             Array::push(seen_defs, value = local_name)
+            let (origin, source) = match env_trait_definition_origin(env = dep_env, name = name) {
+              Some(recorded) => recorded,
+              None => (origin_path, name)
+            }
+            Array::push(def_origins, value = (local_name, origin, source))
           } else {
             ()
           },
@@ -366,7 +380,25 @@ fn engine_prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(Stri
   let mut i = Array::length(retained) - 1
   while i >= 0 {
     out = match Array::get(retained, at = i) {
-      EnvTraitDef(name, supers, is_auto, methods, _, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, out, params, method_gens),
+      EnvTraitDef(name, supers, is_auto, methods, _, params, method_gens) => {
+        let def = EnvTraitDef(name, supers, is_auto, methods, out, params, method_gens)
+        let mut origin = ""
+        let mut source = ""
+        for row in def_origins {
+          let (n, o, src) = row
+          if n == name {
+            origin = o
+            source = src
+          } else {
+            ()
+          }
+        }
+        if origin == "" {
+          def
+        } else {
+          env_bind_trait_definition_origin(env = def, name = name, path = origin, source = source)
+        }
+      },
       EnvTraitImpl(name, target, _) => EnvTraitImpl(name, target, out),
       EnvTraitImplGen(name, params, bounds, target, _) => EnvTraitImplGen(name, params, bounds, target, out),
       _ => out
@@ -1898,7 +1930,9 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         Some(CtUnknown) => if alias == None && import_keeps_builtin_signature(name) {
           nacc
         } else match aliased_builtin {
-          Some(sig) => env_bind_with_origin(env = nacc, name = bound_name, ty = sig, origin = binding_origin),
+          Some(sig) => env_bind(env = env_bind_with_origin(env = nacc, name = bound_name, ty = sig, origin = binding_origin), name = builtin_alias_marker(bound_name), ty = CtRecord([
+            (canonical_builtin_name(name), CtUnit)
+          ])),
           None => env_bind_with_origin(env = nacc, name = bound_name, ty = ty, origin = binding_origin)
         },
         Some(_) => env_bind_with_origin(env = nacc, name = bound_name, ty = ty, origin = binding_origin),
@@ -1909,7 +1943,9 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           nacc
         } else if aliased_builtin is Some {
           match aliased_builtin {
-            Some(sig) => env_bind_with_origin(env = nacc, name = bound_name, ty = sig, origin = binding_origin),
+            Some(sig) => env_bind(env = env_bind_with_origin(env = nacc, name = bound_name, ty = sig, origin = binding_origin), name = builtin_alias_marker(bound_name), ty = CtRecord([
+              (canonical_builtin_name(name), CtUnit)
+            ])),
             None => nacc
           }
         } else if contains_str(arr = dep_selectable_type_defs, target = name) || engine_trait_in_list(traits = dep_traits, name = name) {
@@ -1981,7 +2017,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   let declaration_trait_mappings = engine_dependency_trait_projection_mappings(dep_env = dep_env, dep_bindings = dep_bindings, dep_traits = dep_traits, upper_slots = dep_upper_slots, names = declaration_names, unresolved = array_empty())
   engine_foreign_trait_impl_collisions(dep_env = dep_env, mappings = declaration_trait_mappings, raw_path = raw_path, resolved = resolved, dep_types = dep_types, local_types = local_types, unresolved = unresolved, reported = collision_reported)
   engine_note_trait_identities(dep_env = dep_env, mappings = declaration_trait_mappings, raw_path = raw_path, defs = id_defs, markers = id_markers, walked = id_walked, keep = id_keep, carried = carried_references, seen = seen_types, unresolved = unresolved)
-  let bound = bind_names(0, engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = declaration_trait_mappings, tail = engine_prepend_dependency_type_defs(view = view, names = declaration_names, tail = acc)))
+  let bound = bind_names(0, engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = declaration_trait_mappings, tail = engine_prepend_dependency_type_defs(view = view, names = declaration_names, tail = acc), origin_path = raw_path))
   let mut with_references = bound
   let mut ci = 0
   while ci < Array::length(carried_references) {
@@ -2055,7 +2091,7 @@ fn engine_prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, na
   let dep_upper_slots = view.upper_slots
   let ignored = array_empty()
   let mappings = engine_dependency_trait_projection_mappings(dep_env = dep_env, dep_bindings = dep_bindings, dep_traits = dep_traits, upper_slots = dep_upper_slots, names = names, unresolved = ignored)
-  let mut out = engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = mappings, tail = engine_prepend_dependency_type_defs(view = view, names = names, tail = acc))
+  let mut out = engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = mappings, tail = engine_prepend_dependency_type_defs(view = view, names = names, tail = acc), origin_path = "")
   // #3036: the published surface names each carried type's declaration, so
   // an importer of the alias checks it against its other imports.
   let mut ci = 0

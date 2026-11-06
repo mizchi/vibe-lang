@@ -10,7 +10,7 @@
 // per call.
 
 import ./checker_call_header.vibe {
-  checker_call_header_is_declaration, checker_call_header_names, checker_header_name_is_positional
+  checker_builtin_call_name, checker_call_header_is_declaration, checker_call_header_names, checker_header_name_is_positional
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -89,8 +89,9 @@ export fn checker_note_label_site(env: TypeEnv, name: String, ident_offset: Int,
   if !Array::get(label_sites_active, at = 0) || checker_call_header_is_probe() || offset < 0 || MutMap::has(Array::get(label_site_offsets, at = 0), k = offset) {
     ()
   } else {
-    let found = if builtin_resolves_at(env = env, name = name, ident_off = ident_offset) && (lookup_builtin(name) is Some(_)) {
-      match builtin_param_labels(name) {
+    let bname = checker_builtin_call_name(env = env, name = name)
+    let found = if builtin_resolves_at(env = env, name = bname, ident_off = ident_offset) && (lookup_builtin(bname) is Some(_)) {
+      match builtin_param_labels(bname) {
         Some(names) => Some((label_site_builtin, names)),
         None => None
       }
@@ -151,11 +152,13 @@ fn missing_label_name(_ raw: String) -> String {
 /// builtin, or a declaration (`checker_call_header_is_declaration`). A local
 /// lambda or a value answers None: those calls stay positional.
 fn required_label_names(env: TypeEnv, name: String, ident_offset: Int, method_call: Bool) -> Option[Array[String]] {
-  if builtin_resolves_at(env = env, name = name, ident_off = ident_offset) && (lookup_builtin(name) is Some(_)) {
-    if canonical_builtin_name(name) == "sh_lines" {
+  // #3832: a builtin reached through an import alias takes the builtin's labels.
+  let bname = checker_builtin_call_name(env = env, name = name)
+  if builtin_resolves_at(env = env, name = bname, ident_off = ident_offset) && (lookup_builtin(bname) is Some(_)) {
+    if canonical_builtin_name(bname) == "sh_lines" {
       None
     } else {
-      builtin_param_labels(name)
+      builtin_param_labels(bname)
     }
   } else if checker_call_header_is_declaration(env = env, name = name) {
     match checker_call_header_names(env = env, name = name) {
@@ -181,7 +184,7 @@ export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset
       // More arguments than parameters is an arity error, and a declaration's
       // call that labels some arguments and not others is reported as mixing:
       // either says what to fix first.
-      Some(names) => if Array::length(args) > Array::length(names) || (!(lookup_builtin(name) is Some(_)) && checker_args_mix_labels(args)) {
+      Some(names) => if Array::length(args) > Array::length(names) || (!(lookup_builtin(checker_builtin_call_name(env = env, name = name)) is Some(_)) && checker_args_mix_labels(args)) {
         ()
       } else {
         let missing: Array[String] = []

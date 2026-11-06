@@ -139,7 +139,10 @@ codegen shape, the same RC treatment.
 - **Excluded from the needing set**: functions unreachable from the entry
   (DCE keep flags), self-discharging functions (they install their own handle
   for `E`), and local binders that shadow a needing function's name, which are
-  α-renamed to `__edpsh_N_<name>` first (`edp_alpha_rename_shadowed`).
+  α-renamed to `__edpsh_NoTAG_<name>` first (`edp_alpha_rename_shadowed`):
+  `N` counts within the top-level statement the binder is in and `TAG` is
+  that statement's tag (`generated_owner_tag`, #3829), so the name does not
+  depend on the statements before it and is still unique program-wide.
 - **Vacuous handles are erased.** When no `perform E::..` exists anywhere in
   the program, every handle of `E` is replaced by its body before migration
   (`edp_erase_effect_handles`). A handle that only names a host label (`Env`,
@@ -598,7 +601,7 @@ alternatives").
    the handle is the only sound option (renaming the private effect would leak
    the row upward). Pinned by `fixtures/effect_vacuous_handle_erased.vibe`.
 2. **Shadowed needing names.** Local binders that shadow a needing function
-   are α-renamed (`__edpsh_N_<name>`), and the eligibility scan is scope
+   are α-renamed (`__edpsh_NoTAG_<name>`), and the eligibility scan is scope
    tracked: a call to a `let`-bound closure literal is safe, while a parameter,
    `let mut` or pattern binder that shadows a global name is opaque.
    `fixtures/evidence_dict_needing_shadowed_by_local.vibe` now migrates.

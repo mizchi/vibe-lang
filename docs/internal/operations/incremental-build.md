@@ -1526,86 +1526,42 @@ to one leaf must re-check that leaf and the modules whose interfaces it
 changes, not the whole closure. That is #1379's semantic-module granularity,
 and this row is the number it has to move.
 
-##### The obvious candidate is measured, and it is a REGRESSION (2026-09-12)
+##### Typing reuse on the compile lane — the default (#2728)
 
-The check lane has had typing-dependency env reuse as its production default
-for a while — **TDRE9** at this commit; `TDRE8` was the retired protocol v23
-replaced, and the section below already says so — and on that lane a one-leaf
-edit re-checks exactly **1 of 197** planned modules. The obvious move was to give a COMPILE the same reuse,
-so `VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE=1` exists. Measured on the same
-corpus, same instrument, same three temperatures, reproduced byte-for-byte
-across two independent invocations:
+The check lane's typing-dependency env reuse (TDRE10) is also the compile
+lanes' default: on a one-leaf edit only the edited module and the modules whose
+interfaces it changes are re-checked, instead of the whole closure.
+`VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` opts out on every lane.
 
-| check phase (`source_groups -> prepared_db`) | reuse off (today's default) | reuse on |
-|---|---:|---:|
-| cold | 270.9 MB | **1,647.1 MB** |
-| unchanged (warm) | 11.4 MB | 11.4 MB |
-| one-leaf edit | 344.9 MB | **812.7 MB** |
-| **whole-compile total, cold** | **946.2 MB** | **2,322.4 MB** |
-| **whole-compile total, one-leaf edit** | **848.7 MB** | **1,434.3 MB** |
+It was off on the compile lanes until both halves below held. The first
+measurement of it (2026-09-12) was a regression: 1,647 MB against 271 MB for a
+cold check phase, because a cold compile paid the whole transport for reads
+that could not succeed.
 
-**Reuse on is 2.4x worse on the edit it was supposed to fix, and 6.1x worse
-cold.** The cold row is the one that bounds it: a cold compile can reuse
-nothing, so every byte of that 1.38 GB is the transport machinery running for
-a read that cannot succeed. The unchanged row is identical to the byte in both
-lanes, which says the reuse arm is not even reached there: the conservative
-fingerprint already short-circuits that case.
+**The cost.** Most of that cold cost was the size of what each module
+published. #3783 memoized each dependency's env text. #3800 cut the alias down
+to the target fingerprint and wrote the key and target once. #3808 stopped
+building three strings, each as large as a module's source plus its
+dependencies' env texts, and never reclaimed on the bump lane: the reuse key,
+a copy of it hashed to name the alias path, and the witness text that embeds
+it. The key is now kept as its segments' payloads (`TypingReuseKey`), the alias
+path is named by a digest of those payloads, the witness is written piece by
+piece, and a stored key is compared against the payloads where it lies.
 
-**What the cold row does NOT say is that the cost is publication** (Codex P2 on
-the PR that recorded this, and correct). On a miss the enabled lane pays TWICE
-over, in two different places, and both are inside that number:
+Reuse on minus reuse off, measured after #3808:
 
-- `finish_typecheck_fs_impl` calls `typing_dependency_env_reuse_is_eligible`,
-  then builds `typing_dependency_transport_input_key` from the module's
-  verbatim source plus each dependency's exact env text, then calls
-  `load_typing_dependency_env_reuse_target` — which on a cold compile misses
-  for every module;
-- `commit_module_outcome` then runs the eligibility walk again, builds *the
-  same large key again*, and publishes the eligibility and the sidecar.
+| corpus | case | heap | wall (advisory, one round) |
+|---|---|---:|---:|
+| selfcompile KPI input (`scripts/selfcompile_kpi.sh`) | cold | +12.1 MB (+1.0%) | — |
+| CLI closure (694 modules) | cold | +21 MB | +0.6 s |
+| CLI closure | comment appended to `core/hex.vibe` | −518 MB | −3.5 s |
+| CLI closure | exported fn added to `core/hex.vibe` | −59 MB | −0.6 s |
+| CLI closure | private fn added to `cli/entry.vibe` | +1 MB | +0.2 s |
 
-**The eligibility walk is not a cheap predicate.** For each dependency it does
-`Fs::exists`, `Fs::read_file`, a binding parse, and
-`load_canonical_typing_dependency_env_reuse_target` — reading and parsing that
-dependency's canonical target env text. On a non-leaf module with many
-dependencies it is a plausible dominant term on its own, and like the key it
-is paid twice.
+The `core/hex.vibe` edits re-check 1 of 561 modules with reuse on (a comment)
+and 283 (an exported function), against 561 with it off.
 
-So the cold figure is **eligibility validation plus miss-path lookup plus
-publication**, with both the eligibility walk and the key construction paid
-twice per module, and nothing here separates them. Splitting those four terms
-is the next measurement, not a conclusion this table supports.
-
-**Nothing here shows it is WRONG either — and nothing here shows it is
-right.** Compiling the same corpus with the flag on and off, body cache off so
-a replayed body cannot mask a difference, gives byte-identical output at both
-temperatures (`sha256` equal). Read what those two comparisons can actually
-see: the cold one has no reuse hit to get wrong, and the edited one appends a
-COMMENT, so the program is semantically unchanged and a stale reused env would
-produce the same answer as a fresh one. **Neither exercises a reuse hit on a
-program whose meaning changed**, which is the case that could be silently
-wrong.
-
-What this rules out is the shortcut, not the goal. Criterion 5 still needs the
-check phase bounded by the edited module, but reusing the check lane's
-transport as-is makes a compile worse, because a compile consumes more of a
-module's check than the public env carries (the typed-lowering offsets the
-reuse arm republishes, #2391) and pays the whole transport whether or not the
-read succeeds. #3783 and #3800 have since cut that publication cost; the
-wall-time comparison after them is in #3800.
-
-**The cold allocation is now within a percent of reuse off.** The rest of the
-cold cost was three strings, each as large as a module's source plus its
-dependencies' env texts, built once per module and never reclaimed on the bump
-lane: the reuse key, a copy of it hashed to name the alias path, and the
-witness text that embeds it. The key is now kept as its segments'
-payloads (`TypingReuseKey`), the alias path is named by a digest of those
-payloads, the witness is written piece by piece, and a stored key is compared
-against the payloads where it lies. Measured on the selfcompile KPI input
-(`scripts/selfcompile_kpi.sh`, cold), reuse on minus reuse off went from
-+192.7 MB (+15.7%) to +12.0 MB (+1.0%); on the CLI closure (694 modules) the
-cold build went from +426 MB to +21 MB.
-
-**The correctness side is a gate now:
+**The correctness side is a gate:
 `scripts/compile_typing_env_reuse_oracle.mjs`** (stage2-oracles, with
 `scripts/compile_typing_env_reuse_oracle_test.sh` as its red self-test). Most
 edit shapes cannot be an oracle. The input key is the module's verbatim source
@@ -1624,13 +1580,16 @@ things:
 - it makes that edit, with a consumer whose `==` resolves only through its
   typed-lowering row;
 - it requires the unchanged consumers to record a dependency-transport hit,
-  because without one the oracle is vacuous in the same way the comparisons
-  above are;
+  because without one the oracle is vacuous: a cold compile has no hit to get
+  wrong, and an edit that keeps the program's meaning (a comment) answers the
+  same through a stale reuse as through a fresh check;
 - it requires the program to have changed;
 - it compares the module against a fresh compile with reuse off.
 
 It also requires corrupted reuse records and an interface edit to miss, and to
-compile to the fresh bytes. The per-file AST cache was built before it was
+compile to the fresh bytes. Its self-test strips the typed-equality rows from
+the reused records, keeping every binding consistent so the reuse is still
+taken, and requires the build to be refused at the comparison. The per-file AST cache was built before it was
 measured and came back at exactly zero (#2668); this is the same mistake one
 step later, caught by measuring first (#2728).
 
@@ -2854,15 +2813,13 @@ typed artifact or lossless `CheckedProgram` claim.
 
 ## Dependency transport-environment typing reuse
 
-TDRE9 TypeEnv reuse is enabled by default for the `vibe check` filesystem
-check-only lane. Build, codegen, LSP, and direct FS typecheck consumers remain
-conservative pending a compact exact-publication design: publishing the current
-exact TDRE9A/TDRE9W texts on a fresh selfcompile exceeds the signed 2 GiB guest
-heap boundary, while the conservative compile lane remains near 1.11 GB.
-`VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` is the strict emergency opt-out for
-check-only reuse; any other nonempty value is rejected. An incremental
-invalidation trace automatically forces reuse off so the trace stays
-observation-only.
+TypeEnv reuse is enabled by default on every lane, `vibe check` and the FS
+compile lanes (`vibe build` / `run` / `test`) included; the compile lanes'
+cost and their oracle are described under "Typing reuse on the compile lane"
+above. `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` is the strict opt-out; the
+check-only and FS-compile lanes reject any other nonempty value. An
+incremental invalidation trace automatically forces reuse off so the trace
+stays observation-only.
 
 TDRE9 aliases the exact logical
 `ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,

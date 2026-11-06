@@ -59,6 +59,10 @@ EXCLUDE_PATTERNS=(
   # the imported generic Double result as an Int; the dedicated GC selfbuild
   # and launcher gates below exercise the intended backend explicitly.
   '^fixtures/gc_import_call_offset_collision_test\.vibe$'
+  # #3826: a wasm COMPONENT import runs on viberun only, and this harness
+  # runs node, which refuses to instantiate one. scripts/test_wasm_import_gate.sh
+  # runs it on viberun with `vibe test`, on both RC lanes.
+  '^fixtures/wasm_import/narrow_import_test\.vibe$'
   # wasi p3 http client: currently failing, under active work on a separate
   # branch. Remove once that lands.
   '^fixtures/runtime/http_p3_client_test\.vibe$'

@@ -35,6 +35,7 @@ import ./types_env_cache.vibe {
   apply_type_constructor,
   bound_flat_self_add,
   bound_flat_self_equals,
+  env_trait_definition_origin,
   hkt_app_name,
   hkt_ctor,
   hkt_ctor_prefix,
@@ -2137,7 +2138,34 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
 /// write (`fill(Self, Array[Self])` pushing 2147483648), or a callback it can
 /// call. Nor is a marker trait, one with supertraits or one with header
 /// parameters borrowed, which this rule does not read.
+///
+/// #3824: the one `Self` result borrowed is the shipped `Default`'s, whose
+/// `Int` impl returns `0`, in range for both types. "Shipped" is decided by
+/// where the definition came from, not by its shape: the seed's rows (no
+/// definition at all), or a trait declared as `Default` in a module reached
+/// through an import spelled `@vibe/core`, under whatever local name an `as`
+/// gives it (`env_trait_definition_origin`). A program's own
+/// `trait Default`, or one reached any other way, keeps the rule above, so an
+/// `impl Default for Int` returning 4294967296 is not borrowed.
 fn int32_borrows_int_impl(env: TypeEnv, trait_name: String) -> Bool {
+  if int32_borrows_shipped_default(env = env, trait_name = trait_ref_name(trait_name)) {
+    true
+  } else {
+    int32_borrows_reading_impl(env = env, trait_name = trait_name)
+  }
+}
+
+fn int32_borrows_shipped_default(env: TypeEnv, trait_name: String) -> Bool {
+  match trait_definition(env = env, name = trait_name) {
+    None => trait_name == "Default",
+    Some((supers, methods, params, _)) => Array::length(supers) == 0 && Array::length(params) == 0 && Array::length(methods) == 1 && match Array::get(methods, at = 0) {
+      (mname, mparams, TyName(ret)) => mname == "default" && Array::length(mparams) == 0 && ret == "Self",
+      _ => false
+    } && env_trait_definition_origin(env = env, name = trait_name) == Some(("@vibe/core", "Default"))
+  }
+}
+
+fn int32_borrows_reading_impl(env: TypeEnv, trait_name: String) -> Bool {
   match trait_definition(env = env, name = trait_name) {
     Some((supers, methods, params, _)) => if Array::length(methods) == 0 || Array::length(supers) > 0 || Array::length(params) > 0 {
       false

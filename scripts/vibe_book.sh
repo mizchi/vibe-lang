@@ -21,14 +21,12 @@ if [ -z "$compiler" ]; then
   # The tool compile and `_start` run below are the executable validation for
   # this lane. Skip generations.sh's additional sample run so the standalone
   # book workflow does not also require a wasmtime installation.
+  # The compiler is the one this build writes, in the directory named before
+  # it (#3830) -- not the newest generation on disk, which can be another one.
+  gen_dir="$(bash scripts/generations.sh out-dir)"
   VIBE_REGEN_MODULE_SOURCE=1 VIBE_GENERATION_VALIDATE_RUN=0 \
-    bash scripts/generations.sh build
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    if [ -s "${gen}stage2.wasm" ]; then
-      compiler="${gen}stage2.wasm"
-      break
-    fi
-  done
+    bash scripts/generations.sh build --out-dir "$gen_dir"
+  compiler="$gen_dir/stage2.wasm"
 fi
 if [ ! -s "$compiler" ]; then
   echo "vibe_book.sh: compiler wasm not found: $compiler" >&2

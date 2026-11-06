@@ -109,6 +109,7 @@ import ./suspend_scps_rename_ident.vibe {
   scps_next_site,
   scps_no_names,
   scps_op_suffix,
+  scps_owner_reset,
   scps_params_bind_name,
   scps_perform_args,
   scps_refs_name,
@@ -118,6 +119,8 @@ import ./suspend_scps_rename_ident.vibe {
   scps_row_has_var,
   scps_sanitize,
   scps_seq_float_fresh,
+  scps_set_owner_clone,
+  scps_set_owner_stmt,
   scps_st_errs,
   scps_st_inj,
   scps_string_names_seed,
@@ -316,6 +319,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
     let groups = scps_collect_groups(stmts)
     let ctx = (stmts, effect_defs, fn_defs, es_names, es_members_list, ctor_names, groups)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
+    scps_owner_reset()
     // closure-CPS (追記31 Vertical B) phase 1: the CPS-mode effect set.
     let cps_effs = scps_collect_cps_effs(stmts = stmts, groups = groups)
     scps_note_step_mode(cps_effs = cps_effs, extra = extra)
@@ -338,6 +342,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
       if scps_stmt_has_trigger(Array::get(stmts, at = i)) {
         Array::truncate(scps_cur_stmt, length = 0)
         Array::push(scps_cur_stmt, value = i)
+        scps_set_owner_stmt(Array::get(stmts, at = i))
         match Array::get(stmts, at = i) {
           SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, scps_rewrite_root(e = expr, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope))),
           SLetMut(name, ty, expr) => Array::set(stmts, at = i, value = SLetMut(name, ty, scps_rewrite_root(e = expr, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope))),
@@ -356,6 +361,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
     let (_, _, _, q_eff, q_fn, inj, _) = st
     let mut qi = 0
     while qi < Array::length(q_fn) {
+      scps_set_owner_clone(eff = Array::get(q_eff, at = qi), fname = Array::get(q_fn, at = qi))
       scps_emit_clone(eff = Array::get(q_eff, at = qi), fname = Array::get(q_fn, at = qi), ctx = ctx, st = st)
       qi = qi + 1
     }
@@ -420,6 +426,7 @@ fn scps_prepass_stmts(stmts: Array[Stmt], ecfgs: Array[(String, Array[String], A
   } else {
     0
   }) {
+    scps_set_owner_stmt(Array::get(stmts, at = ip))
     match Array::get(stmts, at = ip) {
       // A TOP-LEVEL fn value is the 3b needing-fn world: the ORIGINAL must
       // stay untouched (dual entry -- cps callers go through the
@@ -478,6 +485,7 @@ export fn suspend_prepass_splits(stmts: Array[Stmt], eff: String) -> Bool {
     edp_argcond_note_binders(copy)
     let ctx = (copy, edp_collect_effect_defs(copy), fn_defs, es_names, es_members_list, scps_collect_ctor_names(copy), groups)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), array_empty_str())
+    scps_owner_reset()
     let split_effs = array_empty_str()
     scps_prepass_stmts(stmts = copy, ecfgs = for target in matching {
       scps_ecfg_for(ctx = ctx, eff = target)

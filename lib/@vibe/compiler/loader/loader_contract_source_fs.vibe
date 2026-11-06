@@ -1,7 +1,11 @@
+import @vibe/compiler/config {
+  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+
 // lib/@vibe/compiler/loader/loader.vibe — contract source fs.
 
 import @vibe/compiler/syntax {
-  Token, cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving_located, print_stmt
+  Token, lex, lex_with_offsets, located_lex_message, parse_program_preserving_located_with_cfg, parse_program_with_cfg, print_stmt
 }
 
 import @vibe/core {
@@ -50,10 +54,10 @@ import ./header_cache.vibe {
   ModuleParse,
   contract_sibling_impl_raws,
   contract_sibling_impl_raws_source,
-  load_or_parse_module_header_fs_impl,
+  load_or_parse_module_header_fs_impl_with_config,
   merge_impl_raws_dedupe,
-  parse_answer_fs,
-  parse_program_located_shared_fs,
+  parse_answer_fs_with_config,
+  parse_program_located_shared_fs_with_config,
   source_answer
 }
 
@@ -102,8 +106,8 @@ import @vibe/compiler/cache {
   compact_string_fingerprint,
   fingerprint_file_fs,
   normalize_persistent_cache_text,
-  persistent_contract_facade_cache_path,
-  persistent_vpkg_prefix_cache_path
+  persistent_contract_facade_cache_path_in_namespace,
+  persistent_vpkg_prefix_cache_path_in_namespace
 }
 
 /// Collect the exported type kinds of one source boundary, following facade
@@ -264,7 +268,7 @@ export fn set_exported_type_params_memo_row_bound(_ rows: Int) -> Unit {
   Array::set(exported_type_params_memo_row_bound, at = 0, value = rows)
 }
 
-fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String], cfg: TargetCfg) -> Array[(String, Array[String])] with Env + Exception + Fs {
   if contains_path(visited = visiting, path = path) {
     Array::set(exported_type_params_cycle_hits, at = 0, value = Array::get(exported_type_params_cycle_hits, at = 0) + 1)
     return array_empty()
@@ -280,7 +284,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
   let fresh = match MutMap::get(Array::get(exported_type_params_memo_cell, at = 0), k = path) {
     Some(entry) => {
       let (reads, _, _, resolves) = entry
-      if exported_type_params_entry_cfg_matches(path = path, cfg = cfg_ambient_flags_csv()) && exported_type_params_entry_fresh(reads = reads, resolves = resolves) {
+      if exported_type_params_entry_cfg_matches(path = path, cfg = target_cfg_identity(cfg)) && exported_type_params_entry_fresh(reads = reads, resolves = resolves) {
         Some(entry)
       } else {
         None
@@ -311,7 +315,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
       let resolve_mark = Array::length(exported_type_params_resolve_log)
       let dep_mark = Array::length(dep_fingerprints)
       let hits_before = Array::get(exported_type_params_cycle_hits, at = 0)
-      let out = exported_type_params_uncached_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = visiting)
+      let out = exported_type_params_uncached_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = visiting, cfg = cfg)
       let reads = Array::slice(exported_type_params_read_log, start = log_mark, end = Array::length(exported_type_params_read_log))
       let fps = Array::slice(dep_fingerprints, start = dep_mark, end = Array::length(dep_fingerprints))
       let resolves = Array::slice(exported_type_params_resolve_log, start = resolve_mark, end = Array::length(exported_type_params_resolve_log))
@@ -319,7 +323,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
         exported_type_params_memo_release(path)
         exported_type_params_memo_reserve(Array::length(reads) + Array::length(resolves))
         MutMap::set(Array::get(exported_type_params_memo_cell, at = 0), k = path, v = (reads, fps, out, resolves))
-        MutMap::set(Array::get(exported_type_params_memo_cfg_cell, at = 0), k = path, v = cfg_ambient_flags_csv())
+        MutMap::set(Array::get(exported_type_params_memo_cfg_cell, at = 0), k = path, v = target_cfg_identity(cfg))
       } else {
         ()
       }
@@ -333,7 +337,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
 /// re-export resolutions made on the way. Over any provider: a re-export's
 /// own answer is a `ContractIngest::TypeParams` request, which the
 /// filesystem lane serves from the memo below (`exported_type_params_fs`).
-fn exported_type_params_node(_ path: String) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + ContractIngest + ModuleParse + Source {
+fn exported_type_params_node(_ path: String, cfg: TargetCfg) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + ContractIngest + ModuleParse + Source {
   let out = array_empty()
   let dep_paths = array_empty()
   let dep_fingerprints = array_empty()
@@ -361,7 +365,7 @@ fn exported_type_params_node(_ path: String) -> (Array[(String, Array[String])],
     }
   } else {
     let ingested = source_answer(perform ContractIngest::IngestMember(path, raw))
-    let stmts = exported_type_params_parse(path = path, ingested = ingested)
+    let stmts = exported_type_params_parse(path = path, ingested = ingested, cfg = cfg)
     let defs = collect_impl_type_defs(stmts)
     let mut ti = 0
     while ti < Array::length(defs) {
@@ -430,12 +434,12 @@ fn exported_type_params_node(_ path: String) -> (Array[(String, Array[String])],
 /// two is parsed as its new body under the old token, so the next ask
 /// re-reads it; the other order would record the new token against the old
 /// parse), and the node's sources and resolutions go to the memo's logs.
-fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String], cfg: TargetCfg) -> Array[(String, Array[String])] with Env + Exception + Fs {
   let visiting_mark = Array::length(visiting)
   Array::push(visiting, value = path)
   let token = Fs::stat_token(path)
   Array::push(exported_type_params_read_log, value = (path, token))
-  let (out, node_paths, node_fingerprints, resolves) = exported_type_params_node_on_fs(path)
+  let (out, node_paths, node_fingerprints, resolves) = exported_type_params_node_on_fs(path, cfg = cfg, visiting = visiting)
   let mut ni = 0
   while ni < Array::length(node_paths) {
     Array::push(dep_paths, value = Array::get(node_paths, at = ni))
@@ -455,30 +459,34 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
 /// `ContractIngest::TypeParams` answers of one recursion. Each answer
 /// restores it to its own mark, success or failure, so it is empty between
 /// top-level asks.
-let exported_type_params_visiting: Array[String] = []
 
-fn type_params_answer_fs(_ path: String) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env + Fs {
-  let mark = Array::length(exported_type_params_visiting)
+fn type_params_answer_fs(_ path: String, cfg: TargetCfg, visiting: Array[String]) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env + Fs {
+  let mark = Array::length(visiting)
   let dep_paths = array_empty()
   let dep_fingerprints = array_empty()
   let answer = handle {
-    (exported_type_params_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = exported_type_params_visiting), None)
+    (exported_type_params_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = visiting, cfg = cfg), None)
   } with { Exception::Throw(message) => (array_empty(), Some(message)) }
-  Array::truncate(exported_type_params_visiting, length = mark)
+  Array::truncate(visiting, length = mark)
   let (out, failure) = answer
   ((out, dep_paths, dep_fingerprints), failure)
 }
 
-fn exported_type_params_node_on_fs(_ path: String) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + Fs {
+fn exported_type_params_node_on_fs(_ path: String, cfg: TargetCfg, visiting: Array[String]) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + Fs {
   handle {
-    exported_type_params_node(path)
-  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p)); ModuleParse::Parse(p, text) => resume(parse_answer_fs(path = p, source = text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+    exported_type_params_node(path, cfg = cfg)
+  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw, cfg = cfg)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p, cfg = cfg, visiting = visiting)); ModuleParse::Parse(p, text) => resume(parse_answer_fs_with_config(path = p, source = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// #1872: the exported type parameters of `path` over any provider, with
 /// the sources read for them and their fingerprints.
 export fn exported_type_params_source(_ path: String) -> (Array[(String, Array[String])], Array[String], Array[String]) with Env + Exception + ContractIngest + ModuleParse + Source {
-  let (out, dep_paths, dep_fingerprints, _) = exported_type_params_node(path)
+  exported_type_params_source_with_config(path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn exported_type_params_source_with_config(_ path: String, cfg: TargetCfg) -> (Array[(String, Array[String])], Array[String], Array[String]) with Env + Exception + ContractIngest + ModuleParse + Source {
+  let (out, dep_paths, dep_fingerprints, _) = exported_type_params_node(path, cfg = cfg)
   (out, dep_paths, dep_fingerprints)
 }
 
@@ -490,7 +498,7 @@ export fn exported_type_params_source(_ path: String) -> (Array[(String, Array[S
 /// spells identically. A text that does not parse is re-parsed the old way so
 /// the error a caller sees is the one it always saw; a throwing located parse
 /// is not memoized.
-fn exported_type_params_parse(path: String, ingested: String) -> Array[Stmt] with Exception + ModuleParse {
+fn exported_type_params_parse(path: String, ingested: String, cfg: TargetCfg) -> Array[Stmt] with Exception + ModuleParse {
   let (stmts, failure) = perform ModuleParse::Parse(path, ingested)
   // A plain Bool, not the parser chain inside a match arm (the #708 shape).
   let failed = match failure {
@@ -498,7 +506,7 @@ fn exported_type_params_parse(path: String, ingested: String) -> Array[Stmt] wit
     None => false
   }
   if failed {
-    parse_program(lex(ingested))
+    parse_program_with_cfg(lex(ingested), cfg_flags = target_cfg_flags(cfg))
   } else {
     stmts
   }
@@ -573,6 +581,11 @@ fn member_reexported_type_defs(unit_path: String, stmts: Array[Stmt], dep_paths:
 /// `fn main`. Exact operation-row equality is wired in a later phase; this
 /// slice fixes the file/entry shape and requires an explicit row.
 export fn validate_vibex_entry_source(path: String, source: String) -> Unit with Exception {
+  validate_vibex_entry_source_with_config(path = path, source = source, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn validate_vibex_entry_source_with_config(path: String, source: String, cfg: TargetCfg) -> Unit with Exception {
   if !String::ends_with(path, suffix = ".vibex") {
     ()
   } else {
@@ -600,7 +613,7 @@ export fn validate_vibex_entry_source(path: String, source: String) -> Unit with
     // index leaked into the message instead).
     let stmts = handle {
       let (tokens, starts, _ends) = lex_with_offsets(pin_blanked)
-      parse_program_preserving_located(tokens = tokens, starts = starts, source = pin_blanked)
+      parse_program_preserving_located_with_cfg(tokens = tokens, starts = starts, source = pin_blanked, cfg_flags = target_cfg_flags(cfg))
     } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), located_lex_message(source = pin_blanked, msg = msg))) }
     let mut main_count = 0
     let mut saw_value_main = false
@@ -1483,11 +1496,12 @@ export fn validate_index_layout_fs(_ path: String) -> Unit with Exception + Fs {
 export let vpkg_types_registry_contracts: Array[String] = []
 export let vpkg_types_registry_paths: Array[String] = []
 export let vpkg_types_registry_texts: Array[String] = []
-fn vpkg_types_registry_note(contract_path: String, types_path: String, text: String) -> Unit {
+export let vpkg_types_registry_cfgs: Array[String] = []
+fn vpkg_types_registry_note(contract_path: String, types_path: String, text: String, cfg: TargetCfg) -> Unit {
   let mut i = 0
   let mut seen = false
   while i < Array::length(vpkg_types_registry_paths) {
-    if Array::get(vpkg_types_registry_paths, at = i) == types_path {
+    if Array::get(vpkg_types_registry_paths, at = i) == types_path && Array::get(vpkg_types_registry_cfgs, at = i) == target_cfg_identity(cfg) {
       seen = true
       i = Array::length(vpkg_types_registry_paths)
     } else {
@@ -1500,6 +1514,7 @@ fn vpkg_types_registry_note(contract_path: String, types_path: String, text: Str
     Array::push(vpkg_types_registry_contracts, value = contract_path)
     Array::push(vpkg_types_registry_paths, value = types_path)
     Array::push(vpkg_types_registry_texts, value = text)
+    Array::push(vpkg_types_registry_cfgs, value = target_cfg_identity(cfg))
   }
 }
 
@@ -1574,7 +1589,7 @@ fn vpkg_types_module(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[
 /// #1872: publish a computed types module (`vpkg_types_module`) at the
 /// filesystem boundary: the content-keyed file is written once, and the
 /// process-local registry learns it either way. "" when there is none.
-fn publish_vpkg_types_module_fs(vpkg_path: String, types_path: String, text: String) -> String with Fs {
+fn publish_vpkg_types_module_fs(vpkg_path: String, types_path: String, text: String, cfg: TargetCfg) -> String with Fs {
   if types_path == "" {
     ""
   } else {
@@ -1583,14 +1598,14 @@ fn publish_vpkg_types_module_fs(vpkg_path: String, types_path: String, text: Str
     } else {
       Fs::write_file(types_path, contents = text)
     }
-    vpkg_types_registry_note(contract_path = vpkg_path, types_path = types_path, text = text)
+    vpkg_types_registry_note(contract_path = vpkg_path, types_path = types_path, text = text, cfg = cfg)
     types_path
   }
 }
 
-fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Array[String])], decl_pos: Array[String]) -> String with Exception + Fs {
+fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Array[String])], decl_pos: Array[String], cfg: TargetCfg) -> String with Exception + Fs {
   let (types_path, text) = vpkg_types_module(vpkg_path = vpkg_path, extra = extra, opaque_names = opaque_names, decl_pos = decl_pos)
-  publish_vpkg_types_module_fs(vpkg_path = vpkg_path, types_path = types_path, text = text)
+  publish_vpkg_types_module_fs(vpkg_path = vpkg_path, types_path = types_path, text = text, cfg = cfg)
 }
 
 /// #1840: the RELATIVE spelling of `canonical` (a repo-root-relative path)
@@ -1694,7 +1709,7 @@ fn vpkg_shared_prefix_of_contract(vpkg_path: String, vpkg_raw: String) -> (Strin
   (prefix_text, types_path, types_text)
 }
 
-fn vpkg_directory_shared_import_prefix_fs(_ path: String) -> String with Env + Exception + Fs {
+fn vpkg_directory_shared_import_prefix_fs(_ path: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
   let vpkg_path = vpkg_shared_prefix_owner_fs(path)
   if vpkg_path == "" {
     ""
@@ -1712,7 +1727,7 @@ fn vpkg_directory_shared_import_prefix_fs(_ path: String) -> String with Env + E
       // defer the raw read to the miss branch — the hit path (every member
       // after the first) previously re-read + re-hashed the whole contract
       // just to compute the cache key.
-      let prefix_cache_path = persistent_vpkg_prefix_cache_path(path = vpkg_path, source_fingerprint = fingerprint_file_fs(vpkg_path))
+      let prefix_cache_path = persistent_vpkg_prefix_cache_path_in_namespace(path = vpkg_path, source_fingerprint = fingerprint_file_fs(vpkg_path), namespace = target_cfg_namespace(cfg))
       let cached_prefix = if Fs::exists(prefix_cache_path) {
         normalize_persistent_cache_text(Fs::read_file(prefix_cache_path))
       } else {
@@ -1763,7 +1778,7 @@ fn vpkg_directory_shared_import_prefix_fs(_ path: String) -> String with Env + E
             if cached_types_path == "" {
               ()
             } else {
-              vpkg_types_registry_note(contract_path = vpkg_path, types_path = cached_types_path, text = cached_types_text)
+              vpkg_types_registry_note(contract_path = vpkg_path, types_path = cached_types_path, text = cached_types_text, cfg = cfg)
             }
             rest[nl + 1: String::length(rest)]
           } else {
@@ -1778,7 +1793,7 @@ fn vpkg_directory_shared_import_prefix_fs(_ path: String) -> String with Env + E
       } else {
         let vpkg_raw = cache_read_source_fs(vpkg_path)
         let (computed_prefix, computed_types_path, computed_types_text) = vpkg_shared_prefix_of_contract(vpkg_path = vpkg_path, vpkg_raw = vpkg_raw)
-        let types_path = publish_vpkg_types_module_fs(vpkg_path = vpkg_path, types_path = computed_types_path, text = computed_types_text)
+        let types_path = publish_vpkg_types_module_fs(vpkg_path = vpkg_path, types_path = computed_types_path, text = computed_types_text, cfg = cfg)
         let prefix_text = computed_prefix
         Fs::write_file(prefix_cache_path, contents = String::concat("v5\n", String::concat(types_path, String::concat("\n", prefix_text))))
         prefix_text
@@ -1968,14 +1983,14 @@ fn sibling_top_level_value_names(_ text: String) -> Array[String] with Exception
 /// A pure function of (prefix, sibling text), so the per-vpkg prefix cache
 /// stays per-vpkg and the downstream caches keyed on the ingested text stay
 /// correct.
-fn shared_import_prefix_unshadowed(prefix: String, sibling: String) -> String with Exception {
+fn shared_import_prefix_unshadowed(prefix: String, sibling: String, cfg: TargetCfg) -> String with Exception {
   let lines = String::split(prefix, sep = "\n")
   let mut candidate = false
   let mut li = 0
   while !candidate && li < Array::length(lines) {
     let line = Array::get(lines, at = li)
     if String::starts_with(line, prefix = "import @") {
-      for stmt in parse_program(lex(line)) {
+      for stmt in parse_program_with_cfg(lex(line), cfg_flags = target_cfg_flags(cfg)) {
         match stmt {
           SImport(_, items) => for item in items {
             let bound = shared_import_value_binding(item)
@@ -2000,7 +2015,7 @@ fn shared_import_prefix_unshadowed(prefix: String, sibling: String) -> String wi
     let out: Array[String] = array_empty()
     for line in lines {
       if String::starts_with(line, prefix = "import @") {
-        let stmts = parse_program(lex(line))
+        let stmts = parse_program_with_cfg(lex(line), cfg_flags = target_cfg_flags(cfg))
         if Array::length(stmts) == 1 {
           match Array::get(stmts, at = 0) {
             SImport(ipath, items) => {
@@ -2034,7 +2049,7 @@ fn shared_import_prefix_unshadowed(prefix: String, sibling: String) -> String wi
 
 /// #1872: prepend `prefix` (a contract's shared imports, "" for none) to a
 /// sibling's pin-blanked text; a text already carrying the block is left as is.
-fn apply_shared_import_prefix(path: String, pin_blanked: String, prefix: String) -> String with Exception {
+fn apply_shared_import_prefix(path: String, pin_blanked: String, prefix: String, cfg: TargetCfg) -> String with Exception {
   // An ingested text opens with the marker and holds the end marker; a file
   // whose author merely began it with the marker comment still gets its
   // imports.
@@ -2048,7 +2063,7 @@ fn apply_shared_import_prefix(path: String, pin_blanked: String, prefix: String)
       // sibling's own suffix so two siblings never collide in a merge.
       let slot = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_contract_effects_sibling_slot, "__"))
       let sib = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_sibling_ident(path), "__"))
-      let own_prefix = shared_import_prefix_unshadowed(prefix = String::join(String::split(prefix, sep = slot), sep = sib), sibling = pin_blanked)
+      let own_prefix = shared_import_prefix_unshadowed(prefix = String::join(String::split(prefix, sep = slot), sep = sib), sibling = pin_blanked, cfg = cfg)
       // The short head is joined first, so the member's source is copied once.
       // #3656: the block closes with its end marker, so a position counted in
       // the ingested text can be moved back to the file on disk
@@ -2060,10 +2075,15 @@ fn apply_shared_import_prefix(path: String, pin_blanked: String, prefix: String)
 }
 
 export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Env + Exception + Fs {
+  apply_vpkg_directory_shared_imports_fs_with_config(path = path, pin_blanked = pin_blanked, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn apply_vpkg_directory_shared_imports_fs_with_config(path: String, pin_blanked: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
   if String::starts_with(pin_blanked, prefix = vpkg_shared_import_marker) && loader_prepended_prefix_bytes(pin_blanked) > 0 {
     pin_blanked
   } else {
-    apply_shared_import_prefix(path = path, pin_blanked = pin_blanked, prefix = vpkg_directory_shared_import_prefix_fs(path))
+    apply_shared_import_prefix(path = path, pin_blanked = pin_blanked, prefix = vpkg_directory_shared_import_prefix_fs(path, cfg = cfg), cfg = cfg)
   }
 }
 
@@ -2072,6 +2092,11 @@ export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: Stri
 /// with no prefix cache. `apply_vpkg_directory_shared_imports_fs` is the
 /// filesystem lane, which caches the prefix and publishes the module.
 export fn share_imports_source(path: String, pin_blanked: String) -> (String, String, String) with Exception + Source {
+  share_imports_source_with_config(path = path, pin_blanked = pin_blanked, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn share_imports_source_with_config(path: String, pin_blanked: String, cfg: TargetCfg) -> (String, String, String) with Exception + Source {
   if String::starts_with(pin_blanked, prefix = vpkg_shared_import_marker) && loader_prepended_prefix_bytes(pin_blanked) > 0 {
     (pin_blanked, "", "")
   } else {
@@ -2081,7 +2106,7 @@ export fn share_imports_source(path: String, pin_blanked: String) -> (String, St
     } else {
       let vpkg_raw = perform Source::Read(vpkg_path)
       let (prefix, types_path, types_text) = vpkg_shared_prefix_of_contract(vpkg_path = vpkg_path, vpkg_raw = vpkg_raw)
-      (apply_shared_import_prefix(path = path, pin_blanked = pin_blanked, prefix = prefix), types_path, types_text)
+      (apply_shared_import_prefix(path = path, pin_blanked = pin_blanked, prefix = prefix, cfg = cfg), types_path, types_text)
     }
   }
 }
@@ -2140,11 +2165,16 @@ fn record_unstable_candidate(path: String, ingested: String) -> Unit {
 }
 
 export fn ingest_source_text_fs(path: String, raw: String) -> String with Env + Exception + Fs {
+  ingest_source_text_fs_with_config(path = path, raw = raw, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn ingest_source_text_fs_with_config(path: String, raw: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
   // The serialized Iterator boundary is a trusted carrier only after sources
   // have been merged. Keep the common path allocation- and parse-free; a
   // comment mentioning the prefix pays one parse but remains accepted.
   if String::contains(raw, needle = "@vibe/compiler/internal/iterator_boundary") {
-    reject_user_iterator_serialized_boundaries(parse_program(lex(raw)))
+    reject_user_iterator_serialized_boundaries(parse_program_with_cfg(lex(raw), cfg_flags = target_cfg_flags(cfg)))
   } else {
     ()
   }
@@ -2153,10 +2183,10 @@ export fn ingest_source_text_fs(path: String, raw: String) -> String with Env + 
     if String::starts_with(pin_blanked, prefix = contract_facade_marker) {
       pin_blanked
     } else {
-      String::concat(contract_facade_marker, desugar_contract_source_fs(path = path, source = pin_blanked))
+      String::concat(contract_facade_marker, desugar_contract_source_fs_with_config(path = path, source = pin_blanked, cfg = cfg))
     }
   } else {
-    apply_vpkg_directory_shared_imports_fs(path = path, pin_blanked = pin_blanked)
+    apply_vpkg_directory_shared_imports_fs_with_config(path = path, pin_blanked = pin_blanked, cfg = cfg)
   }
   record_unstable_candidate(path = path, ingested = ingested)
   ingested
@@ -2211,11 +2241,11 @@ struct ContractDesugared {
 /// `SourceIngest`, an answer carries its failure (`source_answer`), so a
 /// provider's arm never throws.
 export effect ContractIngest {
-  // A member's ingested text from its raw text (`ingest_source_text_fs`).
+  // A member's ingested text from its raw text (`ingest_source_text_fs_with_config`).
   IngestMember(String, String) -> (String, Option[String])
   // The type parameters a module exports (exported name, params), with the
   // sources read for them and those sources' fingerprints
-  // (`exported_type_params_source`).
+  // (`exported_type_params_source_with_config`).
   TypeParams(String) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String])
 }
 
@@ -2466,19 +2496,25 @@ fn contract_plan_on_fs(path: String, source: String) -> ContractPlan with Env + 
   } with { Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
-fn ingest_member_answer_fs(path: String, raw: String) -> (String, Option[String]) with Env + Fs {
+fn ingest_member_answer_fs(path: String, raw: String, cfg: TargetCfg) -> (String, Option[String]) with Env + Fs {
   handle {
-    (ingest_source_text_fs(path = path, raw = raw), None)
+    (ingest_source_text_fs_with_config(path = path, raw = raw, cfg = cfg), None)
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
 
-fn contract_build_on_fs(path: String, source: String, plan: ContractPlan) -> ContractDesugared with Env + Exception + Fs {
+fn contract_build_on_fs(path: String, source: String, plan: ContractPlan, cfg: TargetCfg) -> ContractDesugared with Env + Exception + Fs {
+  let visiting: Array[String] = []
   handle {
     contract_build(path = path, source = source, plan = plan)
-  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p)); ModuleParse::Parse(p, text) => resume(parse_answer_fs(path = p, source = text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw, cfg = cfg)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p, cfg = cfg, visiting = visiting)); ModuleParse::Parse(p, text) => resume(parse_answer_fs_with_config(path = p, source = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 export fn desugar_contract_source_fs(path: String, source: String) -> String with Env + Exception + Fs {
+  desugar_contract_source_fs_with_config(path = path, source = source, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn desugar_contract_source_fs_with_config(path: String, source: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
   let plan = contract_plan_on_fs(path = path, source = source)
   // #1100 (selfcompile-heap): everything below this point — per-member
   // ingest + full parse, conformance check, facade generation — is a pure
@@ -2505,7 +2541,7 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
     fpi = fpi + 1
   }
   let closure_fp = compact_string_fingerprint(StringBuilder::freeze(closure_fp_sb))
-  let facade_cache_path = persistent_contract_facade_cache_path(path = path, closure_fingerprint = closure_fp)
+  let facade_cache_path = persistent_contract_facade_cache_path_in_namespace(path = path, closure_fingerprint = closure_fp, namespace = target_cfg_namespace(cfg))
   let cached_facade = if Fs::exists(facade_cache_path) {
     normalize_persistent_cache_text(Fs::read_file(facade_cache_path))
   } else {
@@ -2571,7 +2607,7 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
       }
       if fc_types_fresh && fc_deps_fresh {
         // #1840: the registry note must happen on the HIT path too —
-        // collect_merged_stmts' fixed-source-set re-injection reads the
+        // collect_merged_stmts_with_config' fixed-source-set re-injection reads the
         // process-local registry, and a warm facade cache would otherwise
         // skip ensure_vpkg_types_module_fs entirely (found the hard way:
         // the s5 bundle merge lost the AST enums, `PInt ... reached code
@@ -2579,7 +2615,7 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
         if fc_types_path == "" {
           ()
         } else {
-          vpkg_types_registry_note(contract_path = path, types_path = fc_types_path, text = fc_types_text)
+          vpkg_types_registry_note(contract_path = path, types_path = fc_types_path, text = fc_types_text, cfg = cfg)
         }
         return fc_after_types[fc_deps_end + 2: String::length(fc_after_types)]
       } else {
@@ -2591,8 +2627,8 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
   } else {
     ()
   }
-  let built = contract_build_on_fs(path = path, source = source, plan = plan)
-  let facade_types_path = publish_vpkg_types_module_fs(vpkg_path = path, types_path = built.types_path, text = built.types_text)
+  let built = contract_build_on_fs(path = path, source = source, plan = plan, cfg = cfg)
+  let facade_types_path = publish_vpkg_types_module_fs(vpkg_path = path, types_path = built.types_path, text = built.types_text, cfg = cfg)
   let facade_final = built.facade
   let reexport_dep_paths = built.dep_paths
   let reexport_dep_fingerprints = built.dep_fingerprints
@@ -2604,6 +2640,6 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
     rdi = rdi + 1
   }
   let reexport_dep_text = String::join(reexport_dep_rows, sep = "\n")
-  Fs::write_file(persistent_contract_facade_cache_path(path = path, closure_fingerprint = fresh_closure_fp), contents = String::concat("v4\n", String::concat(facade_types_path, String::concat("\n", String::concat(reexport_dep_text, String::concat("\n\n", facade_final))))))
+  Fs::write_file(persistent_contract_facade_cache_path_in_namespace(path = path, closure_fingerprint = fresh_closure_fp, namespace = target_cfg_namespace(cfg)), contents = String::concat("v4\n", String::concat(facade_types_path, String::concat("\n", String::concat(reexport_dep_text, String::concat("\n\n", facade_final))))))
   facade_final
 }

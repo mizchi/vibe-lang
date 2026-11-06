@@ -736,15 +736,13 @@ export fn parse_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int
 /// methods become ordinary qualified free functions resolved by name. `pos` is
 /// at the body `{` (or the next token for a body-less impl). Needs `parse_expr`,
 /// which is why this lives here rather than in parser_base.
-// `starts` are the token offsets. Only the tooling parse (a binder context)
-// reads them here: it records each method body's source ranges, which `vibe
-// mutants` and the span queries need. A compile parse keeps passing none, so
-// the AST it hands the checker and codegen is unchanged.
+// `starts` are the token offsets, and a method body is parsed with them like
+// any other body: the checker records a labeled call's argument placement at
+// the call's offset, so a body parsed without them (every call at offset -1)
+// was refused ("missing or invalid checker argument placement"). A caller
+// passes the offsets it parses its other statements with.
 fn parse_impl_methods(tokens: Array[Token], starts: Array[Int], pos: Int, simpl: Stmt, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
-  let method_starts = match context {
-    Some(_) => starts,
-    None => []
-  }
+  let method_starts = starts
   let out = ArrayBuilder::new()
   ArrayBuilder::push(out, value = simpl)
   match peek(tokens = tokens, pos = pos) {
@@ -852,7 +850,7 @@ fn parse_impl_methods(tokens: Array[Token], starts: Array[Int], pos: Int, simpl:
 
 let cfg_ambient_flags: Array[String] = []
 
-let cfg_ambient_flags_csv_cell: Array[String] = [""]
+let cfg_ambient_flags_csv_cell: Array[String] = ["", ""]
 
 /// Replace the process-wide ambient `#cfg` flag set. Called once per CLI
 /// invocation from the environment; every subsequent parse of any module
@@ -865,6 +863,7 @@ export fn set_cfg_ambient_flags(_ flags: Array[String]) -> Unit {
     i = i + 1
   }
   Array::set(cfg_ambient_flags_csv_cell, at = 0, value = String::join(flags, sep = ","))
+  Array::set(cfg_ambient_flags_csv_cell, at = 1, value = cfg_flags_identity(flags))
 }
 
 /// The ambient set as one string, in the caller's order (the same spelling
@@ -873,6 +872,44 @@ export fn set_cfg_ambient_flags(_ flags: Array[String]) -> Unit {
 /// both (#2386's loader memos, Codex review on #2520).
 export fn cfg_ambient_flags_csv() -> String {
   Array::get(cfg_ambient_flags_csv_cell, at = 0)
+}
+
+/// Capture the compatibility flags and their memo identity before a caller
+/// yields to another invocation. The array is a copy: neither later setters
+/// nor edits to the returned array can change the other's flags.
+export fn cfg_ambient_flags_snapshot() -> (Array[String], String) {
+  (Array::slice(cfg_ambient_flags, start = 0, end = Array::length(cfg_ambient_flags)), cfg_ambient_flags_csv())
+}
+
+/// An exact parse-configuration identity. Ordinary flag arrays retain their
+/// CSV key. Empty elements or literal commas use a length-delimited spelling
+/// beginning with a comma, which no ordinary nonempty flag array can produce.
+export fn cfg_flags_identity(_ flags: Array[String]) -> String {
+  let mut escaped = false
+  let mut i = 0
+  while !escaped && i < Array::length(flags) {
+    let flag = Array::get(flags, at = i)
+    escaped = flag == "" || String::index_of(flag, needle = ",") >= 0
+    i = i + 1
+  }
+  if escaped {
+    let out = StringBuilder::new()
+    StringBuilder::push(out, value = ",")
+    let mut j = 0
+    while j < Array::length(flags) {
+      let flag = Array::get(flags, at = j)
+      StringBuilder::push(out, value = "\{String::length(flag)}:\{flag}")
+      j = j + 1
+    }
+    StringBuilder::freeze(out)
+  } else {
+    String::join(flags, sep = ",")
+  }
+}
+
+/// Compatibility memo observations use the same exact identity as parsing.
+export fn cfg_ambient_flags_identity() -> String {
+  Array::get(cfg_ambient_flags_csv_cell, at = 1)
 }
 
 /// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`,
@@ -937,11 +974,11 @@ fn parse_cfg_directive_tokens(tokens: Array[Token], pos: Int) -> (String, String
 /// return the active flag set: the ambient set first, then the file's own
 /// directives. O(tokens), with one fresh result allocation; the result does
 /// not grow unless a THash enables a flag or the ambient set is non-empty.
-fn cfg_scan_enabled(_ tokens: Array[Token]) -> Array[String] with Exception {
+fn cfg_scan_enabled(tokens: Array[Token], cfg_flags: Array[String]) -> Array[String] with Exception {
   let out = ArrayBuilder::freeze(ArrayBuilder::new())
   let mut a = 0
-  while a < Array::length(cfg_ambient_flags) {
-    Array::push(out, value = Array::get(cfg_ambient_flags, at = a))
+  while a < Array::length(cfg_flags) {
+    Array::push(out, value = Array::get(cfg_flags, at = a))
     a = a + 1
   }
   let mut i = 0
@@ -1057,7 +1094,7 @@ fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int)
   match peek(tokens = tokens, pos = pos) {
     TImpl => {
       let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1)
-      parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)
+      parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None)
     },
     _ => {
       let (stmt, n) = parse_stmt_preserving(tokens = tokens, starts = starts, pos = pos)
@@ -1081,8 +1118,13 @@ fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int)
 /// logs already drained; the markers were appended last here and the
 /// lowerings keep statement order, so they stay last.
 export fn parse_program_preserving(_ tokens: Array[Token]) -> Array[Stmt] with Exception {
+  parse_program_preserving_with_cfg(tokens, cfg_flags = cfg_ambient_flags)
+}
+
+/// Preserving parse with an explicit target flag array.
+export fn parse_program_preserving_with_cfg(_ tokens: Array[Token], cfg_flags: Array[String]) -> Array[Stmt] with Exception {
   reset_pattern_refs()
-  let cfg_active = cfg_scan_enabled(tokens)
+  let cfg_active = cfg_scan_enabled(tokens = tokens, cfg_flags = cfg_flags)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -1161,7 +1203,7 @@ export fn parse_program_preserving(_ tokens: Array[Token]) -> Array[Stmt] with E
 /// so its parse errors had no position, and a token index encoded as `at #N`
 /// reached the reader verbatim.
 export fn parse_program_preserving_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
-  parse_program_preserving_impl(tokens = tokens, starts = starts, source = source, located = true)
+  parse_program_preserving_impl(tokens = tokens, starts = starts, source = source, located = true, cfg_flags = cfg_ambient_flags)
 }
 
 /// One `#name` directive at `pos` for the located preserving parse: pushes
@@ -1181,7 +1223,7 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
     let dn = match peek(tokens = tokens, pos = dnext) {
       TImpl => {
         let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens = tokens, pos = dnext + 1)
-        let (_dropped, dn) = parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)
+        let (_dropped, dn) = parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None)
         dn
       },
       _ => {
@@ -1195,7 +1237,7 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
   }
 }
 
-fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], source: String, located: Bool) -> Array[Stmt] with Exception {
+fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], source: String, located: Bool, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
   reset_pattern_refs()
   if located {
     remember_parse_source(source)
@@ -1203,9 +1245,9 @@ fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], sourc
     ()
   }
   let cfg_active = if located {
-    cfg_scan_enabled_located(tokens = tokens, starts = starts, source = source, cfg_flags = cfg_ambient_flags)
+    cfg_scan_enabled_located(tokens = tokens, starts = starts, source = source, cfg_flags = cfg_flags)
   } else {
-    cfg_scan_enabled(tokens)
+    cfg_scan_enabled(tokens = tokens, cfg_flags = cfg_flags)
   }
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -1658,7 +1700,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
   reset_pattern_refs()
   remember_parse_source(source)
   let cfg_active = handle {
-    cfg_scan_enabled(tokens)
+    cfg_scan_enabled(tokens = tokens, cfg_flags = cfg_ambient_flags)
   } with { Exception::Throw(_) => ArrayBuilder::freeze(ArrayBuilder::new()) }
   let b = ArrayBuilder::new()
   let diags = ArrayBuilder::new()
@@ -1697,8 +1739,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             let dn = match peek(tokens = tokens, pos = dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens = tokens, pos = dnext + 1)
-                let (_dropped, dn) = parse_impl_methods(tokens = tokens, starts = [
-                ], pos = hp_d, simpl = simpl_d, context = None)
+                let (_dropped, dn) = parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None)
                 dn
               },
               _ => {
@@ -1736,7 +1777,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           let (stmts, next) = match peek(tokens = tokens, pos = pos) {
             TImpl => {
               let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1)
-              parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)
+              parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None)
             },
             _ => {
               let (stmt, n) = parse_stmt(tokens = tokens, starts = starts, pos = pos)
@@ -1828,7 +1869,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
 /// end offset. The three returned arrays are parallel (one entry per stmt).
 export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with Exception {
   reset_pattern_refs()
-  let cfg_active = cfg_scan_enabled(tokens)
+  let cfg_active = cfg_scan_enabled(tokens = tokens, cfg_flags = cfg_ambient_flags)
   let b = ArrayBuilder::new()
   let span_start = ArrayBuilder::new()
   let span_end = ArrayBuilder::new()
@@ -1982,4 +2023,15 @@ export fn parse_source_with_ranges(_ source: String) -> Array[Stmt] with Excepti
   let (tokens, starts, ends) = lex_with_offsets(source)
   let context = source_expr_context(starts = starts, ends = ends)
   parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = Some(context), cfg_flags = cfg_ambient_flags).0
+}
+
+/// Lowered token-only parse with explicit target flags and legacy diagnostics.
+export fn parse_program_with_cfg(_ tokens: Array[Token], cfg_flags: Array[String]) -> Array[Stmt] with Exception {
+  attach_qualified_pattern_refs(expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving_with_cfg(tokens, cfg_flags = cfg_flags))))
+}
+
+/// Located preserving parse with explicit flags and the same binder authority
+/// as the compatibility entry: flags select syntax, never semantic authority.
+export fn parse_program_preserving_located_with_cfg(tokens: Array[Token], starts: Array[Int], source: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
+  parse_program_preserving_impl(tokens = tokens, starts = starts, source = source, located = true, cfg_flags = cfg_flags)
 }

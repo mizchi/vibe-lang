@@ -217,19 +217,31 @@ hold; it never changes what a build produces (ADR-0121). The report keeps
 proved**, and each line names one that is not:
 
 ```
-f.vibe:5:1: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
+f.vibe:5:57: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
 f.vibe:12:5: unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903
 f.vibe:21:3: unproved: requires of half: (x >= 0), called in `call_half` -- counterexample: y = -4611686018427387904
 f.vibe:7:9: unsupported: a `while` without a `where { decreases: .. }` measure: termination is not proved, so the result would be partial correctness only (in `sum_to`)
-f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
+f.vibe:7:12: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 ```
 
 Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported
-construct fail (exit 1), never pass. The provable fragment is pure functions
+construct fail (exit 1), never pass. An `ensures` line points at the clause
+that is not proved. The provable fragment is pure functions
 over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
 `+ - * / % << >>` and comparisons, `&&` / `||` / `!`, and calls to other functions
 of the file with such signatures. `Int` is a mathematical integer plus one
 no-overflow obligation per operation, which is exact for the 63-bit `Int`.
+`Int32` / `UInt32` (#3827) are SMT 32-bit words instead: `+ - *` wrap as
+the runtime does, so they owe no overflow; the bitwise operators are exact;
+comparisons, `/`, `%` and `>>` read the bits signed on `Int32` and unsigned
+on `UInt32`; a shift count is taken mod 32; and `/` / `%` owe a non-zero
+divisor. A parameter is declared as the number it reads as, so a
+counterexample shows it in decimal. `Int32::to_int` / `UInt32::to_int` and
+`Int::wrap_int32` / `Int::wrap_uint32` are exact, and a literal written beside
+a word (or as a word argument, or a `let x: Int32 = 5`) is that word; any
+other `Int` beside a word is unsupported, and so is `Int::to_int32` /
+`Int::to_uint32`, which answer an `Option`. A relation the solver must carry
+across `to_int` symbolically can time out, which is `unknown`, a failure.
 `/` and `%` truncate toward zero as the runtime does (`-7 / 2 == -3`,
 `-7 % 2 == -1`) and also owe a non-zero divisor, since a zero one aborts; the
 code after them assumes it was not zero. `<<` and `>>` are admitted by a

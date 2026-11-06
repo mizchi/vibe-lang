@@ -5,13 +5,20 @@ import @vibe/compiler/cache {
   cache_read_source_fs,
   compact_source_fingerprint_memo,
   fingerprint_file_fs,
-  load_persistent_ast,
+  load_persistent_ast_with_cfg,
   normalize_persistent_cache_text,
   package_index_deps_are_current,
   parse_persistent_module_header_text,
-  persistent_module_header_cache_path,
+  persistent_module_header_cache_path_in_namespace,
   persistent_module_header_text,
-  store_persistent_ast
+  store_persistent_ast_with_cfg
+}
+
+import @vibe/compiler/config {
+  Config, TargetCfg, cfg_flags_from_csv, target_cfg_ambient, target_cfg_capture, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+import @vibe/parser {
+  cfg_ambient_flags_identity, cfg_ambient_flags_snapshot, cfg_flags_identity, parse_program_located_with_cfg
 }
 
 import @vibe/core {
@@ -47,7 +54,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import @vibe/compiler/syntax {
-  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, offset_to_line_col, parse_program, parse_program_located
+  lex, lex_with_offsets, located_lex_message, offset_to_line_col, parse_program_with_cfg
 }
 import @vibe/compiler/contract {
   classify_contract_stmts, contract_facade_marker, extract_package_version, extract_require_pins, parse_contract_program
@@ -315,19 +322,21 @@ fn string_array_contains_hc(items: Array[String], target: String) -> Bool {
 /// in-memory overlay and the disk may both answer one path). The filesystem
 /// provider answers the read from its stat-token text memo, so a repeat costs
 /// the same one stat it did when the entry was keyed by token. A new reading
-/// REPLACES the path's entry rather than sitting next to it (review on
+/// or target configuration REPLACES the path's entry rather than sitting next
+/// to it (review on
 /// #2512): a resident compiler holds one list per contract, however often the
 /// contract is edited. The list is handed out shared and never mutated by its
 /// reader (`string_array_contains_hc` only scans it).
-let export_names_memo: MutMap[String, (String, Array[String])] = MutMap::new_string()
+let export_names_memo: MutMap[String, (String, String, Array[String])] = MutMap::new_string()
 
-fn resolved_export_names(_ resolved: String) -> Array[String] with Exception + Source {
+fn resolved_export_names(_ resolved: String, cfg: TargetCfg) -> Array[String] with Exception + Source {
+  let identity = target_cfg_identity(cfg)
   let source = perform Source::Read(resolved)
   refuse_failed_wasm_import(source)
   let fresh = match MutMap::get(export_names_memo, k = resolved) {
     Some(entry) => {
-      let (seen_source, names) = entry
-      if String::equals(seen_source, source) {
+      let (seen_source, seen_cfg, names) = entry
+      if String::equals(seen_source, source) && seen_cfg == identity {
         Some(names)
       } else {
         None
@@ -338,14 +347,14 @@ fn resolved_export_names(_ resolved: String) -> Array[String] with Exception + S
   match fresh {
     Some(names) => names,
     None => {
-      let computed = resolved_export_names_of_text(resolved = resolved, source = source)
-      MutMap::set(export_names_memo, k = resolved, v = (source, computed))
+      let computed = resolved_export_names_of_text(resolved = resolved, source = source, cfg = cfg)
+      MutMap::set(export_names_memo, k = resolved, v = (source, identity, computed))
       computed
     }
   }
 }
 
-fn resolved_export_names_of_text(resolved: String, source: String) -> Array[String] with Exception {
+fn resolved_export_names_of_text(resolved: String, source: String, cfg: TargetCfg) -> Array[String] with Exception {
   if is_contract_ext(resolved) && !String::starts_with(source, prefix = contract_facade_marker) {
     let (_, pin_blanked) = extract_require_pins(source)
     let (cdecls, copaques, cextra) = parse_contract_program(lex(pin_blanked))
@@ -373,7 +382,7 @@ fn resolved_export_names_of_text(resolved: String, source: String) -> Array[Stri
     }
     names
   } else {
-    collect_exports(parse_program(lex(source)))
+    collect_exports(parse_program_with_cfg(lex(source), cfg_flags = target_cfg_flags(cfg)))
   }
 }
 
@@ -410,7 +419,7 @@ fn import_display_name(raw_path: String, resolved: String) -> String {
   }
 }
 
-fn validate_import_names(source: String, keyword: String, raw_path: String, resolved: String, names: Array[ImportItem]) -> Unit with Exception + Source {
+fn validate_import_names(source: String, keyword: String, raw_path: String, resolved: String, names: Array[ImportItem], cfg: TargetCfg) -> Unit with Exception + Source {
   let materialized = is_contract_boundary_path(resolved) && perform Source::Exists(resolved)
   if materialized {
     let mut dep_exports = array_empty()
@@ -420,7 +429,7 @@ fn validate_import_names(source: String, keyword: String, raw_path: String, reso
       let name = Array::get(names, at = i).name
       if is_lowercase_leading_plain_ident(name) {
         if !loaded {
-          dep_exports = resolved_export_names(resolved)
+          dep_exports = resolved_export_names(resolved, cfg = cfg)
           loaded = true
         } else ()
         if string_array_contains_hc(items = dep_exports, target = name) {
@@ -453,7 +462,12 @@ fn validate_import_names(source: String, keyword: String, raw_path: String, reso
 /// over the same statements, and a second pass would report the same error
 /// twice or, worse, differ from it.
 export fn module_reexport_deps_fs(path: String, source: String) -> Array[String] with Env + Exception + Fs {
-  let stmts = parse_program_located_shared_fs(path = path, source = source)
+  module_reexport_deps_fs_with_config(path = path, source = source, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn module_reexport_deps_fs_with_config(path: String, source: String, cfg: TargetCfg) -> Array[String] with Env + Exception + Fs {
+  let stmts = parse_program_located_shared_fs_with_config(path = path, source = source, cfg = cfg)
   let base_dir = dir_of_path(path)
   let out = array_empty()
   let mut i = 0
@@ -467,7 +481,7 @@ export fn module_reexport_deps_fs(path: String, source: String) -> Array[String]
   out
 }
 
-fn collect_import_deps_from_stmts_source(stmts: Array[Stmt], base_dir: String, self_path: String, source: String) -> Array[String] with Env + Exception + Source {
+fn collect_import_deps_from_stmts_source(stmts: Array[Stmt], base_dir: String, self_path: String, source: String, cfg: TargetCfg) -> Array[String] with Env + Exception + Source {
   let deps = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -476,12 +490,12 @@ fn collect_import_deps_from_stmts_source(stmts: Array[Stmt], base_dir: String, s
         ()
       } else {
         let resolved = resolve_checked_path(base_dir = base_dir, raw_path = raw_path, self_path = self_path, source = source, keyword = "import")
-        validate_import_names(source = source, keyword = "import", raw_path = raw_path, resolved = resolved, names = names)
+        validate_import_names(source = source, keyword = "import", raw_path = raw_path, resolved = resolved, names = names, cfg = cfg)
         Array::push(deps, value = resolved)
       },
       SReExport(raw_path, names) => {
         let resolved = resolve_checked_path(base_dir = base_dir, raw_path = raw_path, self_path = self_path, source = source, keyword = "export")
-        validate_import_names(source = source, keyword = "export", raw_path = raw_path, resolved = resolved, names = names)
+        validate_import_names(source = source, keyword = "export", raw_path = raw_path, resolved = resolved, names = names, cfg = cfg)
         Array::push(deps, value = resolved)
       },
       _ => ()
@@ -585,7 +599,7 @@ export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[Stri
 /// `parse_program_located` pair under the identical `<path>: <msg>` error
 /// wrapping, so one answer serves both.
 ///
-/// Keyed by path, and each path keeps every (source text, ambient `#cfg`
+/// Keyed by path, and each path keeps every (source text, supplied `#cfg`
 /// set) it was asked with:
 /// a same-path re-ingest with different text is a real shape (#897's vpkg
 /// shared-import prefix marker), and the text is compared in full -- a
@@ -676,7 +690,7 @@ fn located_parse_consumed_versions(memo: MutMap[String, Array[Bool]], path: Stri
 export fn parse_program_located_shared_semantic_pending(path: String, source: String) -> Bool {
   let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
   let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv())
+  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_identity())
   if hit < 0 {
     true
   } else {
@@ -692,7 +706,7 @@ export fn parse_program_located_shared_semantic_pending(path: String, source: St
 export fn parse_program_located_shared_mark_semantic(path: String, source: String) -> Unit {
   let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
   let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv())
+  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_identity())
   if hit >= 0 {
     let flags = located_parse_consumed_versions(memo = Array::get(located_parse_memo_consumed, at = 0), path = path)
     if hit < Array::length(flags) {
@@ -743,14 +757,14 @@ fn located_parse_version_index(seen_sources: Array[String], seen_cfgs: Array[Str
 /// #708 (the RC-lane `unreachable` in `tk_name`) reproduces when
 /// lex_with_offsets/parse_program_located are compiled next to an Option
 /// match in the same function.
-fn located_parse_uncached(path: String, source: String) -> Array[Stmt] with Exception {
+fn located_parse_uncached(path: String, source: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
-    parse_program_located(tokens = tokens, starts = starts, source = source)
+    parse_program_located_with_cfg(tokens = tokens, starts = starts, source = source, cfg_flags = cfg_flags)
   } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), loader_physical_located(source = source, located = located_lex_message(source = source, msg = msg)))) }
 }
 
-fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Unit {
+fn located_parse_record(path: String, source: String, parsed: Array[Stmt], cfg_csv: String) -> Unit {
   if Array::get(located_parse_memo_size, at = 0) >= 1024 {
     Array::set(located_parse_memo_sources, at = 0, value = MutMap::new_string())
     Array::set(located_parse_memo_cfgs, at = 0, value = MutMap::new_string())
@@ -773,16 +787,44 @@ fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Un
     MutMap::set(consumed_now, k = path, v = array_empty())
   }
   Array::push(located_parse_versions(memo = sources_now, path = path), value = source)
-  Array::push(located_parse_versions(memo = cfgs_now, path = path), value = cfg_ambient_flags_csv())
+  Array::push(located_parse_versions(memo = cfgs_now, path = path), value = cfg_csv)
   Array::push(located_parse_stmt_versions(memo = stmts_now, path = path), value = parsed)
   Array::push(located_parse_consumed_versions(memo = consumed_now, path = path), value = false)
   Array::set(located_parse_memo_size, at = 0, value = Array::get(located_parse_memo_size, at = 0) + 1)
 }
 
 export fn parse_program_located_shared(path: String, source: String) -> Array[Stmt] with Exception {
+  let (cfg_flags, _) = cfg_ambient_flags_snapshot()
+  let cfg_csv = cfg_flags_identity(cfg_flags)
+  if located_parse_flags_cacheable(cfg_flags) {
+    located_parse_shared_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+  } else {
+    located_parse_without_memo(path = path, source = source, cfg_flags = cfg_flags)
+  }
+}
+
+/// The compatibility setter accepts arbitrary strings. A literal comma cannot
+/// name a directive flag, and its CSV would alias several real flags. Parse
+/// that exact array without caching rather than publish an ambiguous identity.
+fn located_parse_flags_cacheable(_ flags: Array[String]) -> Bool {
+  let mut cacheable = true
+  let mut i = 0
+  while cacheable && i < Array::length(flags) {
+    cacheable = String::index_of(Array::get(flags, at = i), needle = ",") < 0
+    i = i + 1
+  }
+  cacheable
+}
+
+fn located_parse_without_memo(path: String, source: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
+  Array::set(located_parse_memo_ran_parser, at = 0, value = true)
+  located_parse_uncached(path = path, source = source, cfg_flags = cfg_flags)
+}
+
+fn located_parse_shared_with_cfg(path: String, source: String, cfg_csv: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
   let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
   let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv())
+  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_csv)
   if hit >= 0 {
     Array::set(located_parse_memo_ran_parser, at = 0, value = false)
     let cached = Array::get(located_parse_stmt_versions(memo = Array::get(located_parse_memo_stmts, at = 0), path = path), at = hit)
@@ -791,8 +833,8 @@ export fn parse_program_located_shared(path: String, source: String) -> Array[St
     // Set before the parse: a throwing parse ran the parser too, and the
     // exception leaves this function before anything after the call.
     Array::set(located_parse_memo_ran_parser, at = 0, value = true)
-    let parsed = located_parse_uncached(path = path, source = source)
-    located_parse_record(path = path, source = source, parsed = parsed)
+    let parsed = located_parse_uncached(path = path, source = source, cfg_flags = cfg_flags)
+    located_parse_record(path = path, source = source, parsed = parsed, cfg_csv = cfg_csv)
     Array::slice(parsed, start = 0, end = Array::length(parsed))
   }
 }
@@ -806,8 +848,8 @@ export fn parse_program_located_shared(path: String, source: String) -> Array[St
 /// cold lane in `load_or_parse_module_header_fs_impl` dispatches on a plain
 /// `mut` Bool too. The match lives here, where no parser call does, and the
 /// caller asks `Array::length`.
-fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[Stmt]] with Env + Exception + Fs {
-  match load_persistent_ast(path = path, source_fingerprint = source_fingerprint) {
+fn ast_cache_slot_fs(path: String, source_fingerprint: String, cfg_csv: String) -> Array[Array[Stmt]] with Env + Exception + Fs {
+  match load_persistent_ast_with_cfg(path = path, source_fingerprint = source_fingerprint, cfg_csv = cfg_csv) {
     Some(stmts) => [stmts],
     None => array_empty()
   }
@@ -871,17 +913,27 @@ fn ast_cache_active() -> Bool with Env {
 }
 
 export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env + Exception + Fs {
+  let (cfg_flags, _) = cfg_ambient_flags_snapshot()
+  let cfg_csv = cfg_flags_identity(cfg_flags)
+  if located_parse_flags_cacheable(cfg_flags) {
+    ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = cfg_csv)
+  } else {
+    false
+  }
+}
+
+fn ast_cache_prefetch_with_cfg(path: String, source: String, cfg_csv: String) -> Bool with Env + Exception + Fs {
   if !ast_cache_active() {
     false
   } else {
     let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
     let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-    if located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv()) >= 0 {
+    if located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_csv) >= 0 {
       false
     } else {
-      let slot = ast_cache_slot_fs(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
+      let slot = ast_cache_slot_fs(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source), cfg_csv = cfg_csv)
       if Array::length(slot) == 1 {
-        located_parse_record(path = path, source = source, parsed = Array::get(slot, at = 0))
+        located_parse_record(path = path, source = source, parsed = Array::get(slot, at = 0), cfg_csv = cfg_csv)
         Array::set(ast_cache_prefetch_hits, at = 0, value = Array::get(ast_cache_prefetch_hits, at = 0) + 1)
         true
       } else {
@@ -910,25 +962,43 @@ export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env +
 /// property `ast_binary_parse_equivalence_test.vibe` asserts against real
 /// compiler sources rather than against the codec itself.
 export fn parse_program_located_shared_fs(path: String, source: String) -> Array[Stmt] with Env + Exception + Fs {
+  let (cfg_flags, _) = cfg_ambient_flags_snapshot()
+  let cfg_csv = cfg_flags_identity(cfg_flags)
+  if located_parse_flags_cacheable(cfg_flags) {
+    located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+  } else {
+    located_parse_without_memo(path = path, source = source, cfg_flags = cfg_flags)
+  }
+}
+
+/// One invocation's target flags select both the parse and every cache it uses.
+/// Capture before any filesystem request can run another invocation.
+export fn parse_program_located_shared_fs_configured(path: String, source: String) -> Array[Stmt] with Config + Env + Exception + Fs {
+  let cfg_flags = cfg_flags_from_csv(perform Config::CfgFlags())
+  let cfg_csv = String::join(cfg_flags, sep = ",")
+  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+}
+
+fn located_parse_shared_fs_with_cfg(path: String, source: String, cfg_csv: String, cfg_flags: Array[String]) -> Array[Stmt] with Env + Exception + Fs {
   let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
   let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-  let memo_hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv()) >= 0
+  let memo_hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_csv) >= 0
   if memo_hit || !ast_cache_active() {
-    parse_program_located_shared(path = path, source = source)
+    located_parse_shared_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
   } else {
     let fingerprint = compact_source_fingerprint_memo(path = path, source = source)
-    let slot = ast_cache_slot_fs(path = path, source_fingerprint = fingerprint)
+    let slot = ast_cache_slot_fs(path = path, source_fingerprint = fingerprint, cfg_csv = cfg_csv)
     if Array::length(slot) == 1 {
       let stmts = Array::get(slot, at = 0)
       // The parser did NOT run, and the telemetry has to say so: a warm
       // decode is the case this exists to create, and counting it as a parse
       // would hide exactly the number worth watching.
       Array::set(located_parse_memo_ran_parser, at = 0, value = false)
-      located_parse_record(path = path, source = source, parsed = stmts)
+      located_parse_record(path = path, source = source, parsed = stmts, cfg_csv = cfg_csv)
       Array::slice(stmts, start = 0, end = Array::length(stmts))
     } else {
-      let parsed = parse_program_located_shared(path = path, source = source)
-      store_persistent_ast(path = path, source_fingerprint = fingerprint, stmts = parsed)
+      let parsed = located_parse_shared_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+      store_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, stmts = parsed, cfg_csv = cfg_csv)
       parsed
     }
   }
@@ -942,15 +1012,20 @@ export fn parse_program_located_shared_fs(path: String, source: String) -> Array
 /// provider compute headers by the same rules. `parse_count` grows by one
 /// when the header came from a parse.
 export fn module_header_source(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + ModuleParse + Source {
+  module_header_source_with_config(path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn module_header_source_with_config(path: String, source: String, parse_count: Int, cfg: TargetCfg) -> (Array[String], Array[String], Int) with Env + Exception + ModuleParse + Source {
   // #708: dispatch on `is_special_bundle_path` (a plain Bool) rather than
   // matching `special_bundle_header(path)`'s Option result directly here,
   // and never nest the `Some((deps, exports))` tuple-in-option pattern in
   // the same match as the `None` arm's parse call. A compiler that is
   // itself self-hosted under RC traps ("wasm unreachable" in `tk_name`,
   // reached via `parse_stmt`) reading a corrupted Token tag when
-  // `load_or_parse_module_header_fs_impl` is compiled with the call chain
+  // `load_or_parse_module_header_fs_impl_with_config` is compiled with the call chain
   // that reaches `tk_name` (lex_with_offsets/parse_program_located, or
-  // even the plain lex/parse_program pair) sitting inside ONE arm of a
+  // even the plain lex/parse_program_with_cfg pair) sitting inside ONE arm of a
   // `match` on `special_bundle_header(path)`'s `Option` result — even
   // though that arm is never taken for ordinary (non-bundle-file) input.
   // Splitting the dispatch into this Bool `if` (special_bundle_header is
@@ -1007,7 +1082,7 @@ export fn module_header_source(path: String, source: String, parse_count: Int) -
     // its explicit deps (implicit membership is unconditional for .vpkg),
     // so its header deps must include both, not just whichever won under
     // the old either/or gate.
-    let cdeps = collect_import_deps_from_stmts_source(stmts = cextra, base_dir = dir_of_path(path), self_path = path, source = pin_blanked)
+    let cdeps = collect_import_deps_from_stmts_source(stmts = cextra, base_dir = dir_of_path(path), self_path = path, source = pin_blanked, cfg = cfg)
     let is_vpkg_contract = String::ends_with(path, suffix = ".vpkg")
     let cdeps2 = if is_vpkg_contract || Array::length(cdeps) == 0 {
       let craws = if is_vpkg_contract {
@@ -1043,29 +1118,39 @@ export fn module_header_source(path: String, source: String, parse_count: Int) -
     // headers computed from source -- the number its callers report as
     // header parse scans -- whether the memo answered or not.
     let stmts = source_answer(perform ModuleParse::Parse(path, source))
-    (collect_import_deps_from_stmts_source(stmts = stmts, base_dir = dir_of_path(path), self_path = path, source = source), collect_exports(stmts), parse_count + 1)
+    (collect_import_deps_from_stmts_source(stmts = stmts, base_dir = dir_of_path(path), self_path = path, source = source, cfg = cfg), collect_exports(stmts), parse_count + 1)
   }
 }
 
 /// `parse_program_located_shared_fs` as a `ModuleParse` answer.
 export fn parse_answer_fs(path: String, source: String) -> (Array[Stmt], Option[String]) with Env + Fs {
+  parse_answer_fs_with_config(path = path, source = source, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn parse_answer_fs_with_config(path: String, source: String, cfg: TargetCfg) -> (Array[Stmt], Option[String]) with Env + Fs {
   handle {
-    (parse_program_located_shared_fs(path = path, source = source), None)
+    (parse_program_located_shared_fs_with_config(path = path, source = source, cfg = cfg), None)
   } with { Exception::Throw(message) => (array_empty(), Some(message)) }
 }
 
 /// The filesystem discharge of `module_header_source`: the cold lane of
 /// `load_or_parse_module_header_fs_impl`. A plain function so the handler
 /// never sits inside a match arm (the #708 trap shape).
-fn module_header_on_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
+fn module_header_on_fs(path: String, source: String, parse_count: Int, cfg: TargetCfg) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
   handle {
-    module_header_source(path = path, source = source, parse_count = parse_count)
-  } with { ModuleParse::Parse(p, text) => resume(parse_answer_fs(path = p, source = text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+    module_header_source_with_config(path = path, source = source, parse_count = parse_count, cfg = cfg)
+  } with { ModuleParse::Parse(p, text) => resume(parse_answer_fs_with_config(path = p, source = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
+  load_or_parse_module_header_fs_impl_with_config(path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn load_or_parse_module_header_fs_impl_with_config(path: String, source: String, parse_count: Int, cfg: TargetCfg) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
   ingestion_pipeline_telemetry_add(index = 10, amount = 1)
-  let cache_path = persistent_module_header_cache_path(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
+  let cache_path = persistent_module_header_cache_path_in_namespace(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source), namespace = target_cfg_namespace(cfg))
   // #801 follow-up: a warm header whose package-index deps no longer match
   // the current resolution winners was written under a different resolution
   // context (a store copy appeared or vanished) — fall through to the cold
@@ -1098,11 +1183,11 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
     ingestion_pipeline_telemetry_add(index = 11, amount = 1)
     // The header is warm, so nothing below parses -- which is exactly when
     // the merge's pure parse has nothing to reuse. Hand it the stored AST.
-    let _ = ast_cache_prefetch_fs(path = path, source = source)
+    let _ = ast_cache_prefetch_fs_with_config(path = path, source = source, cfg = cfg)
     (warm_deps, warm_exports, parse_count)
   } else {
     ingestion_pipeline_telemetry_add(index = 12, amount = 1)
-    let header_result = module_header_on_fs(path = path, source = source, parse_count = parse_count)
+    let header_result = module_header_on_fs(path = path, source = source, parse_count = parse_count, cfg = cfg)
     let deps = header_result.0
     let exports = header_result.1
     let next_parse_count = header_result.2
@@ -1157,4 +1242,19 @@ fn contract_dep_fingerprints_current(_ cdeps: Array[(String, String)]) -> Bool w
     i = i + 1
   }
   ok
+}
+
+/// Shared parse under a caller-owned immutable target configuration.
+export fn parse_program_located_shared_with_config(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Exception {
+  located_parse_shared_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg), cfg_flags = target_cfg_flags(cfg))
+}
+
+/// Shared FS parse: parser flags and both memo/disk identities come from cfg.
+export fn parse_program_located_shared_fs_with_config(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Env + Exception + Fs {
+  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg), cfg_flags = target_cfg_flags(cfg))
+}
+
+/// Prefetch only the AST namespace captured with the parser's target flags.
+export fn ast_cache_prefetch_fs_with_config(path: String, source: String, cfg: TargetCfg) -> Bool with Env + Exception + Fs {
+  ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg))
 }

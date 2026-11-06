@@ -1,0 +1,234 @@
+// The call graph of a file's functions and the walk over an expression's
+// children that it and the prover share (#3717, ADR-0121). Split from
+// prove.vibe, which reads each function.
+
+//# Imports
+
+import @vibe/ast {
+  Expr, Stmt
+}
+
+//# Call graph
+
+/// Each function of the file and the names it calls, in its body and in its
+/// clauses (a clause may call a function too).
+export fn call_graph(_ stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  for s in stmts {
+    match s {
+      SFnDecl(_, name, value, reqs, enss) => {
+        let calls: Array[String] = []
+        collect_calls(expr = value, out = calls)
+        for r in reqs {
+          collect_calls(expr = r, out = calls)
+        }
+        for e in enss {
+          collect_calls(expr = e, out = calls)
+        }
+        Array::push(out, value = (name, calls))
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn graph_callees(graph: Array[(String, Array[String])], name: String) -> Option[Array[String]] {
+  let mut found = None
+  for g in graph {
+    let (n, calls) = g
+    if n == name {
+      found = Some(calls)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+export fn contains_name(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  for y in xs {
+    if y == x {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Whether a cycle of the call graph is reachable from `node`, `node`
+/// itself included. `path` is the current DFS path; `done` holds nodes
+/// already shown to reach no cycle.
+export fn reaches_cycle(graph: Array[(String, Array[String])], node: String, path: Array[String], done: Array[String]) -> Bool {
+  if contains_name(xs = path, x = node) {
+    true
+  } else if contains_name(xs = done, x = node) {
+    false
+  } else {
+    match graph_callees(graph = graph, name = node) {
+      None => false,
+      Some(calls) => {
+        let next = Array::slice(path, start = 0, end = Array::length(path))
+        Array::push(next, value = node)
+        let mut found = false
+        for c in calls {
+          if !found && reaches_cycle(graph = graph, node = c, path = next, done = done) {
+            found = true
+          } else {
+            ()
+          }
+        }
+        if !found {
+          Array::push(done, value = node)
+        } else {
+          ()
+        }
+        found
+      }
+    }
+  }
+}
+
+/// Every name `expr` calls directly (`f(..)`), anywhere inside it.
+fn collect_calls(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, _, _, _) => match callee {
+      EIdent(n, _) => Array::push(out, value = n),
+      _ => ()
+    },
+    _ => ()
+  }
+  for k in expr_kids(expr) {
+    collect_calls(expr = k, out = out)
+  }
+  ()
+}
+
+/// The direct sub-expressions of `e`. Every variant is listed, so a new one
+/// is a compile error here rather than a call edge the cycle check misses.
+export fn expr_kids(_ e: Expr) -> Array[Expr] {
+  match e {
+    EInt(_) => [],
+    EFloat(_) => [],
+    EString(_, _) => [],
+    EBool(_) => [],
+    EIdent(_, _) => [],
+    EUnit => [],
+    EStringInterp(_) => [],
+    ETuple(items) => items,
+    EArray(items) => items,
+    ERecord(_, fields, _) => for f in fields {
+      let (_, v) = f
+      v
+    },
+    EMap(fields) => for f in fields {
+      let (_, v) = f
+      v
+    },
+    EIf(c, t, f) => [c, t, f],
+    ELet(_, v, b, _) => [v, b],
+    ELetRec(_, v, b) => [v, b],
+    ELetMut(_, v, b, _) => [v, b],
+    EAssign(_, v, c, _) => [v, c],
+    EAssignOp(_, _, v, c, _) => [v, c],
+    ESeq(a, b) => [a, b],
+    EMatch(sc, arms) => {
+      let out = [sc]
+      for a in arms {
+        let (_, x) = a
+        Array::push(out, value = x)
+      }
+      out
+    },
+    EHandle(b, arms) => {
+      let out = [b]
+      for a in arms {
+        let (_, x) = a
+        Array::push(out, value = x)
+      }
+      out
+    },
+    EWhile(c, b) => [c, b],
+    ELoop(params, b) => {
+      let out: Array[Expr] = []
+      for p in params {
+        let (_, v) = p
+        Array::push(out, value = v)
+      }
+      Array::push(out, value = b)
+      out
+    },
+    EForIn(_, _, it, b) => [it, b],
+    ECall(callee, args, _, _) => {
+      let out = [callee]
+      for a in args {
+        Array::push(out, value = a)
+      }
+      out
+    },
+    EBinOp(_, l, r, _) => [l, r],
+    EUnaryOp(_, x) => [x],
+    EFn(_, _, _, _, _, b) => [b],
+    EDot(obj, _, _, _) => [obj],
+    ELabeledArg(_, _, v) => [v],
+    EReturn(v) => [v],
+    EBreak(v) => match v {
+      Some(x) => [x],
+      None => []
+    },
+    EContinue(args) => args,
+    ESpread(v) => [v]
+  }
+}
+
+//# Source positions
+
+/// The smallest source offset recorded inside `e`, or -1.
+export fn expr_off(_ e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    EBinOp(_, l, r, off) => min_off(a = min_off(a = off, b = expr_off(l)), b = expr_off(r)),
+    EUnaryOp(_, x) => expr_off(x),
+    ECall(callee, _, off, _) => min_off(a = off, b = expr_off(callee)),
+    EIf(c, _, _) => expr_off(c),
+    EString(_, off) => off,
+    _ => 0 - 1
+  }
+}
+
+fn min_off(a: Int, b: Int) -> Int {
+  if a < 0 {
+    b
+  } else if b < 0 || a < b {
+    a
+  } else {
+    b
+  }
+}
+
+export fn construct_name(_ e: Expr) -> String {
+  match e {
+    ELetMut(_, _, _, _) => "let mut",
+    EAssign(_, _, _, _) => "assignment",
+    EAssignOp(_, _, _, _, _) => "assignment",
+    EWhile(_, _) => "while",
+    ELoop(_, _) => "loop",
+    EForIn(_, _, _, _) => "for",
+    EMatch(_, _) => "match",
+    EHandle(_, _) => "handle",
+    EFn(_, _, _, _, _, _) => "a lambda",
+    EString(_, _) => "a String",
+    EStringInterp(_) => "a String",
+    EFloat(_) => "a Float64",
+    EArray(_) => "an Array",
+    ETuple(_) => "a tuple",
+    ERecord(_, _, _) => "a struct",
+    EMap(_) => "a Map",
+    EDot(_, _, _, _) => "a field access",
+    EBreak(_) => "break",
+    EContinue(_) => "continue",
+    _ => "this expression"
+  }
+}

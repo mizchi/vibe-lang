@@ -467,6 +467,13 @@ export fn edp_erase_effect_handles_with_index(stmts: Array[Stmt], ename: String,
 /// by edp_drop_shadowed_needing, so the failure mode is the OLD
 /// conservative behavior (now a loud ineligibility error), never a
 /// miscompile.
+/// The tag of the top-level statement `edp_ar_expr` is renaming (#3829).
+let edp_ar_owner: Array[String] = [""]
+
+export fn edp_ar_set_owner(_ tag: String) -> Unit {
+  Array::set(edp_ar_owner, at = 0, value = tag)
+}
+
 /// #1119 Codex review (P2): the generated spelling must not collide with a
 /// name the program ALREADY uses. If user code binds `__edpsh_0_helper`
 /// itself and also shadows a needing `helper`, a blind counter would rename
@@ -476,12 +483,16 @@ export fn edp_erase_effect_handles_with_index(stmts: Array[Stmt], ename: String,
 /// diagnostic). `taken` carries every `__edpsh_`-prefixed name already
 /// present anywhere in the program (edp_collect_prefixed_names, one scan);
 /// the counter skips past any candidate that hits it.
+///
+/// #3829: `counter` counts within the owning top-level statement and the name
+/// carries that statement's tag (`edp_ar_owner`), so it is unique across the
+/// program without being numbered by the statements before it.
 fn edp_ar_fresh(counter: Array[Int], name: String, taken: Array[String]) -> String {
   let mut out = ""
   while out == "" {
     let n = Array::get(counter, at = 0)
     Array::set(counter, at = 0, value = n + 1)
-    let cand = String::concat(String::concat(String::concat("__edpsh_", __to_string(n)), "_"), name)
+    let cand = String::concat(String::concat(String::concat(String::concat(String::concat("__edpsh_", __to_string(n)), "o"), Array::get(edp_ar_owner, at = 0)), "_"), name)
     if edp_str_array_contains(arr = taken, v = cand) {
       ()
     } else {

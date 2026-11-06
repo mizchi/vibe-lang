@@ -55,33 +55,38 @@ run_case() {
 
 run_case proved 0 ""
 run_case datatypes 0 ""
-run_case unproved 1 "$dir/unproved.vibe:5:1: unproved: ensures (result > x) of \`dec\` -- counterexample: <model>
+run_case unproved 1 "$dir/unproved.vibe:5:57: unproved: ensures (result > x) of \`dec\` -- counterexample: <model>
 $dir/unproved.vibe:12:5: unproved: overflow in (x + 1) in \`inc\` -- counterexample: <model>
 $dir/unproved.vibe:21:3: unproved: requires of half: (x >= 0), called in \`call_half\` -- counterexample: <model>
-$dir/unproved.vibe:26:1: unproved: ensures (result == x) of \`shadowed\` -- counterexample: <model>
-$dir/unproved.vibe:33:1: unproved: ensures (result == 0) of \`branch_scope\` -- counterexample: <model>
-$dir/unproved.vibe:49:1: unproved: ensures (result > 0) of \`coin_value\` -- counterexample: <model>
+$dir/unproved.vibe:26:45: unproved: ensures (result == x) of \`shadowed\` -- counterexample: <model>
+$dir/unproved.vibe:33:49: unproved: ensures (result == 0) of \`branch_scope\` -- counterexample: <model>
+$dir/unproved.vibe:49:48: unproved: ensures (result > 0) of \`coin_value\` -- counterexample: <model>
 $dir/unproved.vibe:59:9: unproved: a \`match\` on x covers every value, in \`uncovered\` -- counterexample: <model>
 $dir/unproved.vibe:67:5: unproved: the divisor of (x / d) is not zero, in \`ratio\` -- counterexample: <model>
 $dir/unproved.vibe:67:5: unproved: overflow in (x / d) in \`ratio\` -- counterexample: <model>
-$dir/unproved.vibe:77:1: unproved: ensures (result == 0) of \`field_branch\` -- counterexample: <model>
-$dir/unproved.vibe:93:1: unproved: ensures (result == 0) of \`pattern_branch\` -- counterexample: <model>
+$dir/unproved.vibe:77:67: unproved: ensures (result == 0) of \`field_branch\` -- counterexample: <model>
+$dir/unproved.vibe:93:69: unproved: ensures (result == 0) of \`pattern_branch\` -- counterexample: <model>
 $dir/unproved.vibe:105:5: unproved: overflow in (x << 1) in \`doubled\` -- counterexample: <model>
 $dir/unproved.vibe:112:18: unproved: invariant ((0 <= i) && (i <= 10)) holds again after each iteration, in \`count_up\` -- counterexample: <model>
 $dir/unproved.vibe:125:16: unproved: the measure n stays non-negative and drops on each iteration, in \`stuck\` -- counterexample: <model>
-$dir/unproved.vibe:134:1: unproved: ensures (result == 0) of \`cond_step\` -- counterexample: <model>
+$dir/unproved.vibe:134:64: unproved: ensures (result == 0) of \`cond_step\` -- counterexample: <model>
 $dir/unproved.vibe:150:5: unproved: the index of xs[1] is within the array, in \`second\` -- counterexample: <model>
 $dir/unproved.vibe:154:3: unproved: the index of Array::get(xs, at=i) is within the array, in \`get_at\` -- counterexample: <model>
 $dir/unproved.vibe:162:16: unproved: the measure (n - i) stays non-negative and drops on each iteration, in \`stall\` -- counterexample: <model>
 $dir/unproved.vibe:177:34: unproved: invariant (last >= 0) holds again after each iteration, in \`last_of\` -- counterexample: <model>
-$dir/unproved.vibe:184:1: unproved: ensures (result == 0) of \`plain\` -- counterexample: <model>
+$dir/unproved.vibe:184:50: unproved: ensures (result == 0) of \`plain\` -- counterexample: <model>
 $dir/unproved.vibe:195:53: unproved: the measure f stays non-negative and drops on each iteration, in \`idle\` -- counterexample: <model>
 $dir/unproved.vibe:213:57: unproved: the measure k is not negative when the loop starts, in \`wander\` -- counterexample: <model>
 $dir/unproved.vibe:225:5: unproved: the index of xs[2] is within the array, in \`past_end\` -- counterexample: <model>
-$dir/unproved.vibe:230:1: unproved: ensures (result == 1) of \`overwritten\` -- counterexample: <model>
-$dir/unproved.vibe:237:1: unproved: ensures (result == 0) of \`length_kept\` -- counterexample: <model>
-$dir/unproved.vibe:248:1: unproved: ensures (result == 0) of \`nested_write\` -- counterexample: <model>
-$dir/unproved.vibe:258:1: unproved: ensures (result == 0) of \`read_after_index_write\` -- counterexample: <model>"
+$dir/unproved.vibe:230:42: unproved: ensures (result == 1) of \`overwritten\` -- counterexample: <model>
+$dir/unproved.vibe:237:77: unproved: ensures (result == 0) of \`length_kept\` -- counterexample: <model>
+$dir/unproved.vibe:248:43: unproved: ensures (result == 0) of \`nested_write\` -- counterexample: <model>
+$dir/unproved.vibe:258:53: unproved: ensures (result == 0) of \`read_after_index_write\` -- counterexample: <model>
+$dir/unproved.vibe:267:50: unproved: ensures (result > x) of \`word_next\` -- counterexample: <model>
+$dir/unproved.vibe:272:53: unproved: ensures (result > 0) of \`word_local_wraps\` -- counterexample: <model>
+$dir/unproved.vibe:278:5: unproved: the divisor of (x / d) is not zero, in \`word_udiv\` -- counterexample: <model>
+$dir/unproved.vibe:282:58: unproved: ensures result of \`word_unsigned_low\` -- counterexample: <model>
+$dir/unproved.vibe:288:72: unproved: ensures result of \`word_join\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
@@ -96,8 +101,9 @@ $dir/unsupported.vibe:98:3: unsupported: \`Array::length\` has no \`where\` cont
 $dir/unsupported.vibe:103:1: unsupported: a write to the parameter \`xs\`, which its caller holds: only a local array is written (in \`param_write\`)
 $dir/unsupported.vibe:109:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`aliased\`)
 $dir/unsupported.vibe:117:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`iterated\`)
-$dir/unsupported.vibe:126:1: unsupported: a write to \`xs\`, which is not bound exactly once, by \`let\`, to an array literal (in \`rebound\`)"
-run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
+$dir/unsupported.vibe:126:1: unsupported: a write to \`xs\`, which is not bound exactly once, by \`let\`, to an array literal (in \`rebound\`)
+$dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\`, which is not modelled; test the range and use \`Int::wrap_int32\` (in \`checked_word\`)"
+run_case unknown 1 "$dir/unknown.vibe:7:12: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per
 # line, at that line's position, with that line's message, and `[]` for a

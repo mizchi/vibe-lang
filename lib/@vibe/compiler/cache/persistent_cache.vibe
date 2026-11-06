@@ -106,15 +106,15 @@ export fn set_persistent_cache_cfg_flags(_ flags_csv: String) -> Unit {
   Array::push(persistent_cache_cfg_flags_cell, value = flags_csv)
 }
 
-fn persistent_cache_cfg_segment() -> String {
-  if Array::length(persistent_cache_cfg_flags_cell) == 0 || Array::get(persistent_cache_cfg_flags_cell, at = 0) == "" {
+fn persistent_cache_cfg_csv() -> String {
+  if Array::length(persistent_cache_cfg_flags_cell) == 0 {
     ""
   } else {
-    String::concat("|cfg=", Array::get(persistent_cache_cfg_flags_cell, at = 0))
+    Array::get(persistent_cache_cfg_flags_cell, at = 0)
   }
 }
 
-fn persistent_cache_version_tag() -> String {
+fn persistent_cache_version_tag_with_cfg(_ cfg_csv: String) -> String {
   // v30 (#3440): an imported function header carries its parameter-default
   // bits. A v29 entry lacks them, and its importers would read a written
   // `None` for a defaulted parameter as the omitted argument.
@@ -169,7 +169,22 @@ fn persistent_cache_version_tag() -> String {
   // (`.bin`, via Fs::write_bytes / Fs::read_bytes) — a cache FORMAT change, so
   // the manual `vNN` knob is bumped. Old `.hex` entries are now unreferenced
   // (different key + suffix) and reclaimable via `pkf run cache-clean` (#631).
-  String::concat("v30|cg-", String::concat(codegen_fingerprint(), persistent_cache_cfg_segment()))
+  let cfg_segment = if cfg_csv == "" {
+    ""
+  } else {
+    String::concat("|cfg=", cfg_csv)
+  }
+  String::concat("v30|cg-", String::concat(codegen_fingerprint(), cfg_segment))
+}
+
+fn persistent_cache_version_tag() -> String {
+  persistent_cache_version_tag_with_cfg(persistent_cache_cfg_csv())
+}
+
+/// Capture the compiler cache namespace for an exact target-flag identity.
+/// Callers retain this immutable value with the flags that produced it.
+export fn persistent_cache_namespace_for_cfg(_ cfg_identity: String) -> String {
+  persistent_cache_version_tag_with_cfg(cfg_identity)
 }
 
 /// Read-only trace evidence for the exact existing persistent cache identity.
@@ -211,6 +226,22 @@ export fn load_persistent_artifact(kind: String, entry_name: String, fingerprint
   cache_load_persistent_artifact(version_tag = persistent_cache_version_tag(), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint))
 }
 
+/// Artifact identity for a caller's captured flags, independent of the legacy
+/// process-wide namespace. The empty snapshot preserves the existing key.
+export fn persistent_artifact_cache_path_with_cfg(kind: String, entry_name: String, fingerprint: String, cfg_csv: String) -> String with Env {
+  cache_persistent_artifact_cache_path(version_tag = persistent_cache_version_tag_with_cfg(cfg_csv), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint))
+}
+
+/// Store with the same flag snapshot that produced the artifact.
+export fn store_persistent_artifact_with_cfg(kind: String, entry_name: String, fingerprint: String, bytes: Bytes, cfg_csv: String) -> Unit with Env + Exception + Fs {
+  cache_store_persistent_artifact(version_tag = persistent_cache_version_tag_with_cfg(cfg_csv), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint), bytes = bytes)
+}
+
+/// Load only within the caller's captured flag namespace.
+export fn load_persistent_artifact_with_cfg(kind: String, entry_name: String, fingerprint: String, cfg_csv: String) -> Option[Bytes] with Env + Exception + Fs {
+  cache_load_persistent_artifact(version_tag = persistent_cache_version_tag_with_cfg(cfg_csv), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint))
+}
+
 export fn persistent_dep_list_cache_path(path: String, source_fingerprint: String) -> String with Env {
   cache_persistent_dep_list_cache_path(version_tag = persistent_cache_version_tag(), path = path, source_fingerprint = source_fingerprint, resolution_seed = resolution_env_seed())
 }
@@ -234,24 +265,44 @@ export fn persistent_typing_dependency_env_reuse_eligibility_path(_ fingerprint:
 }
 
 export fn persistent_source_list_cache_path(_ entry_path: String) -> String with Env {
+  persistent_source_list_cache_path_in_namespace(entry_path, namespace = persistent_cache_version_tag())
+}
+
+/// The same cache key recipe with a caller-captured compiler/flag namespace.
+export fn persistent_source_list_cache_path_in_namespace(_ entry_path: String, namespace: String) -> String with Env {
   // #758 review (P1): the cached artifact is a RESOLVED graph — the external
   // lib roots and the freeze switch (#751) are part of its identity, or a
   // graph resolved without pins replays under VIBE_REQUIRE_PINS=1 (and a
   // VIBE_LIB change replays the previous roots). Same seed on the dep-list
   // and module-header caches below.
-  cache_persistent_source_list_cache_path(version_tag = persistent_cache_version_tag(), entry_path = entry_path, resolution_seed = resolution_env_seed())
+  cache_persistent_source_list_cache_path(version_tag = namespace, entry_path = entry_path, resolution_seed = resolution_env_seed())
 }
 
 export fn persistent_source_group_cache_path(_ entry_path: String) -> String with Env {
-  cache_persistent_source_group_cache_path(version_tag = persistent_cache_version_tag(), entry_path = entry_path, resolution_seed = resolution_env_seed())
+  persistent_source_group_cache_path_in_namespace(entry_path, namespace = persistent_cache_version_tag())
+}
+
+/// The same cache key recipe with a caller-captured compiler/flag namespace.
+export fn persistent_source_group_cache_path_in_namespace(_ entry_path: String, namespace: String) -> String with Env {
+  cache_persistent_source_group_cache_path(version_tag = namespace, entry_path = entry_path, resolution_seed = resolution_env_seed())
 }
 
 export fn persistent_module_header_cache_path(path: String, source_fingerprint: String) -> String with Env {
-  cache_persistent_module_header_cache_path(version_tag = persistent_cache_version_tag(), path = path, source_fingerprint = source_fingerprint, resolution_seed = resolution_env_seed())
+  persistent_module_header_cache_path_in_namespace(path = path, source_fingerprint = source_fingerprint, namespace = persistent_cache_version_tag())
+}
+
+/// The same cache key recipe with a caller-captured compiler/flag namespace.
+export fn persistent_module_header_cache_path_in_namespace(path: String, source_fingerprint: String, namespace: String) -> String with Env {
+  cache_persistent_module_header_cache_path(version_tag = namespace, path = path, source_fingerprint = source_fingerprint, resolution_seed = resolution_env_seed())
 }
 
 export fn persistent_manifest_header_cache_path(_ entry_path: String) -> String with Env {
-  cache_persistent_manifest_header_cache_path(version_tag = persistent_cache_version_tag(), entry_path = entry_path)
+  persistent_manifest_header_cache_path_in_namespace(entry_path, namespace = persistent_cache_version_tag())
+}
+
+/// The same cache key recipe with a caller-captured compiler/flag namespace.
+export fn persistent_manifest_header_cache_path_in_namespace(_ entry_path: String, namespace: String) -> String with Env {
+  cache_persistent_manifest_header_cache_path(version_tag = namespace, entry_path = entry_path)
 }
 
 export fn persistent_leaf_fingerprint_cache_path(path: String, source_fingerprint: String) -> String with Env {
@@ -310,14 +361,24 @@ export fn ingestion_compact_fingerprint_is_valid_for_test(_ fingerprint: String)
 /// vpkg shared-import prefix: keyed by the vpkg contract's own content —
 /// the prefix text derives from nothing else.
 export fn persistent_vpkg_prefix_cache_path(path: String, source_fingerprint: String) -> String with Env {
-  cache_stable_text_cache_path(version_tag = persistent_cache_version_tag(), prefix = "selfhost_vpkg_prefix", seed = String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_env_seed()))))
+  persistent_vpkg_prefix_cache_path_in_namespace(path = path, source_fingerprint = source_fingerprint, namespace = persistent_cache_version_tag())
+}
+
+/// The same cache key recipe with a caller-captured compiler/flag namespace.
+export fn persistent_vpkg_prefix_cache_path_in_namespace(path: String, source_fingerprint: String, namespace: String) -> String with Env {
+  cache_stable_text_cache_path(version_tag = namespace, prefix = "selfhost_vpkg_prefix", seed = String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_env_seed()))))
 }
 
 /// contract facade: keyed by a CLOSURE fingerprint (the contract's original
 /// on-disk text + every resolved member's path and content fingerprint) —
 /// a member edit must invalidate the facade and its conformance verdict.
 export fn persistent_contract_facade_cache_path(path: String, closure_fingerprint: String) -> String with Env {
-  cache_stable_text_cache_path(version_tag = persistent_cache_version_tag(), prefix = "selfhost_contract_facade", seed = String::concat(path, String::concat("|", String::concat(closure_fingerprint, resolution_env_seed()))))
+  persistent_contract_facade_cache_path_in_namespace(path = path, closure_fingerprint = closure_fingerprint, namespace = persistent_cache_version_tag())
+}
+
+/// The same cache key recipe with a caller-captured compiler/flag namespace.
+export fn persistent_contract_facade_cache_path_in_namespace(path: String, closure_fingerprint: String, namespace: String) -> String with Env {
+  cache_stable_text_cache_path(version_tag = namespace, prefix = "selfhost_contract_facade", seed = String::concat(path, String::concat("|", String::concat(closure_fingerprint, resolution_env_seed()))))
 }
 
 /// #801 follow-up: the module-header and dep-list caches store RESOLVED dep

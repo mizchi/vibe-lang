@@ -263,6 +263,9 @@ test("balanced-token inventory classifies every production EFn site", () => {
     // only pattern-reads the body to decide whether a rebuild is needed.
     ["parser_expr_primary.vibe:tl_rewrite_expr", [2, "slot-preserving reconstruction"]],
     ["parser_expr_primary.vibe:tl_scan_expr", [1, "deliberately ineligible"]],
+    // #3829 step 2: the read-only twin of map_expr_offsets only pattern-reads
+    // the body's offsets; it builds no EFn.
+    ["parser_expr_primary.vibe:collect_expr_offsets", [1, "deliberately ineligible"]],
   ]);
   const actual = new Map();
   for (const [file, source] of files) {
@@ -316,10 +319,11 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_fn_name(tokens = tokens, pos = pos, context = context)",
     "parse_value_bracket_header(tokens = tokens, pos = name_next, context = context)",
     "parse_fn_param_list_with_defaults(tokens = tokens, starts = starts, pos = lp, context = context)",
-    // Contract conditions get the token offsets only under a context.
-    "Some(_) => starts,",
-    "parse_impl_with_binder_context(tokens = tokens, starts = cond_starts, pos = cp, mode = 0, context = context)",
+    // Contract conditions get the token offsets on every parse, like the
+    // body: a labeled call in a clause is placed by its offset.
+    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = cp, mode = 0, context = context)",
   ], [
+    "cond_starts",
     "parse_fn_name_with_binder_context",
     "parse_param_list(tokens,",
     "parse_impl(tokens = tokens,",
@@ -445,29 +449,43 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   assertNoneWrapper(parserSource, "parse_stmt_preserving", "parse_stmt_preserving_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = None)");
   assertContextual(parserSource, "parse_stmt_with_binder_context", ["parse_stmt_preserving_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context)"], ["parse_stmt_preserving(tokens = tokens,"]);
 
-  // The tooling parse (a context) hands the method bodies the token offsets;
-  // a compile parse hands them none, so its AST is unchanged.
+  // A method body gets the token offsets on every parse, like any other
+  // body: a labeled call in it is placed by its offset.
   assertContextual(parserSource, "parse_impl_methods", [
-    "Some(_) => starts,",
+    "let method_starts = starts",
     "parse_impl_with_binder_context(tokens = tokens, starts = method_starts, pos = p + 1, mode = 0, context = context)",
   ], [
+    "Some(_) => starts,",
     "parse_expr(tokens,",
     "parse_impl(tokens = tokens,",
   ]);
   // #2948: the located preserving parse splits its loop into two helpers --
   // the `#cfg` directive and the top-level statement -- and both are ordinary
   // entries too.
-  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)"], ["parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
-  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)"], ["parse_impl_methods(tokens, [], hp, simpl, context)"]);
-  for (const ordinaryProgram of ["parse_program_preserving", "parse_program_recovering"]) {
-    assertBody(parserSource, ordinaryProgram, [
-      "parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)",
-      "parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)",
-    ], [
-      "parse_impl_methods(tokens, [], hp_d, simpl_d, context)",
-      "parse_impl_methods(tokens, [], hp, simpl, context)",
-    ]);
-  }
+  // Each hands an impl block the offsets it parses its other statements with.
+  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None)"], ["parse_impl_methods(tokens = tokens, starts = [], pos = hp_d", "parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
+  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None)"], ["parse_impl_methods(tokens = tokens, starts = [], pos = hp", "parse_impl_methods(tokens, [], hp, simpl, context)"]);
+  assert.equal(normalize(functionBody(parserSource, "parse_program_preserving")), normalize("parse_program_preserving_with_cfg(tokens, cfg_flags = cfg_ambient_flags)"), "legacy preserving entry must delegate exactly to the flag-only core");
+  // The tokens-only core has no offsets to hand anything; the recovering
+  // parse has them and hands them to impl blocks as to every statement.
+  assertBody(parserSource, "parse_program_preserving_with_cfg", [
+    "parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)",
+    "parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)",
+  ], [
+    "parse_impl_methods(tokens, [], hp_d, simpl_d, context)",
+    "parse_impl_methods(tokens, [], hp, simpl, context)",
+  ]);
+  assertBody(parserSource, "parse_program_recovering", [
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None)",
+  ], [
+    "parse_impl_methods(tokens = tokens, starts = [], pos = hp",
+    "parse_impl_methods(tokens, [], hp_d, simpl_d, context)",
+    "parse_impl_methods(tokens, [], hp, simpl, context)",
+  ]);
+  assert.equal(normalize(functionBody(parserSource, "parse_program_preserving_located")), normalize("parse_program_preserving_impl(tokens = tokens, starts = starts, source = source, located = true, cfg_flags = cfg_ambient_flags)"));
+  assert.equal(normalize(functionBody(parserSource, "parse_program_preserving_located_with_cfg")), normalize("parse_program_preserving_impl(tokens = tokens, starts = starts, source = source, located = true, cfg_flags = cfg_flags)"));
+  assert.equal(normalize(functionBody(parserSource, "parse_program_with_cfg")), normalize("attach_qualified_pattern_refs(expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving_with_cfg(tokens, cfg_flags = cfg_flags))))"));
 
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
     "parse_impl_stmt_dispatch_with_binder_context(tokens = tokens, pos = dnext + 1, context = context)",
