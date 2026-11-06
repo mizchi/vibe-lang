@@ -96,7 +96,7 @@ assert_rc_parity "inner fn return feeding entry arithmetic" 'fn inner(n: Int) ->
 }
 
 let _start = () -> Int {
-  inner(1) + 100
+  inner(n = 1) + 100
 }
 '
 

@@ -842,7 +842,7 @@ cdir="_build/_gate_contract"
 rm -rf "$cdir"; mkdir -p "$cdir/pkg"
 printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vpkg"
 printf 'export fn add(x: Int, y: Int) -> Int { x + y }\n' > "$cdir/pkg/impl.vibe"
-printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/ok.vibe"
+printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(x = 40, y = 2) }\n' > "$cdir/ok.vibe"
 # #749 canary: run this compile with a COLD persistent cache. The runner's
 # module-init _start executes the same pipeline once before the real cli_main
 # invoke; a first-pass failure is masked in the exit code but leaves a .diag

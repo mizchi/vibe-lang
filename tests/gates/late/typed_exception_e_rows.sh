@@ -726,7 +726,7 @@ fn shout(s: String) -> String with Log {
 
 fn main allows Console {
   let r = handle {
-    shout("hi")
+    shout(s = "hi")
   } with {
     Log::Emit(m) => resume(m)
   }

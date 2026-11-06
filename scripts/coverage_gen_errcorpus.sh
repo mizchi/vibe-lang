@@ -29,9 +29,9 @@ emit t_arr_elem      'export let main: () -> Int = () -> { let x: Array[Int] = [
 emit t_arr_scalar    'export let main: () -> Int = () -> { let x: Array[Int] = 1; 0 }'
 emit t_fn_ret        'export let f: () -> Int = () -> { "s" }'
 emit t_fn_arg        'let f: (Int) -> Int = (n) -> { n }
-export let main: () -> Int = () -> { f("s") }'
+export let main: () -> Int = () -> { f(n = "s") }'
 emit t_fn_arity      'let f: (Int, Int) -> Int = (a, b) -> { a + b }
-export let main: () -> Int = () -> { f(1) }'
+export let main: () -> Int = () -> { f(a = 1) }'
 emit t_call_nonfn    'export let main: () -> Int = () -> { let x = 1; x(2) }'
 emit t_if_branches   'export let main: () -> Int = () -> { if true { 1 } else { "s" } }'
 emit t_if_cond       'export let main: () -> Int = () -> { if 1 { 2 } else { 3 } }'
@@ -55,7 +55,7 @@ export let main: () -> Int = () -> { let p = P { x: 1 }; p.x }'
 emit t_struct_nofld  'struct P { x: Int }
 export let main: () -> Int = () -> { let p = P { x: 1 }; p.z }'
 emit t_generic_mis   'let id: (a) -> a = (x) -> { x }
-export let main: () -> Int = () -> { let s: String = id(1); 0 }'
+export let main: () -> Int = () -> { let s: String = id(x = 1); 0 }'
 emit t_ret_unit      'export let main: () -> Int = () -> { () }'
 emit t_option_mis    'export let main: () -> Int = () -> { let x: Option[Int] = Some("s"); 0 }'
 emit t_result_mis    'export let main: () -> Int = () -> { let x: Result[Int, String] = Ok("s"); 0 }'
@@ -106,8 +106,8 @@ emit f_arith   'export let main: () -> Int = () -> {
   let c = if a > b { a } else { b }
   let d = if a >= b && b <= c || a != c { 1 } else { 0 }
   a + b + c + d }'
-emit f_pipe    'let inc: (Int) -> Int = (x) -> { x + 1 }
-let dbl: (Int) -> Int = (x) -> { x * 2 }
+emit f_pipe    'let inc: (Int) -> Int = (_ x) -> { x + 1 }
+let dbl: (Int) -> Int = (_ x) -> { x * 2 }
 export let main: () -> Int = () -> { 3 |> inc |> dbl |> inc }'
 emit f_strops  'export let main: () -> Int = () -> {
   let s = String::concat("ab", "cd")
@@ -116,9 +116,9 @@ emit f_strops  'export let main: () -> Int = () -> {
   n + c + Int::to_string(n) |> String::length }'
 emit f_arrayops 'export let main: () -> Int = () -> {
   let xs = [1, 2, 3, 4]
-  let ys = Array::slice(xs, 1, 3)
-  Array::push(ys, 9)
-  Array::length(ys) + Array::get(xs, 0) }'
+  let ys = Array::slice(xs, start = 1, end = 3)
+  Array::push(ys, value = 9)
+  Array::length(ys) + Array::get(xs, at = 0) }'
 emit f_loops   'export let main: () -> Int = () -> {
   let mut acc = 0
   for x in [1, 2, 3] { acc = acc + x }
@@ -129,7 +129,7 @@ emit f_loops   'export let main: () -> Int = () -> {
 emit f_match   'enum Shape { Circle(Int); Rect(Int, Int); Dot }
 let area: (Shape) -> Int = (s) -> {
   match s { Circle(r) => r * r * 3, Rect(w, h) => w * h, Dot => 0 } }
-export let main: () -> Int = () -> { area(Circle(2)) + area(Rect(3, 4)) + area(Dot) }'
+export let main: () -> Int = () -> { area(s = Circle(2)) + area(s = Rect(3, 4)) + area(s = Dot) }'
 emit f_tuple   'export let main: () -> Int = () -> {
   let t = (1, "a", true)
   let (n, s, b) = t
@@ -151,10 +151,10 @@ emit f_option  'export let main: () -> Int = () -> {
 emit f_result  'let safe: (Int) -> Result[Int, String] = (n) -> {
   if n > 0 { Ok(n) } else { Err("neg") } }
 export let main: () -> Int = () -> {
-  match safe(5) { Ok(v) => v, Err(_) => -1 } }'
+  match safe(n = 5) { Ok(v) => v, Err(_) => -1 } }'
 emit f_rec     'let rec fib: (Int) -> Int = (n) -> {
-  if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }
-export let main: () -> Int = () -> { fib(10) }'
+  if n < 2 { n } else { fib(n = n - 1) + fib(n = n - 2) } }
+export let main: () -> Int = () -> { fib(n = 10) }'
 emit f_string_interp 'export let main: () -> Int = () -> {
   let n = 42
   let s = "value=${n} done"
@@ -183,7 +183,7 @@ let pmkpt: () -> PPoint = () -> { PPoint::{ x: 1, y: 2 } }
 let pgetx: (PPoint) -> Int = (p) -> { p.x + p.y }
 type PInts = Array[Int]
 let psum: (PInts) -> Int = (xs) -> { let mut s = 0; for x in xs { s = s + x }; s }
-export let compute: () -> Int = () -> { puse(pmk()) + pgetx(pmkpt()) + psum([1, 2, 3]) }
+export let compute: () -> Int = () -> { puse(c = pmk()) + pgetx(p = pmkpt()) + psum(xs = [1, 2, 3]) }
 export enum PubColor { URed; UGreen }
 export let pubmk: () -> PubColor = () -> { URed }'
 mkfile mod_kitchen/main.vibe 'import ./lib.vibe { compute, PubColor, pubmk }
@@ -234,10 +234,10 @@ export let main: () -> Int = () -> { wide() + tall() }'
 emit f_suberror 'suberror PBad(String)
 let pfail: (Int) -> Int = (n) -> {
   handle { if n < 0 { throw(PBad("neg")) } else { n } } with { Exception::Throw(_) => 0 } }
-export let main: () -> Int = () -> { pfail(-1) + pfail(7) }'
+export let main: () -> Int = () -> { pfail(n = -1) + pfail(n = 7) }'
 emit f_generic 'let id: [T](T) -> T = (x) -> { x }
 let pair: [A, B](A, B) -> (A, B) = (a, b) -> { (a, b) }
-export let main: () -> Int = () -> { let (x, _) = pair(id(5), id("s")); x }'
+export let main: () -> Int = () -> { let (x, _) = pair(a = id(x = 5), b = id(x = "s")); x }'
 emit f_bitops 'export let main: () -> Int = () -> {
   let a = 0xFF & 0x0F
   let b = 1 << 4
@@ -249,25 +249,25 @@ let rec depth: (Tree) -> Int = (t) -> {
   match t {
     Leaf(_) => 1,
     Node(Leaf(_), Leaf(_)) => 2,
-    Node(l, r) => 1 + (if depth(l) > depth(r) { depth(l) } else { depth(r) })
+    Node(l, r) => 1 + (if depth(t = l) > depth(t = r) { depth(t = l) } else { depth(t = r) })
   } }
-export let main: () -> Int = () -> { depth(Node(Node(Leaf(1), Leaf(2)), Leaf(3))) }'
+export let main: () -> Int = () -> { depth(t = Node(Node(Leaf(1), Leaf(2)), Leaf(3))) }'
 emit f_lit_pat 'enum Cmd { Op(Int, Bool) }
 let run: (Cmd) -> Int = (c) -> {
   match c { Op(0, true) => 1, Op(0, false) => 2, Op(n, true) => n + 10, Op(n, false) => n } }
-export let main: () -> Int = () -> { run(Op(0, true)) + run(Op(5, false)) + run(Op(3, true)) }'
+export let main: () -> Int = () -> { run(c = Op(0, true)) + run(c = Op(5, false)) + run(c = Op(3, true)) }'
 emit f_string_ops 'export let main: () -> Int = () -> {
   let s = "hello world"
   let n = String::length(s)
-  let parts = String::split(s, " ")
+  let parts = String::split(s, sep = " ")
   n + Array::length(parts) }'
-emit f_pipe 'let inc: (Int) -> Int = (n) -> { n + 1 }
-let dbl: (Int) -> Int = (n) -> { n * 2 }
+emit f_pipe 'let inc: (Int) -> Int = (_ n) -> { n + 1 }
+let dbl: (Int) -> Int = (_ n) -> { n * 2 }
 export let main: () -> Int = () -> { 5 |> inc |> dbl |> inc }'
 emit f_early_ret 'let classify: (Int) -> Int = (n) -> {
   if n < 0 { return 0 }
   if n == 0 { return 1 }
   n + 100 }
-export let main: () -> Int = () -> { classify(-1) + classify(0) + classify(5) }'
+export let main: () -> Int = () -> { classify(n = -1) + classify(n = 0) + classify(n = 5) }'
 
 echo "[gen] wrote $(find "$OUT" -name '*.vibe' | wc -l) programs to $OUT"
