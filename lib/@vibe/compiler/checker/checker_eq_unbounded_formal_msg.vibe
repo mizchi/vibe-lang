@@ -815,20 +815,47 @@ fn is_enum_ctor_name(name: String, defs: Array[TypeDef]) -> Bool {
 
 export fn direct_result_enum_payload_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef]) -> Array[Int] {
   let found = array_empty()
+  result_enum_payload_params(body = body, params = params, defs = defs, alias_names = array_empty(), alias_indices = array_empty(), found = found)
+  found
+}
+
+/// The parameters whose values the enum constructor at the body's TAIL holds
+/// (#3862): a statement before the tail (`let _ = 0; Pair(a, b)`) does not hide
+/// it. A `let` that holds a parameter is an alias of it, and one that holds
+/// none shadows a parameter of its name (`collect_result_param_indices`).
+fn result_enum_payload_params(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
   match body {
-    ECall(EIdent(ctor_name, _), args, _, _) => {
-      let alias_names = array_empty()
-      let alias_indices = array_empty()
+    ECall(EIdent(ctor_name, _), args, _, _) => if is_enum_ctor_name(name = ctor_name, defs = defs) {
       for call_arg in args {
         collect_result_param_indices(body = call_arg, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
       }
-      if Array::length(found) > 0 && !is_enum_ctor_name(name = ctor_name, defs = defs) {
-        Array::truncate(found, length = 0)
+    } else {
+      ()
+    },
+    ESeq(_, right) => result_enum_payload_params(body = right, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found),
+    ELet(name, value, rest, _) => {
+      let alias_mark = Array::length(alias_names)
+      let held: Array[Int] = []
+      collect_result_param_indices(body = value, params = params, alias_names = alias_names, alias_indices = alias_indices, found = held)
+      if Array::length(held) == 0 {
+        Array::push(alias_names, value = name)
+        Array::push(alias_indices, value = -1)
+      } else {
+        for index in held {
+          Array::push(alias_names, value = name)
+          Array::push(alias_indices, value = index)
+        }
       }
+      result_enum_payload_params(body = rest, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
+      Array::truncate(alias_names, length = alias_mark)
+      Array::truncate(alias_indices, length = alias_mark)
+    },
+    EIf(_, then_expr, else_expr) => {
+      result_enum_payload_params(body = then_expr, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
+      result_enum_payload_params(body = else_expr, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
     },
     _ => ()
   }
-  found
 }
 
 export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: Expr) -> TypeEnv {
