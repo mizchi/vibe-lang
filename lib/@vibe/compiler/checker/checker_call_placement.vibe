@@ -180,8 +180,12 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
   }
 }
 
-/// Calls through values without declaration headers keep the legacy positional
-/// passthrough. Labels on such values are retired in ADR-0120 Phase 4.
+/// A call through a value without a declaration header -- a parameter, a
+/// field, a call's result -- passes its arguments by position. A label there
+/// is refused (ADR-0120 Phase 4b): a function type carries no labels, so it
+/// named nothing, and the arguments used to bind in written order whatever
+/// they said (`f(y = 3, x = 10)` through `f: (Int, Int) -> Int` passed `3`
+/// first).
 export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[String]) -> Unit {
   if checker_call_header_is_probe() {
     ()
@@ -189,7 +193,7 @@ export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[S
     match call_placement_raw(cell) {
       Some((callee, args, _, offset)) => {
         let before = Array::length(errors)
-        placement_check_mixed(name = placement_source_name(callee), offset = offset, args = args, errors = errors)
+        placement_refuse_value_labels(name = placement_source_name(callee), offset = offset, args = args, errors = errors)
         if Array::length(errors) == before {
           call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 2, slots = placement_identity(Array::length(args)), errors = errors)
         } else {
@@ -244,7 +248,13 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 all_names
               }
               let slots = placement_for_header(args = args, names = names)
-              placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), declaration = checker_call_header_is_declaration(env = env, name = name), errors = errors)
+              // A local lambda's header still places omitted optional slots,
+              // but its call is through a value: positional only.
+              if checker_call_header_is_declaration(env = env, name = name) {
+                placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), declaration = true, errors = errors)
+              } else {
+                placement_refuse_value_labels(name = name, offset = ident_offset, args = args, errors = errors)
+              }
               if Array::length(errors) == before {
                 match slots {
                   Some(found) => call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors),
@@ -254,14 +264,7 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 ()
               }
             },
-            None => {
-              placement_check_uncertain(env = env, name = name, offset = ident_offset, args = args, errors = errors)
-              if Array::length(errors) == before {
-                checker_record_opaque_call_placement(cell = cell, errors = errors)
-              } else {
-                ()
-              }
-            }
+            None => checker_record_opaque_call_placement(cell = cell, errors = errors)
           }
         }
       },
@@ -491,6 +494,39 @@ fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: A
   }
 }
 
+/// ADR-0120 Phase 4b: the edit for the labels on a call through a value,
+/// every one of them in written order.
+fn placement_refuse_value_labels(name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let mut labels: Option[Array[String]] = None
+  for arg in args {
+    match arg {
+      ELabeledArg(label, marker, _) => {
+        let item = if marker == "?" {
+          "`" + label + "? = `"
+        } else {
+          "`" + label + " = `"
+        }
+        match labels {
+          Some(items) => Array::push(items, value = item),
+          None => labels = Some([item])
+        }
+      },
+      _ => ()
+    }
+  }
+  match labels {
+    Some(items) => {
+      let (callee, len) = if name == "<call>" {
+        ("a function value", 1)
+      } else {
+        ("the function value `" + name + "`", String::length(name))
+      }
+      Array::push(errors, value = "a call through " + callee + " passes its arguments by position: remove " + String::join(items, sep = ", ") + " (only a call to a declaration names its arguments)" + off_marker_len(off = offset, len = len))
+    },
+    None => ()
+  }
+}
+
 /// `written_len` is the callee as the source spells it: the canonical `name`
 /// for a direct call, the alias for one through an import alias (#3832), so
 /// the diagnostic's range covers what was written (Codex on #3839).
@@ -586,22 +622,6 @@ fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names:
       None => ()
     }
     ai = ai + 1
-  }
-}
-
-fn placement_check_uncertain(env: TypeEnv, name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
-  let uncertain = match env_lookup_binding(env = env, name = name) {
-    Some(binding) => match binding.origin {
-      BindingOriginUncertainFunctionHeader => true,
-      BindingOriginMutableFunctionHeader(box) => Array::get(box, at = 0).0 == 2,
-      _ => false
-    },
-    None => false
-  }
-  if uncertain && placement_has_labels(args) {
-    Array::push(errors, value = "cannot resolve labeled arguments for " + name + ": a branch, loop or closure assigns it a lambda with different parameter names, so a label does not name a position here — call " + name + " positionally, or give every lambda assigned to " + name + " the same parameter names" + off_marker_len(off = offset, len = String::length(name)))
-  } else {
-    ()
   }
 }
 

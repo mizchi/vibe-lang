@@ -136,7 +136,7 @@ def tooManyArguments : OracleCase := {
 def labeledReordered : OracleCase := {
   name := "labeled-reordered"
   issue := "#986"
-  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn main() -> Int { f(y=\"ok\", x=1) }"
+  source := "fn f(x: Int, y: String) -> Int { x } fn main() -> Int { f(y=\"ok\", x=1) }"
   signature := labeledSignature
   arguments := [labeled "y" .string, labeled "x" .int]
   expected := .accepted .int []
@@ -145,7 +145,7 @@ def labeledReordered : OracleCase := {
 def labeledPositional : OracleCase := {
   name := "labeled-positional"
   issue := "#986"
-  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn main() -> Int { f(1, \"ok\") }"
+  source := "fn f(x: Int, y: String) -> Int { x } fn main() -> Int { f(1, \"ok\") }"
   signature := labeledSignature
   arguments := [positional .int, positional .string]
   expected := .accepted .int []
@@ -262,7 +262,7 @@ def int64ArrayAliasAccepted : OracleCase := {
 def labeledTypeMismatch : OracleCase := {
   name := "labeled-type-mismatch"
   issue := "#986"
-  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn bad() -> Int { f(x=\"bad\", y=\"ok\") }"
+  source := "fn f(x: Int, y: String) -> Int { x } fn bad() -> Int { f(x=\"bad\", y=\"ok\") }"
   signature := labeledSignature
   arguments := [labeled "x" .string, labeled "y" .string]
   expected := .rejected .typeMismatch
@@ -271,7 +271,7 @@ def labeledTypeMismatch : OracleCase := {
 def labeledUnknown : OracleCase := {
   name := "labeled-unknown"
   issue := "#986"
-  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn bad() -> Int { f(z=1, y=\"ok\") }"
+  source := "fn f(x: Int, y: String) -> Int { x } fn bad() -> Int { f(z=1, y=\"ok\") }"
   signature := labeledSignature
   arguments := [labeled "z" .int, labeled "y" .string]
   expected := .rejected .unknownLabel
@@ -280,7 +280,7 @@ def labeledUnknown : OracleCase := {
 def labeledDuplicate : OracleCase := {
   name := "labeled-duplicate"
   issue := "#986"
-  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn bad() -> Int { f(x=1, x=2) }"
+  source := "fn f(x: Int, y: String) -> Int { x } fn bad() -> Int { f(x=1, x=2) }"
   signature := labeledSignature
   arguments := [labeled "x" .int, labeled "x" .int]
   expected := .rejected .duplicateLabel
@@ -289,7 +289,7 @@ def labeledDuplicate : OracleCase := {
 def labeledMissing : OracleCase := {
   name := "labeled-missing"
   issue := "#986"
-  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn bad() -> Int { f(x=1) }"
+  source := "fn f(x: Int, y: String) -> Int { x } fn bad() -> Int { f(x=1) }"
   signature := labeledSignature
   arguments := [labeled "x" .int]
   expected := .rejected .arityMismatch
@@ -298,7 +298,7 @@ def labeledMissing : OracleCase := {
 def mixedArgumentModes : OracleCase := {
   name := "mixed-argument-modes"
   issue := "#1001"
-  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn bad() -> Int { f(x=1, \"ok\") }"
+  source := "fn f(x: Int, y: String) -> Int { x } fn bad() -> Int { f(x=1, \"ok\") }"
   signature := labeledSignature
   arguments := [labeled "x" .int, positional .string]
   expected := .rejected .mixedArgumentModes

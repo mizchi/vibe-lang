@@ -348,7 +348,7 @@ class ExtGen:
         name = self.fresh("lab")
         ca, cb, cc = r.randint(1, 5), r.randint(1, 5), r.randint(1, 5)
         self.decls.append(
-            f"export fn {name}(a~: Int, b~: Int, c~: Int) -> Int {{\n"
+            f"export fn {name}(a: Int, b: Int, c: Int) -> Int {{\n"
             f"  ((a * {ca} - b * {cb} + c * {cc}) & {MASK})\n}}")
         self.exports.append(name)
         self.lab = (name, ca, cb, cc)

@@ -118,9 +118,11 @@ test "a macro cannot erase a poisoned source call placement" {
 }
 
 /// Mutable lambda declarations follow the binding typing resolves, across a
-/// sequential assignment, with no independent syntax/name table lookup.
+/// sequential assignment, with no independent syntax/name table lookup. A
+/// call through the binding is positional (ADR-0120 Phase 4b); its omitted
+/// optional slot is still placed.
 test "checker placements survive sequential mutable lambda assignments" {
-  let source = "fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; let a = g(y = 3, x = 10); g = (y~: Int, x~: Int) -> Int { x - y }; a + g(y = 3, x = 10) }"
+  let source = "fn main() -> Int { let mut g = (x: Int, y?: Int) -> Int { x }; let a = g(10); g = (y: Int, x?: Int) -> Int { y }; a + g(3) }"
   let message = lowering_message(source = source, rows = checked_placement_rows(source), expand_inspect = false)
   if message != "" {
     throw(message)
@@ -149,8 +151,8 @@ test "checker placement agrees on optional omission wrapping and option values" 
 /// headers that typing used inside the group's provisional environment.
 test "recursive group generalization retains call placement headers" {
   for source in [
-    "let rec f = (x~: Int, y~: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }",
-    "let rec f = (x~: Int, y~: Int) -> { if x == 0 { y } else { g(x = 0, y = y) } }\nlet rec g = (x~: Int, y~: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }"
+    "let rec f = (x: Int, y: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }",
+    "let rec f = (x: Int, y: Int) -> { if x == 0 { y } else { g(x = 0, y = y) } }\nlet rec g = (x: Int, y: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }"
   ] {
     assert(lowering_message(source = source, rows = checked_placement_rows(source), expand_inspect = false) == "")
   }

@@ -308,12 +308,12 @@ Raw identifier (advanced):
 - Internally the bound name is normalized to `<ident>` (`if`, `bench` in the
   examples).
 
-## Labeled arguments (MoonBit-style)
+## Labeled arguments
 
 Definition:
 ```
-let foo: (x~: Int, y?: Int) -> Int = (x~, y?) -> {
-  match y? {
+fn foo(x: Int, y?: Int) -> Int {
+  match y {
     Some(y) => x + y,
     None => x,
   }
@@ -322,8 +322,8 @@ let foo: (x~: Int, y?: Int) -> Int = (x~, y?) -> {
 
 Call:
 ```
-foo(x=1)
-foo(x=1, y=2)
+foo(x = 1)
+foo(x = 1, y = 2)
 ```
 
 Shell view (conceptual):
@@ -331,8 +331,9 @@ Shell view (conceptual):
 foo -x=1 -y=2
 ```
 
-Rules:
-- `x~` is required (must be supplied by label).
+Rules (ADR-0120):
+- A declaration's parameters are labeled by their names, and a call to a
+  declaration writes each label; `_ x: T` declares a positional slot.
 - `y?` is optional and is bound as `Option[Int]` inside the function body.
 - A typed parameter of a `fn` declaration may carry a default (`times: Int = 1`):
   the call may omit it, and the body sees `Int`. Defaults are trailing, may
@@ -341,6 +342,8 @@ Rules:
 - Labeled call arguments are evaluated in the order they are written and then
   bound to the parameters by name.
 - Missing optional args are passed as `None`.
+- A call through a function value (a parameter, a local lambda, a field) is
+  positional only, and a function type carries no labels.
 
 ## Builtins (current)
 

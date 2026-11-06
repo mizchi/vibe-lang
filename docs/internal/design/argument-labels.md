@@ -13,8 +13,8 @@ method call), ADR-0117 (`_` as pipe slot and section).
 
 ## Context
 
-Labels are optional today, and the parameter marker `x~` has almost no
-effect. Measured on the committed seed at `db57c14`:
+Labels were optional, and the parameter marker `x~` (retired in Phase 4b)
+had almost no effect. Measured on the committed seed at `db57c14`:
 
 <!-- doctest-skip: measured call shapes, not a standalone program -->
 ```vibe skip
@@ -239,7 +239,10 @@ Phase 1c (#3661) keeps the source argument order through checking. The
 checker publishes a placement on each call that needs labels or optional
 slots; lowering consumes its source indices and inserts `Some` / `None`.
 The syntactic resolver and paired binder-authority normalization are removed.
-Declaration reordering and opaque value-call behavior remain until Phase 4.
+A call through a value is positional since Phase 4b. Declaration reordering
+remains: a call to a declaration whose labels are out of declared order is
+still placed by name and evaluated in written order (#3549), not refused as
+D2 states.
 Rowless build lanes refuse labeled calls and ask for checked source.
 
 ### Positional slots

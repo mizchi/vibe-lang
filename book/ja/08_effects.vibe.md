@@ -116,7 +116,7 @@ resume します。そして、それを明示しなければなりません: �
 ありません。row を変数として書けば、来たものをそのまま運びます。
 
 ```vibe run
-fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
+fn apply_twice(f: (Int) -> Int with e, x: Int) -> Int with e {
   f(f(x))
 }
 

@@ -2037,14 +2037,15 @@ export fn parse_type(tokens: Array[Token], pos: Int) -> (TypeExpr, Int) with Exc
 /// to reach the caller for it to wrap.
 ///
 /// `p` is the position of the label identifier. Returns `(p, false)` for
-/// anything that is not `label: T` / `label~: T` / `label?: T` -- that is a
-/// bare type, and it starts right where the caller is looking.
-fn labeled_type_start(tokens: Array[Token], p: Int) -> (Int, Bool) {
+/// anything that is not `label: T` / `label?: T` -- that is a bare type, and
+/// it starts right where the caller is looking. `label~: T` is refused: a
+/// function type carries no labels (ADR-0120 D1, Phase 4b).
+fn labeled_type_start(tokens: Array[Token], p: Int) -> (Int, Bool) with Exception {
   match peek(tokens = tokens, pos = p) {
-    TIdent(_) => match peek(tokens = tokens, pos = p + 1) {
+    TIdent(name) => match peek(tokens = tokens, pos = p + 1) {
       TColon => (p + 2, false),
       TTilde => match peek(tokens = tokens, pos = p + 2) {
-        TColon => (p + 3, false),
+        TColon => throw(retired_tilde_type_error(name = name, pos = p + 1)),
         _ => (p, false)
       },
       TQuestion => match peek(tokens = tokens, pos = p + 2) {
@@ -2055,6 +2056,16 @@ fn labeled_type_start(tokens: Array[Token], p: Int) -> (Int, Bool) {
     },
     _ => (p, false)
   }
+}
+
+/// ADR-0120 Phase 4b retired the `~` label marker on a parameter.
+fn retired_tilde_param_error(name: String, pos: Int) -> String {
+  "parameter `\{name}~`: the `~` label marker is retired; write `\{name}` (a declaration's parameters are labeled by their names, and `_ \{name}` makes one positional) at #\{pos}"
+}
+
+/// ... and in a function type, which carries no labels (ADR-0120 D1).
+fn retired_tilde_type_error(name: String, pos: Int) -> String {
+  "`\{name}~: T` in a function type: a function type carries no labels; write the parameter's type alone, `T` at #\{pos}"
 }
 
 /// Wrap a labeled parameter's declared type when its label carried `?`.
@@ -2070,22 +2081,9 @@ export fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, co
   let ((name, ty), next) = match peek(tokens = tokens, pos = pos) {
     TIdent(name) => {
       match peek(tokens = tokens, pos = pos + 1) {
-        TTilde => {
-          let labeled_name = "\{name}~"
-          binder_capture_source(context = context, name = labeled_name, first_token = pos, last_token = pos + 1)
-          match peek(tokens = tokens, pos = pos + 2) {
-            TColon => {
-              let (ty, tp) = parse_type_with_source_context(tokens = tokens, pos = pos + 3, mode = 0, context = context);
-              match peek(tokens = tokens, pos = tp) {
-                // #3120 (Codex on #3438): a default is not supported on a
-                // labeled parameter yet.
-                TEq => throw("parameter '\{name}~' is labeled, and a labeled parameter cannot carry a default yet; drop the `~`, or declare it `\{name}?: T` and match on the `Option`"),
-                _ => ((labeled_name, Some(ty)), tp)
-              }
-            },
-            _ => ((labeled_name, None), pos + 2)
-          }
-        },
+        // ADR-0120 Phase 4b: a declaration labels every parameter by its
+        // name, so the `~` marker says nothing and is refused.
+        TTilde => throw(retired_tilde_param_error(name = name, pos = pos + 1)),
         TQuestion => {
           let opt_name = "\{name}?"
           binder_capture_source(context = context, name = opt_name, first_token = pos, last_token = pos + 1)
@@ -2162,7 +2160,7 @@ export fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, co
     token => throw(binder_name_error(actual = tk_name(token), kind = "parameter", pos = pos))
   }
   let name_end = match peek(tokens = tokens, pos = pos + 1) {
-    TTilde|TQuestion => pos + 2,
+    TQuestion => pos + 2,
     _ => pos + 1
   }
   source_record_slot(kind = "param", name = name, first = pos, next = name_end, context = context)

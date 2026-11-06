@@ -122,7 +122,7 @@ function it was handed performs. Write the row as a variable and it
 carries whatever arrives:
 
 ```vibe run
-fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
+fn apply_twice(f: (Int) -> Int with e, x: Int) -> Int with e {
   f(f(x))
 }
 
