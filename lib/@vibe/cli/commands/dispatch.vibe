@@ -56,6 +56,7 @@ import @vibe/compiler/query {
   rc_classify_source,
   rc_plan_source,
   rc_validate_source,
+  rc_validate_source_mutated,
   symbol_spans_fs_report,
   symbol_spans_locate_failure,
   symbol_spans_with_docs_for_path,
@@ -1324,7 +1325,7 @@ fn rc_plan_help_text() -> String {
 /// `vibe rc-validate --help`, kept in step with runtime/vibe's static copy by
 /// hand like the two above.
 fn rc_validate_help_text() -> String {
-  "usage: vibe rc-validate [--fn NAME] <file.vibe>\nChecks each function's Perceus plan against the linear ownership discipline.\nEmpty output = every checked binding balances on every path.\nLines: FN BINDING PATH: owned value not consumed | owned value released N more than held | borrowed parameter consumed without a dup | consume mark at offset N is not a consuming occurrence | heap value planned as scalar | not checked: REASON.\nGaps: the file is checked alone; elaborate_heap_params and return_control_annotate_calls do not run; a heap value planned as scalar is not caught in general.\n"
+  "usage: vibe rc-validate [--fn NAME] [--mutate drop-dups] <file.vibe>\nChecks each function's Perceus plan against the linear ownership discipline.\nEmpty output = every checked binding balances on every path.\nLines: FN BINDING PATH: owned value not consumed | owned value released N more than held | borrowed parameter consumed without a dup | consume mark at offset N is not a consuming occurrence | heap value planned as scalar | not checked: REASON.\nGaps: the file is checked alone; elaborate_heap_params and return_control_annotate_calls do not run; a heap value planned as scalar is not caught in general.\n--mutate drop-dups: self-test seam only. Validates each plan with every PaDup row deleted, so a gate can show it fails on a wrong plan; the lines then describe a plan the compiler never builds.\n"
 }
 
 fn selfhost_cli_user_rc_classify_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
@@ -1379,6 +1380,7 @@ fn selfhost_cli_user_rc_plan_args(_ args: Array[String]) -> Int with Exception +
 
 fn selfhost_cli_user_rc_validate_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
   let mut fn_filter = ""
+  let mut mutation = ""
   let mut src = ""
   let mut i = 1
   while i < Array::length(args) {
@@ -1389,6 +1391,13 @@ fn selfhost_cli_user_rc_validate_args(_ args: Array[String]) -> Int with Excepti
       ()
     } else if String::starts_with(arg, prefix = "--fn=") {
       fn_filter = arg[5: String::length(arg)]
+      ()
+    } else if arg == "--mutate" {
+      i = i + 1
+      mutation = need_value(args = args, index = i, command = "rc-validate", flag = arg)
+      ()
+    } else if String::starts_with(arg, prefix = "--mutate=") {
+      mutation = arg[9: String::length(arg)]
       ()
     } else if arg == "--help" || arg == "-h" {
       print_text(rc_validate_help_text())
@@ -1401,11 +1410,16 @@ fn selfhost_cli_user_rc_validate_args(_ args: Array[String]) -> Int with Excepti
     i = i + 1
   }
   if src == "" {
-    throw("usage: vibe rc-validate [--fn NAME] <file.vibe>")
+    throw("usage: vibe rc-validate [--fn NAME] [--mutate drop-dups] <file.vibe>")
   } else if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
-    print_text(rc_validate_source(source = Fs::read_file(src), fn_filter = fn_filter))
+    let text = Fs::read_file(src)
+    print_text(if mutation == "" {
+      rc_validate_source(source = text, fn_filter = fn_filter)
+    } else {
+      rc_validate_source_mutated(source = text, fn_filter = fn_filter, mutation = mutation)
+    })
     0
   }
 }
