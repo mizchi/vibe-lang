@@ -206,6 +206,41 @@ case "$result" in
   *) fail "or_seed answered with nothing to answer: $result" ;;
 esac
 
+# 12. Two seeds' generations for the same HEAD -- a workspace mid seed bump.
+#     The pinned seed's (what `generations.sh out-dir` names) wins, even though
+#     the other one sorts first, and needs no NOTE (#3870 review). The stub
+#     stands in for generations.sh: it is what names the pinned directory.
+pin_seed() { # <repo> <seed name>
+  mkdir -p "$1/scripts"
+  printf '#!/bin/sh\n[ "$1" = out-dir ] && printf "_build/selfhost/generations/%s_%%s\\n" "$(git rev-parse --short HEAD)"\n' "$2" > "$1/scripts/generations.sh"
+}
+plant_seed_generation() { # <repo> <seed name> <sha>
+  local dir="$1/_build/selfhost/generations/$2_$3"
+  mkdir -p "$dir"
+  printf 'stage2' > "$dir/stage2.wasm"
+}
+repo="$(new_repo gen_pinned)"
+sha="$(git -C "$repo" rev-parse --short HEAD)"
+pin_seed "$repo" pinned
+plant_seed_generation "$repo" another "$sha"
+plant_seed_generation "$repo" pinned "$sha"
+result="$(run_gen "$repo" resolve_stage2_generation)"
+case "$result" in
+  "0|$repo/_build/selfhost/generations/pinned_$sha/stage2.wasm") : ;;
+  *) fail "generation did not prefer the pinned seed's HEAD generation: $result" ;;
+esac
+[ ! -s "$work/stderr" ] || fail "generation narrated the pinned seed's generation: $(cat "$work/stderr")"
+# 13. ... and with only the other seed's generation for HEAD, that one is
+#     used, but said so.
+rm -rf "$repo/_build/selfhost/generations/pinned_$sha"
+result="$(run_gen "$repo" resolve_stage2_generation)"
+case "$result" in
+  "0|$repo/_build/selfhost/generations/another_$sha/stage2.wasm")
+    grep -q "NOTE no generation for the pinned seed at HEAD" "$work/stderr" ||
+      fail "generation took another seed's generation without a NOTE" ;;
+  *) fail "generation did not fall back to another seed's HEAD generation: $result" ;;
+esac
+
 if [ "$failures" -ne 0 ]; then
   echo "[resolve-stage2-test] FAIL: $failures case(s)" >&2
   exit 1
