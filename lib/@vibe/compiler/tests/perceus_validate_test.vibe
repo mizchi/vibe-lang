@@ -13,7 +13,7 @@ import @vibe/compiler/query {
 }
 
 import @vibe/compiler/perceus {
-  PerceusAction, pa_is_consume_mark, pa_is_drop, pa_is_dup, pa_is_path_drop
+  PerceusAction, pa_is_alias_dup, pa_is_consume_mark, pa_is_drop, pa_is_dup, pa_is_path_drop
 }
 
 //# Functions
@@ -196,12 +196,8 @@ test "a binding consumed on one branch and read in place on the other" {
 
 //# Not checked
 
-test "a loop over the binding is not checked" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    k = k + keep(d)\n  }\n  k\n}"), content = "run d -: not checked: loop")
-}
-
 test "an early return is not checked" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d -: not checked: early exit")
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d -: not checked: early exit: an exit releases it (exit-drop row)")
 }
 
 test "a closure capture is not checked" {
@@ -211,3 +207,124 @@ test "a closure capture is not checked" {
 test "a reuse row is not checked" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let e = match d {\n    A(xs) => A(xs)\n  }\n  keep(e)\n}"), content = "run d -: not checked: reuse row\nrun * -: not checked: 1 pattern binders, 0 let mut")
 }
+
+//# Loops
+
+// #3718 slice 2: a loop body is taken 0, 1 and 2 times. A binding declared
+// before the loop is loop-carried there, and codegen retains it where it is
+// a call argument or an aggregate item, so those occurrences consume
+// nothing; its own reference is released at its scope end.
+
+let carried = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    k = k + keep(d)\n  }\n  k\n}"
+
+let carried_after = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    k = k + keep(d)\n  }\n  k + keep(d)\n}"
+
+let body_split = "let run: (Bool) -> Int = (c) -> {\n  let mut k = 0\n  while k < 2 {\n    let d = A([k])\n    if c {\n      keep(d)\n    } else {\n      0\n    }\n    k = k + 1\n  }\n  k\n}"
+
+let carried_alias = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    let e = d\n    k = k + keep(e)\n  }\n  k\n}"
+
+// #3168: a parameterized `loop` whose value is discarded. Its result slot
+// owns what `break d` stores, and its scope end releases it.
+let loop_discarded = "let run: (Bool) -> Int = (c) -> {\n  loop (i = 0) {\n    let d = A([i])\n    if i == 2 {\n      break d\n    }\n    continue(i + 1)\n  }\n  0\n}"
+
+let loop_used = "let run: (Bool) -> Int = (c) -> {\n  let r = loop (i = 0) {\n    let d = A([i])\n    if i == 2 {\n      break d\n    }\n    continue(i + 1)\n  }\n  keep(r)\n}"
+
+let loop_skips = "run d -: not checked: early exit: an exit releases it (exit-drop row)\nrun __lt0 -: not checked: early exit: break or continue leaves its scope"
+
+test "a loop-carried binding passed to a consuming call keeps its drop" {
+  inspect(plan(carried), content = "run __seq0 drop 1\nrun d drop 1")
+  inspect(validate(carried), content = "")
+}
+
+test "a deleted drop of a loop-carried binding leaks" {
+  let out = edited(body = carried, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_drop(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d -: owned value not consumed")
+}
+
+test "a dup for a consume after the loop balances a loop-carried binding" {
+  inspect(validate(carried_after), content = "")
+}
+
+test "a deleted dup after a loop releases one more than held" {
+  let out = edited(body = carried_after, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_dup(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d -: owned value released 1 more than held")
+}
+
+test "a duplicated dup around a loop leaks" {
+  let out = edited(body = carried_after, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    twice_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_dup(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d -: owned value not consumed")
+}
+
+test "a split release inside a loop body balances each iteration" {
+  inspect(validate(body_split), content = "")
+}
+
+test "a deleted path drop inside a loop body leaks on the branch that kept it" {
+  let out = edited(body = body_split, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_path_drop(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d if1:else: owned value not consumed")
+}
+
+test "a loop-carried alias without its alias dup is released once per iteration" {
+  inspect(validate(carried_alias), content = "")
+  let out = edited(body = carried_alias, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_alias_dup(a) && a.name == "e"
+    })
+  })
+  inspect(out, content = "run d loop1:once: owned value released 1 more than held")
+}
+
+test "a break leaves a loop-carried binding live" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 3 {\n    if k > 1 {\n      break\n    }\n    k = k + keep(d)\n  }\n  k\n}"), content = "")
+}
+
+test "a loop-carried value stored into a tuple leaks" {
+  // A true positive: the plan transfers `d` into the tuple, and codegen
+  // retains it there instead (a loop-carried aggregate item), so `d`'s own
+  // reference is never released.
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    let t = (d, 1)\n    k = k + t.1\n  }\n  k\n}"), content = "run d -: owned value not consumed")
+}
+
+test "a parameter retained in a loop with no planned drop is not checked" {
+  let src = String::concat(prologue, "let sink: (D) -> Int = (d) -> {\n  let mut k = 0\n  while k < 2 {\n    k = k + keep(d)\n  }\n  k\n}\nlet main: () -> Int = () -> {\n  sink(A([1]))\n}")
+  inspect(rc_validate_source(source = src, fn_filter = "sink"), content = "")
+  let out = rc_validate_source_edited(source = src, fn_filter = "sink", edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_drop(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "sink d -: not checked: loop: a parameter retained in a loop with no planned drop")
+}
+
+test "a discarded parameterized loop releases its break value (#3168)" {
+  inspect(validate(loop_discarded), content = loop_skips)
+  inspect(validate(loop_used), content = loop_skips)
+}
+
+test "the #3168 plan without the result slot's drop leaks the break value" {
+  // Before the fix the slot was classified from its `0` placeholder and got
+  // no scope-end drop; deleting the row the fix added rebuilds that plan.
+  let out = edited(body = loop_discarded, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_drop(a) && a.name == "__loop_result"
+    })
+  })
+  inspect(out, content = "run __loop_result loop1:once,if1:then: owned value not consumed\n" + loop_skips)
+}
+
