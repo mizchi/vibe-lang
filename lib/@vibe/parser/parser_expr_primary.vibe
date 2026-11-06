@@ -164,26 +164,206 @@ export fn shift_expr_offsets(expr: Expr, delta: Int) -> Expr {
   map_expr_offsets(expr = expr, f = (off) -> off + delta, context = None)
 }
 
-fn shift_expr_offset_array(exprs: Array[Expr], delta: Int) -> Array[Expr] {
-  for expr in exprs {
-    shift_expr_offsets(expr = expr, delta = delta)
-  }
-}
-
 /// Shift every expression location carried by a statement. The match is
 /// exhaustive over expression-bearing statement variants; declarations with
 /// no expression locations are returned unchanged.
 export fn shift_stmt_offsets(stmt: Stmt, delta: Int) -> Stmt {
+  map_stmt_offsets(stmt = stmt, f = (off) -> off + delta)
+}
+
+/// Every located offset `shift_stmt_offsets` would move: the same slots, so a
+/// caller that rebases a statement (#3829) sees exactly the offsets the merge
+/// shifted. An index site key contributes its decoded `[` offset, as it does
+/// to the shift. The walk only reads -- the shift rebuilds every node, and on
+/// a whole program that copy alone is hundreds of megabytes.
+export fn stmt_located_offsets(_ stmt: Stmt) -> Array[Int] {
+  let out: Array[Int] = []
+  collect_stmt_offsets(stmt = stmt, out = out)
+  out
+}
+
+fn collect_stmt_offsets(stmt: Stmt, out: Array[Int]) -> Unit {
   match stmt {
-    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, shift_expr_offsets(expr = expr, delta = delta)),
-    SLetMut(name, annotation, expr) => SLetMut(name, annotation, shift_expr_offsets(expr = expr, delta = delta)),
-    STest(name, expr) => STest(name, shift_expr_offsets(expr = expr, delta = delta)),
-    SBench(name, expr) => SBench(name, shift_expr_offsets(expr = expr, delta = delta)),
-    SExample(name, expr) => SExample(name, shift_expr_offsets(expr = expr, delta = delta)),
-    SExpr(expr) => SExpr(shift_expr_offsets(expr = expr, delta = delta)),
-    SLetPat(pattern, expr) => SLetPat(pattern, shift_expr_offsets(expr = expr, delta = delta)),
-    SModule(exported, name, stmts) => SModule(exported, name, shift_stmts_offsets(stmts = stmts, delta = delta)),
-    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, shift_expr_offsets(expr = expr, delta = delta), shift_expr_offset_array(exprs = requires, delta = delta), shift_expr_offset_array(exprs = ensures, delta = delta)),
+    SLet(_, _, _, _, expr) => collect_expr_offsets(expr = expr, out = out),
+    SLetMut(_, _, expr) => collect_expr_offsets(expr = expr, out = out),
+    STest(_, expr) => collect_expr_offsets(expr = expr, out = out),
+    SBench(_, expr) => collect_expr_offsets(expr = expr, out = out),
+    SExample(_, expr) => collect_expr_offsets(expr = expr, out = out),
+    SExpr(expr) => collect_expr_offsets(expr = expr, out = out),
+    SLetPat(_, expr) => collect_expr_offsets(expr = expr, out = out),
+    SModule(_, _, stmts) => {
+      for st in stmts {
+        collect_stmt_offsets(stmt = st, out = out)
+      }
+      ()
+    },
+    SFnDecl(_, _, expr, requires, ensures) => {
+      collect_expr_offsets(expr = expr, out = out)
+      collect_exprs_offsets(items = requires, out = out)
+      collect_exprs_offsets(items = ensures, out = out)
+    },
+    _ => ()
+  }
+}
+
+fn collect_located_off(off: Int, out: Array[Int]) -> Unit {
+  if off >= 0 {
+    Array::push(out, value = off)
+  } else {
+    ()
+  }
+}
+
+/// `map_ident_off`'s slot: an index site key is decoded to its `[` offset.
+fn collect_ident_off(off: Int, out: Array[Int]) -> Unit {
+  let bracket = index_site_offset(off)
+  if bracket >= 0 {
+    collect_located_off(off = bracket, out = out)
+  } else {
+    collect_located_off(off = off, out = out)
+  }
+}
+
+fn collect_exprs_offsets(items: Array[Expr], out: Array[Int]) -> Unit {
+  for it in items {
+    collect_expr_offsets(expr = it, out = out)
+  }
+  ()
+}
+
+/// The read-only twin of `map_expr_offsets`: the same arms in the same order,
+/// exhaustive, so a new `Expr` variant is a compile error in both.
+fn collect_expr_offsets(expr: Expr, out: Array[Int]) -> Unit {
+  match expr {
+    ECall(EIdent("$source_span", _), args, _, _) => collect_expr_offsets(expr = Array::get(args, at = 0), out = out),
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_, off) => collect_located_off(off = off, out = out),
+    EBool(_) => (),
+    EUnit => (),
+    EIdent(_, off) => collect_ident_off(off = off, out = out),
+    ETuple(items) => collect_exprs_offsets(items = items, out = out),
+    EArray(items) => collect_exprs_offsets(items = items, out = out),
+    ERecord(_, fields, _) => {
+      for fld in fields {
+        let (_, v) = fld
+        collect_expr_offsets(expr = v, out = out)
+      }
+      ()
+    },
+    EIf(c, t, e) => {
+      collect_expr_offsets(expr = c, out = out)
+      collect_expr_offsets(expr = t, out = out)
+      collect_expr_offsets(expr = e, out = out)
+    },
+    ELet(_, v, b, soff) => {
+      collect_expr_offsets(expr = v, out = out)
+      collect_expr_offsets(expr = b, out = out)
+      collect_located_off(off = soff, out = out)
+    },
+    ELetRec(_, v, b) => {
+      collect_expr_offsets(expr = v, out = out)
+      collect_expr_offsets(expr = b, out = out)
+    },
+    ELetMut(_, v, b, soff) => {
+      collect_expr_offsets(expr = v, out = out)
+      collect_expr_offsets(expr = b, out = out)
+      collect_located_off(off = soff, out = out)
+    },
+    EAssign(_, v, b, target_off) => {
+      collect_expr_offsets(expr = v, out = out)
+      collect_expr_offsets(expr = b, out = out)
+      collect_located_off(off = target_off, out = out)
+    },
+    EAssignOp(_, _, v, b, target_off) => {
+      collect_expr_offsets(expr = v, out = out)
+      collect_expr_offsets(expr = b, out = out)
+      collect_located_off(off = target_off, out = out)
+    },
+    ESeq(a, b) => {
+      collect_expr_offsets(expr = a, out = out)
+      collect_expr_offsets(expr = b, out = out)
+    },
+    EMatch(sc, arms) => {
+      collect_expr_offsets(expr = sc, out = out)
+      collect_arm_offsets(arms = arms, out = out)
+    },
+    EHandle(sc, arms) => {
+      collect_expr_offsets(expr = sc, out = out)
+      collect_arm_offsets(arms = arms, out = out)
+    },
+    EWhile(c, b) => {
+      collect_expr_offsets(expr = c, out = out)
+      collect_expr_offsets(expr = b, out = out)
+    },
+    ELoop(params, b) => {
+      for prm in params {
+        let (_, v) = prm
+        collect_expr_offsets(expr = v, out = out)
+      }
+      collect_expr_offsets(expr = b, out = out)
+    },
+    EForIn(_, _, it, b) => {
+      collect_expr_offsets(expr = it, out = out)
+      collect_expr_offsets(expr = b, out = out)
+    },
+    ECall(callee, args, off, _) => {
+      collect_expr_offsets(expr = callee, out = out)
+      collect_exprs_offsets(items = args, out = out)
+      collect_located_off(off = off, out = out)
+    },
+    EBinOp(_, l, r, boff) => {
+      collect_expr_offsets(expr = l, out = out)
+      collect_expr_offsets(expr = r, out = out)
+      collect_located_off(off = boff, out = out)
+    },
+    EUnaryOp(_, e) => collect_expr_offsets(expr = e, out = out),
+    EFn(_, _, _, _, _, body) => collect_expr_offsets(expr = body, out = out),
+    EDot(e, _, off, fdoff) => {
+      collect_expr_offsets(expr = e, out = out)
+      collect_located_off(off = off, out = out)
+      collect_located_off(off = fdoff, out = out)
+    },
+    ELabeledArg(_, _, v) => collect_expr_offsets(expr = v, out = out),
+    EReturn(e) => collect_expr_offsets(expr = e, out = out),
+    EBreak(opt) => match opt {
+      Some(v) => collect_expr_offsets(expr = v, out = out),
+      None => ()
+    },
+    EContinue(args) => collect_exprs_offsets(items = args, out = out),
+    EMap(fields) => {
+      for fld in fields {
+        let (_, v) = fld
+        collect_expr_offsets(expr = v, out = out)
+      }
+      ()
+    },
+    ESpread(e) => collect_expr_offsets(expr = e, out = out),
+    EStringInterp(_) => ()
+  }
+}
+
+fn collect_arm_offsets(arms: Array[(Pat, Expr)], out: Array[Int]) -> Unit {
+  for a in arms {
+    let (_, e) = a
+    collect_expr_offsets(expr = e, out = out)
+  }
+  ()
+}
+
+fn map_stmt_offsets(stmt: Stmt, f: (Int) -> Int) -> Stmt {
+  match stmt {
+    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, map_expr_offsets(expr = expr, f = f, context = None)),
+    SLetMut(name, annotation, expr) => SLetMut(name, annotation, map_expr_offsets(expr = expr, f = f, context = None)),
+    STest(name, expr) => STest(name, map_expr_offsets(expr = expr, f = f, context = None)),
+    SBench(name, expr) => SBench(name, map_expr_offsets(expr = expr, f = f, context = None)),
+    SExample(name, expr) => SExample(name, map_expr_offsets(expr = expr, f = f, context = None)),
+    SExpr(expr) => SExpr(map_expr_offsets(expr = expr, f = f, context = None)),
+    SLetPat(pattern, expr) => SLetPat(pattern, map_expr_offsets(expr = expr, f = f, context = None)),
+    SModule(exported, name, stmts) => SModule(exported, name, for st in stmts {
+      map_stmt_offsets(stmt = st, f = f)
+    }),
+    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, map_expr_offsets(expr = expr, f = f, context = None), map_exprs(items = requires, f = f, context = None), map_exprs(items = ensures, f = f, context = None)),
     _ => stmt
   }
 }
