@@ -1,0 +1,42 @@
+// Helpers of the region-tail check in checker_lambda_expr.vibe.
+
+import @vibe/compiler/core {
+  Expr, call_arg_formal, call_arg_value
+}
+
+/// A closed, parameterless lambda whose body is a literal reads no region.
+export fn tail_region_closed_ground_fn(_ expr: Expr) -> Bool {
+  match expr {
+    EFn(tparams, tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(tbounds) == 0 && Array::length(params) == 0 && ret_ty == None && effect == None {
+      match body {
+        EInt(_) => true,
+        EFloat(_) => true,
+        EString(_, _) => true,
+        EBool(_) => true,
+        EUnit => true,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// The written arguments, unwrapped, that may fill formal parameter `index`
+/// (ADR-0120): the one the call's placement assigns to it, and every argument
+/// whose slot is not known, so an unknown slot is asked rather than missed.
+export fn tail_formal_args(args: Array[Expr], cell: Array[Int], index: Int) -> Array[Expr] {
+  let out: Array[Expr] = []
+  let mut j = 0
+  while j < Array::length(args) {
+    let formal = call_arg_formal(args = args, cell = cell, source = j)
+    if formal == index || formal < 0 {
+      Array::push(out, value = call_arg_value(Array::get(args, at = j)))
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
