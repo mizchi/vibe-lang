@@ -9,8 +9,11 @@ import @vibe/compiler/lowering/effects/queries {
   edp_perform_facts,
   edp_perform_facts_hit,
   edp_perform_facts_performs,
+  edp_performing_callers,
   edp_performing_names,
+  edp_performing_names_beyond,
   edp_performing_names_from_facts,
+  edp_performing_opaque_names,
   edp_rq_fold
 }
 
@@ -69,6 +72,17 @@ fn check_facts_agree(names: Array[String], bodies: Array[Option[Expr]], effect: 
   let mut k = 0
   while k < Array::length(actual) {
     assert(Array::get(from_facts, at = k) == Array::get(actual, at = k)); k = k + 1
+  }
+  // The opaque closure walked once plus a walk from the direct performers
+  // meets the same names, each once, in another order.
+  let callers = edp_performing_callers(names = names, facts = facts)
+  let opaque = edp_performing_opaque_names(names = names, facts = facts, callers = callers)
+  let beyond = edp_performing_names_beyond(names = names, facts = facts, callers = callers, opaque = opaque, opaque_set = name_set(opaque), effect = effect)
+  assert(Array::length(beyond) == Array::length(actual))
+  let beyond_set = name_set(beyond)
+  assert(MutSet::size(beyond_set) == Array::length(beyond))
+  for name in actual {
+    assert(MutSet::has(beyond_set, x = name))
   }
   for body in bodies {
     match body {

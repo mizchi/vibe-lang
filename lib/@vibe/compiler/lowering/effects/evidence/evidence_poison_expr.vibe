@@ -22,8 +22,11 @@ import @vibe/compiler/lowering/effects/queries {
   edp_pat_binds,
   edp_perform_facts,
   edp_perform_facts_performs,
+  edp_performing_callers,
   edp_performing_names,
+  edp_performing_names_beyond,
   edp_performing_names_from_facts,
+  edp_performing_opaque_names,
   edp_resolve_effect_names_into,
   edp_row_is_exactly,
   edp_rq_exprs,
@@ -278,12 +281,99 @@ export fn edp_collect_performing_fns_from_facts(stmts: Array[Stmt], fn_defs: Arr
   for def in fn_defs {
     let (idx, _, _, name, _, _) = def
     Array::push(names, value = name)
-    Array::push(body_facts, value = match Array::get(stmts, at = idx) {
-      SLet(_, _, _, _, EFn(_, _, _, _, _, _)) => Array::get(facts, at = idx),
-      _ => None
-    })
+    Array::push(body_facts, value = edp_fn_body_facts(stmts = stmts, facts = facts, idx = idx))
   }
   edp_performing_names_from_facts(names = names, facts = body_facts, effect = ename)
+}
+
+/// The facts edp_collect_performing_fns_from_facts reads for the function
+/// defined by statement `idx`: its body's, when the statement binds a lambda.
+fn edp_fn_body_facts(stmts: Array[Stmt], facts: Array[Option[(Bool, Array[String], Array[String])]], idx: Int) -> Option[(Bool, Array[String], Array[String])] {
+  match Array::get(stmts, at = idx) {
+    SLet(_, _, _, _, EFn(_, _, _, _, _, _)) => Array::get(facts, at = idx),
+    _ => None
+  }
+}
+
+/// An empty graph for edp_collect_performing_fns_in: the functions' names,
+/// their body facts, the statement defining each, and what a query derives
+/// from those once (empty until one does): the reverse call graph, the
+/// names that reach an opaque call (edp_performing_opaque_names), and those
+/// names as a set.
+export fn edp_performing_graph_new() -> (Array[String], Array[Option[(Bool, Array[String], Array[String])]], Array[Int], Array[(MutMap[String, Array[String]], Array[String], MutSet[String])]) {
+  let names: Array[String] = []
+  let body_facts: Array[Option[(Bool, Array[String], Array[String])]] = []
+  let at: Array[Int] = []
+  let derived: Array[(MutMap[String, Array[String]], Array[String], MutSet[String])] = [
+  ]
+  (names, body_facts, at, derived)
+}
+
+/// The members of edp_collect_performing_fns_from_facts's answer, in another
+/// order, for one effect of several asked about the same program. Its only
+/// reader asks for membership. The functions, the reverse call graph and the
+/// names that reach an opaque call do not depend on the effect, so `graph`
+/// keeps them from the first query on; only the walk from the functions that
+/// perform the effect directly is per effect. After a rewrite,
+/// edp_performing_graph_refresh brings `graph` up to the facts it refreshed.
+export fn edp_collect_performing_fns_in(graph: (Array[String], Array[Option[(Bool, Array[String], Array[String])]], Array[Int], Array[(MutMap[String, Array[String]], Array[String], MutSet[String])]), stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], facts: Array[Option[(Bool, Array[String], Array[String])]], ename: String) -> Array[String] {
+  let (names, body_facts, at, derived) = graph
+  if Array::length(derived) == 0 {
+    if Array::length(at) == 0 {
+      for def in fn_defs {
+        let (idx, _, _, name, _, _) = def
+        Array::push(names, value = name)
+        Array::push(body_facts, value = edp_fn_body_facts(stmts = stmts, facts = facts, idx = idx))
+        Array::push(at, value = idx)
+      }
+    } else ()
+    let callers = edp_performing_callers(names = names, facts = body_facts)
+    let opaque = edp_performing_opaque_names(names = names, facts = body_facts, callers = callers)
+    Array::push(derived, value = (callers, opaque, edp_name_set(opaque)))
+  } else ()
+  let (callers, opaque, opaque_set) = Array::get(derived, at = 0)
+  edp_performing_names_beyond(names = names, facts = body_facts, callers = callers, opaque = opaque, opaque_set = opaque_set, effect = ename)
+}
+
+/// Re-read the body facts of the functions defined by the statements in
+/// `indices`, after edp_refresh_statement_perform_facts refreshed them. What
+/// the graph derives from them is dropped, to be rebuilt by the next query,
+/// only when one of those functions now calls something else or changed
+/// whether it makes an opaque call.
+export fn edp_performing_graph_refresh(graph: (Array[String], Array[Option[(Bool, Array[String], Array[String])]], Array[Int], Array[(MutMap[String, Array[String]], Array[String], MutSet[String])]), stmts: Array[Stmt], facts: Array[Option[(Bool, Array[String], Array[String])]], indices: Array[Int]) -> Unit {
+  let (_, body_facts, at, derived) = graph
+  if Array::length(at) > 0 && Array::length(indices) > 0 {
+    let touched: MutSet[Int] = MutSet::new_int()
+    for i in indices {
+      MutSet::add(touched, x = i)
+    }
+    let mut p = 0
+    while p < Array::length(at) {
+      let idx = Array::get(at, at = p)
+      if MutSet::has(touched, x = idx) {
+        let fresh = edp_fn_body_facts(stmts = stmts, facts = facts, idx = idx)
+        if !edp_same_edges(a = Array::get(body_facts, at = p), b = fresh) {
+          Array::truncate(derived, length = 0)
+        } else ()
+        Array::set(body_facts, at = p, value = fresh)
+      } else ()
+      p = p + 1
+    }
+  } else ()
+}
+
+/// Do two body facts give a function the same edges in the reverse call
+/// graph, and the same standing as a seed of the opaque walk?
+fn edp_same_edges(a: Option[(Bool, Array[String], Array[String])], b: Option[(Bool, Array[String], Array[String])]) -> Bool {
+  match (a, b) {
+    (Some(fa), Some(fb)) => {
+      let (oa, _, ca) = fa
+      let (ob, _, cb) = fb
+      oa == ob && ca == cb
+    },
+    (None, None) => true,
+    _ => false
+  }
 }
 
 export fn edp_program_user_performs(stmts: Array[Stmt], ename: String) -> Bool {
