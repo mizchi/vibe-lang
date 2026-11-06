@@ -148,7 +148,8 @@ grep -Fq '(func async (param "request" 5) (result 4))' "$OUT/http-client.wat"
 # the answer about a different compiler, not a pass or fail about this one.
 COMPILER="${VIBE_WIT_ASYNC_IMPORT_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  COMPILER="$(ls -td "$ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
+  . "$ROOT/scripts/resolve_stage2.sh"
+  COMPILER="$(resolve_stage2_generation wit-async-import-gate "$ROOT")" || COMPILER=""
 fi
 if [ ! -f "$COMPILER" ]; then
   echo "WIT async import gate FAILED: no stage2 compiler (set VIBE_WIT_ASYNC_IMPORT_GATE_COMPILER or run pkf run generation)" >&2

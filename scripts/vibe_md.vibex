@@ -414,36 +414,23 @@ fn shq(s: String) -> String {
 // block itself goes through `cli_main` with VIBE_FS_COMPILE=1 -- the same lane
 // as `vibe check` -- so the compiler's identity is the whole of the difference.
 //
-// Newest-first candidate scan, skipping any generation directory whose
-// stage2.wasm is missing or empty (an interrupted/still-running selfhost
-// build) rather than picking the newest DIRECTORY unconditionally -- matches
-// scripts/vibe_md.py's resolve_stage2, which filtered candidates the same
-// way before sorting by mtime.
-fn resolve_stage2() -> String with Process + Env + Fs {
+// The generation built from HEAD, else the newest one with a NOTE, else the
+// seed -- `resolve_stage2_generation` in scripts/resolve_stage2.sh, so this
+// tool and the shell scripts answer the same way (#3866). Its NOTE is captured
+// with the command's stderr, so it is passed on here.
+fn resolve_stage2() -> String with Process + Env + Fs + Stderr {
   let env_val = Env::get("VIBE_MD_STAGE2")
   if String::length(env_val) > 0 {
     env_val
   } else {
-    let r = sh_capture("ls -dt _build/selfhost/generations/*/ 2>/dev/null")
-    let dirs = splitlines_like(s = r.stdout)
-    let n = Array::length(dirs)
-    let mut i = 0
-    let mut found = ""
-    while i < n && found == "" {
-      let dir = String::trim(Array::get(dirs, at = i))
-      if dir != "" {
-        let candidate = String::concat(dir, "stage2.wasm")
-        if file_nonempty(path = candidate) {
-          found = candidate
-        } else {
-          ()
-        }
-      } else {
-        ()
-      }
-      i = i + 1
+    let r = sh_capture(". scripts/resolve_stage2.sh && resolve_stage2_generation vibe-md \"$PWD\"")
+    if r.stderr != "" {
+      Stderr::write_stream(r.stderr)
+    } else {
+      ()
     }
-    if found != "" {
+    let found = String::trim(r.stdout)
+    if found != "" && file_nonempty(path = found) {
       found
     } else {
       "bootstrap/seed/compiler.wasm"

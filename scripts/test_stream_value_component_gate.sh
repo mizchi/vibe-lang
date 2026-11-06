@@ -58,12 +58,10 @@ require_or_skip() {
 command -v wasm-tools >/dev/null 2>&1 || require_or_skip "wasm-tools not installed"
 command -v wasmtime >/dev/null 2>&1 || require_or_skip "wasmtime not installed"
 
+. "$PROJECT_ROOT/scripts/resolve_stage2.sh"
 COMPILER="${VIBE_STREAM_VALUE_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  # `|| true`: no generations dir => ls exits nonzero => pipefail would abort
-  # before the seed fallback below could run.
-  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
-  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  COMPILER="$(resolve_stage2_generation_or_seed test-stream-value-component-gate "$PROJECT_ROOT")" || COMPILER=""
 fi
 echo "[stream-value-component-gate] compiler: $COMPILER"
 

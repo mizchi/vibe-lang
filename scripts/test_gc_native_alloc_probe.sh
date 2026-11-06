@@ -12,7 +12,8 @@ cd "$ROOT_DIR"
 
 CLI_WASM="${1:-${VIBE_GC_NATIVE_ALLOC_PROBE_CLI_WASM:-}}"
 if [ -z "$CLI_WASM" ]; then
-  CLI_WASM="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  CLI_WASM="$(resolve_stage2_generation test-gc-native-alloc-probe "$ROOT_DIR")" || CLI_WASM=""
 fi
 [ -n "$CLI_WASM" ] && [ -s "$CLI_WASM" ] || {
   echo "[gc-native-alloc-probe] FAIL: pass a fresh stage2.wasm or build a selfhost generation" >&2

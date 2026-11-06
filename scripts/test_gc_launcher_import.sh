@@ -12,7 +12,8 @@ cd "$ROOT_DIR"
 
 CLI_WASM="${1:-}"
 if [ -z "$CLI_WASM" ]; then
-  CLI_WASM="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . scripts/resolve_stage2.sh
+  CLI_WASM="$(resolve_stage2_generation gc-launcher-import "$PWD")" || CLI_WASM=""
 fi
 if [ -z "$CLI_WASM" ] || [ ! -s "$CLI_WASM" ]; then
   echo "gc-launcher-import: compiler wasm not found" >&2

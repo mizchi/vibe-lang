@@ -107,12 +107,10 @@ if [ "$RUNNER" = "$DEFAULT_RUNNER" ]; then
 fi
 [ -x "$RUNNER" ] || require_or_skip "viberun not available: $RUNNER"
 
+. "$PROJECT_ROOT/scripts/resolve_stage2.sh"
 COMPILER="${VIBE_SPAWNED_FUTURE_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  # `|| true`: no generations dir => ls exits nonzero => pipefail would abort
-  # before the seed fallback below could run.
-  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
-  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  COMPILER="$(resolve_stage2_generation_or_seed test-spawned-future-component-gate "$PROJECT_ROOT")" || COMPILER=""
 fi
 echo "[spawned-future-component-gate] compiler: $COMPILER"
 echo "[spawned-future-component-gate] runner: $RUNNER"

@@ -50,6 +50,7 @@ import @vibe/compiler/lowering/effects/queries {
 import ./evidence_poison_expr.vibe {
   edp_collect_handle_sites_expr,
   edp_find_fn_body,
+  edp_name_set,
   edp_needing_names_tab,
   edp_performs_user_effect_expr,
   edp_pure_fn_names,
@@ -2265,11 +2266,11 @@ fn edp_row_lit_shape(expr: Expr, row_efn: Array[Bool], ident_lets: Array[String]
   expr_children_pop(mark)
 }
 
-fn edp_names_any(names: Array[String], wanted: Array[String]) -> Bool {
+fn edp_names_any(names: Array[String], wanted: MutSet[String]) -> Bool {
   let mut hit = false
   let mut k = 0
   while !hit && k < Array::length(names) {
-    hit = edp_str_array_contains(arr = wanted, v = Array::get(names, at = k))
+    hit = MutSet::has(wanted, x = Array::get(names, at = k))
     k = k + 1
   }
   hit
@@ -2281,11 +2282,13 @@ fn edp_names_any(names: Array[String], wanted: Array[String]) -> Bool {
 /// gate refuses (`lets`) or the escape check passes (without).
 export fn edp_mf_statements_naming(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], needing: Array[String], lets: Bool) -> Array[Int] {
   edp_mf_refresh(facts = facts, stmts = stmts)
+  // Every identifier of every statement is looked up, so `needing` is a set.
+  let wanted = edp_name_set(needing)
   let out: Array[Int] = []
   let mut i = 0
-  while i < Array::length(facts) {
+  while Array::length(needing) > 0 && i < Array::length(facts) {
     let (_, _, _, _, _, _, ident_lets, ident_args) = Array::get(facts, at = i)
-    if edp_names_any(names = ident_args, wanted = needing) || lets && edp_names_any(names = ident_lets, wanted = needing) {
+    if edp_names_any(names = ident_args, wanted = wanted) || lets && edp_names_any(names = ident_lets, wanted = wanted) {
       Array::push(out, value = i)
     } else ()
     i = i + 1
@@ -2301,17 +2304,12 @@ export fn edp_mf_row_lit_scan(facts: Option[Array[(Array[String], Array[Expr], A
   match facts {
     Some(known) => {
       edp_mf_refresh(facts = known, stmts = stmts)
+      let wanted = edp_name_set(needing)
       let candidates: Array[Int] = []
       let mut i = 0
       while i < Array::length(known) {
         let (_, _, _, _, _, row_efn, ident_lets, _) = Array::get(known, at = i)
-        let mut hit = row_efn
-        let mut k = 0
-        while !hit && k < Array::length(ident_lets) {
-          hit = edp_str_array_contains(arr = needing, v = Array::get(ident_lets, at = k))
-          k = k + 1
-        }
-        if hit {
+        if row_efn || edp_names_any(names = ident_lets, wanted = wanted) {
           Array::push(candidates, value = i)
         } else ()
         i = i + 1

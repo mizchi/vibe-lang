@@ -1,4 +1,4 @@
-// A step that runs a compiler names it; it does not pick the newest one (#3830).
+// A step that runs a compiler names it; it does not pick the newest one (#3830, #3866).
 //
 //   bash scripts/vibe_run.sh scripts/check_generation_choice.vibex -- [--root DIR]
 //
@@ -7,19 +7,27 @@
 // this run build". On a reused workspace an unrelated generation can be newer,
 // and a concurrent build touches directories; a step that asks by mtime then
 // measures, certifies or ships whichever compiler that is, and says nothing.
-// #3810 took the bootstrap lane off it (it now names its generation directory
-// before the selfbuild) and #3830 took eight workflow steps off it (they pass
-// the compiler the job restored, or a directory named before the build).
+// #3810 took the bootstrap lane off it, #3830 the workflow steps, and #3866
+// the scripts, tasks and eval drivers. A script whose caller named no compiler
+// asks `resolve_stage2_generation` (scripts/resolve_stage2.sh): the generation
+// built from HEAD, else the newest one WITH a NOTE on stderr.
 //
-// Refused: a line in `.github/workflows/*.yml` or a lane source under
-// `tests/gates/` (`*.sh` there and one directory down) that runs `ls` with an
-// option word carrying both `d` and `t` (`-dt`, `-td`, `-tdr`, ...) over
-// `selfhost/generations`. Comment lines (first non-blank character `#`) are
-// prose and are skipped. scripts/ is not scanned: several tools there keep the
-// newest generation as their LAST fallback after an explicit override, which
-// is a different contract from a step whose answer is the newest one.
+// Refused: a line that runs `ls` with an option word carrying `t` (`-t`,
+// `-dt`, `-td`, `-1t`, ...) and names `selfhost/generations`, in
+//   - `.github/workflows/*.yml`;
+//   - `tests/gates/*.sh` and `tests/gates/*/*.sh` (the lane sources);
+//   - `scripts/*.sh`, `scripts/*.vibex` and `scripts/pkfire/*.pkl`;
+//   - `Taskfile.pkl`;
+//   - `tests/fuzz/*.sh`, `eval/*/*.sh` and `eval/*/*/*.sh`.
+// Comment lines (first non-blank characters `#` or `//`) are prose and are
+// skipped. This file and its self-test are not scanned: both spell the
+// pattern on purpose.
 //
-// Seeing nothing is not clean: no workflow file or no lane source found fails.
+// `scripts/generation_choice_allowlist.txt` names the files that may still do
+// it, each with its reason. It may only shrink: an entry whose file no longer
+// has a finding fails, so the list cannot outlive what it excuses.
+//
+// Seeing nothing is not clean: an empty workflow, lane or scripts set fails.
 //
 // --root DIR checks another tree (the self-test's).
 
@@ -76,21 +84,16 @@ fn files_in(root: String, rel: String, suffix: String) -> Array[String] with Fs 
   out
 }
 
-/// `rel/*.sh` and `rel/*/*.sh`.
-fn lane_sources(root: String, rel: String) -> Array[String] with Fs {
-  let out = files_in(root = root, rel = rel, suffix = ".sh")
+/// The directories directly in `rel`, as `rel/name`.
+fn dirs_in(root: String, rel: String) -> Array[String] with Fs {
+  let out: Array[String] = []
   if Fs::is_dir(under(root = root, rel = rel)) {
     let entries = ls(under(root = root, rel = rel))
     let mut i = 0
     while i < Array::length(entries) {
       let entry = Array::get(entries, at = i)
       if entry.is_dir {
-        let inner = files_in(root = root, rel = "\{rel}/\{entry.name}", suffix = ".sh")
-        let mut j = 0
-        while j < Array::length(inner) {
-          Array::push(out, value = Array::get(inner, at = j))
-          j = j + 1
-        }
+        Array::push(out, value = "\{rel}/\{entry.name}")
       } else {
         ()
       }
@@ -102,22 +105,65 @@ fn lane_sources(root: String, rel: String) -> Array[String] with Fs {
   out
 }
 
-fn is_comment(line: String) -> Bool {
-  String::starts_with(String::trim(line), prefix = "#")
+fn append_all(out: Array[String], more: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(more) {
+    Array::push(out, value = Array::get(more, at = i))
+    i = i + 1
+  }
 }
 
-/// Does the option word starting at `at` (just after `ls -`) carry both `d` and `t`?
-fn mtime_dir_flags(line: String, at: Int) -> Bool {
-  let mut d = false
+/// `rel/*suffix` and `rel/*/*suffix`.
+fn files_two_deep(root: String, rel: String, suffix: String) -> Array[String] with Fs {
+  let out = files_in(root = root, rel = rel, suffix = suffix)
+  let subs = dirs_in(root = root, rel = rel)
+  let mut i = 0
+  while i < Array::length(subs) {
+    append_all(out = out, more = files_in(root = root, rel = Array::get(subs, at = i), suffix = suffix))
+    i = i + 1
+  }
+  out
+}
+
+/// `rel/*/*suffix` and `rel/*/*/*suffix`.
+fn files_under_subdirs(root: String, rel: String, suffix: String) -> Array[String] with Fs {
+  let out: Array[String] = []
+  let subs = dirs_in(root = root, rel = rel)
+  let mut i = 0
+  while i < Array::length(subs) {
+    append_all(out = out, more = files_two_deep(root = root, rel = Array::get(subs, at = i), suffix = suffix))
+    i = i + 1
+  }
+  out
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, at = i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn is_comment(line: String) -> Bool {
+  let t = String::trim(line)
+  String::starts_with(t, prefix = "#") || String::starts_with(t, prefix = "//")
+}
+
+/// Does the option word starting at `at` (just after `ls -`) carry `t`?
+fn mtime_flags(line: String, at: Int) -> Bool {
   let mut t = false
   let mut i = at
   let mut going = true
   while going && i < String::length(line) {
     let c = String::substring(line, start = i, end = i + 1)
-    if c == "d" {
-      d = true
-      i = i + 1
-    } else if c == "t" {
+    if c == "t" {
       t = true
       i = i + 1
     } else if c == " " || c == "\t" {
@@ -126,11 +172,10 @@ fn mtime_dir_flags(line: String, at: Int) -> Bool {
       i = i + 1
     }
   }
-  d && t
+  t
 }
 
-/// An `ls -<flags>` with both `d` and `t`, on a line that names the
-/// generations directory.
+/// An `ls -<flags>` with `t`, on a line that names the generations directory.
 fn picks_newest_generation(line: String) -> Bool {
   if is_comment(line = line) || String::index_of_from(line, sub = "selfhost/generations", start = 0) < 0 {
     false
@@ -148,8 +193,8 @@ fn picks_newest_generation(line: String) -> Bool {
         } else {
           String::substring(line, start = at - 1, end = at)
         }
-        let starts_word = prev == " " || prev == "(" || prev == "\t" || prev == "`"
-        if starts_word && mtime_dir_flags(line = line, at = at + 4) {
+        let starts_word = prev == " " || prev == "(" || prev == "\t" || prev == "`" || prev == "\""
+        if starts_word && mtime_flags(line = line, at = at + 4) {
           found = true
         } else {
           from = at + 1
@@ -160,10 +205,56 @@ fn picks_newest_generation(line: String) -> Bool {
   }
 }
 
+/// The allowlisted paths: the first field of each non-blank, non-`#` line.
+fn read_allowlist(root: String, rel: String) -> Array[String] with Fs {
+  let out: Array[String] = []
+  if Fs::exists(under(root = root, rel = rel)) {
+    let lines = String::split(Fs::read_file(under(root = root, rel = rel)), sep = "\n")
+    let mut i = 0
+    while i < Array::length(lines) {
+      let line = String::trim(Array::get(lines, at = i))
+      if line != "" && !String::starts_with(line, prefix = "#") {
+        let tab = String::index_of_from(line, sub = "\t", start = 0)
+        let space = String::index_of_from(line, sub = " ", start = 0)
+        let cut = if tab >= 0 && (space < 0 || tab < space) {
+          tab
+        } else {
+          space
+        }
+        if cut >= 0 {
+          Array::push(out, value = String::substring(line, start = 0, end = cut))
+        } else {
+          Array::push(out, value = line)
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  out
+}
+
 fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process::exit {
   let root = option(name = "--root", fallback = ".")
+  let allowlist_path = "scripts/generation_choice_allowlist.txt"
   let workflows = sort_str(files_in(root = root, rel = ".github/workflows", suffix = ".yml"))
-  let lanes = sort_str(lane_sources(root = root, rel = "tests/gates"))
+  let lanes = sort_str(files_two_deep(root = root, rel = "tests/gates", suffix = ".sh"))
+  let scripts: Array[String] = []
+  append_all(out = scripts, more = files_in(root = root, rel = "scripts", suffix = ".sh"))
+  append_all(out = scripts, more = files_in(root = root, rel = "scripts", suffix = ".vibex"))
+  let script_count = Array::length(scripts)
+  append_all(out = scripts, more = files_in(root = root, rel = "scripts/pkfire", suffix = ".pkl"))
+  let others: Array[String] = []
+  if Fs::exists(under(root = root, rel = "Taskfile.pkl")) {
+    Array::push(others, value = "Taskfile.pkl")
+  } else {
+    ()
+  }
+  append_all(out = others, more = files_in(root = root, rel = "tests/fuzz", suffix = ".sh"))
+  append_all(out = others, more = files_under_subdirs(root = root, rel = "eval", suffix = ".sh"))
   let mut bad = 0
   if Array::length(workflows) == 0 {
     Stderr::write_stream("[generation-choice] FAIL: no .github/workflows/*.yml found under \{root} -- nothing checked is not clean\n")
@@ -177,39 +268,69 @@ fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process
   } else {
     ()
   }
+  if script_count == 0 {
+    Stderr::write_stream("[generation-choice] FAIL: no scripts/*.sh or scripts/*.vibex found under \{root} -- nothing checked is not clean\n")
+    bad = bad + 1
+  } else {
+    ()
+  }
+  let excluded = ["scripts/check_generation_choice.vibex", "scripts/check_generation_choice_test.sh"]
+  let allowed = read_allowlist(root = root, rel = allowlist_path)
+  let excused: Array[String] = []
   let files: Array[String] = []
-  let mut w = 0
-  while w < Array::length(workflows) {
-    Array::push(files, value = Array::get(workflows, at = w))
-    w = w + 1
-  }
-  let mut l = 0
-  while l < Array::length(lanes) {
-    Array::push(files, value = Array::get(lanes, at = l))
-    l = l + 1
-  }
+  append_all(out = files, more = workflows)
+  append_all(out = files, more = lanes)
+  append_all(out = files, more = sort_str(scripts))
+  append_all(out = files, more = sort_str(others))
+  let mut scanned = 0
   let mut f = 0
   while f < Array::length(files) {
     let path = Array::get(files, at = f)
-    let lines = String::split(Fs::read_file(under(root = root, rel = path)), sep = "\n")
-    let mut n = 0
-    while n < Array::length(lines) {
-      let line = Array::get(lines, at = n)
-      if picks_newest_generation(line = line) {
-        Stderr::write_stream("[generation-choice] FAIL: \{path}:\{n + 1}: picks the newest generation by mtime: \{String::trim(line)}\n")
-        bad = bad + 1
-      } else {
-        ()
+    if contains(xs = excluded, x = path) {
+      ()
+    } else {
+      scanned = scanned + 1
+      let lines = String::split(Fs::read_file(under(root = root, rel = path)), sep = "\n")
+      let mut n = 0
+      while n < Array::length(lines) {
+        let line = Array::get(lines, at = n)
+        if picks_newest_generation(line = line) {
+          if contains(xs = allowed, x = path) {
+            if contains(xs = excused, x = path) {
+              ()
+            } else {
+              Array::push(excused, value = path)
+            }
+          } else {
+            Stderr::write_stream("[generation-choice] FAIL: \{path}:\{n + 1}: picks the newest generation by mtime: \{String::trim(line)}\n")
+            bad = bad + 1
+          }
+        } else {
+          ()
+        }
+        n = n + 1
       }
-      n = n + 1
     }
     f = f + 1
   }
+  let mut a = 0
+  while a < Array::length(allowed) {
+    let entry = Array::get(allowed, at = a)
+    if contains(xs = excused, x = entry) {
+      ()
+    } else {
+      Stderr::write_stream("[generation-choice] FAIL: \{allowlist_path}: \{entry} no longer picks by mtime (or is not scanned) -- delete its entry\n")
+      bad = bad + 1
+    }
+    a = a + 1
+  }
   if bad > 0 {
-    Stderr::write_stream("  Name the compiler instead: pass the stage2 the job restored, or build with\n")
-    Stderr::write_stream("  --out-dir \"$(bash scripts/generations.sh out-dir)\" and read that directory (#3830).\n")
+    Stderr::write_stream("  Name the compiler instead: pass the stage2 the job restored, build with\n")
+    Stderr::write_stream("  --out-dir \"$(bash scripts/generations.sh out-dir)\" and read that directory,\n")
+    Stderr::write_stream("  or, as a fallback when no compiler was named, ask\n")
+    Stderr::write_stream("  `resolve_stage2_generation <label> <root>` from scripts/resolve_stage2.sh (#3866).\n")
     exit(1)
   } else {
-    Console::write_stream("[generation-choice] ok (\{Array::length(workflows)} workflows, \{Array::length(lanes)} lane sources)\n")
+    Console::write_stream("[generation-choice] ok (\{scanned} files: \{Array::length(workflows)} workflows, \{Array::length(lanes)} lane sources; \{Array::length(allowed)} allowlisted)\n")
   }
 }

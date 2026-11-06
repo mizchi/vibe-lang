@@ -35,12 +35,8 @@ KNOWN_FAILURES="scripts/examples_typecheck_known_failures.txt"
 
 stage2="${EXAMPLES_STAGE2:-}"
 if [ -z "$stage2" ]; then
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    if [ -s "${gen}stage2.wasm" ]; then
-      stage2="${gen}stage2.wasm"
-      break
-    fi
-  done
+  . scripts/resolve_stage2.sh
+  stage2="$(resolve_stage2_generation check-examples-typecheck "$PWD")" || stage2=""
 fi
 if [ -z "$stage2" ] || [ ! -s "$stage2" ]; then
   echo "[examples-typecheck] no stage2 found." >&2

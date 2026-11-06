@@ -19,8 +19,8 @@
 ## Build
 
 ```bash
-S2=$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm
-[ -f "$S2" ] || S2=bootstrap/seed/compiler.wasm
+. scripts/resolve_stage2.sh
+S2="$(resolve_stage2_generation_or_seed lang-bench "$PWD")"
 VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
   "$S2" eval/lang-bench/attempts/<round>/vibe/minivcs.vibe \

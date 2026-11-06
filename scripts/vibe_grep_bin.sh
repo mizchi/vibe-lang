@@ -45,12 +45,8 @@ pick_cli_wasm() {
     die "compiler wasm not found: $VIBE_CLI_WASM"
   fi
   local candidate
-  candidate="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
-  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-    printf '%s' "$candidate"
-    return 0
-  fi
-  candidate="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage1.wasm 2>/dev/null | head -1 || true)"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  candidate="$(resolve_stage2_generation vibe-grep-bin "$ROOT_DIR")" || candidate=""
   if [ -n "$candidate" ] && [ -f "$candidate" ]; then
     printf '%s' "$candidate"
     return 0

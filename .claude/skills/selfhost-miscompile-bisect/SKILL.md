@@ -1,59 +1,67 @@
 ---
 name: selfhost-miscompile-bisect
-description: backend(gc/linear/RC)でコンパイルしたコンパイラ自身が誤動作するとき、probe entry の追記とフェーズ二分で miscompile を特定する手法。コンパイラの self-compile が hang する・誤った診断を出す・出力が linear と食い違うときに使う。
+description: How to find a miscompile when the compiler built by one backend (gc/linear/RC) misbehaves, by appending probe entries to the bundle and bisecting phases. Use it when the compiler's self-compile hangs, emits a wrong diagnostic, or produces output that differs from the linear lane's.
 ---
 
-# selfhost miscompile bisect — backend バグをコンパイラ自身の実走で特定する
+# selfhost miscompile bisect — find a backend bug by running the compiler itself
 
-backend X(wasm-gc lane 等)でコンパイルしたコンパイラ(以下「X-compiled compiler」)が
-誤動作する(hang / 誤診断 / 出力差分)とき、原因はほぼ確実に backend X の **miscompile**
-(コンパイラのソースは linear で実証済みのため)。以下の手順で「どの言語構文がどう
-壊れているか」まで最小化する。#538 P4.5(gc lane の self-compile fixpoint 到達)で
-7 件の miscompile をこの手法で連続特定した実績がある。
+When the compiler built by backend X (the wasm-gc lane, for example; "the
+X-compiled compiler" below) misbehaves (a hang, a wrong diagnostic, a differing
+output), the cause is almost certainly a **miscompile** in backend X, because
+the compiler's source is proven on the linear lane. The steps below narrow it
+down to which language construct breaks, and how. #538 P4.5 (the gc lane
+reaching the self-compile fixpoint) found seven miscompiles in a row this way.
 
-## 前提となる成果物とコマンド
+## Artifacts and commands
 
 ```bash
 # 1. Build the linear CLI with the fix (stage2e): regenerate the flat module source
 #    (lib/@vibe/compiler/_cli_adapter_module_source.vibe; a ~1s no-op when current),
-#    then compile it with the latest stage2
+#    then compile it with the stage2 built from this checkout
 bash scripts/ensure_generated.sh
-STAGE2="$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
+STAGE2="$(bash scripts/generations.sh out-dir)/stage2.wasm"
 env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   lib/@vibe/compiler/_cli_adapter_module_source.vibe _build/gc538/stage2e.wasm cli_main
 
-# 2. stage2e で bundle を backend X でコンパイル(X-compiled compiler を得る)
+# 2. Compile the bundle with backend X using stage2e (gives the X-compiled compiler)
 env VIBE_BACKEND=gc VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main _build/gc538/stage2e.wasm \
   lib/@vibe/compiler/_cli_adapter_module_source.vibe _build/gc538/bundle_gc.wasm cli_main
 
-# 3. X-compiled compiler を実走(entry は _start: argv は "vibe" host import 経由)
+# 3. Run the X-compiled compiler (entry _start; argv arrives through the "vibe" host import)
 env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke _start _build/gc538/bundle_gc.wasm \
   <input.vibe> <out.wasm> main
 ```
 
-常設の総合計測は `bash scripts/test_gc_selfbuild.sh _build/gc538/stage2e.wasm`
-(probes / bundle compile / run E2E / self-compile fixpoint)。
+The standing end-to-end measurement is
+`bash scripts/test_gc_selfbuild.sh _build/gc538/stage2e.wasm` (probes, bundle
+compile, run E2E, self-compile fixpoint).
 
-## 手順
+## Steps
 
-### 1. 症状の分類
+### 1. Classify the symptom
 
-- 出力ファイルなし + `<out>.diag` あり → 誤診断(checker/effect 系の比較 miscompile が典型)
-- 出力なし + diag なし + CPU 100% → **hang**(worklist の pop 不全、比較の恒真/恒偽が典型)。
-  `timeout N` + `time` で user time を見る(busy loop か I/O 待ちか)
-- 出力ありだが linear 版と `cmp` で差分 → `cmp -l` で差分バイトを列挙。**差分が少ないほど
-  情報量が多い**(例: f64 定数の上位 2 bytes だけ 0 → float リテラルの 0 化)
+- No output file, but a `<out>.diag` → a wrong diagnostic (typically a
+  miscompiled comparison in the checker or effect code).
+- No output, no diag, CPU at 100% → a **hang** (typically a worklist that never
+  pops, or a comparison that is always true or always false). Run it under
+  `timeout N` and `time` and look at user time, to tell a busy loop from an I/O
+  wait.
+- Output that differs from the linear lane's under `cmp` → list the differing
+  bytes with `cmp -l`. **The fewer bytes differ, the more they tell you** (for
+  example, only the top two bytes of an f64 constant being 0 means float
+  literals are being zeroed).
 
-### 2. フェーズ二分 — bundle に probe entry を追記する
+### 2. Bisect the phases — append a probe entry to the bundle
 
-flat bundle は namespace が平坦なので、末尾に 0 引数 entry を足すだけで
-**内部関数を任意に呼べる**。scratch にコピーして追記し、`entry_name` に probe 名を渡す:
+The flat bundle has a flat namespace, so appending a zero-argument entry at the
+end lets you **call any internal function**. Copy the bundle to a scratch
+directory, append the probe, and pass the probe's name as `entry_name`:
 
 ```vibe
-// bundle コピーの末尾に追記(commit しない)
+// Appended to the end of a copy of the bundle (never committed)
 export let probe_check: () -> Int with Exception = () -> {
   let stmts = parse_program(lex("export let main = () -> Int { 40 + 2 }"))
   expand_interp_stmts(stmts)
@@ -68,56 +76,65 @@ env VIBE_BACKEND=gc VIBE_RC=0 ... --invoke cli_main _build/gc538/stage2e.wasm \
 timeout 60 env ... --invoke _start $SCRATCH/bp.probe_check.wasm
 ```
 
-lex → parse → interp → check → codegen の順に probe を作り、最初に壊れる段を特定。
-さらにその段の内部(check_program なら check_stmts / check_program_bounds /
-collect_async_effect_errors...)へ probe を掘る。**1 回の bundle compile は ~1 分**
-なので、複数の検証は 1 つの probe 関数にまとめて返り値に多重エンコードする
-(`a * 1000 + b * 100 + ...`)か、`Fs::write_file` でダンプを書く。
+Write probes in the order lex → parse → interp → check → codegen and find the
+first stage that breaks. Then dig probes into that stage (for `check_program`:
+`check_stmts`, `check_program_bounds`, `collect_async_effect_errors`, ...).
+**One bundle compile takes about a minute**, so fold several checks into one
+probe function, either by encoding them in the return value
+(`a * 1000 + b * 100 + ...`) or by writing a dump with `Fs::write_file`.
 
-### 3. 単体 probe への最小化
+### 3. Reduce to a standalone probe
 
-疑わしい構文パターンが見えたら、bundle 不要の単一ファイル probe にして
-**gc と linear の両方でコンパイル・実行して比較**する(数十秒):
+Once a suspicious construct shows up, turn it into a single-file probe that
+needs no bundle, then **compile and run it on both gc and linear and compare**
+(tens of seconds):
 
 ```bash
 for BE in gc ""; do env ${BE:+VIBE_BACKEND=$BE} VIBE_RC=0 ... --invoke cli_main \
   _build/gc538/stage2e.wasm probe.vibe probe.$BE.wasm main; done
-wasmtime run -W gc=y,function-references=y,exceptions=y probe.gc.wasm   # gc 側
+wasmtime run -W gc=y,function-references=y,exceptions=y probe.gc.wasm   # the gc side
 env VIBE_PREOPEN_DIR="$PWD" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start probe.lin.wasm
 ```
 
-差分が出れば最小再現。そこから削って 1 構文まで絞る(hang は guard カウンタ
-`while cond && guard < 100` を入れて「何回回ったか」を数値で観測すると速い)。
+A difference is a minimal reproduction. Cut it down from there to a single
+construct. For a hang, adding a guard counter
+(`while cond && guard < 100`) and reading how many iterations ran is the fast
+way to see it.
 
-### 4. emit された wasm を直接読む
+### 4. Read the emitted wasm directly
 
 ```bash
-wasm-tools print out.wasm | less        # call/drop の並びで stub・欠落が一目で分かる
+wasm-tools print out.wasm | less        # the call/drop sequence shows a stub or a missing call at a glance
 ```
 
-関数 index → 対応の目安: imports(0..hbo) → 生成 builtin(hbo+1..hbo+num_generated) →
-user 関数(func_offset = 1 + hbo + num_generated から bundle の SLet-EFn 順)。
-trap の `wasm-function[N]` はこの対応で source 関数に翻訳できる。
+A rough map from function index to source: imports (0..hbo) → generated
+builtins (hbo+1..hbo+num_generated) → user functions (from
+func_offset = 1 + hbo + num_generated, in the bundle's SLet-EFn order). A
+trap's `wasm-function[N]` translates to a source function through this map.
 
-### 5. 修正 → fixpoint 検証ループ
+### 5. Fix → fixpoint verification loop
 
-修正のたびに: bundle 再生成 → stage2e 再ビルド → bundle_gc 再コンパイル →
-tiny E2E(`cmp` で linear 出力と一致)→ self-compile
-(bundle_gc に bundle 自身をコンパイルさせ、stage2e と `cmp`)。
-**byte 一致 = fixpoint** が最終合格。ゲートは
-`bash scripts/test_gc_selfbuild.sh` と `bash scripts/compiler_gate.sh`。
+After every fix: regenerate the bundle → rebuild stage2e → recompile
+bundle_gc → a tiny E2E (its output matches the linear lane's under `cmp`) →
+self-compile (bundle_gc compiles the bundle itself, compared with stage2e by
+`cmp`). **Byte-identical = fixpoint** is the final pass. The gates are
+`bash scripts/test_gc_selfbuild.sh` and `bash scripts/compiler_gate.sh`.
 
-## 落とし穴(実際に踏んだもの)
+## Pitfalls (all hit in practice)
 
-- **probe 内の `print()` は使わない**: gc lane の print は `__to_string` 経由で、
-  String を渡すと packed pointer が数値で出る(それ自体が #538 のバグだったが、
-  修正後も型により挙動が違う)。数値エンコード返却か `Fs::write_file` を使う。
-- **VIBE_RC=0 を常に pin**: RC ビルドの stage は結果が RC-tag されて読み違える。
-- **「hang」は miscompile の可能性を先に疑う**: #538 では深い再帰による stack
-  overflow に見えたものが、実際は eq 恒偽による異常経路だった。`--stack-size` を
-  増やして挙動が変わるかで「正当な深い再帰」と「サイクル」を切り分けられる。
-- **診断メッセージの "expected X, got X"**: 表示上同一 = 表示関数(type_to_string 等)
-  自身も同じ miscompile を踏んでいるサイン。比較と表示の共通基盤(この時は
-  for-in 内包表記)を疑う。
-- **runner の終了コードは当てにしない**: パイプ越しの `rc=$?` は tail の rc。
-  出力ファイルの有無と `.diag` で判定する。
+- **Do not use `print()` inside a probe**: on the gc lane, print goes through
+  `__to_string`, and passing it a String prints the packed pointer as a number
+  (that was itself a #538 bug, and after the fix the behavior still differs by
+  type). Return an encoded number or use `Fs::write_file`.
+- **Always pin VIBE_RC=0**: a stage built with RC returns RC-tagged results and
+  they get misread.
+- **Suspect a miscompile first when it "hangs"**: in #538, what looked like a
+  stack overflow from deep recursion was really an abnormal path taken because
+  an equality was always false. Whether raising `--stack-size` changes the
+  behavior separates legitimate deep recursion from a cycle.
+- **A diagnostic reading "expected X, got X"**: when the two sides print the
+  same, the printing function (`type_to_string` and the like) is hitting the
+  same miscompile. Suspect what comparison and printing share (that time, a
+  for-in comprehension).
+- **Do not trust the runner's exit code**: `rc=$?` across a pipe is the tail's.
+  Judge by whether the output file exists and by the `.diag`.

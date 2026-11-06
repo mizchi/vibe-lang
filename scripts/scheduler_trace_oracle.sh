@@ -65,7 +65,8 @@ SEEDS="${VIBE_SCHEDULER_ORACLE_SEEDS:-1 7 23}"
 
 COMPILER="${VIBE_SCHEDULER_ORACLE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  COMPILER="$(ls -td "$ROOT_DIR"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  COMPILER="$(resolve_stage2_generation scheduler-oracle "$ROOT_DIR")" || COMPILER=""
 fi
 if [ ! -s "$COMPILER" ]; then
   echo "[scheduler-oracle] no stage2 compiler found (set VIBE_SCHEDULER_ORACLE_COMPILER)" >&2

@@ -7,37 +7,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-newest_stage2_artifact() {
-  local generations_dir="$1"
-  ls -t "$generations_dir"/*/stage2.wasm 2>/dev/null | head -1 || true
-}
-
-# A bootstrap may leave a newer directory before it publishes stage2.wasm.
-# Pin selection to artifact mtimes, not generation-directory mtimes.
-selector_regression() {
-  local fixture expected got
-  fixture="$(mktemp -d "$ROOT_DIR/_build/exception_exit_selector.XXXXXX")"
-  mkdir -p "$fixture/old" "$fixture/new" "$fixture/interrupted"
-  : >"$fixture/old/stage2.wasm"
-  : >"$fixture/new/stage2.wasm"
-  touch -t 202601010101 "$fixture/old/stage2.wasm"
-  touch -t 202601020101 "$fixture/new/stage2.wasm"
-  touch -t 202601030101 "$fixture/interrupted"
-  expected="$fixture/new/stage2.wasm"
-  got="$(newest_stage2_artifact "$fixture")"
-  rm -rf "$fixture"
-  if [ "$got" != "$expected" ]; then
-    echo "[exception-exit] stage2 selection got '$got', expected '$expected'" >&2
-    exit 1
-  fi
-}
-
 mkdir -p "$ROOT_DIR/_build"
-selector_regression
 
+# The generation built from HEAD, else the newest one that HAS a stage2.wasm
+# (a bootstrap may leave a newer directory before it publishes one), announced
+# on stderr. scripts/resolve_stage2_test.sh pins both (#3866).
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
 COMPILER="${1:-${VIBE_EXCEPTION_EXIT_COMPILER:-}}"
 if [ -z "$COMPILER" ]; then
-  COMPILER="$(newest_stage2_artifact "$ROOT_DIR/_build/selfhost/generations")"
+  COMPILER="$(resolve_stage2_generation exception-exit "$ROOT_DIR")" || COMPILER=""
 fi
 [ -f "$COMPILER" ] || { echo "[exception-exit] missing stage2 compiler: $COMPILER" >&2; exit 2; }
 

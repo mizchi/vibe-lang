@@ -684,7 +684,42 @@ export fn edp_perform_facts_performs(facts: (Bool, Array[String], Array[String])
 /// with the same `inert` / `fn_names`. Same visit order, same graph, same
 /// queue, so the same result in the same order.
 export fn edp_performing_names_from_facts(names: Array[String], facts: Array[Option[(Bool, Array[String], Array[String])]], effect: String) -> Array[String] {
+  edp_performing_names_over(names = names, facts = facts, callers = edp_performing_callers(names = names, facts = facts), effect = effect)
+}
+
+/// The reverse call graph edp_performing_names_over walks: for each callee,
+/// every name whose body calls it, in `names` order. It does not depend on
+/// the effect, so one graph serves every effect asked about.
+///
+/// A graph built for one effect alone would leave out the edges of the names
+/// whose bodies hit that effect. Keeping them changes nothing: such a name is
+/// in the result before the walk starts, and the walk only adds a name that
+/// is not, so it skips that entry wherever it stands.
+export fn edp_performing_callers(names: Array[String], facts: Array[Option[(Bool, Array[String], Array[String])]]) -> MutMap[String, Array[String]] {
   let callers: MutMap[String, Array[String]] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(names) {
+    match Array::get(facts, at = i) {
+      Some(fact) => {
+        let (_, _, calls) = fact
+        let name = Array::get(names, at = i)
+        for callee in calls {
+          match MutMap::get(callers, k = callee) {
+            Some(entries) => Array::push(entries, value = name),
+            None => MutMap::set(callers, k = callee, v = [name])
+          }
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  callers
+}
+
+/// edp_performing_names_from_facts over `callers`, the
+/// edp_performing_callers of the same `names` / `facts`.
+export fn edp_performing_names_over(names: Array[String], facts: Array[Option[(Bool, Array[String], Array[String])]], callers: MutMap[String, Array[String]], effect: String) -> Array[String] {
   let member: MutSet[String] = MutSet::new_string()
   let out: Array[String] = []
   let mut i = 0
@@ -695,15 +730,7 @@ export fn edp_performing_names_from_facts(names: Array[String], facts: Array[Opt
         Some(fact) => if edp_perform_facts_hit(facts = fact, effect = effect) {
           MutSet::add(member, x = name)
           Array::push(out, value = name)
-        } else {
-          let (_, _, calls) = fact
-          for callee in calls {
-            match MutMap::get(callers, k = callee) {
-              Some(entries) => Array::push(entries, value = name),
-              None => MutMap::set(callers, k = callee, v = [name])
-            }
-          }
-        },
+        } else (),
         None => ()
       }
     }
@@ -723,6 +750,87 @@ export fn edp_performing_names_from_facts(names: Array[String], facts: Array[Opt
     head = head + 1
   }
   out
+}
+
+/// The names edp_performing_names_over answers for every non-empty effect
+/// alike: those whose body makes a call this analysis cannot see through,
+/// and every name that reaches one through `callers`.
+export fn edp_performing_opaque_names(names: Array[String], facts: Array[Option[(Bool, Array[String], Array[String])]], callers: MutMap[String, Array[String]]) -> Array[String] {
+  let member: MutSet[String] = MutSet::new_string()
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    match Array::get(facts, at = i) {
+      Some(fact) => {
+        let (opaque, _, _) = fact
+        let name = Array::get(names, at = i)
+        if opaque && !MutSet::has(member, x = name) {
+          MutSet::add(member, x = name)
+          Array::push(out, value = name)
+        } else ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  edp_performing_close(out = out, member = member, callers = callers, from = 0, skip = member)
+  out
+}
+
+/// The members of edp_performing_names_over's answer for `effect`, in
+/// another order, given the edp_performing_opaque_names of the same graph
+/// (`opaque`, and its members as `opaque_set`). Only the names that perform
+/// `effect` directly, and what reaches them, are walked; the rest of the
+/// answer is `opaque`, which does not depend on the effect. The two walks
+/// meet the same set because a name is in the answer exactly when it
+/// reaches a seed of either.
+export fn edp_performing_names_beyond(names: Array[String], facts: Array[Option[(Bool, Array[String], Array[String])]], callers: MutMap[String, Array[String]], opaque: Array[String], opaque_set: MutSet[String], effect: String) -> Array[String] {
+  if String::length(effect) == 0 {
+    // Every tree hits the empty effect, so every name with a body is a seed.
+    edp_performing_names_over(names = names, facts = facts, callers = callers, effect = effect)
+  } else {
+    let out: Array[String] = []
+    for name in opaque {
+      Array::push(out, value = name)
+    }
+    let from = Array::length(out)
+    let member: MutSet[String] = MutSet::new_string()
+    let mut i = 0
+    while i < Array::length(names) {
+      match Array::get(facts, at = i) {
+        Some(fact) => if edp_perform_facts_performs(facts = fact, effect = effect) {
+          let name = Array::get(names, at = i)
+          if !MutSet::has(opaque_set, x = name) && !MutSet::has(member, x = name) {
+            MutSet::add(member, x = name)
+            Array::push(out, value = name)
+          } else ()
+        } else (),
+        None => ()
+      }
+      i = i + 1
+    }
+    edp_performing_close(out = out, member = member, callers = callers, from = from, skip = opaque_set)
+    out
+  }
+}
+
+/// Append to `out` every name that reaches `out[from..]` through `callers`,
+/// each once: not already in `member`, nor in `skip`. New names join
+/// `member`.
+fn edp_performing_close(out: Array[String], member: MutSet[String], callers: MutMap[String, Array[String]], from: Int, skip: MutSet[String]) -> Unit {
+  let mut head = from
+  while head < Array::length(out) {
+    match MutMap::get(callers, k = Array::get(out, at = head)) {
+      Some(entries) => for name in entries {
+        if !MutSet::has(member, x = name) && !MutSet::has(skip, x = name) {
+          MutSet::add(member, x = name)
+          Array::push(out, value = name)
+        }
+      },
+      None => ()
+    }
+    head = head + 1
+  }
 }
 
 /// Local copy of dlh_strip_tilde (desugar_trait_dict.vibe) -- see
