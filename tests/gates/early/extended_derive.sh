@@ -1861,7 +1861,7 @@ if ! cmp -s "$ac_regen" "$ac_fixture"; then
   echo "[compiler-gate] FAIL: fixtures/async_lift_run42.component.wasm no longer matches what the codegen emits." >&2
   echo "  Regenerate it with: bash scripts/emit_async_lift_fixture.sh" >&2; exit 1
 fi
-echo "[compiler-gate] async-lift fixture reproduces from scripts/emit_async_lift_fixture.sh ($(wc -c < "$ac_regen") bytes)"
+echo "[compiler-gate] async-lift fixture regenerates from scripts/emit_async_lift_fixture.sh ok ($(wc -c < "$ac_regen") bytes)"
 if [ -z "${WT_BIN:-}" ] || ! "$WT_BIN" --version >/dev/null 2>&1; then
   echo "[compiler-gate] SKIP: wasmtime not available"
 elif ! "$WT_BIN" -W help 2>&1 | grep -q "component-model-async-stackful"; then
