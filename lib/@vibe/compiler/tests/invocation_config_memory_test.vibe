@@ -1,0 +1,255 @@
+import @vibe/compiler/config {
+  Config, target_cfg_capture, target_cfg_from_csv
+}
+import @vibe/compiler/cache {
+  set_persistent_cache_cfg_flags
+}
+import @vibe/compiler/runtime {
+  TypeDb,
+  check_sources_memory_configured,
+  db_check_env,
+  db_new,
+  db_parse_count,
+  db_set_source,
+  db_typecheck,
+  db_typecheck_count,
+  db_typecheck_with_config,
+  persistent_type_env_cache_text
+}
+import @vibe/compiler/runtime/memory_source {
+  memory_module_header, memory_module_header_with_config, memory_sources_new
+}
+import @vibe/compiler/incremental {
+  ripple_new, ripple_set_source
+}
+import @vibe/compiler/loader {
+  parse_program_located_shared_semantic_pending_with_config
+}
+import @vibe/checker/engine {
+  CheckJob,
+  CheckJob::check_with_raw_diagnostics,
+  CheckJob::check_with_raw_diagnostics_with_config,
+  ModuleOutcome,
+  engine_dependency_interface_set_new,
+  engine_typecheck_fs_build_fingerprint_with_config
+}
+import @vibe/compiler/checker {
+  typing_semantics_seed
+}
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+fn memory_cfg_reset() -> Unit {
+  set_cfg_ambient_flags([])
+  set_persistent_cache_cfg_flags("")
+}
+
+fn memory_cfg_inputs(_ root: String) -> Array[(String, String)] {
+  [
+    ("\{root}/main.vibe", "#cfg(alpha)\nimport ./alpha.vibe { selected }\n#cfg(beta)\nimport ./beta.vibe { selected }\n#cfg(poison)\nimport ./missing.vibe {}\n#cfg(alpha)\nexport fn result() -> Int { selected() }\n#cfg(beta)\nexport fn result() -> Bool { selected() }\n"),
+    ("\{root}/alpha.vibe", "export fn selected() -> Int { 11 }\n"),
+    ("\{root}/beta.vibe", "export fn selected() -> Bool { true }\n")
+  ]
+}
+
+fn memory_cfg_db(_ sources: Array[(String, String)]) -> TypeDb {
+  let mut db = db_new()
+  for entry in sources {
+    db = db_set_source(db = db, path = entry.0, source = entry.1)
+  }
+  db
+}
+
+fn memory_cfg_env(db: TypeDb, path: String) -> String with Exception {
+  match db_check_env(db = db, path = path) {
+    Some(env) => persistent_type_env_cache_text(env),
+    None => throw("configured memory check did not publish an environment")
+  }
+}
+
+// These helpers' rows intentionally exclude Fs: virtual checks need no host files.
+fn memory_cfg_run(db: TypeDb, path: String, flags: String) -> TypeDb with Env + Exception {
+  db_typecheck_with_config(db = db, path = path, cfg = target_cfg_from_csv(flags))
+}
+
+fn memory_cfg_error(db: TypeDb, path: String, flags: String) -> String with Env {
+  handle {
+    let _ = memory_cfg_run(db = db, path = path, flags = flags)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+test "virtual reexport headers follow Config and retain the legacy ambient entry" {
+  let path = "memory_cfg_header/main.vibe"
+  let source = "#cfg(alpha)\nexport ./alpha.vibe { selected }\n#cfg(beta)\nexport ./beta.vibe { selected }\n"
+  let mut db = ripple_new()
+  for entry in memory_cfg_inputs("memory_cfg_header") {
+    db = ripple_set_source(db = db, path = entry.0, source = entry.1)
+  }
+  db = ripple_set_source(db = db, path = path, source = source)
+  let sources = memory_sources_new(db)
+  set_cfg_ambient_flags(["beta"])
+  set_persistent_cache_cfg_flags("beta")
+  handle {
+    let (deps, _, _) = handle {
+      memory_module_header_with_config(sources = sources, path = path, source = source, parse_count = 0, cfg = target_cfg_capture())
+    } with { Config::CfgFlags() => resume("alpha") }
+    assert_eq(String::join(deps, sep = ","), "memory_cfg_header/alpha.vibe")
+    let (legacy_deps, _, _) = memory_module_header(sources = sources, path = path, source = source, parse_count = 0)
+    assert_eq(String::join(legacy_deps, sep = ","), "memory_cfg_header/beta.vibe")
+    memory_cfg_reset()
+  } with { Exception::Throw(message) => {
+    memory_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "memory graphs switch flags while preserving warm reuse and semantic identities" {
+  let inputs = memory_cfg_inputs("memory_cfg_resident")
+  let path = "memory_cfg_resident/main.vibe"
+  let source = Array::get(inputs, at = 0).1
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let alpha = memory_cfg_run(db = memory_cfg_db(inputs), path = path, flags = " alpha, ")
+    let a = memory_cfg_env(db = alpha, path = path)
+    let a_count = db_typecheck_count(alpha)
+    let a_parse = db_parse_count(alpha)
+    assert(!parse_program_located_shared_semantic_pending_with_config(path = path, source = source, cfg = target_cfg_from_csv("alpha")))
+    assert(parse_program_located_shared_semantic_pending_with_config(path = path, source = source, cfg = target_cfg_from_csv("beta")))
+    let beta = memory_cfg_run(db = alpha, path = path, flags = "beta")
+    let b = memory_cfg_env(db = beta, path = path)
+    let b_count = db_typecheck_count(beta)
+    let b_parse = db_parse_count(beta)
+    assert(a != b)
+    assert(b_count > a_count)
+    assert(b_parse > a_parse)
+    assert(!parse_program_located_shared_semantic_pending_with_config(path = path, source = source, cfg = target_cfg_from_csv("beta")))
+    let warm = memory_cfg_run(db = beta, path = path, flags = "beta")
+    assert_eq(db_typecheck_count(warm), b_count)
+    assert_eq(db_parse_count(warm), b_parse)
+    assert_eq(memory_cfg_env(db = warm, path = path), b)
+    let alpha_again = memory_cfg_run(db = warm, path = path, flags = "alpha")
+    assert_eq(memory_cfg_env(db = alpha_again, path = path), a)
+    assert(db_typecheck_count(alpha_again) > b_count)
+    assert(db_parse_count(alpha_again) > b_parse)
+    memory_cfg_reset()
+  } with { Exception::Throw(message) => {
+    memory_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "a failing memory configuration leaves the successful DB reusable" {
+  let path = "memory_cfg_failure/main.vibe"
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let alpha = memory_cfg_run(db = memory_cfg_db(memory_cfg_inputs("memory_cfg_failure")), path = path, flags = "alpha")
+    let before = memory_cfg_env(db = alpha, path = path)
+    let parsed = db_parse_count(alpha)
+    assert(String::contains(memory_cfg_error(db = alpha, path = path, flags = "poison"), needle = "missing.vibe"))
+    let warm = memory_cfg_run(db = alpha, path = path, flags = "alpha")
+    assert_eq(memory_cfg_env(db = warm, path = path), before)
+    assert_eq(db_parse_count(warm), parsed)
+    memory_cfg_reset()
+  } with { Exception::Throw(message) => {
+    memory_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "one Config read owns the complete virtual check across nested checks" {
+  let inputs = memory_cfg_inputs("memory_cfg_outer")
+  let inner_inputs = memory_cfg_inputs("memory_cfg_inner")
+  let calls = [0]
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    handle {
+      check_sources_memory_configured("memory_cfg_outer/main.vibe", sources = inputs)
+    } with { Config::CfgFlags() => {
+      Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
+      let inner = memory_cfg_run(db = memory_cfg_db(inner_inputs), path = "memory_cfg_inner/main.vibe", flags = "beta")
+      assert(memory_cfg_env(db = inner, path = "memory_cfg_inner/main.vibe") != "")
+      assert(memory_cfg_error(db = inner, path = "memory_cfg_inner/main.vibe", flags = "poison") != "")
+      resume("alpha")
+    } }
+    assert_eq(Array::get(calls, at = 0), 1)
+    let legacy_error = handle {
+      let _ = db_typecheck(db = memory_cfg_db(inputs), path = "memory_cfg_outer/main.vibe")
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(legacy_error, needle = "missing.vibe"))
+    memory_cfg_reset()
+  } with { Exception::Throw(message) => {
+    memory_cfg_reset()
+    throw(message)
+  } }
+}
+
+fn memory_cfg_diagnostics(_ outcome: ModuleOutcome) -> String with Exception {
+  match outcome {
+    Diagnosed(_, diagnostics) => String::join(diagnostics, sep = "\n"),
+    _ => throw("the selected configuration must diagnose the invalid Int result")
+  }
+}
+
+test "the configured raw checker preserves diagnostic bytes and scoped fingerprints" {
+  let path = "memory_cfg_diagnostics/main.vibe"
+  let source = "#cfg(alpha)\nexport fn result() -> Int { true }\n#cfg(beta)\nexport fn result() -> Bool { true }\n"
+  let job = CheckJob::{
+    path,
+    source,
+    deps: [],
+    dep_fps: [],
+    dep_envs: [],
+    ships_owned_heads: false
+  }
+  set_cfg_ambient_flags(["alpha"])
+  set_persistent_cache_cfg_flags("alpha")
+  handle {
+    let expected = memory_cfg_diagnostics(CheckJob::check_with_raw_diagnostics(job, interfaces = engine_dependency_interface_set_new()))
+    assert(expected != "")
+    set_cfg_ambient_flags(["poison"])
+    set_persistent_cache_cfg_flags("poison")
+    let actual = memory_cfg_diagnostics(CheckJob::check_with_raw_diagnostics_with_config(job, interfaces = engine_dependency_interface_set_new(), cfg = target_cfg_from_csv("alpha")))
+    assert_eq(actual, expected)
+    match CheckJob::check_with_raw_diagnostics_with_config(job, interfaces = engine_dependency_interface_set_new(), cfg = target_cfg_from_csv("beta")) {
+      Checked(_, fingerprint, _, _, _, _, _) => assert_eq(fingerprint, engine_typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = [
+      ], semantics_seed = typing_semantics_seed(), cfg = target_cfg_from_csv("beta"))),
+      _ => throw("beta must check the valid Bool result")
+    }
+    memory_cfg_reset()
+  } with { Exception::Throw(message) => {
+    memory_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "the configured virtual check rejects a missing entry and accepts empty source" {
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let message = handle {
+      handle {
+        check_sources_memory_configured("memory_cfg_absent/entry.vibe", sources = [
+        ])
+      } with { Config::CfgFlags() => resume("alpha") }
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, needle = "memory_cfg_absent/entry.vibe"))
+    let suffix = Profiler::now_us()
+    let empty_path = "memory_cfg_empty/entry_\{suffix}.vibe"
+    handle {
+      check_sources_memory_configured(empty_path, sources = [
+        ("memory_cfg_empty/entry_\{suffix}.vibe", "")
+      ])
+    } with { Config::CfgFlags() => resume("alpha") }
+    memory_cfg_reset()
+  } with { Exception::Throw(message) => {
+    memory_cfg_reset()
+    throw(message)
+  } }
+}

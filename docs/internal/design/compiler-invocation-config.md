@@ -1,7 +1,7 @@
 # Compiler invocation configuration (#1953)
 
 Target `#cfg` flags have scoped entries for the flat-source RC compiler,
-shared FS parsing, source collection and filesystem typechecking. These are migration slices,
+shared FS parsing, source collection, filesystem and in-memory typechecking. These are migration slices,
 not completion of #1953 or a claim that the compiler as a whole is reentrant.
 
 ## Boundary and authority
@@ -118,9 +118,7 @@ flag identities also enter conservative module fingerprints, so shared memos
 keyed by those fingerprints cannot conflate two configurations. The empty-flag
 fingerprint retains its previous representation. Compatibility fingerprint
 helpers keep their original input-only recipe, independently of ambient flags.
-The legacy in-memory coordinator uses the checker's flag-aware fingerprint
-for its warm lookup too; configuration switches still discard its derived results.
-Its parsing and other policy reads remain a separate migration slice.
+The in-memory coordinator uses the same flag-aware fingerprint for its warm lookup.
 
 Storage helpers take only an explicit namespace, not a parser configuration.
 `*_in_namespace` adapters share the legacy storage recipes; compatibility cache
@@ -145,11 +143,44 @@ Merge/codegen, final-artifact orchestration, worker/tooling boundaries and CLI
 integration remain later slices. Existing CLI entries retain compatibility
 behavior rather than granting the whole compiler reentrancy.
 
+## In-memory typechecking
+
+`check_sources_memory_configured` captures `Config` once, owns a DB populated
+from the supplied virtual files, and returns `Unit`. Like the configured FS
+check, it keeps opaque DB values inside the operation instead of returning
+them through an effect handler. A caller retaining its DB passes a captured
+`TargetCfg` to `db_typecheck_with_config` directly.
+A missing entry is refused before the walk; supplied empty text remains valid.
+
+The dependency planner, `MemorySources` header provider, shared parse memo,
+module checker and fingerprint lookup all receive that same snapshot.
+`memory_module_header_with_config` uses both the configured loader policy and
+the configured `ModuleParse` answer. The checker uses
+`CheckJob::check_with_raw_diagnostics_with_config`: parse errors keep their
+existing path handling, while type diagnostics retain the raw spans and markers
+that the source API's final renderer owns. First-semantic-use observations use
+the check's identity too.
+
+These APIs require `Env` and `Exception`, with `Config` added only at the
+capturing boundary. They acquire no `Fs` authority. Virtual directory/package
+resolution, source-revision validation, dependency publication, collected-error
+policy and shipped owned-head provenance keep their existing providers and
+authority boundaries. A flag change uses the shared `TypeDb` invalidation;
+unchanged flags retain resident dependency/environment reuse. Warm checks are
+tested with parse counters as well as fingerprint counters: recording the same
+fingerprint twice does not increment the latter and cannot prove reuse.
+
+Compatibility entries capture the exact legacy flags once at their boundary
+and delegate to the same data implementations. They do not write the flag cells
+or temporarily replace another invocation's configuration. Other policies and
+mutable cache contents remain separate work; this does not make the complete
+compiler safe for arbitrary concurrent calls.
+
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
 | --- | --- | --- |
-| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection and FS checking use explicit `TargetCfg`; memory-only checking, merge/codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
+| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; merge/codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
 | Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Collection, AST, typing and checked-module storage use captured identities in the scoped lane. Final-artifact and content-only fingerprint/stamp adapters remain; the latter values are independent of target flags. Cache-only compatibility APIs retain the legacy cell. |
 | In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection and checking use scoped identities for parse, semantic use, import-name, re-export and generated-type reuse. Other merge/tooling entries retain compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
