@@ -6,6 +6,9 @@
 #   proved.vibe       every obligation proved -> no output, exit 0
 #   datatypes.vibe    structs / enums as SMT datatypes and `match` as a case
 #                     split, every obligation proved -> no output, exit 0
+#   ranges.vibe       `Int::range_all` / `Int::range_any` imported from
+#                     `@vibe/builtin` as quantifiers over an index range:
+#                     three proved, two unproved, exit 1
 #   unproved.vibe     a false ensures, an Int overflow, a callee's unmet
 #                     requires, a parameter the body shadows, a branch-local
 #                     `let`, `for` / `loop` contracts that do not hold ->
@@ -56,6 +59,8 @@ run_case() {
 
 run_case proved 0 ""
 run_case datatypes 0 ""
+run_case ranges 1 "$dir/ranges.vibe:32:62: unproved: the index of xs[(i + 1)] is within the array, in \`off_by_one\` -- counterexample: <model>
+$dir/ranges.vibe:38:12: unproved: ensures (result > 0) of \`any_not_first\` -- counterexample: <model>"
 run_case unproved 1 "$dir/unproved.vibe:5:57: unproved: ensures (result > x) of \`dec\` -- counterexample: <model>
 $dir/unproved.vibe:12:5: unproved: overflow in (x + 1) in \`inc\` -- counterexample: <model>
 $dir/unproved.vibe:21:3: unproved: requires of half: (x >= 0), called in \`call_half\` -- counterexample: <model>

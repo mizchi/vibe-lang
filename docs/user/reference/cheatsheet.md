@@ -3077,8 +3077,9 @@ call it directly, inside its own module. A key the checker only inferred
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
-`Int::is_even`, `Int::is_odd`, `Int::pow`, `Int::gcd`, `Double::round`,
-`Double::trunc`, `Double::clamp` -- library functions in `@vibe/builtin`, so
+`Int::is_even`, `Int::is_odd`, `Int::pow`, `Int::gcd`, `Int::range_all`,
+`Int::range_any`, `Double::round`, `Double::trunc`, `Double::clamp` -- library
+functions in `@vibe/builtin`, so
 import the ones you call (`import @vibe/builtin { Int::abs, Double::round }`).
 Without the import the call is `unknown name: Int::abs`, and the message names
 that import. `Double::abs`, `Double::max`, `Double::min`, `Double::floor` and

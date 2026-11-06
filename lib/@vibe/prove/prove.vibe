@@ -13,7 +13,18 @@ import ./solver.vibe {
 }
 
 import ./walk.vibe {
-  binder_inits, call_graph, collect_assigned, construct_name, contains_name, expr_kids, expr_off, reaches_cycle, strip_label
+  binder_inits,
+  builtin_imports,
+  call_graph,
+  collect_assigned,
+  construct_name,
+  contains_name,
+  decl_offset,
+  expr_kids,
+  expr_off,
+  reaches_cycle,
+  shown_index_reads,
+  strip_label
 }
 
 import ./int_terms.vibe {
@@ -66,7 +77,11 @@ struct Ctx {
   /// once to an array literal and named only as the array of a builtin read
   /// or write, so no other name holds it and a write is an update of its
   /// one binding.
-  writable: Array[String]
+  writable: Array[String];
+  /// The names the file imports from `@vibe/builtin` under their own
+  /// spelling (`builtin_imports`): `Int::range_all` / `Int::range_any` are
+  /// read as quantifiers only when they are that package's.
+  builtins: Array[String]
 }
 
 /// #3719: a struct or enum of the file the prover reads as an SMT datatype:
@@ -106,6 +121,7 @@ export fn prove_obligations(_ source: String) -> Array[Obligation] with Exceptio
   let adts = collect_adts(stmts)
   let fns = collect_sigs(stmts = stmts, adts = adts)
   let graph = call_graph(stmts)
+  let builtins = builtin_imports(stmts)
   let out: Array[Obligation] = []
   for s in stmts {
     match s {
@@ -123,7 +139,7 @@ export fn prove_obligations(_ source: String) -> Array[Obligation] with Exceptio
           query: ""
         })
       } else {
-        prove_fn(name = name, value = value, fns = fns, adts = adts, decl_off = decl_offset(source = source, name = name), out = out)
+        prove_fn(name = name, value = value, fns = fns, adts = adts, builtins = builtins, decl_off = decl_offset(source = source, name = name), out = out)
       },
       _ => ()
     }
@@ -241,34 +257,7 @@ fn find_sig(fns: Array[FnSig], name: String) -> Option[FnSig] {
 
 //# One function
 
-/// Where `fn <name>` is declared in `source`: the report's position for an
-/// obligation whose own node carries no offset.
-fn decl_offset(source: String, name: String) -> Int {
-  let needle = "fn \{name}"
-  let n = String::length(source)
-  let m = String::length(needle)
-  let mut i = 0
-  let mut found = 0 - 1
-  while i + m <= n && found < 0 {
-    if String::substring(source, start = i, end = i + m) == needle && (i == 0 || is_space(String::byte_at(source, at = i - 1))) && (i + m == n || !is_ident_byte(String::byte_at(source, at = i + m))) {
-      found = i
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-fn is_space(_ c: Int) -> Bool {
-  c == ' ' || c == '\n' || c == '\t' || c == '\r'
-}
-
-fn is_ident_byte(_ c: Int) -> Bool {
-  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
-}
-
-fn prove_fn(name: String, value: Expr, fns: Array[FnSig], adts: Array[Adt], decl_off: Int, out: Array[Obligation]) -> Unit with Exception {
+fn prove_fn(name: String, value: Expr, fns: Array[FnSig], adts: Array[Adt], builtins: Array[String], decl_off: Int, out: Array[Obligation]) -> Unit with Exception {
   let ctx = Ctx::{
     fn_name: name,
     adts: adts,
@@ -278,7 +267,8 @@ fn prove_fn(name: String, value: Expr, fns: Array[FnSig], adts: Array[Adt], decl
     fns: fns,
     counter: [0],
     checkpoints: [],
-    writable: []
+    writable: [],
+    builtins: builtins
   }
   let result = handle {
     prove_fn_body(ctx = ctx, value = value)
@@ -433,20 +423,6 @@ fn push_obligation(ctx: Ctx, kind: String, label: String, off: Int, goal: String
   // The printer spells an index read by its builtin `__index`; a report
   // names it the way a program can (`Array::get(xs, i)`).
   Array::push(ctx.pending, value = (kind, shown_index_reads(label), off, goal, Array::length(ctx.assumes)))
-}
-
-/// `label` with every `__index(` spelled `Array::get(`.
-fn shown_index_reads(_ label: String) -> String {
-  let needle = "__index("
-  let mut rest = label
-  let mut out = ""
-  let mut at = String::index_of(rest, needle = needle)
-  while at >= 0 {
-    out = "\{out}\{String::substring(rest, start = 0, end = at)}Array::get("
-    rest = String::substring(rest, start = at + String::length(needle), end = String::length(rest))
-    at = String::index_of(rest, needle = needle)
-  }
-  "\{out}\{rest}"
 }
 
 /// An `Int` term holds a 63-bit value, so it may be assumed in range -- but
@@ -1783,10 +1759,12 @@ fn sym_array_read(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int,
 
 //# Quantifiers (#3719)
 
-/// Whether a call of `fname` is the builtin `Array::all` / `Array::any`,
+/// Whether a call of `fname` is the builtin `Array::all` / `Array::any`, or
+/// `@vibe/builtin`'s `Int::range_all` / `Int::range_any` imported as such
+/// (by name or with the `Int` namespace),
 /// unless the file declares a function of the name or binds a local to it.
 fn is_quantifier_call(ctx: Ctx, st: Outcome, fname: String) -> Bool {
-  (fname == "Array::all" || fname == "Array::any") && match find_sig(fns = ctx.fns, name = fname) {
+  (fname == "Array::all" || fname == "Array::any" || (fname == "Int::range_all" || fname == "Int::range_any") && (contains_name(xs = ctx.builtins, x = fname) || contains_name(xs = ctx.builtins, x = "Int"))) && match find_sig(fns = ctx.fns, name = fname) {
     Some(_) => false,
     None => match env_lookup(env = st.env, name = fname) {
       Some(_) => false,
@@ -1803,20 +1781,28 @@ fn is_quantifier_call(ctx: Ctx, st: Outcome, fname: String) -> Bool {
 /// calls a function (whose fresh result would be one value for every
 /// element) is refused. What its body owes or assumes is quantified the
 /// same way: owing it for an element the call stops before is stronger than
-/// the runtime needs, never weaker.
+/// the runtime needs, never weaker. `Int::range_all(lo, hi, f = (i) -> p)`
+/// quantifies `i` itself over `lo <= i < hi`, which states what an element
+/// owes its neighbour (`xs[i] <= xs[i + 1]`).
 fn sym_quantifier(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
-  if Array::length(args) != 2 {
+  let ranged = String::starts_with(fname, prefix = "Int::")
+  let arity = if ranged {
+    3
+  } else {
+    2
+  }
+  if Array::length(args) != arity {
     unsupported(off = off, reason = "`\{fname}` with \{Array::length(args)} argument(s)")
   } else {
     ()
   }
-  let (pname, body) = match strip_label(Array::get(args, at = 1)) {
+  let (pname, body) = match strip_label(Array::get(args, at = arity - 1)) {
     EFn(tps, _, params, _, _, b) => if Array::length(tps) == 0 && Array::length(params) == 1 {
       let (pn, pty) = Array::get(params, at = 0)
       match pty {
         None => (),
         Some(_) => if sort_of(adts = ctx.adts, ty = pty) != "Int" {
-          unsupported(off = off, reason = "`\{fname}`'s predicate takes an `Int`, the element of an `Array[Int]`")
+          unsupported(off = off, reason = "`\{fname}`'s predicate takes an `Int`")
         } else {
           ()
         }
@@ -1843,25 +1829,45 @@ fn sym_quantifier(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outc
   for o in sym(ctx = ctx, e = strip_label(Array::get(args, at = 0)), st = st) {
     if o.returned {
       Array::push(out, value = o)
+    } else if ranged {
+      for h in sym(ctx = ctx, e = strip_label(Array::get(args, at = 1)), st = o) {
+        if h.returned {
+          Array::push(out, value = h)
+        } else if o.sort != "Int" || h.sort != "Int" {
+          unsupported(off = off, reason = "`\{fname}`'s bounds must be `Int`s")
+        } else {
+          let q = fresh_bound(ctx)
+          let range = "(and (<= \{o.value} \{q}) (< \{q} \{h.value}))"
+          Array::push(out, value = with_value(st = h, value = quantified(ctx = ctx, fname = fname, pname = pname, body = body, off = off, o = h, q = q, range = range, elem = q), sort = "Bool"))
+        }
+      }
+      ()
     } else if o.sort != arr_sort() {
       unsupported(off = off, reason = "`\{fname}` on a `\{o.sort}`: only `Array[Int]` is modelled")
     } else {
-      Array::push(out, value = with_value(st = o, value = quantified(ctx = ctx, fname = fname, pname = pname, body = body, off = off, o = o), sort = "Bool"))
+      let q = fresh_bound(ctx)
+      let range = "(and (<= 0 \{q}) (< \{q} \{arr_len(o.value)}))"
+      let elem = "(select \{arr_data(o.value)} \{q})"
+      Array::push(out, value = with_value(st = o, value = quantified(ctx = ctx, fname = fname, pname = pname, body = body, off = off, o = o, q = q, range = range, elem = elem), sort = "Bool"))
     }
   }
   out
 }
 
-/// The quantified formula of one call, for the array `o` holds.
-fn quantified(ctx: Ctx, fname: String, pname: String, body: Expr, off: Int, o: Outcome) -> String with Exception {
+/// A bound variable no other quantifier of the function spells.
+fn fresh_bound(_ ctx: Ctx) -> String {
   let k = Array::get(ctx.counter, at = 0)
   Array::set(ctx.counter, at = 0, value = k + 1)
-  let q = "|q!\{k}|"
-  let range = "(and (<= 0 \{q}) (< \{q} \{arr_len(o.value)}))"
+  "|q!\{k}|"
+}
+
+/// The quantified formula of one call from the state `o`: `q` ranges over
+/// `range` and the predicate's parameter is `elem`. What the predicate owes
+/// or assumes, an element's range among them, is quantified the same way.
+fn quantified(ctx: Ctx, fname: String, pname: String, body: Expr, off: Int, o: Outcome, q: String, range: String, elem: String) -> String with Exception {
   let n_decls = Array::length(ctx.decls)
   let n_pending = Array::length(ctx.pending)
   let n_assumes = Array::length(ctx.assumes)
-  let elem = "(select \{arr_data(o.value)} \{q})"
   assume_range(ctx = ctx, term = elem, sort = "Int", pc = o.pc)
   let inner = Outcome::{
     pc: o.pc,
@@ -1908,7 +1914,7 @@ fn quantified(ctx: Ctx, fname: String, pname: String, body: Expr, off: Int, o: O
   } else {
     "(or false \{String::join(parts, sep = " ")})"
   }
-  if fname == "Array::all" {
+  if fname == "Array::all" || fname == "Int::range_all" {
     "(forall ((\{q} Int)) (=> \{range} \{p}))"
   } else {
     "(exists ((\{q} Int)) (and \{range} \{p}))"
