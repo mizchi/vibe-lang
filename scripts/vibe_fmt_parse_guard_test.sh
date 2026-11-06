@@ -37,8 +37,13 @@ fn f() -> Int {
 VIBE
 cp "$pass_input" "$work/pass.original"
 
-if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$pass_input" >/dev/null 2>&1; then
+# The formatter's stderr is shown on failure (#3887): when the formatter
+# itself will not build, it names the cause (a generated artifact missing ->
+# run scripts/ensure_generated.sh), and swallowing that left only the line
+# below, which reads as a formatter regression.
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$pass_input" >/dev/null 2>"$work/pass.err"; then
   echo "vibe_fmt_parse_guard_test: formatter declined a file it should format" >&2
+  sed -n '1,20p' "$work/pass.err" >&2
   exit 1
 fi
 if grep -q '::{' "$pass_input"; then

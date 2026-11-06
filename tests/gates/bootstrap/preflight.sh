@@ -6,6 +6,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
+# FIRST, before anything that compiles a compiler source (#3887). The five
+# generated artifacts are untracked, so a fresh checkout has none, and the
+# formatter guard below builds lib/@vibe/cli/fmt_entry.vibe, whose closure
+# reaches cache/codegen_fingerprint.vibe. With this step after it, a fresh
+# worktree failed preflight with "formatter declined a file it should format"
+# -- a formatter regression to the reader, a missing step in fact. A ~1 s no-op
+# when the artifacts are current.
+echo "[compiler-gate] 1-2/3 generated compiler artifacts"
+bash scripts/ensure_generated.sh
+
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/vibe_run.sh scripts/check_builtin_parity.vibex
 bash scripts/vibe_run.sh scripts/check_gate_registry.vibex
@@ -19,9 +29,6 @@ node --test scripts/parser_binder_context_spine.test.mjs
 python3 scripts/source_files_test.py
 bash scripts/source_group_test.sh
 node scripts/test_immutable_publish_plumbing.js
-
-echo "[compiler-gate] 1-2/3 generated compiler artifacts"
-bash scripts/ensure_generated.sh
 
 echo "[compiler-gate] 2a/3 FS heap measurement protocol"
 bash scripts/measure_fs_heap_test.sh

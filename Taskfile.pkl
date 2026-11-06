@@ -478,7 +478,11 @@ local testHostCapabilityWithhold = new Task {
 // Its own unit tests build modules by hand, so a failure is about the probe
 // and not about whatever the compiler emitted that day.
 local testHostCapabilityProbe = quality.testHostCapabilityProbe
-local checkVibeFmt = scriptTask("check-vibe-fmt", "scripts/check_vibe_fmt.sh")
+// The formatter it builds imports a generated artifact, absent in a fresh
+// checkout (#3887); the dep also keeps it from regenerating beside the gate.
+local checkVibeFmt = (scriptTask("check-vibe-fmt", "scripts/check_vibe_fmt.sh")) {
+  deps { ensureGenerated }
+}
 // The `validate Pkl configs` CI job runs `pkf format --check Taskfile.pkl`,
 // and that was the ONLY place it ran: `release-check` checks .vibe formatting
 // but nothing checked this file, so a Taskfile edit that the pkl formatter
@@ -2535,7 +2539,9 @@ local releaseCompilerGate = new Task {
     "eval/**/*.sh"
     "scripts/generation_choice_allowlist.txt"
   }
-  deps { ensureViberun }
+  // ensureGenerated: release-check's siblings run concurrently, and two
+  // regenerations of the untracked artifacts in one fresh tree race (#3887).
+  deps { ensureViberun; ensureGenerated }
 }
 
 local releaseCheck = new Task {
