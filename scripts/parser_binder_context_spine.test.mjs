@@ -263,6 +263,9 @@ test("balanced-token inventory classifies every production EFn site", () => {
     // only pattern-reads the body to decide whether a rebuild is needed.
     ["parser_expr_primary.vibe:tl_rewrite_expr", [2, "slot-preserving reconstruction"]],
     ["parser_expr_primary.vibe:tl_scan_expr", [1, "deliberately ineligible"]],
+    // #3829 step 2: the read-only twin of map_expr_offsets only pattern-reads
+    // the body's offsets; it builds no EFn.
+    ["parser_expr_primary.vibe:collect_expr_offsets", [1, "deliberately ineligible"]],
   ]);
   const actual = new Map();
   for (const [file, source] of files) {
