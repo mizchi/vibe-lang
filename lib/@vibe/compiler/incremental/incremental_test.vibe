@@ -3,13 +3,15 @@
 import ./incremental.vibe {
   RippleDb,
   ripple_eval_count,
+  ripple_get_deps,
   ripple_get_fingerprint,
   ripple_get_source,
   ripple_new,
   ripple_record_eval,
   ripple_set_source,
   ripple_source_paths,
-  ripple_source_revision
+  ripple_source_revision,
+  ripple_without_results
 }
 
 //# Misc
@@ -130,4 +132,22 @@ test "source membership revision changes only when a new source is inserted" {
   let db = ripple_set_source(db = db, path = "b.vibe", source = "three")
   inspect(ripple_source_revision(db), content = "2")
   inspect(ripple_eval_count(db), content = "1")
+}
+
+test "forgetting derived results preserves source inputs and cumulative counters" {
+  let db = ripple_set_source(db = ripple_new(), path = "main.vibe", source = "source")
+  let db = ripple_record_eval(db = db, path = "main.vibe", fingerprint = "old", deps = [
+    "dep.vibe"
+  ])
+  let revision = ripple_source_revision(db)
+  let count = ripple_eval_count(db)
+  let reset = ripple_without_results(db)
+  assert_eq(ripple_get_source(db = reset, path = "main.vibe"), Some("source"))
+  assert_eq(ripple_source_revision(reset), revision)
+  assert_eq(ripple_eval_count(reset), count)
+  assert_eq(ripple_get_fingerprint(db = reset, path = "main.vibe"), None)
+  assert_eq(ripple_get_deps(db = reset, path = "main.vibe"), None)
+  let checked = ripple_record_eval(db = reset, path = "main.vibe", fingerprint = "new", deps = [
+  ])
+  assert_eq(ripple_eval_count(checked), count + 1)
 }

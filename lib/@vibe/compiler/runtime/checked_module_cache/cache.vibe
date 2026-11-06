@@ -1,10 +1,16 @@
 import @vibe/compiler/cache {
+  persistent_cache_namespace_current
+}
+import @vibe/compiler/cache {
   ast_binary_write_string,
   ast_binary_write_varint,
   load_persistent_artifact,
+  load_persistent_artifact_in_namespace,
   persistent_artifact_input_context,
+  persistent_artifact_input_context_in_namespace,
   persistent_artifact_input_context_with_resolution,
-  store_persistent_artifact
+  store_persistent_artifact,
+  store_persistent_artifact_in_namespace
 }
 import @vibe/compiler/checker/artifacts/module {
   CheckedModuleArtifact, checked_module_input_fingerprint, decode_checked_module_artifact, encode_checked_module_artifact
@@ -40,6 +46,11 @@ export fn checked_module_cache_mode() -> String {
 /// Rows belong to one completed module walk. No previous compilation or mode
 /// may supply the AST of a file that this walk did not validate.
 export fn checked_module_cache_reset() -> Unit with Env {
+  checked_module_cache_reset_in_namespace(namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn checked_module_cache_reset_in_namespace(namespace: String) -> Unit with Env {
   Array::truncate(checked_cache_paths, length = 0)
   Array::truncate(checked_cache_sources, length = 0)
   Array::truncate(checked_cache_stmts, length = 0)
@@ -47,7 +58,7 @@ export fn checked_module_cache_reset() -> Unit with Env {
   Array::truncate(checked_cache_resolution, length = 0)
   let resolution = resolution_env_seed()
   Array::push(checked_cache_resolution, value = resolution)
-  Array::push(checked_cache_version, value = persistent_artifact_input_context_with_resolution(resolution))
+  Array::push(checked_cache_version, value = persistent_artifact_input_context_in_namespace(resolution, namespace = namespace))
   let mut i = 0
   while i < 3 {
     Array::set(checked_cache_counts, at = i, value = 0)
@@ -61,9 +72,14 @@ export fn checked_module_cache_stats() -> (Int, Int, Int) {
 }
 
 export fn checked_module_cache_input_identity(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)]) -> Bytes with Env {
+  checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = semantics_seed, deps = deps, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn checked_module_cache_input_identity_in_namespace(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)], namespace: String) -> Bytes with Env {
   let out = Bytes::new()
   ast_binary_write_string(buf = out, s = "checked-module-input-v1")
-  ast_binary_write_string(buf = out, s = persistent_artifact_input_context())
+  ast_binary_write_string(buf = out, s = persistent_artifact_input_context_in_namespace(resolution_env_seed(), namespace = namespace))
   ast_binary_write_string(buf = out, s = normalize_path(path))
   ast_binary_write_string(buf = out, s = source)
   ast_binary_write_string(buf = out, s = semantics_seed)
@@ -76,19 +92,29 @@ export fn checked_module_cache_input_identity(path: String, source: String, sema
 }
 
 export fn load_checked_module_artifact(path: String, input_identity: Bytes) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
-  match load_persistent_artifact(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(input_identity)) {
+  load_checked_module_artifact_in_namespace(path = path, input_identity = input_identity, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn load_checked_module_artifact_in_namespace(path: String, input_identity: Bytes, namespace: String) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
+  match load_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(input_identity), namespace = namespace) {
     Some(bytes) => decode_checked_module_artifact(bytes = bytes, input_identity = input_identity),
     None => None
   }
 }
 
 export fn commit_checked_module_artifact(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool) -> Unit with Env + Exception + Fs {
+  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = fresh, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn commit_checked_module_artifact_in_namespace(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String) -> Unit with Env + Exception + Fs {
   if fresh {
     let encoded = encode_checked_module_artifact(artifact)
     let fingerprint = checked_module_input_fingerprint(artifact.input_identity)
     let mut already_canonical = false
     if checked_module_cache_mode() == "verify" {
-      match load_persistent_artifact(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint) {
+      match load_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint, namespace = namespace) {
         Some(previous) => if previous == encoded {
           // Exact agreement with a fresh checker result validates every byte.
           // No second tree or replacement envelope needs to be allocated.
@@ -105,7 +131,7 @@ export fn commit_checked_module_artifact(path: String, source: String, artifact:
     if already_canonical {
       ()
     } else {
-      store_persistent_artifact(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint, bytes = encoded)
+      store_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint, bytes = encoded, namespace = namespace)
     }
   }
   let slot = if fresh {
@@ -125,9 +151,14 @@ export fn commit_checked_module_artifact(path: String, source: String, artifact:
 /// must stay free of host capabilities -- require `Env` (#1962). The rest
 /// (compiler version, cfg, typing mode) is recomputed, as before.
 export fn checked_module_artifact_stmts(path: String, source: String) -> Option[Array[Stmt]] {
+  checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn checked_module_artifact_stmts_in_namespace(path: String, source: String, namespace: String) -> Option[Array[Stmt]] {
   if checked_module_cache_mode() == "off" || Array::length(checked_cache_version) == 0 ||
   Array::length(checked_cache_resolution) == 0 ||
-  Array::get(checked_cache_version, at = 0) != persistent_artifact_input_context_with_resolution(Array::get(checked_cache_resolution, at = 0)) {
+  Array::get(checked_cache_version, at = 0) != persistent_artifact_input_context_in_namespace(Array::get(checked_cache_resolution, at = 0), namespace = namespace) {
     return None
   }
   let mut i = 0
