@@ -35,9 +35,10 @@ import @vibe/parser {
 /// `row_offsets` / `row_keys`. `anchor` is the statement's lowest located
 /// offset (-1 when it has none). `text` is its rendering and its rows, each
 /// row as `offset=key` relative to `anchor`, sorted. `ints` holds what the
-/// printer does not render, flat so it costs no allocation per element: the
-/// located offsets relative to `anchor`, a -1, then each call's resolution
-/// cell as its length followed by its values.
+/// printer does not render exactly, flat so it costs no allocation per
+/// element: the located offsets relative to `anchor`, a -1, then in walk
+/// order each call's resolution cell (its length, then its values) and each
+/// floating-point literal (-7, then its exact parts, `stmt_key_push_float`).
 export fn prelude_statement_keys(stmts: Array[Stmt], row_offsets: Array[Int], row_keys: Array[String]) -> Array[PreludeStmtKey] {
   let anchors: Array[Int] = []
   let located: Array[Array[Int]] = []
@@ -163,9 +164,12 @@ fn stmt_key_roots(_ stmt: Stmt) -> Array[Expr] {
   }
 }
 
-/// Every call's resolution cell under `e`, in a fixed walk order, as its
-/// length followed by its values. The printer does not render a cell, and a
-/// pass reads it (the checked call placement).
+/// Under `e`, in a fixed walk order: every call's resolution cell as its
+/// length followed by its values -- the printer does not render a cell, and a
+/// pass reads it (the checked call placement) -- and every floating-point
+/// literal as -7 followed by its exact parts, because the printer rounds a
+/// literal to six decimal places (`1.0000001` and `1.0000002` print alike).
+/// A length is never negative, so the two kinds cannot be confused.
 fn stmt_key_push_resolutions(ints: Array[Int], e: Expr) -> Unit {
   let stack: Array[Expr] = [e]
   while Array::length(stack) > 0 {
@@ -179,8 +183,59 @@ fn stmt_key_push_resolutions(ints: Array[Int], e: Expr) -> Unit {
         }
         ()
       },
+      EFloat(d) => {
+        Array::push(ints, value = -7)
+        stmt_key_push_float(ints = ints, d = d)
+      },
       _ => ()
     }
     expr_children_into(expr = cur, out = stack)
+  }
+}
+
+/// `d` exactly, as three integers: a sign (1 for a negative value, `-0.0`
+/// included), a binary exponent and an integer mantissa in [2^52, 2^53).
+/// Doubling and halving a binary float are exact away from overflow and
+/// underflow, which the two loops stay clear of, so equal parts mean equal
+/// values. Zero, an infinity and a NaN get exponents no finite nonzero
+/// value has.
+fn stmt_key_push_float(ints: Array[Int], d: Float64) -> Unit {
+  if d != d {
+    Array::push(ints, value = 0)
+    Array::push(ints, value = 99999)
+    Array::push(ints, value = 1)
+  } else {
+    let neg = d < 0.0 || (d == 0.0 && 1.0 / d < 0.0)
+    let mut m = if d < 0.0 {
+      0.0 - d
+    } else {
+      d
+    }
+    Array::push(ints, value = if neg {
+      1
+    } else {
+      0
+    })
+    if m == 0.0 {
+      Array::push(ints, value = -99999)
+      Array::push(ints, value = 0)
+    } else if m * 0.5 == m {
+      Array::push(ints, value = 99999)
+      Array::push(ints, value = 0)
+    } else {
+      let low = 4503599627370496.0
+      let high = 9007199254740992.0
+      let mut e = 0
+      while m < low {
+        m = m * 2.0
+        e = e - 1
+      }
+      while m >= high {
+        m = m * 0.5
+        e = e + 1
+      }
+      Array::push(ints, value = e)
+      Array::push(ints, value = Float64::to_int(m))
+    }
   }
 }
