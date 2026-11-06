@@ -1041,7 +1041,7 @@ import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
   TaskGroup::run((g) -> {
     let p = () -> Int with Async + Exception { 5 }
-    let h = TaskGroup::spawn_suspend(g, p)
+    let h = TaskGroup::spawn_suspend(g, f = p)
     TaskGroup::pump_all(g)
     TaskHandle::join(h) + 1
   })
