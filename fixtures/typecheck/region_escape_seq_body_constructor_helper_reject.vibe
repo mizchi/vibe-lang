@@ -1,0 +1,29 @@
+// #3862: a constructor helper whose body has a statement before its tail
+// (`let _ = 0` then `Pair(first, second)`) lost the parameter's region
+// provenance, so the callback that captured the region's list escaped and
+// compiled; the same helper without the statement is refused.
+struct Slot {
+  callback: () -> Array[Int]
+}
+
+enum Wrapper[A, B] {
+  Pair(A, B)
+}
+
+fn pack[A, B](first: A, second: B) -> Wrapper[A, B] {
+  let _ = 0
+  Pair(first, second)
+}
+
+fn main() -> Int {
+  let escaped = region r {
+    let values = MutList::empty(r)
+    pack(first = Slot::{
+      callback: () -> Array[Int] {
+        MutList::to_array(values)
+      }
+    }, second = 0)
+  }
+  let Pair(slot, _) = escaped
+  Array::length(slot.callback())
+}
