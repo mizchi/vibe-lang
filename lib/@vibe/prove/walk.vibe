@@ -5,7 +5,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Pat, Stmt
+  Expr, ImportItem, Pat, Stmt
 }
 
 //# Call graph
@@ -360,4 +360,69 @@ export fn strip_label(_ a: Expr) -> Expr {
     ELabeledArg(_, _, v) => v,
     _ => a
   }
+}
+
+//# Imports and source text
+
+/// The names `stmts` import from `@vibe/builtin` under their own spelling;
+/// an aliased import is the alias's, so it is left out.
+export fn builtin_imports(_ stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  for s in stmts {
+    match s {
+      SImport(path, items) => if path == "@vibe/builtin" {
+        for it in items {
+          match it.alias {
+            None => Array::push(out, value = it.name),
+            Some(_) => ()
+          }
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Where `fn <name>` is declared in `source`: the report's position for an
+/// obligation whose own node carries no offset.
+export fn decl_offset(source: String, name: String) -> Int {
+  let needle = "fn \{name}"
+  let n = String::length(source)
+  let m = String::length(needle)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i + m <= n && found < 0 {
+    if String::substring(source, start = i, end = i + m) == needle && (i == 0 || is_space(String::byte_at(source, at = i - 1))) && (i + m == n || !is_ident_byte(String::byte_at(source, at = i + m))) {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn is_space(_ c: Int) -> Bool {
+  c == ' ' || c == '\n' || c == '\t' || c == '\r'
+}
+
+fn is_ident_byte(_ c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+/// `label` with every `__index(` spelled `Array::get(`.
+export fn shown_index_reads(_ label: String) -> String {
+  let needle = "__index("
+  let mut rest = label
+  let mut out = ""
+  let mut at = String::index_of(rest, needle = needle)
+  while at >= 0 {
+    out = "\{out}\{String::substring(rest, start = 0, end = at)}Array::get("
+    rest = String::substring(rest, start = at + String::length(needle), end = String::length(rest))
+    at = String::index_of(rest, needle = needle)
+  }
+  "\{out}\{rest}"
 }

@@ -69,6 +69,18 @@ fi
 if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
   echo "[prove-selftest] FAIL: the gate accepted a requires weakened from Array::all to Array::any" >&2; exit 1
 fi
+# #3719: without the import, `Int::range_all` is not `@vibe/builtin`'s, so it
+# is not read as a quantifier and `first_pair_sorted` stops proving. The
+# other fixtures are restored first, so this mutation is the only change.
+cp fixtures/prove/proved.vibe "$work/proved.vibe"
+python3 -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(s.replace("import @vibe/builtin {\n  Int::range_all, Int::range_any\n}\n", "", 1))' fixtures/prove/ranges.vibe "$work/ranges.vibe"
+if cmp -s fixtures/prove/ranges.vibe "$work/ranges.vibe"; then
+  echo "[prove-selftest] FAIL: the import mutation did not apply" >&2; exit 1
+fi
+if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
+  echo "[prove-selftest] FAIL: the gate accepted Int::range_all read as a quantifier without the @vibe/builtin import" >&2; exit 1
+fi
+cp fixtures/prove/ranges.vibe "$work/ranges.vibe"
 # A loop that no longer breaks: `find_negative` records the index and goes
 # on, so `found == -1` does not hold at the next checkpoint.
 python3 -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(s.replace("      found = i\n      break\n", "      found = i\n", 1))' fixtures/prove/proved.vibe "$work/proved.vibe"
