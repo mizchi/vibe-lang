@@ -14,6 +14,8 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  call_arg_value,
+  call_arg_values,
   collect_tvars,
   compiler_owned_type_arity,
   env_bind,
@@ -525,6 +527,7 @@ fn callback_row_inst_key() -> String {
 /// as before, an enclosing row's instantiation masked and an enclosing
 /// handle's kept, since a callee may forward such a row to that handle.
 export fn callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> TypeEnv {
+  let arg = call_arg_value(arg)
   callback_arg_env_read(env = env, arg = arg, param_ty = param_ty, s = s, callee = callee, read = (row: String) -> Array[Type] {
     callback_row_instantiations(row = row, callee = callee, defs = defs)
   })
@@ -797,12 +800,14 @@ fn label_row_only_row(row: Option[String], items: Array[(String, Int)]) -> Optio
 /// `r.run` with `run: (() -> Int with Box[String]) -> Int` was handed
 /// nothing and its `perform Box::Put(1)` chose `Int`.
 export fn field_callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, recv: Type, defs: Array[TypeDef]) -> TypeEnv {
+  let arg = call_arg_value(arg)
   callback_arg_env_read(env = env, arg = arg, param_ty = param_ty, s = s, callee = None, read = (row: String) -> Array[Type] {
     struct_field_row_instantiations(row = row, recv = recv, defs = defs)
   })
 }
 
 fn callback_arg_env_read(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, callee: Option[(Type, Type)], read: (String) -> Array[Type]) -> TypeEnv {
+  let arg = call_arg_value(arg)
   match arg {
     EFn(_, _, _, _, None, _) => match subst_apply(s = s, ty = param_ty) {
       CtFn(_, _, Some(row)) => {
@@ -938,6 +943,7 @@ fn row_label_instantiations(row: String, s: Subst, callee: Option[(Type, Type)])
 /// right. A pair that does not unify is left for the call's own argument check
 /// to report.
 export fn callback_prefix_subst(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst, callee: Option[(Type, Type)]) -> Subst {
+  let arg = call_arg_value(arg)
   let ai = Array::length(arg_tys)
   let applies = if ai > 0 && ai < Array::length(param_tys) {
     let param = subst_apply(s = s, ty = Array::get(param_tys, at = ai))
@@ -1891,6 +1897,7 @@ fn effect_inst_leaf_slot(_ ty: Type) -> Bool {
 /// parameter's row is read in the callee's scope (`callback_row_instantiations`),
 /// so a formal it names is the type this call gives it.
 export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee: Option[(Type, Type)], callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let arg = call_arg_value(arg)
   if effect_inst_leaf_slot(param_ty) {
     return s
   }
@@ -1943,6 +1950,7 @@ export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty:
 /// lambda parameter has its type by then, so the performed payload is read
 /// as the call fixed it rather than fixed by this comparison.
 export fn effect_inst_unnamed_args_check(env: TypeEnv, args: Array[Expr], arg_tys: Array[Type], param_tys: Array[Type], s: Subst, callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let args = call_arg_values(args)
   let subject = if String::length(callee_name) > 0 {
     "the function passed to `\{callee_name}`"
   } else {
@@ -1968,6 +1976,7 @@ export fn effect_inst_unnamed_args_check(env: TypeEnv, args: Array[Expr], arg_ty
 /// before #3406's codegen fix miscompiles that shape, and the committed seed
 /// is one. Fold this into the worker once the seed carries the fix.
 export fn effect_inst_unnamed_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let arg = call_arg_value(arg)
   let read = (row: String) -> Array[Type] {
     array_empty()
   }
@@ -1977,6 +1986,7 @@ export fn effect_inst_unnamed_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, p
 /// #3387: `effect_inst_unnamed_arg_check` for a builtin's callback parameter,
 /// whose type has no row at all (`Array::map`, `Array::filter`).
 export fn effect_inst_rowless_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, s: Subst, callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let arg = call_arg_value(arg)
   effect_inst_unnamed_arg_check(env = env, arg = arg, arg_ty = arg_ty, param_ty = CtFn(array_empty(), CtUnknown, None), s = s, callee_name = callee_name, defs = defs, errors = errors)
 }
 
@@ -1984,6 +1994,7 @@ export fn effect_inst_rowless_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, s
 /// parameter's row is read in the receiver's struct
 /// (`struct_field_row_instantiations`).
 export fn field_effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, recv: Type, field: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let arg = call_arg_value(arg)
   if effect_inst_leaf_slot(param_ty) {
     return s
   }
@@ -2022,6 +2033,7 @@ export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type
 }
 
 fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String], mode: Int) -> Subst {
+  let arg = call_arg_value(arg)
   if effect_inst_leaf_slot(param_ty) {
     return s
   }

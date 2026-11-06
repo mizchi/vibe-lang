@@ -1,0 +1,152 @@
+// #3829 step 2: a statement's prelude key must not move when only the text
+// BEFORE the statement changed, and must move when the statement, or a
+// typed-lowering row the passes read for it, changed.
+//
+// Each program is parsed from its own text, so inserting a statement shifts
+// every later offset exactly as an edit earlier in the merged closure does.
+// Rows are placed at a statement's anchor -- one of its located offsets by
+// construction -- in each program separately.
+import @vibe/compiler/normalize/desugar {
+  PreludeStmtKey, prelude_statement_key_equal, prelude_statement_keys
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+/// Parsed with locations, as the compile lanes parse a file.
+fn parsed(_ src: String) -> Array[Stmt] with Exception {
+  let (toks, starts, _) = lex_with_offsets(src)
+  parse_program_located(tokens = toks, starts = starts, source = src)
+}
+
+fn no_ints() -> Array[Int] {
+  []
+}
+
+fn no_keys() -> Array[String] {
+  []
+}
+
+/// The program with `body` as the body of `b`.
+fn program_with(_ body: String) -> String {
+  String::concat("fn a(x: Int) -> Int {\n  x + 1\n}\n\nfn b(p: Int, q: Int) -> Bool {\n  ", String::concat(body, "\n}\n\nfn c() -> Bool {\n  b(1, 2)\n}\n"))
+}
+
+let base_src = program_with("a(p) == q")
+
+let extra_src = "fn early(s: String) -> Int {\n  String::length(s) * 3\n}\n\n"
+
+/// `same`, `vacuous` (the anchors did not move, so nothing was rebased) or
+/// `differs`, for statement `i` of `base_src` against `i + 1` of the program
+/// with `extra_src` in front, each carrying one row `row` at that statement's
+/// anchor when `row` is not empty.
+fn shifted(i: Int, row: String) -> String with Exception {
+  let base = parsed(base_src)
+  let moved = parsed(String::concat(extra_src, base_src))
+  let plain_base = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys())
+  let plain_moved = prelude_statement_keys(stmts = moved, row_offsets = no_ints(), row_keys = no_keys())
+  let at_base = Array::get(plain_base, at = i).anchor
+  let at_moved = Array::get(plain_moved, at = i + 1).anchor
+  let (base_rows, moved_rows) = if row == "" {
+    (no_ints(), no_ints())
+  } else {
+    ([at_base], [at_moved])
+  }
+  let k_base = Array::get(prelude_statement_keys(stmts = base, row_offsets = base_rows, row_keys = [
+    row
+  ]), at = i)
+  let k_moved = Array::get(prelude_statement_keys(stmts = moved, row_offsets = moved_rows, row_keys = [
+    row
+  ]), at = i + 1)
+  if at_base < 0 || at_base == at_moved {
+    "vacuous"
+  } else if prelude_statement_key_equal(a = k_base, b = k_moved) {
+    "same"
+  } else {
+    "differs"
+  }
+}
+
+test "a statement inserted before leaves every later key unchanged" {
+  inspect(shifted(i = 0, row = ""), content = "same")
+  inspect(shifted(i = 1, row = ""), content = "same")
+  inspect(shifted(i = 2, row = ""), content = "same")
+}
+
+test "a row travels with its statement" {
+  inspect(shifted(i = 1, row = "Int"), content = "same")
+  let ks = prelude_statement_keys(stmts = parsed(base_src), row_offsets = [
+    Array::get(prelude_statement_keys(stmts = parsed(base_src), row_offsets = no_ints(), row_keys = no_keys()), at = 1).anchor
+  ], row_keys = ["Int"])
+  // Recorded relative to the anchor, and only in the statement it names.
+  inspect(String::contains(Array::get(ks, at = 1).text, needle = "0=Int"), content = "true")
+  inspect(String::contains(Array::get(ks, at = 0).text, needle = "=Int"), content = "false")
+  inspect(String::contains(Array::get(ks, at = 2).text, needle = "=Int"), content = "false")
+}
+
+test "a changed row changes the key" {
+  let stmts = parsed(base_src)
+  let at = Array::get(prelude_statement_keys(stmts = stmts, row_offsets = no_ints(), row_keys = no_keys()), at = 1).anchor
+  let k_int = Array::get(prelude_statement_keys(stmts = stmts, row_offsets = [
+    at
+  ], row_keys = ["Int"]), at = 1)
+  let k_str = Array::get(prelude_statement_keys(stmts = stmts, row_offsets = [
+    at
+  ], row_keys = ["String"]), at = 1)
+  let k_none = Array::get(prelude_statement_keys(stmts = stmts, row_offsets = no_ints(), row_keys = no_keys()), at = 1)
+  inspect(prelude_statement_key_equal(a = k_int, b = k_str), content = "false")
+  inspect(prelude_statement_key_equal(a = k_int, b = k_none), content = "false")
+}
+
+test "an edit inside the statement changes its key, and only its key" {
+  let base = prelude_statement_keys(stmts = parsed(base_src), row_offsets = no_ints(), row_keys = no_keys())
+  // The same tokens laid out differently: a row recorded against the old
+  // layout would name another expression, so the offsets are part of the key.
+  let respaced = prelude_statement_keys(stmts = parsed(program_with("a(p)  ==  q")), row_offsets = no_ints(), row_keys = no_keys())
+  let edited = prelude_statement_keys(stmts = parsed(program_with("a(q) == p")), row_offsets = no_ints(), row_keys = no_keys())
+  inspect(prelude_statement_key_equal(a = Array::get(base, at = 1), b = Array::get(respaced, at = 1)), content = "false")
+  inspect(prelude_statement_key_equal(a = Array::get(base, at = 1), b = Array::get(edited, at = 1)), content = "false")
+  inspect(prelude_statement_key_equal(a = Array::get(base, at = 0), b = Array::get(edited, at = 0)), content = "true")
+  // Statement 2 starts at the same offset in both, since the edit kept the
+  // length.
+  inspect(prelude_statement_key_equal(a = Array::get(base, at = 2), b = Array::get(edited, at = 2)), content = "true")
+}
+
+/// The key of the one statement `src` holds.
+fn only_key(_ src: String) -> PreludeStmtKey with Exception {
+  Array::get(prelude_statement_keys(stmts = parsed(src), row_offsets = no_ints(), row_keys = no_keys()), at = 0)
+}
+
+test "floating-point literals are keyed exactly, not as printed" {
+  // The printer rounds to six decimal places, so these print alike.
+  inspect(prelude_statement_key_equal(a = only_key("let x = 1.0000001\n"), b = only_key("let x = 1.0000002\n")), content = "false")
+  inspect(prelude_statement_key_equal(a = only_key("let x = 0.0\n"), b = only_key("let x = -0.0\n")), content = "false")
+  inspect(prelude_statement_key_equal(a = only_key("let x = 0.0000001\n"), b = only_key("let x = 0.0000002\n")), content = "false")
+  inspect(prelude_statement_key_equal(a = only_key("let x = 1.5\n"), b = only_key("let x = 1.5\n")), content = "true")
+}
+
+test "floating-point patterns are keyed exactly, nested and top-level ones too" {
+  let arm = (lit: String) -> "fn f(x: Float64) -> Int {\n  match x {\n    \{lit} => 1,\n    _ => 0\n  }\n}\n"
+  inspect(prelude_statement_key_equal(a = only_key(arm("1.0000001")), b = only_key(arm("1.0000002"))), content = "false")
+  inspect(prelude_statement_key_equal(a = only_key(arm("1.5")), b = only_key(arm("1.5"))), content = "true")
+  let nested = (lit: String) -> "fn g(p: (Int, Float64)) -> Int {\n  match p {\n    (_, \{lit}) => 1,\n    _ => 0\n  }\n}\n"
+  inspect(prelude_statement_key_equal(a = only_key(nested("2.0000001")), b = only_key(nested("2.0000002"))), content = "false")
+}
+
+test "a statement that holds no expression has no key" {
+  let decl = only_key("struct Pt {\n  x: Int\n}\n")
+  inspect(decl.keyed, content = "false")
+  inspect(prelude_statement_key_equal(a = decl, b = decl), content = "false")
+  inspect(only_key("let x = 1\n").keyed, content = "true")
+}
+
+test "a string's bytes and boundaries are part of the key" {
+  // Strings enter with their lengths, so moving a byte across a boundary is
+  // a different key even when the concatenation agrees.
+  inspect(prelude_statement_key_equal(a = only_key("let ab = \"c\"\n"), b = only_key("let a = \"bc\"\n")), content = "false")
+}
