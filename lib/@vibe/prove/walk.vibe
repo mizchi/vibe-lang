@@ -5,7 +5,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Stmt
+  Expr, Pat, Stmt
 }
 
 //# Call graph
@@ -230,5 +230,134 @@ export fn construct_name(_ e: Expr) -> String {
     EBreak(_) => "break",
     EContinue(_) => "continue",
     _ => "this expression"
+  }
+}
+
+//# Binders
+
+/// Every binder of `name` in `e`: `Some(initializer)` for a `let` /
+/// `let mut`, `None` for any other (a `let rec`, a `for` variable, a lambda
+/// parameter, a pattern).
+export fn binder_inits(e: Expr, name: String, out: Array[Option[Expr]]) -> Unit {
+  match e {
+    ELet(m, v, _, _) => if m == name {
+      Array::push(out, value = Some(v))
+    } else {
+      ()
+    },
+    ELetMut(m, v, _, _) => if m == name {
+      Array::push(out, value = Some(v))
+    } else {
+      ()
+    },
+    ELetRec(m, _, _) => if m == name {
+      Array::push(out, value = None)
+    } else {
+      ()
+    },
+    EForIn(v, i, _, _) => if v == name || match i {
+      Some(x) => x == name,
+      None => false
+    } {
+      Array::push(out, value = None)
+    } else {
+      ()
+    },
+    EFn(_, _, params, _, _, _) => for p in params {
+      let (pn, _) = p
+      if pn == name {
+        Array::push(out, value = None)
+      } else {
+        ()
+      }
+    },
+    EMatch(_, arms) => for a in arms {
+      let (p, _) = a
+      if pat_binds(p = p, name = name) {
+        Array::push(out, value = None)
+      } else {
+        ()
+      }
+    },
+    EHandle(_, arms) => for a in arms {
+      let (p, _) = a
+      if pat_binds(p = p, name = name) {
+        Array::push(out, value = None)
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+  for k in expr_kids(e) {
+    binder_inits(e = k, name = name, out = out)
+  }
+  ()
+}
+
+/// Whether `p` may bind `name`; a struct pattern's field names count, since
+/// a field written alone binds its own name.
+fn pat_binds(p: Pat, name: String) -> Bool {
+  match p {
+    PBind(n) => n == name,
+    PCtor(_, items) => {
+      let mut found = false
+      for x in items {
+        found = found || pat_binds(p = x, name = name)
+      }
+      found
+    },
+    PTuple(items) => {
+      let mut found = false
+      for x in items {
+        found = found || pat_binds(p = x, name = name)
+      }
+      found
+    },
+    POr(l, r) => pat_binds(p = l, name = name) || pat_binds(p = r, name = name),
+    PStruct(_, fields) => {
+      let mut found = false
+      for f in fields {
+        let (fname, x) = f
+        found = found || fname == name || pat_binds(p = x, name = name)
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+//# Assignments
+
+/// Every name `e` assigns (`x = ..`, `x += ..`), nested loops included. A
+/// name the body itself binds is havocked as well if an enclosing binding of
+/// that name exists, which only loses precision.
+export fn collect_assigned(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EAssign(n, _, _, _) => Array::push(out, value = n),
+    EAssignOp(n, _, _, _, _) => Array::push(out, value = n),
+    // A write to an array changes its binding's value, so a loop that
+    // writes one varies it like an assignment.
+    ECall(EIdent(f, _), args, _, _) => if (f == "Array::set" || f == "Array::push") && Array::length(args) > 0 {
+      match strip_label(Array::get(args, at = 0)) {
+        EIdent(n, _) => Array::push(out, value = n),
+        _ => ()
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  for k in expr_kids(e) {
+    collect_assigned(e = k, out = out)
+  }
+  ()
+}
+
+/// An argument without its label.
+export fn strip_label(_ a: Expr) -> Expr {
+  match a {
+    ELabeledArg(_, _, v) => v,
+    _ => a
   }
 }
