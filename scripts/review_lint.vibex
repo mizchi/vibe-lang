@@ -644,18 +644,25 @@ fn report_function_header_bind_hits(raw: String, emit: Bool) -> Int with Stderr 
   count
 }
 
-// The evidence pass keeps per-statement facts from its vacuity loop through
+// The evidence pass keeps per-statement facts from its isolation step through
 // the last migration, and walks again only the statements a step marked as
-// replaced. A raw write in one of those steps (erase, slot stamping, eta
-// wrapping, migration) would leave its statement's facts stale: the next step
-// would read the old tree's inert base, with no error anywhere.
+// replaced. A raw write in one of those steps (isolation, erase, slot
+// stamping, eta wrapping, migration) would leave its statement's facts stale:
+// the next step would read the old tree's inert base and binder census, with
+// no error anywhere. The pass's driver file is covered too; its alias rename
+// runs before the facts exist, and marks its writes all the same.
+//
+// The pattern takes the arguments whole: the compiler writes
+// `Array::set(stmts, at = i, value = s)`, which a positional pattern
+// (`$(index:exp), $(stmt:exp)`) never matched, so this rule saw none of the
+// writes it was written for.
 fn migration_write_pattern() -> String {
-  "Array::set(stmts, $(index:exp), $(stmt:exp))"
+  "Array::set(stmts, $(args:args))"
 }
 
 fn is_migration_source(path: String) -> Bool {
   let dir = "/lowering/effects/evidence/"
-  String::ends_with(path, suffix = dir + "evidence_edp_apply_migration.vibe") || String::ends_with(path, suffix = dir + "evidence_ecall_arg_idents_expr.vibe") || String::ends_with(path, suffix = dir + "evidence_poison_expr.vibe")
+  String::ends_with(path, suffix = dir + "evidence_edp_apply_migration.vibe") || String::ends_with(path, suffix = dir + "evidence_ecall_arg_idents_expr.vibe") || String::ends_with(path, suffix = dir + "evidence_poison_expr.vibe") || String::ends_with(path, suffix = dir + "evidence_evidence_dict_pass_with_roots.vibe")
 }
 
 fn report_migration_write_hits(raw: String, emit: Bool) -> Int with Stderr {
@@ -682,9 +689,13 @@ fn report_migration_write_hits(raw: String, emit: Bool) -> Int with Stderr {
 
 fn migration_write_self_test(vibe: String) -> Int with Fs + Process + Stderr {
   let path = "_build/_review_lint_migration/lowering/effects/evidence/evidence_edp_apply_migration.vibe"
-  Fs::write_file(path, contents = "fn rewrite(stmts: Array[Stmt], i: Int, s: Stmt) -> Unit { Array::set(stmts, i, s) }")
+  // Both spellings of the write, positional and labeled.
+  Fs::write_file(path, contents = "fn rewrite(stmts: Array[Stmt], i: Int, s: Stmt) -> Unit {\n  Array::set(stmts, i, s)\n  Array::set(stmts, at = i, value = s)\n}")
   let (bad_code, bad) = run_grep(vibe = vibe, root = path, pattern = migration_write_pattern())
-  if bad_code != 0 || report_migration_write_hits(raw = bad, emit = false) != 1 {
+  let driver = "_build/_review_lint_migration/lowering/effects/evidence/evidence_evidence_dict_pass_with_roots.vibe"
+  Fs::write_file(driver, contents = "fn isolate(stmts: Array[Stmt], i: Int, s: Stmt) -> Unit { Array::set(stmts, at = i, value = s) }")
+  let (driver_code, driver_bad) = run_grep(vibe = vibe, root = driver, pattern = migration_write_pattern())
+  if bad_code != 0 || report_migration_write_hits(raw = bad, emit = false) != 2 || driver_code != 0 || report_migration_write_hits(raw = driver_bad, emit = false) != 1 {
     Stderr::write_stream("review-lint self-test: an unmarked migration write was not reported\n")
     1
   } else {

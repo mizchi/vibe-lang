@@ -37,6 +37,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_handle_statement_index,
   edp_handle_statement_indices,
   edp_has_unsafe_construct,
+  edp_mf_set_stmt,
   edp_pat_qname,
   edp_row_is_exactly,
   edp_rq_fold,
@@ -573,8 +574,13 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   for e in evidence_split_handler_sets(stmts) {
     Array::push(errs, value = e)
   }
+  // Per-statement facts for every inert base and binder census from here on
+  // (isolation, vacuity, planning, migrations). Each step that replaces a
+  // statement marks it, and the next refresh walks only those.
+  let statement_facts = edp_mf_new()
+  edp_mf_refresh(facts = statement_facts, stmts = stmts)
   // #3540: before the effect list is read -- it may declare fresh copies.
-  edp_isolate_nested_arm_handlers(stmts)
+  edp_isolate_nested_arm_handlers(stmts = stmts, facts = statement_facts)
   let effect_defs = edp_collect_effect_defs(stmts)
   // ADR-0076 追記34 V2 step 1: vacuous-handle elimination. An effect with
   // ZERO performs anywhere in the program has provably-dead handler arms
@@ -644,10 +650,7 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   }
   let vhe_fn_defs = edp_collect_fn_defs(stmts)
   let vhe_fn_names_arr = edp_all_fn_names(vhe_fn_defs)
-  // Per-statement facts for every inert base and binder census from here on
-  // (vacuity, planning, migrations). Each step that replaces a statement
-  // marks it, and the next refresh walks only those.
-  let statement_facts = edp_mf_new()
+  // The statements isolation replaced or appended.
   edp_mf_refresh(facts = statement_facts, stmts = stmts)
   let vhe_inert_arr = edp_mf_base(facts = statement_facts, stmts = stmts, fn_defs = vhe_fn_defs)
   // #2386: indexed AFTER the append, which is the last writer. Everything
@@ -706,7 +709,7 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   let fn_row_labels = edp_fn_row_label_table(fn_defs = fn_defs, es_names = edp_es_names, es_members_list = edp_es_members_list)
   // #3370: a row-free closure literal at a row-typed parameter takes that
   // row, so the type-directed sweep gives it the dict its callee passes.
-  edp_stamp_slot_rows(stmts = stmts, fn_defs = fn_defs)
+  edp_stamp_slot_rows(stmts = stmts, fn_defs = fn_defs, facts = Some(statement_facts))
   let keep = dce_keep_flags(stmts = stmts, entry_names = roots)
   // #3540: an arm's own effects are migrated before the arm is spliced.
   let plan_binders: Array[MutSet[String]] = []
@@ -1217,11 +1220,11 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool
             let new_expr = edp_ar_expr(expr = expr, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken)
             MutMap::set(owner_counts, k = tag, v = Array::get(counter, at = 0))
             match Array::get(stmts, at = i) {
-              SLet(exported, is_rec, name, ty, _) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, new_expr)),
-              SLetMut(nm2, ty2, _) => Array::set(stmts, at = i, value = SLetMut(nm2, ty2, new_expr)),
-              SExpr(_) => Array::set(stmts, at = i, value = SExpr(new_expr)),
-              STest(tn2, _) => Array::set(stmts, at = i, value = STest(tn2, new_expr)),
-              SBench(bn2, _) => Array::set(stmts, at = i, value = SBench(bn2, new_expr)),
+              SLet(exported, is_rec, name, ty, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLet(exported, is_rec, name, ty, new_expr)),
+              SLetMut(nm2, ty2, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLetMut(nm2, ty2, new_expr)),
+              SExpr(_) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SExpr(new_expr)),
+              STest(tn2, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = STest(tn2, new_expr)),
+              SBench(bn2, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SBench(bn2, new_expr)),
               _ => ()
             }
           } else {
@@ -2403,7 +2406,7 @@ fn edp_ao_marker(_ off: Int) -> String {
 /// answers, and the copied arm's `perform` can no longer reach it, in any
 /// order. A handler this cannot prove that for is left alone and orders the
 /// migrations instead.
-fn edp_isolate_nested_arm_handlers(_ stmts: Array[Stmt]) -> Unit {
+fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt], facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]) -> Unit {
   let decls: Array[Stmt] = []
   let names = empty_str_array()
   for s in stmts {
@@ -2441,7 +2444,11 @@ fn edp_isolate_nested_arm_handlers(_ stmts: Array[Stmt]) -> Unit {
     let es_members_list = array_empty()
     edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
     let row_labels = edp_fn_row_label_table(fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
-    let fx = (edp_ao_fn_positions(fn_defs), row_labels, edp_collect_program_binders(stmts))
+    // The binder census, from the statement facts rather than a walk of the
+    // program (#3856). They were built just before this step, and every
+    // statement it replaces goes through edp_mf_set_stmt below.
+    edp_mf_refresh(facts = facts, stmts = stmts)
+    let fx = (edp_ao_fn_positions(fn_defs), row_labels, edp_mf_binders(facts))
     // Every effect name the program already spells -- declared (imported
     // declarations are statements of the merged program too), handled,
     // performed, or named in a row -- so a generated copy never takes one.
@@ -2467,15 +2474,15 @@ fn edp_isolate_nested_arm_handlers(_ stmts: Array[Stmt]) -> Unit {
     let fresh: Array[Stmt] = []
     for i in needs {
       match Array::get(stmts, at = i) {
-        SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, edp_iso_expr(expr = expr, stack = [
+        SLet(exported, is_rec, name, ty, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLet(exported, is_rec, name, ty, edp_iso_expr(expr = expr, stack = [
         ], names = names, decls = decls, fx = fx, fresh = fresh))),
-        SLetMut(name, ty, expr) => Array::set(stmts, at = i, value = SLetMut(name, ty, edp_iso_expr(expr = expr, stack = [
+        SLetMut(name, ty, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLetMut(name, ty, edp_iso_expr(expr = expr, stack = [
         ], names = names, decls = decls, fx = fx, fresh = fresh))),
-        SExpr(expr) => Array::set(stmts, at = i, value = SExpr(edp_iso_expr(expr = expr, stack = [
+        SExpr(expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SExpr(edp_iso_expr(expr = expr, stack = [
         ], names = names, decls = decls, fx = fx, fresh = fresh))),
-        STest(tn, expr) => Array::set(stmts, at = i, value = STest(tn, edp_iso_expr(expr = expr, stack = [
+        STest(tn, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = STest(tn, edp_iso_expr(expr = expr, stack = [
         ], names = names, decls = decls, fx = fx, fresh = fresh))),
-        SBench(bn, expr) => Array::set(stmts, at = i, value = SBench(bn, edp_iso_expr(expr = expr, stack = [
+        SBench(bn, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SBench(bn, edp_iso_expr(expr = expr, stack = [
         ], names = names, decls = decls, fx = fx, fresh = fresh))),
         _ => ()
       }

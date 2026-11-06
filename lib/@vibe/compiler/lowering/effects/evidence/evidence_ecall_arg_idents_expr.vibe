@@ -40,7 +40,7 @@ import ./evidence_fn_statement_index.vibe {
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
-  edp_append_ctor_inert_names
+  edp_append_ctor_inert_names, edp_mf_binders, edp_mf_refresh
 }
 
 import ./evidence_poison_expr.vibe {
@@ -253,7 +253,7 @@ export fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
 /// labeled argument is matched to its parameter by name; a callee a binding
 /// in scope shadows is left alone. A row-free top-level function passed by
 /// name there is wrapped the same way (#3424, `edp_slot_wrapper`).
-export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], facts: Option[Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]]) -> Unit {
   // #3424: the top-level functions with no row of their own. Passed by name
   // at a row-typed parameter, one is compiled without the dict the callee
   // passes, so the slot gets a wrapper literal that takes it.
@@ -272,6 +272,11 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   Array::truncate(edp_snap_taken, length = 0)
   Array::truncate(edp_snap_program, length = 0)
   Array::push(edp_snap_program, value = (stmts, fn_defs))
+  Array::truncate(edp_snap_facts, length = 0)
+  match facts {
+    Some(known) => Array::push(edp_snap_facts, value = known),
+    None => ()
+  }
   edp_note_program_aliases(stmts)
   edp_note_row_field_structs(stmts)
   edp_record_views_reset()
@@ -1052,11 +1057,23 @@ let edp_snap_owner: Array[String] = ["", "", "", "1"]
 let edp_snap_taken: Array[MutSet[String]] = []
 let edp_snap_program: Array[(Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)])] = [
 ]
+// The statement facts of that program, when the caller keeps them: the
+// census is then read from them instead of walking the program (#3856).
+let edp_snap_facts: Array[Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]] = [
+]
 
 fn edp_snap_taken_set() -> Unit {
   if Array::length(edp_snap_taken) == 0 && Array::length(edp_snap_program) > 0 {
     let (stmts, fn_defs) = Array::get(edp_snap_program, at = 0)
-    let taken = edp_collect_program_binders(stmts)
+    // Every statement replaced since the facts were refreshed went through
+    // edp_mf_set_stmt, so a refresh brings them to the program as it stands.
+    let taken = if Array::length(edp_snap_facts) > 0 {
+      let facts = Array::get(edp_snap_facts, at = 0)
+      edp_mf_refresh(facts = facts, stmts = stmts)
+      edp_mf_binders(facts)
+    } else {
+      edp_collect_program_binders(stmts)
+    }
     for st in stmts {
       match st {
         SLet(_, _, tn, _, _) => MutSet::insert(taken, x = tn),
