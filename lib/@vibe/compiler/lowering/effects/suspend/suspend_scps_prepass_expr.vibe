@@ -25,7 +25,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty, struct MutSet
+  array_empty
 }
 
 import @vibe/compiler/lowering/effects/direct {
@@ -38,9 +38,6 @@ import @vibe/compiler/lowering/effects/evidence {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
-  edp_argcond_note_binders,
-  edp_is_identity_ascription,
-  edp_is_program_binder,
   edp_rq_fold,
   edp_str_array_contains,
   edp_user_perform_effect_of,
@@ -48,6 +45,14 @@ import @vibe/compiler/lowering/effects/queries {
   scps_as_target_perform,
   scps_pat_binds_name,
   scps_pat_binds_resume
+}
+
+import ./suspend_census.vibe {
+  scps_census_drop, scps_census_note
+}
+
+import ./suspend_fn_aliases.vibe {
+  scps_inline_fn_aliases_stmts
 }
 
 import ./suspend_cps_effs_expr.vibe {
@@ -281,6 +286,8 @@ fn scps_lower_handle_sites(_ stmts: Array[Stmt]) -> Array[String] {
 /// retry below (#3540).
 fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Array[String] {
   let errs = array_empty_str()
+  // A census kept from another statement list does not describe this one.
+  scps_census_drop()
   // #3176: a call spelled like an audited pure builtin reaches the program's
   // own function when the program declares one; judge it by that row.
   idp_note_program_decls(stmts)
@@ -310,12 +317,14 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
     edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
     let ctor_names = scps_collect_ctor_names(stmts)
     // Locally bound names, for `scps_inert_taint`'s callee test.
-    edp_argcond_note_binders(stmts)
+    scps_census_note(stmts)
     // #3182: a local alias of a top-level function is lowered as the
     // function. The binders are noted again because the dropped aliases
-    // bound names.
-    scps_inline_fn_aliases_stmts(stmts = stmts, fn_defs = fn_defs)
-    edp_argcond_note_binders(stmts)
+    // bound names; with no alias, the statements are as they were.
+    if scps_inline_fn_aliases_stmts(stmts = stmts, fn_defs = fn_defs) {
+      scps_census_drop()
+    } else ()
+    scps_census_note(stmts)
     let groups = scps_collect_groups(stmts)
     let ctx = (stmts, effect_defs, fn_defs, es_names, es_members_list, ctor_names, groups)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
@@ -351,6 +360,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
           SBench(bn, expr) => Array::set(stmts, at = i, value = SBench(bn, scps_rewrite_root(e = expr, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope))),
           _ => ()
         }
+        scps_census_drop()
       } else {
         ()
       }
@@ -370,6 +380,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
       Array::push(stmts, value = Array::get(inj, at = j))
       j = j + 1
     }
+    scps_census_drop()
     let guarded_members: Array[String] = []
     for target in split_effs {
       for member in scps_group_members(groups = groups, target = target) {
@@ -404,6 +415,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
       for s0 in snapshot {
         Array::push(stmts, value = s0)
       }
+      scps_census_drop()
       let retried = scps_lower_handle_sites_with(stmts = stmts, extra = wanted)
       if Array::length(retried) == 0 {
         retried
@@ -447,6 +459,7 @@ fn scps_prepass_stmts(stmts: Array[Stmt], ecfgs: Array[(String, Array[String], A
       SBench(bn, expr) => Array::set(stmts, at = ip, value = SBench(bn, scps_prepass_expr(e = expr, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = array_empty_kind_scope()))),
       _ => ()
     }
+    scps_census_drop()
     ip = ip + 1
   }
 }
@@ -478,11 +491,14 @@ export fn suspend_prepass_splits(stmts: Array[Stmt], eff: String) -> Bool {
     let es_members_list = array_empty()
     edp_es_collect_into(stmts = copy, es_names = es_names, es_members_list = es_members_list)
     let fn_defs = edp_collect_fn_defs(copy)
-    edp_argcond_note_binders(copy)
+    scps_census_drop()
+    scps_census_note(copy)
     // #3182: the same alias substitution suspend_cps_pass makes, so this
     // answer is about the program that pass will lower.
-    scps_inline_fn_aliases_stmts(stmts = copy, fn_defs = fn_defs)
-    edp_argcond_note_binders(copy)
+    if scps_inline_fn_aliases_stmts(stmts = copy, fn_defs = fn_defs) {
+      scps_census_drop()
+    } else ()
+    scps_census_note(copy)
     let ctx = (copy, edp_collect_effect_defs(copy), fn_defs, es_names, es_members_list, scps_collect_ctor_names(copy), groups)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), array_empty_str())
     scps_owner_reset()
@@ -498,148 +514,6 @@ export fn suspend_prepass_splits(stmts: Array[Stmt], eff: String) -> Bool {
     }
     split
   }
-}
-
-/// #3182: lower a local alias of a top-level function as the function itself.
-///
-/// `let sp = TaskGroup::spawn_suspend` followed by `sp(g, () -> .. { .. })` is
-/// the direct call spelled through a name, but every walk of this pass judges
-/// a call by its callee, and to them a local name is a closure they cannot see
-/// through. So the alias was refused where the direct call compiles: the
-/// closure handed to `TaskGroup::run` "captured" the function, or, with a
-/// tail-resumptive entry boundary, the convention guard fired. Rather than
-/// teach each walk -- eligibility, culprit, inertness, split, prepass, clone --
-/// what an alias is, the alias is substituted before any of them runs, so they
-/// all see the call they already handle.
-///
-/// Nothing can tell the two spellings apart. The binding is immutable, its
-/// value is a top-level function (reading the name has no effect, and the
-/// function never changes), and the target is substituted only when no local
-/// binder anywhere in the program spells it, so every substituted occurrence
-/// still resolves to that function. The rename stops at a binder of the alias
-/// itself (`scps_rename_ident`). An ascribed alias (`let sp: T = f`) is the
-/// same alias. The `let` is dropped once nothing reads it.
-fn scps_inline_fn_aliases_stmts(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
-  // A set: every `let` of the program asks whether its value names one.
-  let fn_names: MutSet[String] = MutSet::new_string()
-  let mut fi = 0
-  while fi < Array::length(fn_defs) {
-    let (_, _, _, fnm, _, _) = Array::get(fn_defs, at = fi)
-    MutSet::add(fn_names, x = fnm)
-    fi = fi + 1
-  }
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, at = i) {
-      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, scps_inline_fn_aliases(e = expr, fn_names = fn_names))),
-      SLetMut(name, ty, expr) => Array::set(stmts, at = i, value = SLetMut(name, ty, scps_inline_fn_aliases(e = expr, fn_names = fn_names))),
-      SExpr(expr) => Array::set(stmts, at = i, value = SExpr(scps_inline_fn_aliases(e = expr, fn_names = fn_names))),
-      STest(tn, expr) => Array::set(stmts, at = i, value = STest(tn, scps_inline_fn_aliases(e = expr, fn_names = fn_names))),
-      SBench(bn, expr) => Array::set(stmts, at = i, value = SBench(bn, scps_inline_fn_aliases(e = expr, fn_names = fn_names))),
-      _ => ()
-    }
-    i = i + 1
-  }
-}
-
-/// The top-level function `v` names when `let x = v` is an alias of it, or
-/// "". `fn_names` are the program's top-level functions; a target some local
-/// binder also spells is not trusted, since that binder may be what the name
-/// resolves to where it is read.
-fn scps_fn_alias_target(v: Expr, fn_names: MutSet[String]) -> String {
-  match v {
-    EIdent(t, _) => if MutSet::has(fn_names, x = t) && !edp_is_program_binder(t) {
-      t
-    } else {
-      ""
-    },
-    ECall(EFn(_, _, aparams, _, _, abody), args, _, _) => if Array::length(args) == 1 && edp_is_identity_ascription(params = aparams, body = abody) {
-      scps_fn_alias_target(v = Array::get(args, at = 0), fn_names = fn_names)
-    } else {
-      ""
-    },
-    _ => ""
-  }
-}
-
-fn scps_inline_fn_aliases(e: Expr, fn_names: MutSet[String]) -> Expr {
-  match e {
-    ELet(x, v, b, off) => {
-      let v2 = scps_inline_fn_aliases(e = v, fn_names = fn_names)
-      let target = scps_fn_alias_target(v = v2, fn_names = fn_names)
-      if target != "" && target != x {
-        let b2 = scps_inline_fn_aliases(e = scps_rename_ident(e = b, x = x, nx = target), fn_names = fn_names)
-        if scps_refs_name(e = b2, x = x) {
-          ELet(x, v2, b2, off)
-        } else {
-          b2
-        }
-      } else {
-        ELet(x, v2, scps_inline_fn_aliases(e = b, fn_names = fn_names), off)
-      }
-    },
-    ELetMut(x, v, b, off) => ELetMut(x, scps_inline_fn_aliases(e = v, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names), off),
-    ELetRec(x, v, b) => ELetRec(x, scps_inline_fn_aliases(e = v, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names)),
-    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_inline_fn_aliases(e = b, fn_names = fn_names)),
-    ECall(callee, args, off, callee_resolution) => ECall(scps_inline_fn_aliases(e = callee, fn_names = fn_names), scps_inline_fn_aliases_exprs(es = args, fn_names = fn_names), off, callee_resolution),
-    ESeq(a, b) => ESeq(scps_inline_fn_aliases(e = a, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names)),
-    EIf(c, t, el) => EIf(scps_inline_fn_aliases(e = c, fn_names = fn_names), scps_inline_fn_aliases(e = t, fn_names = fn_names), scps_inline_fn_aliases(e = el, fn_names = fn_names)),
-    EMatch(s, arms) => EMatch(scps_inline_fn_aliases(e = s, fn_names = fn_names), scps_inline_fn_aliases_arms(arms = arms, fn_names = fn_names)),
-    EHandle(b, arms) => EHandle(scps_inline_fn_aliases(e = b, fn_names = fn_names), scps_inline_fn_aliases_arms(arms = arms, fn_names = fn_names)),
-    EWhile(c, b) => EWhile(scps_inline_fn_aliases(e = c, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names)),
-    EForIn(x, idx, it, b) => EForIn(x, idx, scps_inline_fn_aliases(e = it, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names)),
-    ELoop(pairs, b) => ELoop(scps_inline_fn_aliases_pairs(pairs = pairs, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names)),
-    EAssign(x, v, b, target_off) => EAssign(x, scps_inline_fn_aliases(e = v, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names), target_off),
-    EAssignOp(x, op, v, b, target_off) => EAssignOp(x, op, scps_inline_fn_aliases(e = v, fn_names = fn_names), scps_inline_fn_aliases(e = b, fn_names = fn_names), target_off),
-    EBinOp(op, l, r, boff) => EBinOp(op, scps_inline_fn_aliases(e = l, fn_names = fn_names), scps_inline_fn_aliases(e = r, fn_names = fn_names), boff),
-    EUnaryOp(op, a) => EUnaryOp(op, scps_inline_fn_aliases(e = a, fn_names = fn_names)),
-    EDot(o, f, off, foff) => EDot(scps_inline_fn_aliases(e = o, fn_names = fn_names), f, off, foff),
-    ELabeledArg(l, m, v) => ELabeledArg(l, m, scps_inline_fn_aliases(e = v, fn_names = fn_names)),
-    EReturn(a) => EReturn(scps_inline_fn_aliases(e = a, fn_names = fn_names)),
-    EBreak(opt) => match opt {
-      Some(a) => EBreak(Some(scps_inline_fn_aliases(e = a, fn_names = fn_names))),
-      None => e
-    },
-    EContinue(args) => EContinue(scps_inline_fn_aliases_exprs(es = args, fn_names = fn_names)),
-    ETuple(items) => ETuple(scps_inline_fn_aliases_exprs(es = items, fn_names = fn_names)),
-    EArray(items) => EArray(scps_inline_fn_aliases_exprs(es = items, fn_names = fn_names)),
-    ERecord(rn, fields, targs) => ERecord(rn, scps_inline_fn_aliases_pairs(pairs = fields, fn_names = fn_names), targs),
-    EMap(fields) => EMap(scps_inline_fn_aliases_pairs(pairs = fields, fn_names = fn_names)),
-    ESpread(a) => ESpread(scps_inline_fn_aliases(e = a, fn_names = fn_names)),
-    _ => e
-  }
-}
-
-fn scps_inline_fn_aliases_exprs(es: Array[Expr], fn_names: MutSet[String]) -> Array[Expr] {
-  let out = array_empty_expr()
-  let mut i = 0
-  while i < Array::length(es) {
-    Array::push(out, value = scps_inline_fn_aliases(e = Array::get(es, at = i), fn_names = fn_names))
-    i = i + 1
-  }
-  out
-}
-
-fn scps_inline_fn_aliases_pairs(pairs: Array[(String, Expr)], fn_names: MutSet[String]) -> Array[(String, Expr)] {
-  let out = scps_empty_pairs()
-  let mut i = 0
-  while i < Array::length(pairs) {
-    let (nm, v) = Array::get(pairs, at = i)
-    Array::push(out, value = (nm, scps_inline_fn_aliases(e = v, fn_names = fn_names)))
-    i = i + 1
-  }
-  out
-}
-
-fn scps_inline_fn_aliases_arms(arms: Array[(Pat, Expr)], fn_names: MutSet[String]) -> Array[(Pat, Expr)] {
-  let out = scps_empty_arms()
-  let mut i = 0
-  while i < Array::length(arms) {
-    let (p, ex) = Array::get(arms, at = i)
-    Array::push(out, value = (p, scps_inline_fn_aliases(e = ex, fn_names = fn_names)))
-    i = i + 1
-  }
-  out
 }
 
 /// Drop the ORIGINAL of a function the suspend lowering cloned

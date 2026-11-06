@@ -1,0 +1,60 @@
+// The suspend pass keeps one binder census until it writes the statement
+// list (#3856). These pin the two facts that reuse rests on: the census is
+// the kept one until it is dropped, and alias inlining says when it changed
+// the statements, so the pass knows when to drop it.
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_collect_fn_defs
+}
+import @vibe/compiler/lowering/effects/suspend {
+  scps_census, scps_census_drop, scps_census_note, scps_inline_fn_aliases_stmts
+}
+
+fn top_fn(name: String, body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [], None, None, body))
+}
+
+fn call(_ name: String) -> Expr {
+  ECall(EIdent(name, -1), [], -1, [])
+}
+
+test "the census is the kept one until it is dropped" {
+  let stmts = [
+    top_fn(name = "f", body = ELet("x", EInt(1), EIdent("x", -1), -1))
+  ]
+  scps_census_drop()
+  inspect(MutSet::has(scps_census(stmts), x = "x"), content = "true")
+  // A write the census has not been told about: it still answers for the
+  // statements it was walked from.
+  Array::set(stmts, at = 0, value = top_fn(name = "f", body = ELet("y", EInt(1), EIdent("y", -1), -1)))
+  inspect(MutSet::has(scps_census(stmts), x = "y"), content = "false")
+  scps_census_drop()
+  inspect(MutSet::has(scps_census(stmts), x = "y"), content = "true")
+  inspect(MutSet::has(scps_census(stmts), x = "x"), content = "false")
+}
+
+test "alias inlining says whether it changed the statements" {
+  let plain = [
+    top_fn(name = "f", body = EInt(1)),
+    top_fn(name = "g", body = ELet("v", EInt(2), call("f"), -1))
+  ]
+  scps_census_drop()
+  scps_census_note(plain)
+  inspect(scps_inline_fn_aliases_stmts(stmts = plain, fn_defs = edp_collect_fn_defs(plain)), content = "false")
+  let aliased = [
+    top_fn(name = "f", body = EInt(1)),
+    top_fn(name = "g", body = ELet("h", EIdent("f", -1), call("h"), -1))
+  ]
+  scps_census_drop()
+  scps_census_note(aliased)
+  inspect(scps_inline_fn_aliases_stmts(stmts = aliased, fn_defs = edp_collect_fn_defs(aliased)), content = "true")
+  // The alias's `let` is gone, so a census kept from before no longer
+  // describes the statements: the pass drops it after a `true`.
+  scps_census_drop()
+  inspect(MutSet::has(scps_census(aliased), x = "h"), content = "false")
+}
