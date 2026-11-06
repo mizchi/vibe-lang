@@ -1107,8 +1107,12 @@ work — the companion call's return type drives the dispatch, #1908).
 A BARE top-level `fn total(l: MyList)` is *not* a method: it keeps
 normal call semantics (`total(l)`, and `l |> total` — the pipe is just a call),
 but `l.total()` does not resolve to it and reports a located
-``no method `total` on `MyList` `` diagnostic (#953). A struct FIELD of the same
-name wins over a method (field-stored function call). Builtin receivers
+``no method `total` on `MyList` `` diagnostic (#953). A struct field and a
+companion may not share a name when `x.m()` would have to pick between them
+(#3896): a field that holds a function beside `fn T::m` is refused at the
+companion (rename one), and `x.m()` on a struct whose field `m` holds a value
+is refused at the call -- write `T::m(x)`. Reading the field (`x.m`) and
+calling the companion by its qualified name stay legal. Builtin receivers
 (`Array`/`String`/...) keep their builtin `Type::method` forms — no
 bare-method sugar for them.
 
