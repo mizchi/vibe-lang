@@ -120,10 +120,10 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
 }
 
 fn main allows Console {
-  println("add(1, 2) = \{add(1, 2)}")
+  println("add(1, 2) = \{add(x = 1, y = 2)}")
   println("fact(5) = \{fact(5)}")
   println("identity(7) = \{identity(7)}")
-  println("inc(41) = \{inc(41)}")
+  println("inc(41) = \{inc(x = 41)}")
   println("scaled(x=4, y=2) = \{scaled(x=4, y=2)}")
 }
 ```
@@ -187,9 +187,9 @@ import @vibe/builtin {
 
 fn main allows Console {
   let xs = [1, 2, 3]
-  let doubled = Iterator::map(xs, _ * 2)
-  let total = Iterator::fold(xs, 0, _ + _)
-  println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
+  let doubled = Iterator::map(xs, f = _ * 2)
+  let total = Iterator::fold(xs, init = 0, f = _ + _)
+  println("doubled = [\{Array::get(doubled, at = 0)}, \{Array::get(doubled, at = 1)}, \{Array::get(doubled, at = 2)}]")
   println("fold sum = \{total}")
 }
 ```

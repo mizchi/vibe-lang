@@ -123,7 +123,7 @@ fn fw_signature(spelled: String, is_async: Bool, params: Array[(String, WitTypeE
           _ => fw_type(t = ok, ctx = ctx)
         }
         StringBuilder::push(sb, value = ok_text)
-        Array::push(rows, value = "Exception[\{fw_type(e, ctx)}]")
+        Array::push(rows, value = "Exception[\{fw_type(t = e, ctx = ctx)}]")
       },
       None => throw(fw_refusal(what = "result<..> with no error type", ctx = ctx))
     },
@@ -163,19 +163,19 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
       let mut i = 0
       while i < Array::length(fields) {
         let (fname, fty) = Array::get(fields, at = i)
-        Array::push(lines, value = "  \{fw_ident(fw_snake(fname), ctx)}: \{fw_type(fty, ctx)}")
+        Array::push(lines, value = "  \{fw_ident(name = fw_snake(fname), ctx = ctx)}: \{fw_type(t = fty, ctx = ctx)}")
         i = i + 1
       }
-      "export struct \{fw_type_name(name)} {\n\{String::join(lines, ";\n")}\n}"
+      "export struct \{fw_type_name(name)} {\n\{String::join(lines, sep = ";\n")}\n}"
     },
     TDEnum(name, cases, _) => {
       let parts: Array[String] = []
       let mut i = 0
       while i < Array::length(cases) {
-        Array::push(parts, value = "  \{fw_case_name(Array::get(cases, i), " (in enum `\{name}`)")}")
+        Array::push(parts, value = "  \{fw_case_name(case = Array::get(cases, at = i), ctx = " (in enum `\{name}`)")}")
         i = i + 1
       }
-      "export enum \{fw_type_name(name)} {\n\{String::join(parts, ";\n")}\n}"
+      "export enum \{fw_type_name(name)} {\n\{String::join(parts, sep = ";\n")}\n}"
     },
     TDVariant(name, cases, _) => {
       let ctx = " (in variant `\{name}`)"
@@ -200,16 +200,16 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
               Array::push(tys, value = fw_type(t = Array::get(items, at = k), ctx = ctx))
               k = k + 1
             }
-            "  \{head}(\{String::join(tys, ", ")})"
+            "  \{head}(\{String::join(tys, sep = ", ")})"
           },
-          Some(t) => "  \{head}(\{fw_type(t, ctx)})",
+          Some(t) => "  \{head}(\{fw_type(t = t, ctx = ctx)})",
           None => "  \{head}"
         })
         i = i + 1
       }
-      "export enum \{fw_type_name(name)} {\n\{String::join(parts, ";\n")}\n}"
+      "export enum \{fw_type_name(name)} {\n\{String::join(parts, sep = ";\n")}\n}"
     },
-    TDAlias(name, t, _) => "type \{fw_type_name(name)} = \{fw_type(t, " (in type `\{name}`)")}",
+    TDAlias(name, t, _) => "type \{fw_type_name(name)} = \{fw_type(t = t, ctx = " (in type `\{name}`)")}",
     TDFlags(name, _, _) => throw(fw_refusal(what = "flags \{name}", ctx = "")),
     TDResource(name, funcs, _) => {
       let ty = fw_type_name(name)
@@ -337,7 +337,7 @@ export fn from_wit_typedefs(_ defs: Array[WitTypeDef]) -> String with Exception 
       while j < Array::length(seen_ctor) {
         if Array::get(seen_ctor, at = j) == ctor {
           let first = Array::get(seen_owner, at = j)
-          throw(fw_refusal(what = "case `\{Array::get(cases, c)}` in both `\{first}` and `\{owner}` (both would be the constructor `\{ctor}`)", ctx = ""))
+          throw(fw_refusal(what = "case `\{Array::get(cases, at = c)}` in both `\{first}` and `\{owner}` (both would be the constructor `\{ctor}`)", ctx = ""))
         } else {
           ()
         }
@@ -454,7 +454,7 @@ export fn from_wit_future_imports(_ source: String) -> String with Exception {
             } else {
               pname0
             }
-            Array::push(out, value = "/// `\{iface_id}#\{fname}`, imported as a host response taking `\{plabel}` (#2066).\nexport fn \{vname}(\{pname}: String) -> Future[HostResponse] {\n  host_response_named_with(\"\{iface_id}#\{fname}?\{plabel}\", \{pname})\n}")
+            Array::push(out, value = "/// `\{iface_id}#\{fname}`, imported as a host response taking `\{plabel}` (#2066).\nexport fn \{vname}(\{pname}: String) -> Future[HostResponse] {\n  host_response_named_with(\"\{iface_id}#\{fname}?\{plabel}\", body = \{pname})\n}")
           } else if response {
             Array::push(out, value = "/// `\{iface_id}#\{fname}`, imported as a host response (#2066).\nexport fn \{vname}() -> Future[HostResponse] {\n  host_response_named(\"\{iface_id}#\{fname}\")\n}")
           } else {
@@ -576,15 +576,15 @@ fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
     TyChar => "Char",
     TyString => "String",
     TyList(TyU8) => "Bytes",
-    TyList(el) => "Array[\{fw_type(el, ctx)}]",
-    TyOption(el) => "Option[\{fw_type(el, ctx)}]",
-    TyFuture(el) => "Future[\{fw_type(el, ctx)}]",
+    TyList(el) => "Array[\{fw_type(t = el, ctx = ctx)}]",
+    TyOption(el) => "Option[\{fw_type(t = el, ctx = ctx)}]",
+    TyFuture(el) => "Future[\{fw_type(t = el, ctx = ctx)}]",
     // The host owns the producer end of a boundary byte stream (ADR-0089 D4),
     // which is the nominal `HostStream` handle.
     TyStream(TyU8) => "HostStream",
     TyStream(_) => throw(fw_refusal(what = "stream<..> of anything but u8", ctx = ctx)),
     TyResult(ok, err) => match err {
-      Some(e) => "Result[\{fw_type(ok, ctx)}, \{fw_type(e, ctx)}]",
+      Some(e) => "Result[\{fw_type(t = ok, ctx = ctx)}, \{fw_type(t = e, ctx = ctx)}]",
       None => throw(fw_refusal(what = "result<..> with no error type", ctx = ctx))
     },
     // `_` (the parser's empty tuple) as a type argument: `wit_type_text` has
@@ -603,7 +603,7 @@ fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
         Array::push(parts, value = fw_type(t = Array::get(items, at = i), ctx = ctx))
         i = i + 1
       }
-      "(\{String::join(parts, ", ")})"
+      "(\{String::join(parts, sep = ", ")})"
     },
     TyId(name) => fw_type_name(name),
     TyOwn(name) => fw_type_name(name),

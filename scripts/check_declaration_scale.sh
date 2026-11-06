@@ -52,7 +52,7 @@ import sys
 n, t = int(sys.argv[1]), sys.argv[2]
 for i in range(n):
     print(f'fn {t}_f{i}(x: Int) -> Int {{ x + {i} }}')
-print(f'fn main() -> Unit {{ let _ = {t}_f0(1) }}')
+print(f'fn main() -> Unit {{ let _ = {t}_f0(x = 1) }}')
 " "$N" "$tag" > "$src"
   env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \

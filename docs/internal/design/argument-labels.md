@@ -266,9 +266,22 @@ with every edited file rechecked clean. In both runs the codemod skips
 the same calls: 62 through a local lambda, which D1 keeps positional, and
 10 whose written arguments do not line up with the checked call (pipes
 and calls inside interpolation).
-4. **Enforce.** The warning becomes an error. Retire `x~` and the labeled
-   function-type spelling. Rewrite the cheatsheet's labeled-argument
-   sections and `syntax.md` to the final state.
+4. **Enforce.** In two steps:
+   - **4a.** An unlabeled argument at a call to a declaration (a top-level
+     `fn` or lambda-initialized `let`, `T::f`, an import, a builtin) is a
+     build error that lists the labels to write; a mixed call to a
+     declaration names the same edit. `vibe check --warn-missing-labels` is
+     retired. The codemod types the program it labels with the check
+     suspended. Argument sugar survives a label: `f = x -> x + 1`,
+     `f = _ * 2`, and a labeled pipe hole `x |> f(1, b = _)`.
+   - **4b.** Retire `x~` and the labeled function-type spelling, and make
+     a call through a value (a local lambda, a parameter, a field)
+     positional only, refusing a label there. Rewrite the cheatsheet's
+     labeled-argument sections and `syntax.md` to the final state.
+
+   Lanes that lower without the checker (`*_unchecked_cached`, the grouped
+   merge) have no placement for a labeled call to an imported function and
+   refuse it; they ask for checked source, as Phase 1c already specified.
 
 ## Acceptance
 

@@ -44,7 +44,7 @@ fn add(x: Int, y: Int) -> Int {
 }
 
 fn main allows Console {
-  println("\{add(2, 40)}")
+  println("\{add(x = 2, y = 40)}")
 }
 ```
 

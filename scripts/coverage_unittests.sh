@@ -24,7 +24,7 @@ exact_imports() { # test basename
   case "$1" in
     cfv_test.vibe)
       printf 'import ../../../../lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe { collect_free_vars }\n'
-      printf 'let array_empty: [T]() -> Array[T] = () -> { Array::slice([], 0, 0) }\n'
+      printf 'let array_empty: [T]() -> Array[T] = () -> { Array::slice([], start = 0, end = 0) }\n'
       ;;
     cfv_encl_test.vibe)
       printf 'import ../../../../lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe { collect_free_vars_indexed_self }\n'

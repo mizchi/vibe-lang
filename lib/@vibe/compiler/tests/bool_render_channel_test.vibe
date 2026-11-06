@@ -162,7 +162,7 @@ test "2464: the gc ECall arm is load-bearing, and its guard holds" {
   // arm fires, and `a_user` proves the "a USER function owns this call" guard
   // holds. Without that guard an `fn eq(..) -> Int` would render its result as
   // "true"/"false" -- worse than the bug being fixed.
-  let a_user = "fn eq(a: Int, b: Int) -> Bool {\n  a < b\n}\nfn main() -> Int {\n  let s = __to_string(eq(1, 2))\n  0\n}\n"
+  let a_user = "fn eq(a: Int, b: Int) -> Bool {\n  a < b\n}\nfn main() -> Int {\n  let s = __to_string(eq(a = 1, b = 2))\n  0\n}\n"
   let b_builtin = "fn zz(a: Int, b: Int) -> Bool {\n  a < b\n}\nfn main() -> Int {\n  let s = __to_string(eq(1, 2))\n  0\n}\n"
   inspect(gc_size(b_builtin) > gc_size(a_user), content = "true")
 }
@@ -182,8 +182,8 @@ test "a USER function named `not` owns its own call" {
   // guard spread the bug instead of fixing one. The typed channel cannot
   // rescue it: it is an extra `||`, so it can only ADD a classification, never
   // correct a syntactic `true`.
-  let user_not = "fn not(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(not(true))\n  0\n}\n"
-  let other_name = "fn nope(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(nope(true))\n  0\n}\n"
+  let user_not = "fn not(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(not(x = true))\n  0\n}\n"
+  let other_name = "fn nope(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(nope(x = true))\n  0\n}\n"
   // Same program shape, only the name differs -- and neither may be
   // classified, so the two must cost the same.
   inspect(gc_size(user_not) == gc_size(other_name), content = "true")
@@ -211,8 +211,8 @@ test "2464: gc does not classify a call by the NAME `T::equals`" {
   // omission rather than a guard: `desugar_derives` GENERATES `T::equals` into
   // that same table, so the guard would disable the `==` rewrite's own output.
   // linear's copy still carries the hole; it is reported, not half-fixed here.
-  let user_equals = "fn Foo::equals(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::equals(1, 2))\n  0\n}\n"
-  let other_name = "fn Foo::eqx(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::eqx(1, 2))\n  0\n}\n"
+  let user_equals = "fn Foo::equals(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::equals(a = 1, b = 2))\n  0\n}\n"
+  let other_name = "fn Foo::eqx(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::eqx(a = 1, b = 2))\n  0\n}\n"
   // Neither may be classified, so the two must cost the same. With the clause
   // ported, only the first would take the boolish path and they would differ.
   inspect(gc_size(user_equals) == gc_size(other_name), content = "true")
@@ -260,26 +260,26 @@ test "2468: a Show wrapper's argument gets the same rows as `__to_string`" {
   // argument. The argument is the #2462 shape (a lambda bound by a `let`
   // INSIDE a function body), so nothing syntactic reaches it either -- the row
   // is the whole mechanism.
-  let shim = "fn to_string[T](x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
+  let shim = "fn to_string[T](_ x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
   inspect(bool_rows(shim), content = "1")
   // Red direction: a one-parameter function that is NOT a bare `__to_string`
   // of its parameter is an ordinary call, and its argument files nothing.
   // #2840 rejects this erased body; the renderer-row query reports failure.
-  let not_shim = "fn to_string[T](x: T) -> String {\n  let y = x\n  __to_string(y)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
+  let not_shim = "fn to_string[T](_ x: T) -> String {\n  let y = x\n  __to_string(y)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
   inspect(bool_rows(not_shim), content = "-1")
   // And the wrapper must be recognized by its SHAPE, not by the name
   // `to_string`.
-  let other_name = "fn zz[T](x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = zz(l())\n  ()\n}\n"
+  let other_name = "fn zz[T](_ x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = zz(l())\n  ()\n}\n"
   inspect(bool_rows(other_name), content = "1")
   // An Int through the same wrapper stays an Int row -- the wrapper widens
   // WHICH calls are renders, never which type an argument has.
-  let int_shim = "fn to_string[T](x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let n = 7\n  let s = to_string(n)\n  ()\n}\n"
+  let int_shim = "fn to_string[T](_ x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let n = 7\n  let s = to_string(n)\n  ()\n}\n"
   inspect(bool_rows(int_shim), content = "0")
   inspect(int_rows(int_shim), content = "1")
   // A MONOMORPHIC wrapper files its own body's row too, and that is not a
   // second answer about the same expression: `__to_string(x)` inside the
   // wrapper is a render of a Bool in its own right.
-  let mono = "fn to_string(x: Bool) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
+  let mono = "fn to_string(_ x: Bool) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
   inspect(bool_rows(mono), content = "2")
 }
 

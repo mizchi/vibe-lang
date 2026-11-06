@@ -240,7 +240,7 @@ import ./pkg/lib.vibe { compose, addone, double }
 fn f() -> Int { 1 }
 
 export let main = () -> Int {
-  let c = compose(addone, double)
+  let c = compose(f = addone, g = double)
   c(3)
 }
 VEOF
@@ -1041,7 +1041,7 @@ import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
   TaskGroup::run((g) -> {
     let p = () -> Int with Async + Exception { 5 }
-    let h = TaskGroup::spawn_suspend(g, p)
+    let h = TaskGroup::spawn_suspend(g, f = p)
     TaskGroup::pump_all(g)
     TaskHandle::join(h) + 1
   })
@@ -1099,7 +1099,7 @@ cat > "$ssldir/inline.vibe" <<'VIBE'
 import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
   TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception { 5 })
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception { 5 })
     TaskGroup::pump_all(g)
     TaskHandle::join(h) + 1
   })
@@ -1191,7 +1191,7 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception + Async {
   let r = TaskGroup::run((g) -> Int with Async + Exception {
-    let a = TaskGroup::spawn(g, () -> 1)
+    let a = TaskGroup::spawn(g, f = () -> 1)
     sleep(10)
     TaskHandle::join(a) + 1
   })
@@ -1475,7 +1475,7 @@ if ! op_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runn
 fi
 cat > "$opb/neg.vibe" <<'EOF'
 fn only_read(p: String) -> Unit with Fs::read_file {
-  Fs::write_file(p, "x")
+  Fs::write_file(p, contents = "x")
 }
 
 let main = () -> Int {
@@ -1488,7 +1488,7 @@ gate_require_diag_matches "$opb/neg.wasm.diag" "missing { Fs::write_file }" \
   "the diagnostic must name the missing OPERATION, not the whole effect (ADR-0071/#1343)"
 cat > "$opb/bare.vibe" <<'EOF'
 fn both(p: String) -> Unit with Fs {
-  Fs::write_file(p, Fs::read_file(p))
+  Fs::write_file(p, contents = Fs::read_file(p))
 }
 
 let main = () -> Int {
@@ -1707,7 +1707,7 @@ let main = () -> Int {
     gen()
     42
   }
-  run(body)
+  run(f = body)
 }
 EOF
 gate_fs_compile "$hsdir/param.vibe" "$hsdir/param.wasm" main

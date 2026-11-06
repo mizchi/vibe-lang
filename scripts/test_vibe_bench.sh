@@ -45,7 +45,7 @@ field() { printf '%s\n' "$1" | grep -oE "$2=[0-9]+" | head -1 | cut -d= -f2; }
 proj="$WORK/proj"; mkdir -p "$proj"
 cat > "$proj/pure_bench.vibe" <<'EOF'
 let add = (a: Int, b: Int) -> Int { a + b }
-bench "pure_add" { let _ = add(2, 3) }
+bench "pure_add" { let _ = add(a = 2, b = 3) }
 EOF
 cat > "$proj/alloc_bench.vibe" <<'EOF'
 let build = (n: Int) -> String {
@@ -54,7 +54,7 @@ let build = (n: Int) -> String {
   while i < n { s = String::concat(s, "x"); i = i + 1 }
   s
 }
-bench "build" { let _ = String::length(build(50)) }
+bench "build" { let _ = String::length(build(n = 50)) }
 EOF
 
 # 1. pure bench: machine-readable line, bytes_per_op = 0, ops_per_sec present.
@@ -96,8 +96,8 @@ let work = (n: Int) -> Int {
   while i < n { acc = acc + (i & 3); i = i + 1 }
   acc
 }
-bench "light" { let _ = work(500) }
-bench "heavy" { let _ = work(1000) }
+bench "light" { let _ = work(n = 500) }
+bench "heavy" { let _ = work(n = 1000) }
 EOF
 multi_out="$("$VIBE" bench "$proj/multi_bench.vibe" --iters 200 --warmup 20 2>&1)"
 printf '%s\n' "$multi_out" | grep -qE "vibe::bench label=multi_bench\.vibe::light " \
@@ -174,7 +174,7 @@ cat > "$proj/trapping_profile_bench.vibe" <<'EOF'
 let calls = [0]
 bench "trap_measurement" allows Exception {
   let next = calls[0] + 1
-  Array::set(calls, 0, next)
+  Array::set(calls, at = 0, value = next)
   if next > 1 { throw("measurement boom") }
 }
 EOF
@@ -197,7 +197,7 @@ fn spin(n: Int) -> Int {
   while i < n { acc = acc + (i & 7); i = i + 1 }
   acc
 }
-fn main allows () { let _ = spin(20000000) }
+fn main allows () { let _ = spin(n = 20000000) }
 EOF
 run_profile="$WORK/run-profile.json"
 profile_run_out="$($VIBE profile "$proj/profile.vibex" --out "$run_profile" --interval-us 100 2>&1)"
@@ -265,7 +265,7 @@ fn work(n: Int) -> Int {
   i
 }
 fn main() -> Unit allows Exception {
-  let _ = work(20000000)
+  let _ = work(n = 20000000)
   throw("profiled boom")
 }
 EOF

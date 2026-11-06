@@ -221,7 +221,7 @@ let drain = (s: HostStream) -> Int {
 }
 
 let run: () -> Int with Async = () -> {
-  drain(host_stream_named("body"))
+  drain(s = host_stream_named("body"))
 }
 EOF
 FOR_NEG_OUT="$OUT_DIR/stream_for_norow.wasm"
@@ -280,7 +280,7 @@ let drain = (h: Holder) -> Int {
 }
 
 let run: () -> Int with Async = () -> {
-  drain(Holder::{ s: host_stream_named("body") })
+  drain(h = Holder::{ s: host_stream_named("body") })
 }
 EOF
 PROJ_NEG_OUT="$OUT_DIR/stream_for_proj_norow.wasm"
@@ -516,15 +516,15 @@ fn pull(s: HostStream) -> Int with Async {
 let run: () -> Int with Async = () -> {
   let left = host_stream_named("left")
   let right = host_stream_named("right")
-  let a = pull(left)
-  let b = pull(right)
-  let c = pull(left)
-  let d = pull(right)
-  let left_eos_1 = pull(left)
-  let left_eos_2 = pull(left)
+  let a = pull(s = left)
+  let b = pull(s = right)
+  let c = pull(s = left)
+  let d = pull(s = right)
+  let left_eos_1 = pull(s = left)
+  let left_eos_2 = pull(s = left)
   host_stream_close(right)
   host_stream_close(right)
-  let right_after_close = pull(right)
+  let right_after_close = pull(s = right)
   let terminals = if left_eos_1 == 0 - 1 && left_eos_2 == 0 - 1 && right_after_close == 0 - 1 {
     0
   } else {

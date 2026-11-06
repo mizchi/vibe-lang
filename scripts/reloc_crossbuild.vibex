@@ -40,7 +40,7 @@ fn bytes_range_to_string(b: Bytes, start: Int, end_pos: Int) -> String {
   let sb = StringBuilder::new()
   let mut i = start
   while i < end_pos {
-    StringBuilder::push(sb, String::from_byte(Bytes::get(b, i)))
+    StringBuilder::push(sb, value = String::from_byte(Bytes::get(b, at = i)))
     i = i + 1
   }
   StringBuilder::freeze(sb)
@@ -52,7 +52,7 @@ fn read_uleb(b: Bytes, pos: Int) -> (Int, Int) {
   let mut p = pos
   let mut done = false
   while !done {
-    let byte = Bytes::get(b, p)
+    let byte = Bytes::get(b, at = p)
     result = result|((byte&127)<<shift)
     shift = shift + 7
     p = p + 1
@@ -72,7 +72,7 @@ fn read_sleb(b: Bytes, pos: Int) -> (Int, Int) {
   let mut done = false
   let mut last = 0
   while !done {
-    let byte = Bytes::get(b, p)
+    let byte = Bytes::get(b, at = p)
     last = byte
     result = result|((byte&127)<<shift)
     shift = shift + 7
@@ -92,9 +92,9 @@ fn read_sleb(b: Bytes, pos: Int) -> (Int, Int) {
 }
 
 fn skip_valtype(b: Bytes, pos: Int) -> Int {
-  let t = Bytes::get(b, pos)
+  let t = Bytes::get(b, at = pos)
   if t == 0x63 || t == 0x64 {
-    let (_, p) = read_sleb(b, pos + 1)
+    let (_, p) = read_sleb(b = b, pos = pos + 1)
     p
   } else {
     pos + 1
@@ -102,12 +102,12 @@ fn skip_valtype(b: Bytes, pos: Int) -> Int {
 }
 
 fn skip_locals(b: Bytes, pos: Int) -> Int {
-  let (groups, p0) = read_uleb(b, pos)
+  let (groups, p0) = read_uleb(b = b, pos = pos)
   let mut p = p0
   let mut i = 0
   while i < groups {
-    let (_, pn) = read_uleb(b, p)
-    p = skip_valtype(b, pn)
+    let (_, pn) = read_uleb(b = b, pos = p)
+    p = skip_valtype(b = b, pos = pn)
     i = i + 1
   }
   p
@@ -135,35 +135,35 @@ fn load(path: String) -> Mod with Exception + Fs {
   let mut imported = 0
   let mut p = 8
   while p < len {
-    let sid = Bytes::get(b, p)
-    let (size, p1) = read_uleb(b, p + 1)
+    let sid = Bytes::get(b, at = p)
+    let (size, p1) = read_uleb(b = b, pos = p + 1)
     let section_end = p1 + size
     if sid == 2 {
-      let (n, pi0) = read_uleb(b, p1)
+      let (n, pi0) = read_uleb(b = b, pos = p1)
       let mut pi = pi0
       let mut i = 0
       while i < n {
-        let (l1, pa) = read_uleb(b, pi)
-        let (l2, pb) = read_uleb(b, pa + l1)
+        let (l1, pa) = read_uleb(b = b, pos = pi)
+        let (l2, pb) = read_uleb(b = b, pos = pa + l1)
         let pk = pb + l2
-        let kind = Bytes::get(b, pk)
+        let kind = Bytes::get(b, at = pk)
         if kind == 0 {
-          let (_, pn) = read_uleb(b, pk + 1)
+          let (_, pn) = read_uleb(b = b, pos = pk + 1)
           imported = imported + 1
           pi = pn
         } else if kind == 1 {
-          let fl = Bytes::get(b, pk + 2)
-          let (_, pn) = read_uleb(b, pk + 3)
+          let fl = Bytes::get(b, at = pk + 2)
+          let (_, pn) = read_uleb(b = b, pos = pk + 3)
           if fl == 1 {
-            let (_, pm) = read_uleb(b, pn); pi = pm
+            let (_, pm) = read_uleb(b = b, pos = pn); pi = pm
           } else {
             pi = pn
           }
         } else if kind == 2 {
-          let fl = Bytes::get(b, pk + 1)
-          let (_, pn) = read_uleb(b, pk + 2)
+          let fl = Bytes::get(b, at = pk + 1)
+          let (_, pn) = read_uleb(b = b, pos = pk + 2)
           if fl == 1 {
-            let (_, pm) = read_uleb(b, pn); pi = pm
+            let (_, pm) = read_uleb(b = b, pos = pn); pi = pm
           } else {
             pi = pn
           }
@@ -173,35 +173,35 @@ fn load(path: String) -> Mod with Exception + Fs {
         i = i + 1
       }
     } else if sid == 10 {
-      let (n, pc0) = read_uleb(b, p1)
+      let (n, pc0) = read_uleb(b = b, pos = p1)
       let mut pc = pc0
       let mut i = 0
       while i < n {
-        let (bsize, bstart) = read_uleb(b, pc)
-        Array::push(body_idxs, imported + i)
-        Array::push(body_starts, skip_locals(b, bstart))
-        Array::push(body_ends, bstart + bsize)
+        let (bsize, bstart) = read_uleb(b = b, pos = pc)
+        Array::push(body_idxs, value = imported + i)
+        Array::push(body_starts, value = skip_locals(b = b, pos = bstart))
+        Array::push(body_ends, value = bstart + bsize)
         pc = bstart + bsize
         i = i + 1
       }
     } else if sid == 0 {
-      let (nl, pn0) = read_uleb(b, p1)
-      let sec_name = bytes_range_to_string(b, pn0, pn0 + nl)
+      let (nl, pn0) = read_uleb(b = b, pos = p1)
+      let sec_name = bytes_range_to_string(b = b, start = pn0, end_pos = pn0 + nl)
       if sec_name == "name" {
         let mut q = pn0 + nl
         while q < section_end {
-          let sub = Bytes::get(b, q)
-          let (ssz, qs) = read_uleb(b, q + 1)
+          let sub = Bytes::get(b, at = q)
+          let (ssz, qs) = read_uleb(b = b, pos = q + 1)
           let sub_end = qs + ssz
           if sub == 1 {
-            let (cnt, qc0) = read_uleb(b, qs)
+            let (cnt, qc0) = read_uleb(b = b, pos = qs)
             let mut qc = qc0
             let mut k = 0
             while k < cnt {
-              let (idx, qa) = read_uleb(b, qc)
-              let (nlen, qb) = read_uleb(b, qa)
-              Array::push(name_idxs, idx)
-              Array::push(names, bytes_range_to_string(b, qb, qb + nlen))
+              let (idx, qa) = read_uleb(b = b, pos = qc)
+              let (nlen, qb) = read_uleb(b = b, pos = qa)
+              Array::push(name_idxs, value = idx)
+              Array::push(names, value = bytes_range_to_string(b = b, start = qb, end_pos = qb + nlen))
               qc = qb + nlen
               k = k + 1
             }
@@ -233,8 +233,8 @@ fn name_of(m: Mod, idx: Int) -> String {
   let mut i = 0
   let mut found = ""
   while i < n {
-    if Array::get(m.name_idxs, i) == idx {
-      found = Array::get(m.names, i); i = n
+    if Array::get(m.name_idxs, at = i) == idx {
+      found = Array::get(m.names, at = i); i = n
     } else {
       i = i + 1
     }
@@ -259,10 +259,10 @@ fn index_of_name(m: Mod, name: String) -> Int {
   let mut found = -1
   let mut hits = 0
   while i < n {
-    if Array::get(m.names, i) == name {
+    if Array::get(m.names, at = i) == name {
       hits = hits + 1
       if hits == 1 {
-        found = Array::get(m.name_idxs, i)
+        found = Array::get(m.name_idxs, at = i)
       } else {
         ()
       }
@@ -288,13 +288,13 @@ fn index_of_name(m: Mod, name: String) -> Int {
 /// identify ONE function on each side before it can carry a mapping. Found by
 /// review on #2705, one round after the B-side-only version.
 fn map_index(a: Mod, b: Mod, idx: Int) -> Int {
-  let nm = name_of(a, idx)
+  let nm = name_of(m = a, idx = idx)
   if nm == "" {
     -1
-  } else if index_of_name(a, nm) == -2 {
+  } else if index_of_name(m = a, name = nm) == -2 {
     -2
   } else {
-    index_of_name(b, nm)
+    index_of_name(m = b, name = nm)
   }
 }
 
@@ -303,7 +303,7 @@ fn body_slot(m: Mod, idx: Int) -> Int {
   let mut i = 0
   let mut found = -1
   while i < n {
-    if Array::get(m.body_idxs, i) == idx {
+    if Array::get(m.body_idxs, at = i) == idx {
       found = i; i = n
     } else {
       i = i + 1
@@ -319,7 +319,7 @@ fn spans_equal(ab: Bytes, s: Int, e: Int, other: Bytes) -> Bool {
     let mut i = 0
     let mut same = true
     while i < e - s {
-      if Bytes::get(ab, s + i) != Bytes::get(other, i) {
+      if Bytes::get(ab, at = s + i) != Bytes::get(other, at = i) {
         same = false
       } else {
         ()
@@ -336,14 +336,14 @@ fn is_source_edited(name: String, edited: Array[String]) -> Bool {
   let mut i = 0
   let mut hit = false
   while !hit && i < Array::length(edited) {
-    hit = name == Array::get(edited, i)
+    hit = name == Array::get(edited, at = i)
     i = i + 1
   }
   hit
 }
 
 fn source_edited_index(m: Mod, name: String) -> Int with Exception {
-  let exact = index_of_name(m, name)
+  let exact = index_of_name(m = m, name = name)
   if exact == -2 {
     throw("reloc-crossbuild: source-edited name is ambiguous: " + name)
   } else {
@@ -356,9 +356,9 @@ fn source_edited_index(m: Mod, name: String) -> Int with Exception {
     let mut hits = 0
     let mut i = 0
     while i < Array::length(m.names) {
-      let candidate = Array::get(m.names, i)
-      if String::starts_with(candidate, name + "_exp_") || String::starts_with(candidate, name + "_dep_") {
-        found = Array::get(m.name_idxs, i)
+      let candidate = Array::get(m.names, at = i)
+      if String::starts_with(candidate, prefix = name + "_exp_") || String::starts_with(candidate, prefix = name + "_dep_") {
+        found = Array::get(m.name_idxs, at = i)
         hits = hits + 1
       } else {
         ()
@@ -379,14 +379,14 @@ fn split_commas(s: String) -> Array[String] with Exception {
   let mut cur = ""
   let mut i = 0
   while i < String::length(s) {
-    let c = String::substring(s, i, i + 1)
+    let c = String::substring(s, start = i, end = i + 1)
     if c == "," {
       if cur == "" {
         throw("reloc-crossbuild: source-edited list requires a function name at every position")
       } else {
         ()
       }
-      Array::push(out, cur)
+      Array::push(out, value = cur)
       cur = ""
     } else {
       cur = cur + c
@@ -398,7 +398,7 @@ fn split_commas(s: String) -> Array[String] with Exception {
   } else {
     ()
   }
-  Array::push(out, cur)
+  Array::push(out, value = cur)
   out
 }
 
@@ -406,21 +406,21 @@ fn source_edited_names(a: Mod, b: Mod, requested: Array[String]) -> Array[String
   let names: Array[String] = []
   let mut i = 0
   while i < Array::length(requested) {
-    let name = Array::get(requested, i)
-    let ai = source_edited_index(a, name)
-    let bi = source_edited_index(b, name)
-    if ai < 0 || bi < 0 || body_slot(a, ai) < 0 || body_slot(b, bi) < 0 || map_index(a, b, ai) != bi {
+    let name = Array::get(requested, at = i)
+    let ai = source_edited_index(m = a, name = name)
+    let bi = source_edited_index(m = b, name = name)
+    if ai < 0 || bi < 0 || body_slot(m = a, idx = ai) < 0 || body_slot(m = b, idx = bi) < 0 || map_index(a = a, b = b, idx = ai) != bi {
       throw("reloc-crossbuild: exclusion must name a shared defined function: " + name)
     } else {
       ()
     }
-    let exact = name_of(a, ai)
-    if is_source_edited(exact, names) {
+    let exact = name_of(m = a, idx = ai)
+    if is_source_edited(name = exact, edited = names) {
       throw("reloc-crossbuild: duplicate exclusion: " + name)
     } else {
       ()
     }
-    Array::push(names, exact)
+    Array::push(names, value = exact)
     i = i + 1
   }
   names
@@ -437,12 +437,12 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
   } else {
     ()
   }
-  let a = load(Env::args_get(0))
-  let b = load(Env::args_get(1))
+  let a = load(path = Env::args_get(0))
+  let b = load(path = Env::args_get(1))
   // Validate every request before reporting any measurement. The binary
   // cannot establish source equality; callers must identify their edits.
   let edited = if Env::args_len() == 3 {
-    source_edited_names(a, b, split_commas(Env::args_get(2)))
+    source_edited_names(a = a, b = b, requested = split_commas(s = Env::args_get(2)))
   } else {
     []
   }
@@ -464,15 +464,15 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
   let n = Array::length(a.body_idxs)
   let mut i = 0
   while i < n {
-    let ai = Array::get(a.body_idxs, i)
-    let nm = name_of(a, ai)
-    let bi = map_index(a, b, ai)
+    let ai = Array::get(a.body_idxs, at = i)
+    let nm = name_of(m = a, idx = ai)
+    let bi = map_index(a = a, b = b, idx = ai)
     let bs = if bi < 0 {
       -1
     } else {
-      body_slot(b, bi)
+      body_slot(m = b, idx = bi)
     }
-    if is_source_edited(nm, edited) {
+    if is_source_edited(name = nm, edited = edited) {
       source_edited_excluded = source_edited_excluded + 1
     } else if bi == -2 {
       ambiguous_name = ambiguous_name + 1
@@ -485,9 +485,9 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
       } else {
         ()
       }
-      let a_start = Array::get(a.body_starts, i)
-      let a_end = Array::get(a.body_ends, i)
-      let r = scan_body_relocs(a.bytes, a_start, a_end)
+      let a_start = Array::get(a.body_starts, at = i)
+      let a_end = Array::get(a.body_ends, at = i)
+      let r = scan_body_relocs(body = a.bytes, start = a_start, end_pos = a_end)
       let cnt = Array::length(r.offsets)
       // Remap: a FUNCTION index goes through the name; everything else is
       // passed through, and counted, because the binary carries no name for
@@ -502,18 +502,18 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
       let mut rewritten = 0
       let mut k = 0
       while k < cnt {
-        let kind = Array::get(r.kinds, k)
-        let val = Array::get(r.values, k)
+        let kind = Array::get(r.kinds, at = k)
+        let val = Array::get(r.values, at = k)
         if kind == reloc_kind_func {
-          let nv = map_index(a, b, val)
+          let nv = map_index(a = a, b = b, idx = val)
           // -1 absent, -2 ambiguous on either side: neither can be remapped,
           // and passing the old value through is a KNOWN-WRONG relocation,
           // not a neutral one.
           if nv < 0 {
             unresolved = unresolved + 1
-            Array::push(mapped, val)
+            Array::push(mapped, value = val)
           } else {
-            Array::push(mapped, nv)
+            Array::push(mapped, value = nv)
             if nv != val {
               rewritten = rewritten + 1
             } else {
@@ -522,7 +522,7 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
           }
         } else {
           nonfunc = nonfunc + 1
-          Array::push(mapped, val)
+          Array::push(mapped, value = val)
         }
         k = k + 1
       }
@@ -536,13 +536,13 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
       } else {
         ()
       }
-      let rebuilt = rebuild_body_relocs(a.bytes, a_start, a_end, r, mapped)
+      let rebuilt = rebuild_body_relocs(body = a.bytes, start = a_start, end_pos = a_end, r = r, new_values = mapped)
       if rewritten > 0 {
         rewritten_bodies = rewritten_bodies + 1
       } else {
         ()
       }
-      if spans_equal(b.bytes, Array::get(b.body_starts, bs), Array::get(b.body_ends, bs), rebuilt) {
+      if spans_equal(ab = b.bytes, s = Array::get(b.body_starts, at = bs), e = Array::get(b.body_ends, at = bs), other = rebuilt) {
         matched = matched + 1
         if rewritten > 0 {
           rewritten_matched = rewritten_matched + 1
@@ -576,7 +576,7 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
         if nonfunc == 0 && unresolved == 0 {
           mismatch_encoding_blind = mismatch_encoding_blind + 1
           if Array::length(examples) < 6 {
-            Array::push(examples, nm)
+            Array::push(examples, value = nm)
           } else {
             ()
           }
@@ -588,42 +588,42 @@ fn main() -> Unit allows Exception + Fs + Console + Env::args_get + Env::args_le
     i = i + 1
   }
   let out = StringBuilder::new()
-  StringBuilder::push(out, "reloc-crossbuild compared=")
-  StringBuilder::push(out, __to_string(compared))
-  StringBuilder::push(out, " matched=")
-  StringBuilder::push(out, __to_string(matched))
-  StringBuilder::push(out, " mismatched=")
-  StringBuilder::push(out, __to_string(mismatched))
-  StringBuilder::push(out, " mismatch_encoding_blind=")
-  StringBuilder::push(out, __to_string(mismatch_encoding_blind))
-  StringBuilder::push(out, " mismatch_ambiguous_cause=")
-  StringBuilder::push(out, __to_string(mismatch_ambiguous_cause))
-  StringBuilder::push(out, " ambiguous_name_skipped=")
-  StringBuilder::push(out, __to_string(ambiguous_name))
-  StringBuilder::push(out, " moved_index=")
-  StringBuilder::push(out, __to_string(moved_index))
-  StringBuilder::push(out, " rewritten=")
-  StringBuilder::push(out, __to_string(rewritten_bodies))
-  StringBuilder::push(out, " rewritten_matched=")
-  StringBuilder::push(out, __to_string(rewritten_matched))
-  StringBuilder::push(out, " rewritten_mismatched=")
-  StringBuilder::push(out, __to_string(rewritten_mismatched))
-  StringBuilder::push(out, " source_edited_excluded=")
-  StringBuilder::push(out, __to_string(source_edited_excluded))
-  StringBuilder::push(out, " a_only=")
-  StringBuilder::push(out, __to_string(a_only_shape))
-  StringBuilder::push(out, " bodies_with_nonfunc_refs=")
-  StringBuilder::push(out, __to_string(had_nonfunc))
-  StringBuilder::push(out, " bodies_with_unresolved_func=")
-  StringBuilder::push(out, __to_string(unresolved_func))
+  StringBuilder::push(out, value = "reloc-crossbuild compared=")
+  StringBuilder::push(out, value = __to_string(compared))
+  StringBuilder::push(out, value = " matched=")
+  StringBuilder::push(out, value = __to_string(matched))
+  StringBuilder::push(out, value = " mismatched=")
+  StringBuilder::push(out, value = __to_string(mismatched))
+  StringBuilder::push(out, value = " mismatch_encoding_blind=")
+  StringBuilder::push(out, value = __to_string(mismatch_encoding_blind))
+  StringBuilder::push(out, value = " mismatch_ambiguous_cause=")
+  StringBuilder::push(out, value = __to_string(mismatch_ambiguous_cause))
+  StringBuilder::push(out, value = " ambiguous_name_skipped=")
+  StringBuilder::push(out, value = __to_string(ambiguous_name))
+  StringBuilder::push(out, value = " moved_index=")
+  StringBuilder::push(out, value = __to_string(moved_index))
+  StringBuilder::push(out, value = " rewritten=")
+  StringBuilder::push(out, value = __to_string(rewritten_bodies))
+  StringBuilder::push(out, value = " rewritten_matched=")
+  StringBuilder::push(out, value = __to_string(rewritten_matched))
+  StringBuilder::push(out, value = " rewritten_mismatched=")
+  StringBuilder::push(out, value = __to_string(rewritten_mismatched))
+  StringBuilder::push(out, value = " source_edited_excluded=")
+  StringBuilder::push(out, value = __to_string(source_edited_excluded))
+  StringBuilder::push(out, value = " a_only=")
+  StringBuilder::push(out, value = __to_string(a_only_shape))
+  StringBuilder::push(out, value = " bodies_with_nonfunc_refs=")
+  StringBuilder::push(out, value = __to_string(had_nonfunc))
+  StringBuilder::push(out, value = " bodies_with_unresolved_func=")
+  StringBuilder::push(out, value = __to_string(unresolved_func))
   println(StringBuilder::freeze(out))
   if Array::length(examples) > 0 {
     let ex = StringBuilder::new()
-    StringBuilder::push(ex, "reloc-crossbuild encoding-blind-examples")
+    StringBuilder::push(ex, value = "reloc-crossbuild encoding-blind-examples")
     let mut e = 0
     while e < Array::length(examples) {
-      StringBuilder::push(ex, " ")
-      StringBuilder::push(ex, Array::get(examples, e))
+      StringBuilder::push(ex, value = " ")
+      StringBuilder::push(ex, value = Array::get(examples, at = e))
       e = e + 1
     }
     println(StringBuilder::freeze(ex))

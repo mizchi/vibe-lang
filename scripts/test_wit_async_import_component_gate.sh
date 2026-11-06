@@ -24,56 +24,56 @@ fn write_hex(bytes: Bytes, path: String) -> Unit with Fs {
   let out = StringBuilder::new()
   let mut i = 0
   while i < Bytes::length(bytes) {
-    let byte = Bytes::get(bytes, i)
+    let byte = Bytes::get(bytes, at = i)
     let hi = (byte >> 4)&15
     let lo = byte&15
-    StringBuilder::push(out, String::from_char_code(if hi < 10 { 48 + hi } else { 87 + hi }))
-    StringBuilder::push(out, String::from_char_code(if lo < 10 { 48 + lo } else { 87 + lo }))
+    StringBuilder::push(out, value = String::from_char_code(if hi < 10 { 48 + hi } else { 87 + hi }))
+    StringBuilder::push(out, value = String::from_char_code(if lo < 10 { 48 + lo } else { 87 + lo }))
     i = i + 1
   }
-  Fs::write_file(path, StringBuilder::freeze(out))
+  Fs::write_file(path, contents = StringBuilder::freeze(out))
 }
 
 test "emit composed fixture" {
   write_hex(
-    comp_emit_component_wasm_async_wit_future_fixture(),
-    "_build/wit_async_import_component_gate/component.hex"
+    bytes = comp_emit_component_wasm_async_wit_future_fixture(),
+    path = "_build/wit_async_import_component_gate/component.hex"
   )
   write_hex(
-    comp_emit_wit_async_future_import_surface(
-      "example:prices/api@1.0.0",
-      "get-price-record",
-      "future<record{amount:s64,currency:string}>"
+    bytes = comp_emit_wit_async_future_import_surface(
+      interface_id = "example:prices/api@1.0.0",
+      func_name = "get-price-record",
+      wit_result_type = "future<record{amount:s64,currency:string}>"
     ),
-    "_build/wit_async_import_component_gate/record.hex"
+    path = "_build/wit_async_import_component_gate/record.hex"
   )
   write_hex(
-    comp_emit_wit_async_future_import_surface(
-      "example:prices/api@1.0.0",
-      "get-price-band",
-      "future<enum{cheap,expensive}>"
+    bytes = comp_emit_wit_async_future_import_surface(
+      interface_id = "example:prices/api@1.0.0",
+      func_name = "get-price-band",
+      wit_result_type = "future<enum{cheap,expensive}>"
     ),
-    "_build/wit_async_import_component_gate/enum.hex"
+    path = "_build/wit_async_import_component_gate/enum.hex"
   )
   write_hex(
-    comp_emit_wit_async_future_import_surface(
-      "wasi:http/outgoing-handler@0.3.0",
-      "handle",
-      comp_wit_outbound_http_response_descriptor()
+    bytes = comp_emit_wit_async_future_import_surface(
+      interface_id = "wasi:http/outgoing-handler@0.3.0",
+      func_name = "handle",
+      wit_result_type = comp_wit_outbound_http_response_descriptor()
     ),
-    "_build/wit_async_import_component_gate/http-response.hex"
+    path = "_build/wit_async_import_component_gate/http-response.hex"
   )
   write_hex(
-    comp_emit_wit_outbound_http_dual_fetch_surface(),
-    "_build/wit_async_import_component_gate/http-dual.hex"
+    bytes = comp_emit_wit_outbound_http_dual_fetch_surface(),
+    path = "_build/wit_async_import_component_gate/http-dual.hex"
   )
   write_hex(
-    comp_emit_wit_http_error_code_type_surface(),
-    "_build/wit_async_import_component_gate/http-error-code.hex"
+    bytes = comp_emit_wit_http_error_code_type_surface(),
+    path = "_build/wit_async_import_component_gate/http-error-code.hex"
   )
   write_hex(
-    comp_emit_wit_http_client_send_surface(),
-    "_build/wit_async_import_component_gate/http-client.hex"
+    bytes = comp_emit_wit_http_client_send_surface(),
+    path = "_build/wit_async_import_component_gate/http-client.hex"
   )
 }
 EOF

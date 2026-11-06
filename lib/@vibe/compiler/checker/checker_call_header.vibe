@@ -21,6 +21,10 @@ import @vibe/compiler/core {
   record_alias_target
 }
 
+import @vibe/core {
+  struct MutMap
+}
+
 /// ADR-0120 D3 (#3681): the `_` slots of the program being checked, from its
 /// trailing `SPositionalParams` statement. The root statement list publishes
 /// them for the duration of its check (`checker_swap_positional_rows`); a
@@ -158,6 +162,79 @@ export fn checker_bind_declaration_call_header(env: TypeEnv, name: String, ty: T
   bind_call_header(env = env, name = name, ty = ty, value = value, declaration = true)
 }
 
+/// ADR-0120 Phase 4: the header each declaration of the program being
+/// checked was bound with. A local `let` lambda gets a header of the same
+/// shape (labels on it still place), but its call stays positional; a call is
+/// to a declaration when the header it resolved to is the one recorded here.
+let declared_headers: Array[MutMap[String, Array[String]]] = [
+  MutMap::new_string()
+]
+
+/// The declaration names a local lambda has shadowed in this check (Codex on
+/// #3881). Equal parameter names cannot tell the two headers apart, so such a
+/// local also binds `local_shadow_marker(name)` beside itself; the marker is
+/// in scope exactly where the local is. Only a name listed here pays for the
+/// marker lookup.
+let locally_shadowed: Array[MutMap[String, Bool]] = [MutMap::new_string()]
+
+/// Forget the declarations of an earlier check.
+export fn checker_declared_headers_reset() -> Unit {
+  Array::set(declared_headers, at = 0, value = MutMap::new_string())
+  Array::set(locally_shadowed, at = 0, value = MutMap::new_string())
+}
+
+fn local_shadow_marker(_ name: String) -> String {
+  String::concat("#local_call_header:", name)
+}
+
+fn declared_header_is(env: TypeEnv, name: String, names: Array[String]) -> Bool {
+  match MutMap::get(Array::get(declared_headers, at = 0), k = name) {
+    Some(found) => if found != names {
+      false
+    } else {
+      match MutMap::get(Array::get(locally_shadowed, at = 0), k = name) {
+        Some(_) => match env_lookup_binding(env = env, name = local_shadow_marker(name)) {
+          Some(_) => false,
+          None => true
+        },
+        None => true
+      }
+    },
+    None => false
+  }
+}
+
+/// Whether a call to `name` in `env` calls a declaration -- a top-level `fn`
+/// or lambda-initialized `let`, an import, or a re-export -- rather than a
+/// local lambda or a value. Only such a call must label its arguments.
+export fn checker_call_header_is_declaration(env: TypeEnv, name: String) -> Bool {
+  match env_lookup_binding(env = env, name = name) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleFunctionHeader(_, _, _, _) => true,
+      BindingOriginReExportFunctionHeader(_, _, _, _) => true,
+      BindingOriginModuleExport(_, _) => true,
+      BindingOriginFunctionHeader(names) => declared_header_is(env = env, name = name, names = names),
+      BindingOriginDefaultedFunctionHeader(names, _) => declared_header_is(env = env, name = name, names = names),
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// A `Trait::op` wrapper the trait-namespace derivation synthesized: its body
+/// forwards to the implementation through a call at the derivation's
+/// synthetic offset (-2). The trait's signature names no parameter, so every
+/// slot of the wrapper is positional (`Mappable::map(xs, f)`).
+fn synthesized_trait_operation(_ value: Expr) -> Bool {
+  match value {
+    EFn(_, _, _, _, _, body) => match body {
+      ECall(EIdent(_, callee_off), _, off, _) => off == 0 - 2 && callee_off == 0 - 2,
+      _ => false
+    },
+    _ => false
+  }
+}
+
 fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declaration: Bool) -> TypeEnv {
   match value {
     EFn(_, _, params, _, _, _) => {
@@ -165,16 +242,33 @@ fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declarati
         let (raw, _) = param
         raw
       }
-      let names = if declaration {
+      let names = if declaration && synthesized_trait_operation(value) {
+        for raw in raw_names {
+          "_ " + raw
+        }
+      } else if declaration {
         positional_header_names(name = name, raw = raw_names)
       } else {
         raw_names
+      }
+      // A local that shadows a declaration carries a marker in its scope.
+      let scoped = if declaration {
+        MutMap::set(Array::get(declared_headers, at = 0), k = name, v = names)
+        env
+      } else {
+        match MutMap::get(Array::get(declared_headers, at = 0), k = name) {
+          Some(_) => {
+            MutMap::set(Array::get(locally_shadowed, at = 0), k = name, v = true)
+            env_bind(env = env, name = local_shadow_marker(name), ty = ty)
+          },
+          None => env
+        }
       }
       let origin = match checker_parameter_defaults(value) {
         Some(flags) => BindingOriginDefaultedFunctionHeader(names, flags),
         None => BindingOriginFunctionHeader(names)
       }
-      env_bind_with_origin(env = env, name = name, ty = ty, origin = origin)
+      env_bind_with_origin(env = scoped, name = name, ty = ty, origin = origin)
     },
     _ => env_bind(env = env, name = name, ty = ty)
   }
@@ -260,7 +354,12 @@ export fn checker_seed_import_call_headers(env: TypeEnv, imported: Array[(String
     let (name, names) = row
     match env_lookup_binding(env = env, name = name) {
       Some(binding) => match binding.origin {
-        BindingOriginUnavailable => out = env_bind_with_origin(env = out, name = name, ty = binding.ty, origin = BindingOriginFunctionHeader(names)),
+        // An imported declaration: a call to it labels its arguments as a
+        // filesystem import's would (Codex on #3881).
+        BindingOriginUnavailable => {
+          MutMap::set(Array::get(declared_headers, at = 0), k = name, v = names)
+          out = env_bind_with_origin(env = out, name = name, ty = binding.ty, origin = BindingOriginFunctionHeader(names))
+        },
         _ => ()
       },
       None => ()

@@ -97,7 +97,7 @@ fi
 
 # Hovering a USE of an env-visible name resolves too (line 2 references `add`).
 g="$WORK/use.vibe"
-printf 'export let add = (a: Int, b: Int) -> Int { a + b }\nexport let main = () -> Int { add(1, 2) }\n' > "$g"
+printf 'export let add = (a: Int, b: Int) -> Int { a + b }\nexport let main = () -> Int { add(a = 1, b = 2) }\n' > "$g"
 ty_use="$("$VIBE" type-at "$g" 2 31 2>/dev/null || true)"
 if printf '%s' "$ty_use" | grep -qF "Int"; then
   echo "ok: type-at on a use of 'add' (2:31) contains Int -> '$ty_use'"; pass=$((pass + 1))
@@ -137,7 +137,7 @@ fi
 # `export let main = () -> Bool { ` is 31 chars, so the call `is_pos(5)` starts
 # at line 2 col 32; the recorded result type there must be Bool.
 k="$WORK/call.vibe"
-printf 'export let is_pos = (n: Int) -> Bool { n > 0 }\nexport let main = () -> Bool { is_pos(5) }\n' > "$k"
+printf 'export let is_pos = (n: Int) -> Bool { n > 0 }\nexport let main = () -> Bool { is_pos(n = 5) }\n' > "$k"
 
 ty_call="$("$VIBE" type-at "$k" 2 32 2>/dev/null || true)"
 if printf '%s' "$ty_call" | grep -qF "Bool"; then
@@ -176,7 +176,7 @@ fn run(sink: Array[String]) -> Unit {
   handle {
     perform Log::Emit("hi")
   } with { Log::Emit(msg) => {
-    Array::push(sink, msg)
+    Array::push(sink, value = msg)
     resume(())
   } }
 }
@@ -209,7 +209,7 @@ binder() { # binder <line> <col> <want> <label>
   fi
 }
 binder 7 22 String "handler arm binder msg"
-binder 8 23 String "use of msg"
+binder 8 31 String "use of msg"
 binder 14 10 Int "match arm binder v"
 binder 14 16 Int "use of v"
 binder 19 8 Int "destructuring binder n"

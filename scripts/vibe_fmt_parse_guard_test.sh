@@ -37,8 +37,13 @@ fn f() -> Int {
 VIBE
 cp "$pass_input" "$work/pass.original"
 
-if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$pass_input" >/dev/null 2>&1; then
+# The formatter's stderr is shown on failure (#3887): when the formatter
+# itself will not build, it names the cause (a generated artifact missing ->
+# run scripts/ensure_generated.sh), and swallowing that left only the line
+# below, which reads as a formatter regression.
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$pass_input" >/dev/null 2>"$work/pass.err"; then
   echo "vibe_fmt_parse_guard_test: formatter declined a file it should format" >&2
+  sed -n '1,20p' "$work/pass.err" >&2
   exit 1
 fi
 if grep -q '::{' "$pass_input"; then
@@ -392,11 +397,11 @@ fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
 }
 
 fn caller(shadow: Array[String], out: Array[String]) -> Unit {
-  collect_by((head) -> {
+  collect_by(is_formal = (head) -> {
     let mut pi = 0
     let mut found = false
     while pi < Array::length(shadow) {
-      if Array::get(shadow, pi) == head {
+      if Array::get(shadow, at = pi) == head {
         found = true
       } else {
         ()
@@ -404,7 +409,7 @@ fn caller(shadow: Array[String], out: Array[String]) -> Unit {
       pi = pi + 1
     }
     found
-  }, out)
+  }, out = out)
 }
 VIBE
 if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$closure_nf" >/dev/null 2>&1; then

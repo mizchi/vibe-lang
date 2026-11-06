@@ -31,7 +31,7 @@ bad() { printf 'package-sibling-scope: FAIL: %s\n' "$1" >&2; fails=1; }
 cat > "$WORK/use.vibe" <<'VIBE'
 import ./pkg { public_entry }
 
-fn main() -> Unit { let _ = public_entry(3) }
+fn main() -> Unit { let _ = public_entry(n = 3) }
 VIBE
 
 write_pkg() { # write_pkg <exported?> <declared?> <imported?>
@@ -45,7 +45,7 @@ write_pkg() { # write_pkg <exported?> <declared?> <imported?>
   } > "$WORK/pkg/index.vpkg"
   {
     [ "$imported" = yes ] && printf 'import ./helper.vibe { sib_helper }\n\n'
-    printf 'export fn public_entry(n: Int) -> Int {\n  sib_helper(n) + 1\n}\n'
+    printf 'export fn public_entry(n: Int) -> Int {\n  sib_helper(n = n) + 1\n}\n'
   } > "$WORK/pkg/main_impl.vibe"
 }
 

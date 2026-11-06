@@ -51,7 +51,7 @@ test "optional placements fill omitted slots and wrap written values" {
   for pair in [
     ("f(x = 10)", "f(10, None)"),
     ("f(y = 3, x = 10)", "f(10, Some(3))"),
-    ("f(10, None)", "f(10, None)")
+    ("f(x = 10, y? = None)", "f(10, None)")
   ] {
     assert(print_program(placed(source = head + pair.0 + " }", env = EnvEmpty)) == print_program(parsed(head + pair.1 + " }")))
   }
@@ -102,4 +102,22 @@ test "a rowless inspect expansion retains its placement refusal" {
   } with { Exception::Throw(message) => message }
   assert(String::contains(message, needle = "checker argument placement for `inspect`"))
   assert(String::contains(message, needle = "check this source before lowering it"))
+}
+
+/// A header seeded through `initial_env` plus `#params:f` is an imported
+/// declaration, so an unlabeled call to it is refused as a filesystem
+/// import's would be (ADR-0120 Phase 4; Codex on #3881).
+test "an unlabeled call to a seeded import header is refused" {
+  let env = env_bind(env = env_bind(env = EnvEmpty, name = "f", ty = CtFn([
+    CtInt,
+    CtInt
+  ], CtInt, None)), name = "#params:f", ty = CtRecord([
+    ("y", CtUnknown),
+    ("x", CtUnknown)
+  ]))
+  let message = handle {
+    let _ = check_program_with_env_typed_lowering_located_observation(stmts = parsed("fn main() -> Int { f(10, 3) }"), initial_env = env)
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, needle = "label the arguments of f: write `y = ` before argument 1, `x = ` before argument 2"))
 }

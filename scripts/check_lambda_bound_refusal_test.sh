@@ -97,7 +97,7 @@ fn render[T: Show](x: T) -> String {
 }
 
 export fn _start() -> Int {
-  String::length(render(Pt::{ v: 1 }))
+  String::length(render(x = Pt::{ v: 1 }))
 }
 VIBE
 if run_gate "$WORK/r1/*.vibe"; then

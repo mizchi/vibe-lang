@@ -254,7 +254,7 @@ git -C "$TMP_ROOT" reset -q HEAD -- .
 git -C "$TMP_ROOT" restore .
 mkdir -p "$TMP_ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only"
 cat > "$TMP_ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess.vibe" <<'EOF'
-fn bad_async_row(row: String) -> Bool { String::contains(row, "Async") }
+fn bad_async_row(row: String) -> Bool { String::contains(row, needle = "Async") }
 EOF
 git -C "$TMP_ROOT" add .
 

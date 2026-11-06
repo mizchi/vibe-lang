@@ -100,7 +100,7 @@ fn fetch(url: String) -> String with Http
 fn store(path: String) -> Unit with Disk
 ' 'export fn area(width: Int, height: Int) -> Int { width * height }
 export fn fetch(url: String) -> String with Http { url }
-export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, contents = "") }
 '
 update
 grep -q 'update @diff3673/geo: 2.0.0 -> 2.1.0' "$WORK/upd.out" || fail "2.1.0 was not the update"
@@ -115,7 +115,7 @@ fn store(path: String) -> Unit with Disk
 let shout: (String) -> Unit with Console
 ' 'export fn area(width: Int, height: Int) -> Int { width * height }
 export fn fetch(url: String) -> String with Http { url }
-export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, contents = "") }
 export let shout: (String) -> Unit with Console = (s) -> { println(s) }
 '
 update
@@ -134,7 +134,7 @@ let tick: Clock
 ' 'type Clock = () -> Int with Process
 export fn area(width: Int, height: Int) -> Int { width * height }
 export fn fetch(url: String) -> String with Http { url }
-export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, contents = "") }
 export let shout: (String) -> Unit with Console = (s) -> { println(s) }
 export let tick: Clock = () -> { 0 }
 '
@@ -155,7 +155,7 @@ let tick: Clock
 export struct Probe { read: () -> Int with Stdin; id: Int }
 export fn area(width: Int, height: Int) -> Int { width * height }
 export fn fetch(url: String) -> String with Http { url }
-export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, contents = "") }
 export let shout: (String) -> Unit with Console = (s) -> { println(s) }
 export let tick: Clock = () -> { 0 }
 '

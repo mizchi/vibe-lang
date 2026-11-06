@@ -42,11 +42,11 @@ fn grouped_handler_run(label: String, source: String, expected: String) -> Unit 
 }
 
 test "grouped handler arms execute once per operation" {
-  grouped_handler_run(label = "arm-state-once", source = "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let state: Array[Int] = [0]\n let r = handle { b_guarded() + b_guarded() + perform A::Op() } with {\n  A::Op() => { Array::set(state, 0, Array::get(state, 0) + 1); resume(100) };\n  B::Op() => { Array::set(state, 0, Array::get(state, 0) + 10); resume(5) }\n }\n println(\"\\{r}\"); println(\"\\{Array::get(state, 0)}\")\n}\n", expected = "112\n21\n")
+  grouped_handler_run(label = "arm-state-once", source = "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let state: Array[Int] = [0]\n let r = handle { b_guarded() + b_guarded() + perform A::Op() } with {\n  A::Op() => { Array::set(state, at = 0, value = Array::get(state, at = 0) + 1); resume(100) };\n  B::Op() => { Array::set(state, at = 0, value = Array::get(state, at = 0) + 10); resume(5) }\n }\n println(\"\\{r}\"); println(\"\\{Array::get(state, at = 0)}\")\n}\n", expected = "112\n21\n")
 }
 
 test "grouped handlers thread each dictionary through callback parameters" {
-  grouped_handler_run(label = "callback-parameter", source = "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn work() -> Int with A + B { b_guarded() + perform A::Op() }\nfn run_both(f: () -> Int with A + B) -> Int { handle { f() } with { A::Op() => resume(100); B::Op() => resume(5) } }\nfn main() -> Unit allows Console { let r = run_both(work); println(\"\\{r}\") }\n", expected = "106\n")
+  grouped_handler_run(label = "callback-parameter", source = "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn work() -> Int with A + B { b_guarded() + perform A::Op() }\nfn run_both(f: () -> Int with A + B) -> Int { handle { f() } with { A::Op() => resume(100); B::Op() => resume(5) } }\nfn main() -> Unit allows Console { let r = run_both(f = work); println(\"\\{r}\") }\n", expected = "106\n")
 }
 
 test "Exception arms may precede user effect arms" {
@@ -162,7 +162,7 @@ test "grouped suspend grouped-arm-return-captured" {
 }
 
 test "grouped suspend grouped-callback-param" {
-  grouped_handler_run(label = "grouped-callback-param", source = "effect A { Op() -> Int } effect B { Op() -> Int } fn both() -> Int with A+B {perform A::Op()+perform B::Op()} fn run(f:()->Int with A+B)->Int{handle{f()}with{A::Op()=>resume(100);B::Op()=>{let k=resume;k(5)}}} fn main()->Unit allows Console {println(\"\\{run(both)}\")}", expected = "105\n")
+  grouped_handler_run(label = "grouped-callback-param", source = "effect A { Op() -> Int } effect B { Op() -> Int } fn both() -> Int with A+B {perform A::Op()+perform B::Op()} fn run(f:()->Int with A+B)->Int{handle{f()}with{A::Op()=>resume(100);B::Op()=>{let k=resume;k(5)}}} fn main()->Unit allows Console {println(\"\\{run(f = both)}\")}", expected = "105\n")
 }
 
 test "grouped suspend grouped-local-callback" {
@@ -170,7 +170,7 @@ test "grouped suspend grouped-local-callback" {
 }
 
 test "grouped suspend grouped-resume-later" {
-  grouped_handler_run(label = "grouped-resume-later", source = "effect A { Op() -> Int } effect B { Op() -> Int } fn main()->Unit allows Console{let saved:Array[(Int)->Int]=[];let first=handle{100+perform B::Op()}with{A::Op()=>resume(1);B::Op()=>{Array::push(saved,resume);0}};println(\"\\{first}\");let next=Array::get(saved,0)(5);println(\"\\{next}\")}", expected = "0\n105\n")
+  grouped_handler_run(label = "grouped-resume-later", source = "effect A { Op() -> Int } effect B { Op() -> Int } fn main()->Unit allows Console{let saved:Array[(Int)->Int]=[];let first=handle{100+perform B::Op()}with{A::Op()=>resume(1);B::Op()=>{Array::push(saved,value = resume);0}};println(\"\\{first}\");let next=Array::get(saved,at = 0)(5);println(\"\\{next}\")}", expected = "0\n105\n")
 }
 
 test "grouped suspend grouped-three-effects" {
@@ -267,79 +267,79 @@ test "grouped suspend runtime names cannot capture generated source identifiers"
 }
 
 test "delayed resume: grouped" {
-  grouped_handler_run(label = "nonlocal-return-grouped", source = "effect A {Op()->Int} effect B {Op()->Int} fn work()->Int{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Op();perform A::Op()+b}with{A::Op()=>return 7;B::Op()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "7\n")
+  grouped_handler_run(label = "nonlocal-return-grouped", source = "effect A {Op()->Int} effect B {Op()->Int} fn work()->Int{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Op();perform A::Op()+b}with{A::Op()=>return 7;B::Op()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "7\n")
 }
 
 test "delayed resume: single" {
-  grouped_handler_run(label = "nonlocal-return-single", source = "effect B { Yield()->Int; Finish()->Int } fn work()->Int{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return 7;B::Yield()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "7\n")
+  grouped_handler_run(label = "nonlocal-return-single", source = "effect B { Yield()->Int; Finish()->Int } fn work()->Int{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return 7;B::Yield()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "7\n")
 }
 
 test "delayed resume: nested-callee" {
-  grouped_handler_run(label = "nonlocal-return-nested-callee", source = "effect E { Pause()->Int; Finish()->Int } fn invoke(f:(Int)->Int)->Int with Console{let value=f(5);println(\"WRONG\");value} fn work()->Int with Console{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,resume);0}};let resumed=invoke(Array::get(saved,0));99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "7\n")
+  grouped_handler_run(label = "nonlocal-return-nested-callee", source = "effect E { Pause()->Int; Finish()->Int } fn invoke(f:(Int)->Int)->Int with Console{let value=f(5);println(\"WRONG\");value} fn work()->Int with Console{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=invoke(f = Array::get(saved,at = 0));99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "7\n")
 }
 
 test "delayed resume: catch-does-not-intercept" {
-  grouped_handler_run(label = "nonlocal-return-catch-does-not-intercept", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,resume);0}};let resumed=handle {Array::get(saved,0)(5)} with {Exception::Throw(message)=>-100};99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "7\n")
+  grouped_handler_run(label = "nonlocal-return-catch-does-not-intercept", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=handle {Array::get(saved,at = 0)(5)} with {Exception::Throw(message)=>-100};99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "7\n")
 }
 
 test "delayed resume: nested-callee-catch" {
-  grouped_handler_run(label = "nonlocal-return-nested-callee-catch", source = "effect E { Pause()->Int; Finish()->Int } fn invoke(f:(Int)->Int)->Int {handle{f(5)}with{Exception::Throw(m)=>-100}} fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,resume);0}};let resumed=invoke(Array::get(saved,0));99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "7\n")
+  grouped_handler_run(label = "nonlocal-return-nested-callee-catch", source = "effect E { Pause()->Int; Finish()->Int } fn invoke(f:(Int)->Int)->Int {handle{f(5)}with{Exception::Throw(m)=>-100}} fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=invoke(f = Array::get(saved,at = 0));99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "7\n")
 }
 
 test "delayed resume: recursive-distinct-owners" {
-  grouped_handler_run(label = "nonlocal-return-recursive-distinct-owners", source = "effect E { Pause()->Int; Finish()->Int } fn work(depth:Int,saved:Array[(Int)->Int])->Int {if depth==0 {Array::get(saved,0)(5)}else{let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7+depth;E::Pause()=>{Array::push(saved,resume);0}};let r=work(depth-1,saved);99}} fn main()->Unit allows Console{println(\"\\{work(2,[])}\")}", expected = "9\n")
+  grouped_handler_run(label = "nonlocal-return-recursive-distinct-owners", source = "effect E { Pause()->Int; Finish()->Int } fn work(depth:Int,saved:Array[(Int)->Int])->Int {if depth==0 {Array::get(saved,at = 0)(5)}else{let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7+depth;E::Pause()=>{Array::push(saved,value = resume);0}};let r=work(depth = depth-1,saved = saved);99}} fn main()->Unit allows Console{println(\"\\{work(depth = 2,saved = [])}\")}", expected = "9\n")
 }
 
 test "delayed resume: string" {
-  grouped_handler_run(label = "nonlocal-return-string", source = "effect E { Pause()->Int; Finish()->Int } fn work()->String {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return \"escaped\";E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);\"WRONG\"} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "escaped\n")
+  grouped_handler_run(label = "nonlocal-return-string", source = "effect E { Pause()->Int; Finish()->Int } fn work()->String {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return \"escaped\";E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);\"WRONG\"} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "escaped\n")
 }
 
 test "delayed resume: double" {
-  grouped_handler_run(label = "nonlocal-return-double", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Float64 {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 2.5;E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);99.0} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "2.5\n")
+  grouped_handler_run(label = "nonlocal-return-double", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Float64 {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 2.5;E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);99.0} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "2.5\n")
 }
 
 test "delayed resume: array" {
-  grouped_handler_run(label = "nonlocal-return-array", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Array[Int] {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return [7,8];E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);[99]}fn main()->Unit allows Console {println(\"\\{Array::get(work(),0)} \\{Array::get(work(),1)}\")}", expected = "7 8\n")
+  grouped_handler_run(label = "nonlocal-return-array", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Array[Int] {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return [7,8];E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);[99]}fn main()->Unit allows Console {println(\"\\{Array::get(work(),at = 0)} \\{Array::get(work(),at = 1)}\")}", expected = "7 8\n")
 }
 
 test "delayed resume: heap-array" {
-  grouped_handler_run(label = "nonlocal-return-heap-array", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Array[String] {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return [\"escaped\",\"other\"];E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);[\"WRONG\"]}fn main()->Unit allows Console {let xs=work();println(Array::get(xs,0)+\" \"+Array::get(xs,1))}", expected = "escaped other\n")
+  grouped_handler_run(label = "nonlocal-return-heap-array", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Array[String] {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return [\"escaped\",\"other\"];E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);[\"WRONG\"]}fn main()->Unit allows Console {let xs=work();println(Array::get(xs,at = 0)+\" \"+Array::get(xs,at = 1))}", expected = "escaped other\n")
 }
 
 test "delayed resume: tuple" {
-  grouped_handler_run(label = "nonlocal-return-tuple", source = "effect E { Pause()->Int; Finish()->Int } fn work()->(Int,String) {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return (7,\"escaped\");E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);(99,\"WRONG\")}fn main()->Unit allows Console {let (a,b)=work();println(\"\\{a} \"+b)}", expected = "7 escaped\n")
+  grouped_handler_run(label = "nonlocal-return-tuple", source = "effect E { Pause()->Int; Finish()->Int } fn work()->(Int,String) {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return (7,\"escaped\");E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);(99,\"WRONG\")}fn main()->Unit allows Console {let (a,b)=work();println(\"\\{a} \"+b)}", expected = "7 escaped\n")
 }
 
 test "delayed resume: generic-array" {
-  grouped_handler_run(label = "nonlocal-return-generic-array", source = "effect E { Pause()->Int; Finish()->Int } fn work[T](x:T)->T {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return x;E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);x}fn main()->Unit allows Console{println(Array::get(work([\"escaped\"]),0))}", expected = "escaped\n")
+  grouped_handler_run(label = "nonlocal-return-generic-array", source = "effect E { Pause()->Int; Finish()->Int } fn work[T](x:T)->T {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return x;E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);x}fn main()->Unit allows Console{println(Array::get(work(x = [\"escaped\"]),at = 0))}", expected = "escaped\n")
 }
 
 test "delayed resume: return-from-handler-body" {
-  grouped_handler_run(label = "nonlocal-return-return-from-handler-body", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();return 17;perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "17\n")
+  grouped_handler_run(label = "nonlocal-return-return-from-handler-body", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();return 17;perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "17\n")
 }
 
 test "delayed resume: ordinary-body-exception" {
-  grouped_handler_run(label = "nonlocal-return-ordinary-body-exception", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int with Exception{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();throw(\"escaped\");perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);99}fn main()->Unit allows Console{let v=handle{work()}with{Exception::Throw(m)=>{println(m);-1}};println(\"\\{v}\")}", expected = "escaped\n-1\n")
+  grouped_handler_run(label = "nonlocal-return-ordinary-body-exception", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int with Exception{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();throw(\"escaped\");perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);99}fn main()->Unit allows Console{let v=handle{work()}with{Exception::Throw(m)=>{println(m);-1}};println(\"\\{v}\")}", expected = "escaped\n-1\n")
 }
 
 test "delayed resume: return-after-handle" {
-  grouped_handler_run(label = "nonlocal-return-return-after-handle", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,resume);0}};return 23} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "23\n")
+  grouped_handler_run(label = "nonlocal-return-return-after-handle", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,value = resume);0}};return 23} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "23\n")
 }
 
 test "delayed resume: normal-after-handle" {
-  grouped_handler_run(label = "nonlocal-return-normal-after-handle", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,resume);0}};99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "99\n")
+  grouped_handler_run(label = "nonlocal-return-normal-after-handle", source = "effect E { Pause()->Int; Finish()->Int } fn work()->Int {let saved:Array[(Int)->Int]=[];let early=handle{let b=perform E::Pause();perform E::Finish()+b}with{E::Finish()=>return 7;E::Pause()=>{Array::push(saved,value = resume);0}};99} fn main()->Unit allows Console {println(\"\\{work()}\")}", expected = "99\n")
 }
 
 test "return control: annotated-region-mutbytes" {
-  grouped_handler_run(label = "annotated-region-mutbytes", source = "effect B { Yield()->Int; Finish()->Int } fn work()->Int{let check=region r {let b=MutBytes::empty(r);MutBytes::push(b,65);let frozen=MutBytes::to_bytes(b);Bytes::length(frozen)};let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return check+7;B::Yield()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "8\n")
+  grouped_handler_run(label = "annotated-region-mutbytes", source = "effect B { Yield()->Int; Finish()->Int } fn work()->Int{let check=region r {let b=MutBytes::empty(r);MutBytes::push(b,65);let frozen=MutBytes::to_bytes(b);Bytes::length(frozen)};let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return check+7;B::Yield()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "8\n")
 }
 
 test "return control: annotated-program-shadow" {
-  grouped_handler_run(label = "annotated-program-shadow", source = "fn MutBytes::empty(x:Int)->Int{x-1} effect B { Yield()->Int; Finish()->Int } fn work()->Int{let check=MutBytes::empty(42);let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return check+1;B::Yield()=>{Array::push(saved,resume);0}};let resumed=Array::get(saved,0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "42\n")
+  grouped_handler_run(label = "annotated-program-shadow", source = "fn MutBytes::empty(x:Int)->Int{x-1} effect B { Yield()->Int; Finish()->Int } fn work()->Int{let check=MutBytes::empty(x = 42);let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return check+1;B::Yield()=>{Array::push(saved,value = resume);0}};let resumed=Array::get(saved,at = 0)(5);99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "42\n")
 }
 
 test "return control: return-through-region" {
-  grouped_handler_run(label = "return-through-region", source = "fn invoke(f:(Int)->Int)->Int{region r {let b=MutBytes::empty(r);MutBytes::push(b,65);let v=f(5);v+MutBytes::length(b)}} effect B { Yield()->Int; Finish()->Int } fn work()->Int{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return 7;B::Yield()=>{Array::push(saved,resume);0}};let resumed=invoke(Array::get(saved,0));99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "7\n")
+  grouped_handler_run(label = "return-through-region", source = "fn invoke(f:(Int)->Int)->Int{region r {let b=MutBytes::empty(r);MutBytes::push(b,65);let v=f(5);v+MutBytes::length(b)}} effect B { Yield()->Int; Finish()->Int } fn work()->Int{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return 7;B::Yield()=>{Array::push(saved,value = resume);0}};let resumed=invoke(f = Array::get(saved,at = 0));99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", expected = "7\n")
 }
 
 test "independent matching handlers in retained-arm" {

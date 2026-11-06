@@ -783,7 +783,7 @@ fn wib_param_list(_ n: Int) -> String {
       ", "
     } else {
       ""
-    }, "a\{i}: Int"))
+    }, "_ a\{i}: Int"))
     i = i + 1
   }
   out
@@ -849,18 +849,18 @@ fn wib_emit_fn(out: Array[String], raw: String, vibe_name: String, doc: String, 
   let mut i = 0
   while i < n {
     if typed && Array::get(params, at = i) == 0x7F {
-      Array::push(wrap_params, value = "a\{i}: UInt32")
+      Array::push(wrap_params, value = "_ a\{i}: UInt32")
       Array::push(wrap_args, value = "UInt32::to_int(a\{i})")
     } else {
-      Array::push(wrap_params, value = "a\{i}: Int")
+      Array::push(wrap_params, value = "_ a\{i}: Int")
       Array::push(wrap_args, value = "a\{i}")
     }
     i = i + 1
   }
-  let call = "\{raw}\{vibe_name}(\{String::join(wrap_args, ", ")})"
-  let ps = String::join(wrap_params, ", ")
+  let call = "\{raw}\{vibe_name}(\{String::join(wrap_args, sep = ", ")})"
+  let ps = String::join(wrap_params, sep = ", ")
   Array::push(out, value = "/// \{doc}\n")
-  Array::push(out, value = "fn \{raw}\{vibe_name}(\{wib_param_list(n)}) -> Int = wasm \"\{wib_body(callee, params, results)}\"\n")
+  Array::push(out, value = "fn \{raw}\{vibe_name}(\{wib_param_list(n)}) -> Int = wasm \"\{wib_body(callee = callee, params = params, results = results)}\"\n")
   if Array::length(results) == 0 {
     Array::push(out, value = "export fn \{vibe_name}(\{ps}) -> Unit {\n  let _ = \{call}\n  ()\n}\n\n")
   } else if typed && Array::get(results, at = 0) == 0x7F {
@@ -943,9 +943,9 @@ fn wib_core_binding_source(path: String, bytes: Bytes) -> String with Exception 
     } else if dup {
       Array::push(withheld, value = "`\{shown}`: its vibe name `\{vn}` is shared with another export")
     } else if !wib_sig_admitted(params = ps, results = rs) {
-      Array::push(withheld, value = "`\{shown}` \{wib_sig_wat(ps, rs)}: only i32 / i64 params and at most one i32 / i64 result cross the boundary")
+      Array::push(withheld, value = "`\{shown}` \{wib_sig_wat(params = ps, results = rs)}: only i32 / i64 params and at most one i32 / i64 result cross the boundary")
     } else {
-      wib_emit_fn(out = out, raw = raw, vibe_name = vn, doc = "`\{shown}` from \{wib_display_name(path)}: core wasm \{wib_sig_wat(ps, rs)}.", callee = wasm_import_callee(module_name = module_name, field = nm, params = ps, results = rs), params = ps, results = rs, typed = true)
+      wib_emit_fn(out = out, raw = raw, vibe_name = vn, doc = "`\{shown}` from \{wib_display_name(path)}: core wasm \{wib_sig_wat(params = ps, results = rs)}.", callee = wasm_import_callee(module_name = module_name, field = nm, params = ps, results = rs), params = ps, results = rs, typed = true)
     }
     i = i + 1
   }
@@ -1434,7 +1434,7 @@ export fn wasm_component_field(name: String, params: Array[Int], results: Array[
   for c in results {
     Array::push(rs, value = wib_cv_name(c))
   }
-  "\{name}#\{String::join(ps, ",")}->\{String::join(rs, ",")}"
+  "\{name}#\{String::join(ps, sep = ",")}->\{String::join(rs, sep = ",")}"
 }
 
 fn wib_component_sig_text(params: Array[Int], labels: Array[String], results: Array[Int]) -> String {
@@ -1446,14 +1446,14 @@ fn wib_component_sig_text(params: Array[Int], labels: Array[String], results: Ar
     } else {
       "p\{i}"
     }
-    Array::push(parts, value = "\{label}: \{wib_cv_show(Array::get(params, i))}")
+    Array::push(parts, value = "\{label}: \{wib_cv_show(Array::get(params, at = i))}")
     i = i + 1
   }
   let ps = String::join(parts, sep = ", ")
   if Array::length(results) == 0 {
     "func(\{ps})"
   } else if Array::length(results) == 1 {
-    "func(\{ps}) -> \{wib_cv_show(Array::get(results, 0))}"
+    "func(\{ps}) -> \{wib_cv_show(Array::get(results, at = 0))}"
   } else {
     "func(\{ps}) -> <\{Array::length(results) / 2} named results>"
   }
@@ -1505,8 +1505,8 @@ fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: S
   let mut i = 0
   while i < Array::length(params) {
     if Array::get(params, at = i) == 0x73 {
-      Array::push(raw_params, value = "a\{i}: Bytes")
-      Array::push(wrap_params, value = "a\{i}: String")
+      Array::push(raw_params, value = "_ a\{i}: Bytes")
+      Array::push(wrap_params, value = "_ a\{i}: String")
       Array::push(wrap_args, value = "\{raw}_string_bytes(a\{i})")
       args = String::concat(args, " (local.get $a\{i})")
     } else {
@@ -1515,8 +1515,8 @@ fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: S
       // compile-time error at the call rather than the runner's refusal. The
       // raw stub keeps the `Int` every value crosses the boundary as.
       let (wrap_ty, wrap_arg) = wib_cv_int_wrapper(code = Array::get(params, at = i), arg = "a\{i}")
-      Array::push(raw_params, value = "a\{i}: Int")
-      Array::push(wrap_params, value = "a\{i}: \{wrap_ty}")
+      Array::push(raw_params, value = "_ a\{i}: Int")
+      Array::push(wrap_params, value = "_ a\{i}: \{wrap_ty}")
       Array::push(wrap_args, value = wrap_arg)
       args = String::concat(args, " \{wib_untag("a\{i}")}")
     }
@@ -1532,7 +1532,7 @@ fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: S
   } else {
     ("Int", "(vibe.int.tag \{call})", wib_cv_int_result_type(Array::get(results, at = 0)))
   }
-  let wrapped_call = "\{raw}\{vibe_name}(\{String::join(wrap_args, ", ")})"
+  let wrapped_call = "\{raw}\{vibe_name}(\{String::join(wrap_args, sep = ", ")})"
   // The runner checks the component's signature against the one compiled
   // in before any call, so a result of a width offered as `Int32` /
   // `UInt32` is in range and keeping its low 32 bits is exact.
@@ -1549,11 +1549,11 @@ fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: S
     wrapped_call
   }
   Array::push(out, value = "/// \{doc}\n")
-  Array::push(out, value = "fn \{raw}\{vibe_name}(\{String::join(raw_params, ", ")}) -> \{raw_ret} = wasm \"\{body}\"\n")
+  Array::push(out, value = "fn \{raw}\{vibe_name}(\{String::join(raw_params, sep = ", ")}) -> \{raw_ret} = wasm \"\{body}\"\n")
   if has_result {
-    Array::push(out, value = "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> \{wrap_ret} {\n  \{result_expr}\n}\n\n")
+    Array::push(out, value = "export fn \{vibe_name}(\{String::join(wrap_params, sep = ", ")}) -> \{wrap_ret} {\n  \{result_expr}\n}\n\n")
   } else {
-    Array::push(out, value = "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> Unit {\n  let _ = \{raw}\{vibe_name}(\{String::join(wrap_args, ", ")})\n  ()\n}\n\n")
+    Array::push(out, value = "export fn \{vibe_name}(\{String::join(wrap_params, sep = ", ")}) -> Unit {\n  let _ = \{raw}\{vibe_name}(\{String::join(wrap_args, sep = ", ")})\n  ()\n}\n\n")
   }
 }
 
@@ -1574,7 +1574,7 @@ fn wib_component_binding_source(path: String, bytes: Bytes) -> String with Excep
   // The bytes of a `string` argument, copied into the Bytes object the
   // runner reads (the stub of an export named `_string_bytes` would be the
   // same name, so that export is withheld below).
-  Array::push(out, value = "fn \{raw}_string_bytes(s: String) -> Bytes {\n  let b = Bytes::with_capacity(String::length(s))\n  let mut i = 0\n  while i < String::length(s) {\n    Bytes::push(b, String::byte_at(s, i))\n    i = i + 1\n  }\n  b\n}\n\n")
+  Array::push(out, value = "fn \{raw}_string_bytes(_ s: String) -> Bytes {\n  let b = Bytes::with_capacity(String::length(s))\n  let mut i = 0\n  while i < String::length(s) {\n    Bytes::push(b, value = String::byte_at(s, at = i))\n    i = i + 1\n  }\n  b\n}\n\n")
   let mut i = 0
   while i < Array::length(exports) {
     let (nm, fti, why) = Array::get(exports, at = i)

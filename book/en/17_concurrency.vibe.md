@@ -431,7 +431,7 @@ fn sum_down(_ n: Int) -> Int with Async {
 fn tens() -> Array[Int] with Async {
   [1, 2, 3]
     |> Array::iter
-    |> AsyncIter::map((x) -> { x * 10 })
+    |> AsyncIter::map(f = (x) -> { x * 10 })
     |> AsyncIter::collect
 }
 

@@ -125,7 +125,7 @@ cat > "$W/app/main.vibex" <<'V'
 import @rt/mathx { triple }
 
 fn main allows Console {
-  println(Int::to_string(triple(14)))
+  println(Int::to_string(triple(x = 14)))
 }
 V
 out="$( cd "$W/app" && bash "$VIBE" run main.vibex 2>&1 )"

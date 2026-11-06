@@ -44,7 +44,7 @@ fn parse_floor(raw: String, fallback: Float64) -> Option[Float64] {
 
 fn env_double(name: String, fallback: Float64) -> Float64 with Env + Stderr + Process::exit {
   let raw = Env::get(name)
-  match parse_floor(raw, fallback) {
+  match parse_floor(raw = raw, fallback = fallback) {
     Some(v) => v,
     None => {
       die("[coverage-tracks] " + name + "='" + raw + "' is not a number; unset it for the default")
@@ -67,21 +67,21 @@ fn read_obj(path: String) -> Option[Json] with Fs {
 }
 
 fn obj_field(obj: Json, key: String) -> Option[Json] {
-  match Json::get_opt(obj, key) {
+  match Json::get_opt(obj, key = key) {
     Some(v) => if Json::type_of(v) == "object" { Some(v) } else { None },
     None => None
   }
 }
 
 fn num_or(obj: Json, key: String, fallback: Float64) -> Float64 {
-  match Json::get_opt(obj, key) {
+  match Json::get_opt(obj, key = key) {
     Some(v) => if Json::type_of(v) == "number" { Json::number(v) } else { fallback },
     None => fallback
   }
 }
 
 fn bool_or(obj: Json, key: String, fallback: Bool) -> Bool {
-  match Json::get_opt(obj, key) {
+  match Json::get_opt(obj, key = key) {
     Some(v) => if Json::type_of(v) == "boolean" { Json::bool(v) } else { fallback },
     None => fallback
   }
@@ -142,24 +142,24 @@ fn pct(hit: Int, total: Int) -> Float64 {
 }
 
 fn push_track(out: Array[Track], name: String, what: String, hit: Int, total: Int, rate: Float64, exact: Bool, min_rate: Float64) -> Unit {
-  Array::push(out, Track::{ name: name, what: what, hit: hit, total: total, rate: rate, exact: exact, min_rate: min_rate })
+  Array::push(out, value = Track::{ name: name, what: what, hit: hit, total: total, rate: rate, exact: exact, min_rate: min_rate })
 }
 
 fn load_tracks(suite_path: String, corpus_path: String, min_in: Float64, min_self: Float64) -> Array[Track] with Fs {
   let out: Array[Track] = []
-  match read_obj(suite_path) {
-    Some(suite) => match obj_field(suite, "branch_union") {
-      Some(b) => push_track(out, "in-process", "branches the compiled test programs execute", Float64::to_int(num_or(b, "hit", 0.0)), Float64::to_int(num_or(b, "total", 0.0)), num_or(b, "rate", 0.0), bool_or(b, "exact", true), min_in),
+  match read_obj(path = suite_path) {
+    Some(suite) => match obj_field(obj = suite, key = "branch_union") {
+      Some(b) => push_track(out = out, name = "in-process", what = "branches the compiled test programs execute", hit = Float64::to_int(num_or(obj = b, key = "hit", fallback = 0.0)), total = Float64::to_int(num_or(obj = b, key = "total", fallback = 0.0)), rate = num_or(obj = b, key = "rate", fallback = 0.0), exact = bool_or(obj = b, key = "exact", fallback = true), min_rate = min_in),
       None => ()
     },
     None => ()
   }
-  match read_obj(corpus_path) {
-    Some(corpus) => match obj_field(corpus, "branch") {
+  match read_obj(path = corpus_path) {
+    Some(corpus) => match obj_field(obj = corpus, key = "branch") {
       Some(b) => {
-        let hit = Float64::to_int(num_or(b, "hit", 0.0))
-        let total = Float64::to_int(num_or(b, "total", 0.0))
-        push_track(out, "self-compile", "compiler branches executed while compiling a corpus", hit, total, pct(hit, total), true, min_self)
+        let hit = Float64::to_int(num_or(obj = b, key = "hit", fallback = 0.0))
+        let total = Float64::to_int(num_or(obj = b, key = "total", fallback = 0.0))
+        push_track(out = out, name = "self-compile", what = "compiler branches executed while compiling a corpus", hit = hit, total = total, rate = pct(hit = hit, total = total), exact = true, min_rate = min_self)
       },
       None => ()
     },
@@ -172,7 +172,7 @@ fn max_name(rows: Array[Track]) -> Int {
   let mut w = 0
   let mut i = 0
   while i < Array::length(rows) {
-    let n = String::length(Array::get(rows, i).name)
+    let n = String::length(Array::get(rows, at = i).name)
     if n > w { w = n } else { () }
     i = i + 1
   }
@@ -189,14 +189,14 @@ fn rate_below(rate: Float64, floor: Float64) -> Bool {
 
 fn row_line(row: Track, width: Int) -> String {
   let note = if row.exact { "" } else { "  (LOWER BOUND)" }
-  "[coverage-tracks] " + String::pad_right(row.name, width, " ") + "  branches " + __to_string(row.hit) + "/" + __to_string(row.total) + " (" + format_rate(row.rate) + "%)  min " + format_rate(row.min_rate) + "%" + note + "  <- " + row.what
+  "[coverage-tracks] " + String::pad_right(row.name, target_len = width, pad_char = " ") + "  branches " + __to_string(row.hit) + "/" + __to_string(row.total) + " (" + format_rate(d = row.rate) + "%)  min " + format_rate(d = row.min_rate) + "%" + note + "  <- " + row.what
 }
 
 fn has_track(rows: Array[Track], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(rows) {
-    if Array::get(rows, i).name == name { found = true } else { () }
+    if Array::get(rows, at = i).name == name { found = true } else { () }
     i = i + 1
   }
   found
@@ -208,36 +208,36 @@ fn report(rows: Array[Track], check: Bool) -> Int with Console {
   if Array::length(rows) == 0 {
     2
   } else {
-    let width = max_name(rows)
+    let width = max_name(rows = rows)
     let mut i = 0
     while i < Array::length(rows) {
-      println(row_line(Array::get(rows, i), width))
+      println(row_line(row = Array::get(rows, at = i), width = width))
       i = i + 1
     }
-    if !has_track(rows, "in-process") {
-      println("[coverage-tracks] " + String::pad_right("in-process", width, " ") + "  NOT MEASURED in this run")
+    if !has_track(rows = rows, name = "in-process") {
+      println("[coverage-tracks] " + String::pad_right("in-process", target_len = width, pad_char = " ") + "  NOT MEASURED in this run")
     } else { () }
-    if !has_track(rows, "self-compile") {
-      println("[coverage-tracks] " + String::pad_right("self-compile", width, " ") + "  NOT MEASURED in this run")
+    if !has_track(rows = rows, name = "self-compile") {
+      println("[coverage-tracks] " + String::pad_right("self-compile", target_len = width, pad_char = " ") + "  NOT MEASURED in this run")
     } else { () }
     if !check {
       0
     } else {
       let mut failed = false
       let mut missing = ""
-      if !has_track(rows, "in-process") {
+      if !has_track(rows = rows, name = "in-process") {
         missing = "in-process"
       } else { () }
-      if !has_track(rows, "self-compile") {
+      if !has_track(rows = rows, name = "self-compile") {
         missing = if missing == "" { "self-compile" } else { missing + ", self-compile" }
       } else { () }
       let mut j = 0
       while j < Array::length(rows) {
-        let row = Array::get(rows, j)
+        let row = Array::get(rows, at = j)
         if !row.exact {
           println("[coverage-tracks] WARN: " + row.name + " ratchet skipped (value is a lower bound)")
-        } else if rate_below(row.rate, row.min_rate) {
-          println("[coverage-tracks] GATE FAIL: " + row.name + " branch coverage " + format_rate(row.rate) + "% < min " + format_rate(row.min_rate) + "%")
+        } else if rate_below(rate = row.rate, floor = row.min_rate) {
+          println("[coverage-tracks] GATE FAIL: " + row.name + " branch coverage " + format_rate(d = row.rate) + "% < min " + format_rate(d = row.min_rate) + "%")
           failed = true
         } else { () }
         j = j + 1
@@ -268,38 +268,38 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process::exit {
   let corpus = base + "/corpus.json"
   let low = base + "/low.json"
   let bound = base + "/bound.json"
-  Fs::write_file(suite, "{\"branch_union\":{\"hit\":26894,\"total\":46469,\"rate\":57.88,\"exact\":true}}\n")
-  Fs::write_file(corpus, "{\"files\":12,\"branch\":{\"hit\":10703,\"total\":26738}}\n")
-  Fs::write_file(low, "{\"branch_union\":{\"hit\":100,\"total\":1000,\"rate\":10.0,\"exact\":true}}\n")
-  Fs::write_file(bound, "{\"branch_union\":{\"hit\":100,\"total\":1000,\"rate\":10.0,\"exact\":false}}\n")
+  Fs::write_file(suite, contents = "{\"branch_union\":{\"hit\":26894,\"total\":46469,\"rate\":57.88,\"exact\":true}}\n")
+  Fs::write_file(corpus, contents = "{\"files\":12,\"branch\":{\"hit\":10703,\"total\":26738}}\n")
+  Fs::write_file(low, contents = "{\"branch_union\":{\"hit\":100,\"total\":1000,\"rate\":10.0,\"exact\":true}}\n")
+  Fs::write_file(bound, contents = "{\"branch_union\":{\"hit\":100,\"total\":1000,\"rate\":10.0,\"exact\":false}}\n")
   let min_in = 57.0
   let min_self = 0.0
-  expect(report(load_tracks(suite, corpus, min_in, min_self), false) == 0, "both tracks should print")
-  expect(report(load_tracks(suite, corpus, min_in, min_self), true) == 0, "both floors clear")
-  expect(report(load_tracks(low, corpus, min_in, min_self), true) == 1, "10% must miss the in-process floor")
-  expect(report(load_tracks(suite, base + "/absent.json", min_in, min_self), true) == 1, "a missing track must fail the check")
-  expect(report(load_tracks(base + "/no-suite.json", base + "/no-corpus.json", min_in, min_self), true) == 2, "nothing measured is status 2")
-  expect(report(load_tracks(bound, corpus, min_in, min_self), true) == 0, "a lower bound skips its ratchet")
-  let only = load_tracks(base + "/no-suite.json", corpus, min_in, min_self)
-  expect(Array::length(only) == 1, "corpus alone is one track")
-  expect(Array::get(only, 0).name == "self-compile", "the one track is self-compile")
-  expect(format_rate(Array::get(only, 0).rate) == "40.03", "10703/26738 is 40.03, got " + format_rate(Array::get(only, 0).rate))
-  expect(!rate_below(Array::get(only, 0).rate, 40.03), "the printed 40.03 meets a 40.03 floor")
+  expect(cond = report(rows = load_tracks(suite_path = suite, corpus_path = corpus, min_in = min_in, min_self = min_self), check = false) == 0, message = "both tracks should print")
+  expect(cond = report(rows = load_tracks(suite_path = suite, corpus_path = corpus, min_in = min_in, min_self = min_self), check = true) == 0, message = "both floors clear")
+  expect(cond = report(rows = load_tracks(suite_path = low, corpus_path = corpus, min_in = min_in, min_self = min_self), check = true) == 1, message = "10% must miss the in-process floor")
+  expect(cond = report(rows = load_tracks(suite_path = suite, corpus_path = base + "/absent.json", min_in = min_in, min_self = min_self), check = true) == 1, message = "a missing track must fail the check")
+  expect(cond = report(rows = load_tracks(suite_path = base + "/no-suite.json", corpus_path = base + "/no-corpus.json", min_in = min_in, min_self = min_self), check = true) == 2, message = "nothing measured is status 2")
+  expect(cond = report(rows = load_tracks(suite_path = bound, corpus_path = corpus, min_in = min_in, min_self = min_self), check = true) == 0, message = "a lower bound skips its ratchet")
+  let only = load_tracks(suite_path = base + "/no-suite.json", corpus_path = corpus, min_in = min_in, min_self = min_self)
+  expect(cond = Array::length(only) == 1, message = "corpus alone is one track")
+  expect(cond = Array::get(only, at = 0).name == "self-compile", message = "the one track is self-compile")
+  expect(cond = format_rate(d = Array::get(only, at = 0).rate) == "40.03", message = "10703/26738 is 40.03, got " + format_rate(d = Array::get(only, at = 0).rate))
+  expect(cond = !rate_below(rate = Array::get(only, at = 0).rate, floor = 40.03), message = "the printed 40.03 meets a 40.03 floor")
   // Ties go to even, as Python's round(x, 2) does: 1/32 is exactly 3.125.
-  expect(format_rate(pct(1, 32)) == "3.12", "1/32 rounds half to even (3.12), got " + format_rate(pct(1, 32)))
-  expect(rate_below(pct(1, 32), 3.13), "3.12 must miss a 3.13 floor")
-  expect(format_rate(pct(3, 32)) == "9.38", "3/32 is 9.375, which rounds to even 9.38, got " + format_rate(pct(3, 32)))
+  expect(cond = format_rate(d = pct(hit = 1, total = 32)) == "3.12", message = "1/32 rounds half to even (3.12), got " + format_rate(d = pct(hit = 1, total = 32)))
+  expect(cond = rate_below(rate = pct(hit = 1, total = 32), floor = 3.13), message = "3.12 must miss a 3.13 floor")
+  expect(cond = format_rate(d = pct(hit = 3, total = 32)) == "9.38", message = "3/32 is 9.375, which rounds to even 9.38, got " + format_rate(d = pct(hit = 3, total = 32)))
   // The rebaseline, pinned: Python read 23/160 as 14.37 through a binary
   // intermediate (14.374999999999998); the exact ratio is a tie, and even is 14.38.
-  expect(format_rate(pct(23, 160)) == "14.38", "23/160 is exactly 14.375, half to even 14.38, got " + format_rate(pct(23, 160)))
-  expect(format_rate(pct(0, 0)) == "0.0", "an empty corpus is 0.0")
+  expect(cond = format_rate(d = pct(hit = 23, total = 160)) == "14.38", message = "23/160 is exactly 14.375, half to even 14.38, got " + format_rate(d = pct(hit = 23, total = 160)))
+  expect(cond = format_rate(d = pct(hit = 0, total = 0)) == "0.0", message = "an empty corpus is 0.0")
   // A floor that is set must parse; unset or blank is the default.
-  expect(parse_floor("", 57.0) == Some(57.0), "blank floor is the default")
-  expect(parse_floor(" 40.03 ", 0.0) == Some(40.03), "a padded floor parses")
-  expect(parse_floor("40,03", 0.0) == None, "a malformed floor is refused, not replaced by the default")
-  expect(format_rate(57.88) == "57.88", "57.88")
-  expect(format_rate(57.0) == "57.0", "57.0")
-  expect(format_rate(0.0) == "0.0", "0.0")
+  expect(cond = parse_floor(raw = "", fallback = 57.0) == Some(57.0), message = "blank floor is the default")
+  expect(cond = parse_floor(raw = " 40.03 ", fallback = 0.0) == Some(40.03), message = "a padded floor parses")
+  expect(cond = parse_floor(raw = "40,03", fallback = 0.0) == None, message = "a malformed floor is refused, not replaced by the default")
+  expect(cond = format_rate(d = 57.88) == "57.88", message = "57.88")
+  expect(cond = format_rate(d = 57.0) == "57.0", message = "57.0")
+  expect(cond = format_rate(d = 0.0) == "0.0", message = "0.0")
   Fs::remove_tree(base)
   println("coverage-tracks: ok")
 }
@@ -308,14 +308,14 @@ fn main() -> Unit allows Env + Fs + Console + Process::exit {
   if flag("--self-test") {
     self_test()
   } else {
-    let suite = env_or("VIBE_COVERAGE_TRACK_SUITE", "_build/coverage/selfhost-suite/selfhost_suite.report.json")
-    let corpus = env_or("VIBE_COVERAGE_TRACK_CORPUS", "_build/coverage/selfhost-corpus/merged.json")
-    let rows = load_tracks(suite, corpus, env_double("VIBE_TRACK_MIN_IN_PROCESS_RATE", 57.0), env_double("VIBE_TRACK_MIN_SELF_COMPILE_RATE", 0.0))
+    let suite = env_or(name = "VIBE_COVERAGE_TRACK_SUITE", fallback = "_build/coverage/selfhost-suite/selfhost_suite.report.json")
+    let corpus = env_or(name = "VIBE_COVERAGE_TRACK_CORPUS", fallback = "_build/coverage/selfhost-corpus/merged.json")
+    let rows = load_tracks(suite_path = suite, corpus_path = corpus, min_in = env_double(name = "VIBE_TRACK_MIN_IN_PROCESS_RATE", fallback = 57.0), min_self = env_double(name = "VIBE_TRACK_MIN_SELF_COMPILE_RATE", fallback = 0.0))
     if Array::length(rows) == 0 {
       eprintln("[coverage-tracks] neither track has a report; run 'pkf run coverage' and/or 'pkf run coverage-corpus' first")
       exit(2)
     } else {
-      let status = report(rows, flag("--check"))
+      let status = report(rows = rows, check = flag("--check"))
       if status != 0 { exit(status) } else { () }
     }
   }

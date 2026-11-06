@@ -37,7 +37,7 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 proj="$WORK/proj"; mkdir -p "$proj"
 cat > "$proj/pure.vibex" <<'EOF'
 let add = (a: Int, b: Int) -> Int { a + b }
-fn main allows () { let _ = add(2, 3); () }
+fn main allows () { let _ = add(a = 2, b = 3); () }
 EOF
 cat > "$proj/output.vibex" <<'EOF'
 fn main allows Stdout { Stdout::write_stream("5\n") }
@@ -53,7 +53,7 @@ let build = (n: Int) -> String {
   }
   s
 }
-fn main allows () { let _ = String::length(build(500)); () }
+fn main allows () { let _ = String::length(build(n = 500)); () }
 EOF
 
 # 1. plain run emits NO memory report.
@@ -98,7 +98,7 @@ let build = (n: Int) -> Int {
   while i < n { s = String::concat(s, "x"); i = i + 1 }
   String::length(s)
 }
-fn main allows () { let _ = build(3500); () }
+fn main allows () { let _ = build(n = 3500); () }
 EOF
 grow_err="$("$VIBE" run --mem "$proj/grow.vibex" 2>&1 >/dev/null)"
 gcount="$(printf '%s\n' "$grow_err" | grep -oE 'grow_events=[0-9]+' | head -1 | cut -d= -f2)"

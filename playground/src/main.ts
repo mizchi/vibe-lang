@@ -12,8 +12,8 @@ const PRESETS: Preset[] = [
 }
 
 export let _start = () -> Int {
-  let ok = handle { safe_div(12, 3) } with { Exception::Throw(_) => -1 }
-  let err = handle { safe_div(12, 0) } with { Exception::Throw(_) => -1 }
+  let ok = handle { safe_div(a = 12, b = 3) } with { Exception::Throw(_) => -1 }
+  let err = handle { safe_div(a = 12, b = 0) } with { Exception::Throw(_) => -1 }
   ok + err
 }`,
   },
@@ -32,7 +32,7 @@ let area = (shape: Shape) -> Int {
 }
 
 export let _start = () -> Int {
-  area(Circle(5)) + area(Rect(3, 4))
+  area(shape = Circle(5)) + area(shape = Rect(3, 4))
 }`,
   },
   {
@@ -40,12 +40,12 @@ export let _start = () -> Int {
     source: `let values = [1, 2, 3, 4, 5]
 
 let squared_evens = () -> Array[Int] {
-  let squared = Array::map(values, (x: Int) -> Int { x * x })
-  Array::filter(squared, (x: Int) -> Bool { x % 2 == 0 })
+  let squared = Array::map(values, f = (x: Int) -> Int { x * x })
+  Array::filter(squared, f = (x: Int) -> Bool { x % 2 == 0 })
 }
 
 export let _start = () -> Int {
-  Array::fold(squared_evens(), 0, (acc: Int, x: Int) -> Int { acc + x })
+  Array::fold(squared_evens(), init = 0, f = (acc: Int, x: Int) -> Int { acc + x })
 }`,
   },
   {

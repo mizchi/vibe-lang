@@ -10,7 +10,7 @@ mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 # single-file executable root
-printf 'fn main allows Stdout {\n  let xs = [1, 2, 3, 4]\n  let total = Array::fold(xs, 0, _ + _)\n  Stdout::write_stream("\\{total}\\n")\n}\n' > "$WORK/prog.vibex"
+printf 'fn main allows Stdout {\n  let xs = [1, 2, 3, 4]\n  let total = Array::fold(xs, init = 0, f = (a, b) -> a + b)\n  Stdout::write_stream("\\{total}\\n")\n}\n' > "$WORK/prog.vibex"
 raw="$(bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/prog.vibex")"
 out="$(printf '%s\n' "$raw" | tr -dc '0-9\n' | grep -E '.' | head -1)"
 if [ "$out" != "10" ]; then

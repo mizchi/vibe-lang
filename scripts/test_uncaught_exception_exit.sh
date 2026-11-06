@@ -155,7 +155,7 @@ cat >"$WORK/entry_module_value.vibe" <<'EOF'
 let table = [10, 20, 30]
 
 fn main() -> Unit allows Console {
-  println("\{Array::get(table, 1)}")
+  println("\{Array::get(table, at = 1)}")
 }
 EOF
 
@@ -194,7 +194,7 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception {
   let r = TaskGroup::run((g) -> {
-    let a = TaskGroup::spawn(g, () -> {
+    let a = TaskGroup::spawn(g, f = () -> {
       throw("boom")
       1
     })
@@ -210,7 +210,7 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception {
   let r = TaskGroup::run((g) -> {
-    let a = TaskGroup::spawn(g, () -> 1)
+    let a = TaskGroup::spawn(g, f = () -> 1)
     TaskHandle::cancel(a)
     TaskHandle::join(a)
   })
@@ -240,7 +240,7 @@ fn fail() -> Int with Exception[Bad] {
 
 fn main allows Console + Exception[Bad] {
   println("before")
-  let v = guarded(() -> fail())
+  let v = guarded(body = () -> fail())
   println("v = \{v}")
 }
 EOF

@@ -54,25 +54,31 @@ fn label_error(_ source: String) -> String with Exception {
 }
 
 /// Namespace calls have no implicit receiver, even after optional filling.
-test "qualified optional calls without labels use checker placements" {
-  expect_normalized(source = "fn main() -> Int { helper.pick(10) }", expected = "fn main() -> Int { helper.pick(10, None) }")
+test "qualified optional calls use checker placements" {
+  expect_normalized(source = "fn main() -> Int { helper.pick(x = 10) }", expected = "fn main() -> Int { helper.pick(10, None) }")
   expect_normalized(source = "fn main() -> Int { helper.digits() }", expected = "fn main() -> Int { helper.digits(None, None, None) }")
-  expect_normalized(source = "fn main() -> Int { helper.pick(10, 3) }", expected = "fn main() -> Int { helper.pick(10, Some(3)) }")
+  expect_normalized(source = "fn main() -> Int { helper.pick(x = 10, ignored = 3) }", expected = "fn main() -> Int { helper.pick(10, Some(3)) }")
+}
+
+/// A seeded `#params:` header is a declaration, so its calls label their
+/// arguments exactly as a filesystem import's would (ADR-0120 Phase 4).
+test "an unlabeled call to a seeded import header is refused" {
+  assert(String::contains(label_error("fn main() -> Int { helper.pick(10) }"), needle = "label the arguments of helper.pick: write `x = ` before argument 1"))
 }
 
 /// Source labels select declared slots; explicit Options are not wrapped twice.
 test "qualified labels and explicit Options survive placement transport" {
   expect_normalized(source = "fn main() -> Int { helper.digits(b = 4, a = 5) }", expected = "fn main() -> Int { helper.digits(Some(5), Some(4), None) }")
   expect_normalized(source = "fn main() -> Int { helper.pick(ignored = 3, x = 10) }", expected = "fn main() -> Int { helper.pick(10, Some(3)) }")
-  expect_normalized(source = "fn main() -> Int { helper.pick(10, None) }", expected = "fn main() -> Int { helper.pick(10, None) }")
-  expect_normalized(source = "fn main() -> Int { helper.pick(10, Some(3)) }", expected = "fn main() -> Int { helper.pick(10, Some(3)) }")
+  expect_normalized(source = "fn main() -> Int { helper.pick(x = 10, ignored = None) }", expected = "fn main() -> Int { helper.pick(10, None) }")
+  expect_normalized(source = "fn main() -> Int { helper.pick(x = 10, ignored = Some(3)) }", expected = "fn main() -> Int { helper.pick(10, Some(3)) }")
 }
 
 /// These diagnostics come from the resolved namespace binding's call typing.
 test "qualified unknown repeated and mixed labels are diagnosed" {
   assert(String::contains(label_error("fn main() -> Int { helper.pick(typo = 10) }"), needle = "unknown labeled argument `typo`"))
   assert(String::contains(label_error("fn main() -> Int { helper.pick(x = 10, x = 3) }"), needle = "out of declared parameter order"))
-  assert(String::contains(label_error("fn main() -> Int { helper.pick(10, ignored = 3) }"), needle = "mixes positional and labeled arguments"))
+  assert(String::contains(label_error("fn main() -> Int { helper.pick(10, ignored = 3) }"), needle = "label the arguments of helper.pick: write `x = ` before argument 1"))
 }
 
 /// A local receiver shadows the namespace and does not inherit its labels.

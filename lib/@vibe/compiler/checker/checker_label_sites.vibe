@@ -10,7 +10,11 @@
 // per call.
 
 import ./checker_call_header.vibe {
-  checker_builtin_call_name, checker_call_header_names
+  checker_builtin_call_name, checker_call_header_is_declaration, checker_call_header_names, checker_header_name_is_positional
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
 }
 
 import ./checker_call_header_flow.vibe {
@@ -18,7 +22,7 @@ import ./checker_call_header_flow.vibe {
 }
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, builtin_param_labels, env_lookup_binding
+  Expr, TypeEnv, __to_string, builtin_param_labels, canonical_builtin_name, env_lookup_binding
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -47,6 +51,14 @@ export let label_site_imported: Int = 2
 // definition site.
 
 let label_sites_active: Array[Bool] = [false]
+let required_labels_suspended: Array[Bool] = [false]
+
+/// The label codemod types a program in order to label it, so the labels it
+/// is about to write are not errors while it does (ADR-0120 Phase 4). On for
+/// the codemod's query only, the import walk included.
+export fn checker_required_labels_suspend(_ on: Bool) -> Unit {
+  Array::set(required_labels_suspended, at = 0, value = on)
+}
 let label_sites: Array[LabelSite] = []
 let label_site_offsets: Array[MutMap[Int, Bool]] = [MutMap::new_int()]
 
@@ -130,4 +142,140 @@ export fn checker_note_label_site(env: TypeEnv, name: String, ident_offset: Int,
       None => ()
     }
   }
+}
+
+//# Required labels (ADR-0120 Phase 4)
+
+fn missing_label_name(_ raw: String) -> String {
+  let size = String::length(raw)
+  if String::ends_with(raw, suffix = "~") || String::ends_with(raw, suffix = "?") {
+    raw[0: size - 1]
+  } else {
+    raw
+  }
+}
+
+/// The parameter labels of a builtin call to `name`, or None when the call
+/// does not run a builtin. The label table has a row for every builtin the
+/// checker admits (tests/builtin_param_labels_test.vibe), so a row is how a
+/// builtin is recognized here -- `lookup_builtin` would build its type.
+/// #3832: a builtin reached through an import alias takes the builtin's labels.
+fn required_builtin_labels(env: TypeEnv, name: String, ident_offset: Int) -> Option[Array[String]] {
+  let bname = checker_builtin_call_name(env = env, name = name)
+  if !builtin_resolves_at(env = env, name = bname, ident_off = ident_offset) || canonical_builtin_name(bname) == "sh_lines" {
+    None
+  } else {
+    builtin_param_labels(bname)
+  }
+}
+
+/// Whether any written argument is positional. A call whose arguments are
+/// all labeled is missing none, so most calls stop here, before any lookup.
+fn args_have_positional(_ args: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(args) {
+    found = match Array::get(args, at = i) {
+      ELabeledArg(_, _, _) => false,
+      _ => true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// ADR-0120 Phase 4: an argument to a parameter that is not declared `_` names
+/// it, at a call to a builtin or to a declaration
+/// (`checker_call_header_is_declaration`). A call through a local lambda or a
+/// value stays positional. The message lists every label the call is missing,
+/// in written order.
+/// `ident_len` is the length of the token at `ident_offset` -- the written
+/// method name of `p.bump(..)`, not the resolved `P::bump` (Codex on #3881).
+export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, ident_len: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
+  if Array::get(required_labels_suspended, at = 0) || offset < 0 || ident_offset < 0 || !args_have_positional(args) || checker_call_header_is_probe() {
+    ()
+  } else {
+    match required_builtin_labels(env = env, name = name, ident_offset = ident_offset) {
+      Some(names) => report_required_labels(name = name, ident_offset = ident_offset, ident_len = ident_len, args = args, names = names, method_call = method_call, builtin = true, errors = errors),
+      None => if checker_call_header_is_declaration(env = env, name = name) {
+        match checker_call_header_names(env = env, name = name) {
+          Some(names) => report_required_labels(name = name, ident_offset = ident_offset, ident_len = ident_len, args = args, names = names, method_call = method_call, builtin = false, errors = errors),
+          None => ()
+        }
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+/// More arguments than parameters is an arity error, and a declaration's call
+/// that labels some arguments and not others is reported as mixing: either
+/// says what to fix first. A method call's receiver fills the first name, so
+/// its written arguments start one slot in.
+fn report_required_labels(name: String, ident_offset: Int, ident_len: Int, args: Array[Expr], names: Array[String], method_call: Bool, builtin: Bool, errors: Array[String]) -> Unit {
+  let skip = if method_call && Array::length(names) > 0 {
+    1
+  } else {
+    0
+  }
+  if Array::length(args) > Array::length(names) - skip || (!builtin && checker_args_mix_labels(args)) {
+    ()
+  } else {
+    let message = required_labels_message_from(name = name, args = args, names = names, skip = skip)
+    if message != "" {
+      Array::push(errors, value = message + off_marker_len(off = ident_offset, len = ident_len))
+    } else {
+      ()
+    }
+  }
+}
+
+/// The edit for the unlabeled arguments of a call to `name` whose parameters
+/// are `names`: "label the arguments of NAME: write `a = ` before argument
+/// 1, ...", or "" when every argument that needs a label has one.
+export fn checker_required_labels_message(name: String, args: Array[Expr], names: Array[String]) -> String {
+  required_labels_message_from(name = name, args = args, names = names, skip = 0)
+}
+
+/// The same, with the written arguments starting at parameter `skip`. Nothing
+/// is allocated for a call that is missing no label.
+fn required_labels_message_from(name: String, args: Array[Expr], names: Array[String], skip: Int) -> String {
+  let mut missing: Option[Array[String]] = None
+  let mut i = 0
+  while i < Array::length(args) && i + skip < Array::length(names) {
+    let positional = match Array::get(args, at = i) {
+      ELabeledArg(_, _, _) => false,
+      _ => true
+    }
+    let raw = Array::get(names, at = i + skip)
+    if positional && raw != "_" && !checker_header_name_is_positional(raw) {
+      let item = "`" + missing_label_name(raw) + " = ` before argument " + __to_string(i + 1)
+      match missing {
+        Some(items) => Array::push(items, value = item),
+        None => missing = Some([item])
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  match missing {
+    Some(items) => "label the arguments of " + name + ": write " + String::join(items, sep = ", "),
+    None => ""
+  }
+}
+
+fn checker_args_mix_labels(_ args: Array[Expr]) -> Bool {
+  let mut labeled = false
+  let mut plain = false
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, at = i) {
+      ELabeledArg(_, _, _) => labeled = true,
+      _ => plain = true
+    }
+    i = i + 1
+  }
+  labeled && plain
 }

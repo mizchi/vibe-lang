@@ -58,14 +58,14 @@ expect_matches "unknown-name carries an exact range (colM-K)" "line 1:[0-9]+-[0-
 
 # arity mismatch -> located
 expect_contains "arity mismatch located" "function arity mismatch" \
-  'let h = (a: Int, b: Int) -> Int { a + b }\nexport let main = () -> Int { h(1) }\n'
+  'let h = (a: Int, b: Int) -> Int { a + b }\nexport let main = () -> Int { h(a = 1) }\n'
 
 # arity mismatch -> located at the CALL site, not the DEFINITION.
 # `helper` is defined on line 1 but called with wrong arity on line 4; the
 # located diagnostic must point at the call (line 4) via the real AST offset
 # threaded through the [@off=N] marker, NOT the first text occurrence (line 1).
 expect_contains "arity mismatch located at call site (line 4)" "line 4:" \
-  'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let l3 = 0\nexport let main = () -> Int { helper(1) }\n'
+  'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let l3 = 0\nexport let main = () -> Int { helper(a = 1) }\n'
 
 # method-style call (EDot callee) arity mismatch -> located at the CALL site
 # (span-arc step2: the ECall source offset feeds the EDot-callee arity
@@ -97,9 +97,9 @@ expect_matches "unknown-field carries an exact field range (colM-K)" "line 3:5-6
 # (`total` starts at col 3 on line 10: `  l.total()` -> the field token offset
 # feeds the [@off=N:M] marker).
 expect_contains "bare-fn dot call reports no-method (#953)" 'no method `total` on `MyList`' \
-  'enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(t)\n  }\n}\nexport let main = () -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n'
+  'enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(l = t)\n  }\n}\nexport let main = () -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n'
 expect_matches "bare-fn dot call no-method located with exact range (#953)" "line 10:5-10:" \
-  'enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(t)\n  }\n}\nexport let main = () -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n'
+  'enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(l = t)\n  }\n}\nexport let main = () -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n'
 
 # #1567: the type errors that used to arrive with NO location at all. Each
 # passed a hardcoded -1 where the offending expression was in scope; the anchor
@@ -133,7 +133,7 @@ expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
   fi
 }
 expect_missing "no [@off= marker leak (arity)" "[@off=" \
-  'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let main = () -> Int { helper(1) }\n'
+  'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let main = () -> Int { helper(a = 1) }\n'
 expect_missing "no [@off= marker leak (unknown name)" "[@off=" \
   'export let a = 1\nexport let main = () -> Int { zzz }\n'
 expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
@@ -185,7 +185,7 @@ expect_contains "an unescaped literal's range is unchanged" "line 1:14-21" \
 # one is just wrong, and it is the one a reader or an `^line N:C`-parsing LSP
 # takes. Pin the count (one `line N:C:`) and the value (line 3, the call).
 locdup="$WORK/dup.vibe"
-printf 'export let g = (a: Int, b: Int) -> Int { a + b }\nexport fn main() -> Int {\n  g(1)\n}\n' > "$locdup"
+printf 'export let g = (a: Int, b: Int) -> Int { a + b }\nexport fn main() -> Int {\n  g(a = 1)\n}\n' > "$locdup"
 dup_out="$("$VIBE" check "$locdup" 2>&1 || true)"
 dup_n="$(printf '%s' "$dup_out" | grep -oE 'line [0-9]+:[0-9]+' | wc -l | tr -d ' ')"
 if [ "$dup_n" = "1" ]; then
@@ -204,7 +204,7 @@ fi
 # the path and falls back to the buggy behaviour (#1628 review, Codex P2).
 locdir="$WORK/foo: bar"
 mkdir -p "$locdir"
-printf 'export let g = (a: Int, b: Int) -> Int { a + b }\nexport fn main() -> Int {\n  g(1)\n}\n' > "$locdir/dup.vibe"
+printf 'export let g = (a: Int, b: Int) -> Int { a + b }\nexport fn main() -> Int {\n  g(a = 1)\n}\n' > "$locdir/dup.vibe"
 sep_out="$("$VIBE" check "$locdir/dup.vibe" 2>&1 || true)"
 sep_n="$(printf '%s' "$sep_out" | grep -oE 'line [0-9]+:[0-9]+' | wc -l | tr -d ' ')"
 if [ "$sep_n" = "1" ]; then
@@ -219,7 +219,7 @@ fi
 # captured as the struct, then CtUnknown) and read wrong slots at runtime.
 expect_contains "record-into-struct-arg rejected with the record's shape (#1839)" \
   "expected Span, got record { start: Int, end: Int }" \
-  'struct Span { end: Int; start: Int }\nfn span_width(s: Span) -> Int { s.end - s.start }\nexport fn main() -> Int {\n  span_width(record { start: 3, end: 9 })\n}\n'
+  'struct Span { end: Int; start: Int }\nfn span_width(s: Span) -> Int { s.end - s.start }\nexport fn main() -> Int {\n  span_width(s = record { start: 3, end: 9 })\n}\n'
 
 expect_contains "record-into-struct-annotation rejected (#1839)" \
   "expected Span, got record { start: Int, end: Int }" \
@@ -231,7 +231,7 @@ expect_contains "record-into-struct-annotation rejected (#1839)" \
 # record layout as an array)...
 expect_contains "record rejected as an Array builtin receiver (#1839)" \
   "Array::get" \
-  'export fn main() -> Int {\n  Array::get(record { a: 1 }, 0)\n}\n'
+  'export fn main() -> Int {\n  Array::get(record { a: 1 }, at = 0)\n}\n'
 
 # ...while a record used AS a record stays accepted (same colliding struct in
 # scope; literal-order dot access).

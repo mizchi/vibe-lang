@@ -41,18 +41,18 @@ fn main() -> Int allows Console {
   let a = () -> Array[Bool] { [1 < 2, 2 < 1] }
   let o = () -> Option[Char] { Some(Char::from_int(122)) }
   let t = () -> (Float64, Bool, Unit) { (2.5, 1 < 2, ()) }
-  assert(show(b()) == "true")
+  assert(show(value = b()) == "true")
   assert(to_string(b()) == "true")
   assert(to_string(c()) == "q")
-  assert(qualified_show(b()) == "true")
-  assert(show(d()) == "2.5")
-  assert(show(c()) == "q")
-  assert(show(u()) == "()")
-  assert(show(a()) == "[true, false]")
-  assert(show(o()) == "Some(z)")
-  assert(show(t()) == "(2.5, true, ())")
-  println(mono(b()))
-  assert(show_ordinary(b()))
+  assert(qualified_show(value = b()) == "true")
+  assert(show(value = d()) == "2.5")
+  assert(show(value = c()) == "q")
+  assert(show(value = u()) == "()")
+  assert(show(value = a()) == "[true, false]")
+  assert(show(value = o()) == "Some(z)")
+  assert(show(value = t()) == "(2.5, true, ())")
+  println(mono(value = b()))
+  assert(show_ordinary(value = b()))
   0
 }
 `;

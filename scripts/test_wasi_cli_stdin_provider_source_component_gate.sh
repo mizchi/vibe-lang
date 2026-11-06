@@ -56,17 +56,17 @@ fn close(stream: StdinStream) -> Unit with Async { StdinStream::close(stream) }
 fn run() -> Int with Stdin + Async {
   let stream = acquire()
   let alias = stream
-  let a = next(alias)
-  close(stream)
-  close(alias)
-  if a == 10 && next(alias) == -1 { 43 } else { 0 }
+  let a = next(stream = alias)
+  close(stream = stream)
+  close(stream = alias)
+  if a == 10 && next(stream = alias) == -1 { 43 } else { 0 }
 }
 EOF
 cat >"$OUT/top-level-wrappers.vibe" <<'EOF'
 fn acquire_wrapper() -> StdinStream with Stdin { Stdin::read_via_stream() }
 fn next_wrapper(stream: StdinStream) -> Int with Async { StdinStream::next(stream) }
 fn close_wrapper(stream: StdinStream) -> Unit with Async { StdinStream::close(stream) }
-fn read_chunk_wrapper(stream: StdinStream, size: Int) -> Option[String] with Async { StdinStream::read_chunk(stream, size) }
+fn read_chunk_wrapper(stream: StdinStream, size: Int) -> Option[String] with Async { StdinStream::read_chunk(stream, max = size) }
 
 fn use_provider() -> Int with Stdin + Async {
   let acquire = acquire_wrapper
@@ -112,8 +112,8 @@ fn close_alias(stream: S) -> Unit with Async { S::close(stream) }
 
 fn run() -> Int with Stdin + Async {
   let stream = acquire()
-  let first = next_alias(stream)
-  close_alias(stream)
+  let first = next_alias(stream = stream)
+  close_alias(stream = stream)
   if first == 10 { 46 } else { 0 }
 }
 EOF
@@ -124,12 +124,12 @@ fn run() -> Int with Stdin + Async {
   let mut ok = true
   let mut done = false
   while done == false {
-    match StdinStream::read_chunk(stream, 4) {
+    match StdinStream::read_chunk(stream, max = 4) {
       Some(chunk) => {
         if index == 0 {
-          ok = ok && String::length(chunk) == 4 && String::char_code_at(chunk, 0) == 0 && String::char_code_at(chunk, 1) == 128 && String::char_code_at(chunk, 2) == 255 && String::char_code_at(chunk, 3) == 65
+          ok = ok && String::length(chunk) == 4 && String::char_code_at(chunk, at = 0) == 0 && String::char_code_at(chunk, at = 1) == 128 && String::char_code_at(chunk, at = 2) == 255 && String::char_code_at(chunk, at = 3) == 65
         } else if index == 1 {
-          ok = ok && String::length(chunk) == 1 && String::char_code_at(chunk, 0) == 66
+          ok = ok && String::length(chunk) == 1 && String::char_code_at(chunk, at = 0) == 66
         } else {
           ok = false
         }
@@ -138,11 +138,11 @@ fn run() -> Int with Stdin + Async {
       None => { done = true }
     }
   }
-  let post_eof = StdinStream::read_chunk(stream, 4)
+  let post_eof = StdinStream::read_chunk(stream, max = 4)
   StdinStream::close(stream)
   StdinStream::close(stream)
   match post_eof {
-    None => match StdinStream::read_chunk(stream, 4) {
+    None => match StdinStream::read_chunk(stream, max = 4) {
       None => if ok && index == 2 { 50 } else { 0 },
       Some(_) => 0
     },
@@ -151,17 +151,17 @@ fn run() -> Int with Stdin + Async {
 }
 EOF
 cat >"$OUT/chunk-one-wrapper.vibe" <<'EOF'
-fn read_chunk(stream: StdinStream, size: Int) -> Option[String] with Async { StdinStream::read_chunk(stream, size) }
+fn read_chunk(stream: StdinStream, size: Int) -> Option[String] with Async { StdinStream::read_chunk(stream, max = size) }
 
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let a = read_chunk(stream, 1)
-  let b = read_chunk(stream, 1)
-  let c = read_chunk(stream, 1)
-  let d = read_chunk(stream, 1)
-  let e = read_chunk(stream, 1)
-  let eof1 = read_chunk(stream, 1)
-  let eof2 = read_chunk(stream, 1)
+  let a = read_chunk(stream = stream, size = 1)
+  let b = read_chunk(stream = stream, size = 1)
+  let c = read_chunk(stream = stream, size = 1)
+  let d = read_chunk(stream = stream, size = 1)
+  let e = read_chunk(stream = stream, size = 1)
+  let eof1 = read_chunk(stream = stream, size = 1)
+  let eof2 = read_chunk(stream = stream, size = 1)
   match a {
     Some(sa) => match b {
       Some(sb) => match c {
@@ -169,7 +169,7 @@ fn run() -> Int with Stdin + Async {
           Some(sd) => match e {
             Some(se) => match eof1 {
               None => match eof2 {
-                None => if String::length(sa) == 1 && String::char_code_at(sa, 0) == 0 && String::char_code_at(sb, 0) == 128 && String::char_code_at(sc, 0) == 255 && String::char_code_at(sd, 0) == 65 && String::char_code_at(se, 0) == 66 { 51 } else { 0 },
+                None => if String::length(sa) == 1 && String::char_code_at(sa, at = 0) == 0 && String::char_code_at(sb, at = 0) == 128 && String::char_code_at(sc, at = 0) == 255 && String::char_code_at(sd, at = 0) == 65 && String::char_code_at(se, at = 0) == 66 { 51 } else { 0 },
                 Some(_) => 0
               },
               Some(_) => 0
@@ -189,15 +189,15 @@ EOF
 cat >"$OUT/chunk-zero.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  match StdinStream::read_chunk(stream, 0) {
+  match StdinStream::read_chunk(stream, max = 0) {
     Some(_) => 0,
-    None => match StdinStream::read_chunk(stream, 0) {
+    None => match StdinStream::read_chunk(stream, max = 0) {
       Some(_) => 0,
       None => {
         let first = StdinStream::next(stream)
         StdinStream::close(stream)
         StdinStream::close(stream)
-        match StdinStream::read_chunk(stream, 0) { None => if first == 0 { 52 } else { 0 }, Some(_) => 0 }
+        match StdinStream::read_chunk(stream, max = 0) { None => if first == 0 { 52 } else { 0 }, Some(_) => 0 }
       }
     }
   }
@@ -206,12 +206,12 @@ EOF
 cat >"$OUT/chunk-negative.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  match StdinStream::read_chunk(stream, -7) {
+  match StdinStream::read_chunk(stream, max = -7) {
     Some(_) => 0,
     None => {
       let first = StdinStream::next(stream)
       StdinStream::close(stream)
-      match StdinStream::read_chunk(stream, -7) { None => if first == 0 { 53 } else { 0 }, Some(_) => 0 }
+      match StdinStream::read_chunk(stream, max = -7) { None => if first == 0 { 53 } else { 0 }, Some(_) => 0 }
     }
   }
 }
@@ -219,12 +219,12 @@ EOF
 cat >"$OUT/chunk-early-close.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let first = StdinStream::read_chunk(stream, 4)
+  let first = StdinStream::read_chunk(stream, max = 4)
   StdinStream::close(stream)
   StdinStream::close(stream)
   match first {
-    Some(chunk) => match StdinStream::read_chunk(stream, 4) {
-      None => if String::length(chunk) == 4 && String::char_code_at(chunk, 0) == 0 && String::char_code_at(chunk, 3) == 65 { 54 } else { 0 },
+    Some(chunk) => match StdinStream::read_chunk(stream, max = 4) {
+      None => if String::length(chunk) == 4 && String::char_code_at(chunk, at = 0) == 0 && String::char_code_at(chunk, at = 3) == 65 { 54 } else { 0 },
       Some(_) => 0
     },
     None => 0
@@ -334,11 +334,11 @@ EOF
 actionable_fail next-effect run '`StdinStream::next` needs it (effectful call outside effectful context)'
 cat >"$OUT/read-chunk-effect-direct.vibe" <<'EOF'
 fn pure_read_chunk(stream: StdinStream) -> Option[String] {
-  StdinStream::read_chunk(stream, 4)
+  StdinStream::read_chunk(stream, max = 4)
 }
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let _ = pure_read_chunk(stream)
+  let _ = pure_read_chunk(stream = stream)
   StdinStream::close(stream)
   0
 }
@@ -351,7 +351,7 @@ fn pure_read_chunk(stream: StdinStream) -> Option[String] {
 }
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let _ = pure_read_chunk(stream)
+  let _ = pure_read_chunk(stream = stream)
   StdinStream::close(stream)
   0
 }
@@ -371,7 +371,7 @@ for surface in next close read_chunk; do
   cat >"$OUT/top-$surface-effect-alias.vibe" <<EOF
 let ${surface}_alias = StdinStream::$surface
 fn pure_alias(stream: StdinStream) -> $ret { $call }
-fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = pure_alias(s); StdinStream::close(s); 0 }
+fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = pure_alias(stream = s); StdinStream::close(s); 0 }
 EOF
   actionable_fail "top-$surface-effect-alias" run "stdin provider operations are direct-call-only; wrap \`StdinStream::$surface\` in an explicitly effectful function"
 done
@@ -425,7 +425,7 @@ fn run() -> Int {
 EOF
 cat >"$OUT/value-unknown-hof.vibe" <<'EOF'
 fn transport(op: (StdinStream) -> Int with Async) -> Int { 0 }
-fn run() -> Int { transport(StdinStream::next) }
+fn run() -> Int { transport(op = StdinStream::next) }
 EOF
 for opaque in alias-chain conditional compound return struct-field array-field map-field unknown-hof; do
   actionable_fail "value-$opaque" run 'stdin provider operations are direct-call-only; wrap `StdinStream::next` in an explicitly effectful function'
@@ -470,7 +470,7 @@ cat >"$OUT/fs-read-chunk-value-alias.vibe" <<'EOF'
 import @vibe/console { StdinStream::read_chunk as read_chunk }
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let _ = read_chunk(stream, 4)
+  let _ = read_chunk(stream, max = 4)
   StdinStream::close(stream)
   0
 }
@@ -505,7 +505,7 @@ cat >"$OUT/alias-forgery.vibe" <<'EOF'
 import @vibe/console { StdinStream as S }
 struct Fake { value: Int }
 fn consume(stream: S) -> Int with Async { StdinStream::next(stream) }
-fn run() -> Int with Async { consume(Fake::{ value: 1 }) }
+fn run() -> Int with Async { consume(stream = Fake::{ value: 1 }) }
 EOF
 actionable_fail alias-forgery run 'expected StdinStream, got Fake' linear 1
 cat >"$OUT/reserved.vibe" <<'EOF'
@@ -517,15 +517,15 @@ fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = h
 EOF
 actionable_fail mixed run 'mixing stdin-provider imports with named host future/stream imports is not supported'
 cat >"$OUT/chunk-mixed.vibe" <<'EOF'
-fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = host_stream_named("body"); let _ = StdinStream::read_chunk(s, 4); StdinStream::close(s); 0 }
+fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = host_stream_named("body"); let _ = StdinStream::read_chunk(s, max = 4); StdinStream::close(s); 0 }
 EOF
 actionable_fail chunk-mixed run 'mixing stdin-provider imports with named host future/stream imports is not supported'
 cat >"$OUT/noncomponent.vibe" <<'EOF'
-fn main() -> Int allows Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); StdinStream::close(s); 0 }
+fn main() -> Int allows Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, max = 4); StdinStream::close(s); 0 }
 EOF
 actionable_fail noncomponent main 'requires an Async component entry named run'
 cat >"$OUT/gc.vibe" <<'EOF'
-fn main() -> Int allows Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); 0 }
+fn main() -> Int allows Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, max = 4); 0 }
 EOF
 actionable_fail gc main 'StdinStream is unsupported on gc backend' gc
 cat >"$OUT/coverage.vibe" <<'EOF'

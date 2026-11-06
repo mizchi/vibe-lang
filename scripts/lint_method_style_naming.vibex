@@ -87,7 +87,7 @@ fn contains(xs: Array[String], x: String) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(xs) && !found {
-    if Array::get(xs, i) == x {
+    if Array::get(xs, at = i) == x {
       found = true
     } else {
       ()
@@ -102,18 +102,18 @@ fn is_upper(c: Char) -> Bool {
 }
 
 fn is_ident_start(c: Char) -> Bool {
-  (c >= 'a' && c <= 'z') || is_upper(c) || c == '_'
+  (c >= 'a' && c <= 'z') || is_upper(c = c) || c == '_'
 }
 
 fn is_ident(c: Char) -> Bool {
-  is_ident_start(c) || (c >= '0' && c <= '9')
+  is_ident_start(c = c) || (c >= '0' && c <= '9')
 }
 
 /// The end of the identifier starting at `at`, or `at` when there is none.
 fn ident_end(s: String, at: Int) -> Int {
-  if at < String::length(s) && is_ident_start(String::byte_at(s, at)) {
+  if at < String::length(s) && is_ident_start(c = String::byte_at(s, at = at)) {
     let mut j = at + 1
-    while j < String::length(s) && is_ident(String::byte_at(s, j)) {
+    while j < String::length(s) && is_ident(c = String::byte_at(s, at = j)) {
       j = j + 1
     }
     j
@@ -124,15 +124,15 @@ fn ident_end(s: String, at: Int) -> Int {
 
 /// The end of the capitalized name starting at `at`, or `at`.
 fn type_end(s: String, at: Int) -> Int {
-  if at < String::length(s) && is_upper(String::byte_at(s, at)) {
-    ident_end(s, at)
+  if at < String::length(s) && is_upper(c = String::byte_at(s, at = at)) {
+    ident_end(s = s, at = at)
   } else {
     at
   }
 }
 
 fn skip_word(s: String, at: Int, word: String) -> Int {
-  if String::starts_with(String::substring(s, at, String::length(s)), word) {
+  if String::starts_with(String::substring(s, start = at, end = String::length(s)), prefix = word) {
     at + String::length(word)
   } else {
     at
@@ -156,13 +156,13 @@ fn primitives() -> Array[String] {
 
 /// The type a declaration line introduces, or "".
 fn declared_type(line: String) -> String {
-  let a = skip_word(line, 0, "export ")
-  let b = skip_word(line, a, "opaque ")
+  let a = skip_word(s = line, at = 0, word = "export ")
+  let b = skip_word(s = line, at = a, word = "opaque ")
   let mut c = b
   let kinds = ["type ", "struct ", "enum "]
   let mut k = 0
   while k < Array::length(kinds) {
-    let next = skip_word(line, b, Array::get(kinds, k))
+    let next = skip_word(s = line, at = b, word = Array::get(kinds, at = k))
     if next > b {
       c = next
     } else {
@@ -170,27 +170,27 @@ fn declared_type(line: String) -> String {
     }
     k = k + 1
   }
-  let end = type_end(line, c)
+  let end = type_end(s = line, at = c)
   if c == b || end == c {
     ""
   } else {
-    String::substring(line, c, end)
+    String::substring(line, start = c, end = end)
   }
 }
 
 /// `Type::name` for a `fn Type::name` line over an owned type, or "".
 fn companion(line: String, types: Array[String]) -> String {
-  if !String::starts_with(line, "fn ") {
+  if !String::starts_with(line, prefix = "fn ") {
     ""
   } else {
-    let sep = String::index_of_from(line, "::", 3)
+    let sep = String::index_of_from(line, sub = "::", start = 3)
     if sep < 0 {
       ""
     } else {
-      let ty = String::substring(line, 3, sep)
-      let end = ident_end(line, sep + 2)
-      if contains(types, ty) && end > sep + 2 {
-        "\{ty}::\{String::substring(line, sep + 2, end)}"
+      let ty = String::substring(line, start = 3, end = sep)
+      let end = ident_end(s = line, at = sep + 2)
+      if contains(xs = types, x = ty) && end > sep + 2 {
+        "\{ty}::\{String::substring(line, start = sep + 2, end = end)}"
       } else {
         ""
       }
@@ -202,26 +202,26 @@ fn companion(line: String, types: Array[String]) -> String {
 /// ("", "").
 fn recv_shaped(line: String, types: Array[String]) -> (String, String) {
   let none = ("", "")
-  if !String::starts_with(line, "fn ") {
+  if !String::starts_with(line, prefix = "fn ") {
     none
   } else {
-    let name_end = ident_end(line, 3)
-    if name_end == 3 || name_end >= String::length(line) || String::byte_at(line, name_end) != '(' {
+    let name_end = ident_end(s = line, at = 3)
+    if name_end == 3 || name_end >= String::length(line) || String::byte_at(line, at = name_end) != '(' {
       none
     } else {
       // An optional positional marker, then the parameter name and `: `.
-      let p0 = skip_word(line, name_end + 1, "_ ")
-      let p_end = ident_end(line, p0)
-      let t0 = skip_word(line, p_end, ": ")
+      let p0 = skip_word(s = line, at = name_end + 1, word = "_ ")
+      let p_end = ident_end(s = line, at = p0)
+      let t0 = skip_word(s = line, at = p_end, word = ": ")
       if p_end == p0 || t0 == p_end {
         none
       } else {
-        let t_end = type_end(line, t0)
-        let ty = String::substring(line, t0, t_end)
+        let t_end = type_end(s = line, at = t0)
+        let ty = String::substring(line, start = t0, end = t_end)
         let n = String::length(line)
         // One `[...]` argument list (no `]` inside it), then `,` or `)`.
-        let after = if t_end < n && String::byte_at(line, t_end) == '[' {
-          let close = String::index_of_from(line, "]", t_end)
+        let after = if t_end < n && String::byte_at(line, at = t_end) == '[' {
+          let close = String::index_of_from(line, sub = "]", start = t_end)
           if close < 0 {
             n
           } else {
@@ -230,8 +230,8 @@ fn recv_shaped(line: String, types: Array[String]) -> (String, String) {
         } else {
           t_end
         }
-        if t_end > t0 && contains(types, ty) && after < n && (String::byte_at(line, after) == ',' || String::byte_at(line, after) == ')') {
-          (String::substring(line, 3, name_end), ty)
+        if t_end > t0 && contains(xs = types, x = ty) && after < n && (String::byte_at(line, at = after) == ',' || String::byte_at(line, at = after) == ')') {
+          (String::substring(line, start = 3, end = name_end), ty)
         } else {
           none
         }
@@ -243,14 +243,14 @@ fn recv_shaped(line: String, types: Array[String]) -> (String, String) {
 /// The (path, name) pairs on the allowlist.
 fn allowlist(text: String) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
-  let lines = String::split(text, "\n")
+  let lines = String::split(text, sep = "\n")
   let mut i = 0
   while i < Array::length(lines) {
-    let line = Array::get(lines, i)
-    if line != "" && !String::starts_with(line, "#") {
-      let cells = String::split(line, "\t")
+    let line = Array::get(lines, at = i)
+    if line != "" && !String::starts_with(line, prefix = "#") {
+      let cells = String::split(line, sep = "\t")
       if Array::length(cells) >= 2 {
-        Array::push(out, (Array::get(cells, 0), Array::get(cells, 1)))
+        Array::push(out, value = (Array::get(cells, at = 0), Array::get(cells, at = 1)))
       } else {
         ()
       }
@@ -266,7 +266,7 @@ fn is_allowed(allowed: Array[(String, String)], path: String, name: String) -> B
   let mut found = false
   let mut i = 0
   while i < Array::length(allowed) && !found {
-    let (p, n) = Array::get(allowed, i)
+    let (p, n) = Array::get(allowed, at = i)
     if p == path && n == name {
       found = true
     } else {
@@ -284,23 +284,23 @@ fn contracts(root: String) -> Array[String] with Fs {
   let dirs = ["lib/@vibe", "lib/@vibex"]
   let mut d = 0
   while d < Array::length(dirs) {
-    let dir = "\{root}/\{Array::get(dirs, d)}"
+    let dir = "\{root}/\{Array::get(dirs, at = d)}"
     if Fs::is_dir(dir) {
       let entries = find(dir)
       let mut i = 0
       while i < Array::length(entries) {
-        let entry = Array::get(entries, i)
+        let entry = Array::get(entries, at = i)
         if !entry.is_dir && entry.name == "index.vpkg" {
-          let rel = if String::starts_with(entry.path, prefix) {
-            String::substring(entry.path, String::length(prefix), String::length(entry.path))
+          let rel = if String::starts_with(entry.path, prefix = prefix) {
+            String::substring(entry.path, start = String::length(prefix), end = String::length(entry.path))
           } else {
             entry.path
           }
           // A package's own index.vpkg, at least one directory below the
           // scope root, outside the compiler and the CLI.
-          let depth_ok = String::index_of_from(rel, "/", String::length(Array::get(dirs, d)) + 1) >= 0
-          if depth_ok && !String::starts_with(rel, "lib/@vibe/compiler/") && !String::starts_with(rel, "lib/@vibe/cli/") {
-            Array::push(out, rel)
+          let depth_ok = String::index_of_from(rel, sub = "/", start = String::length(Array::get(dirs, at = d)) + 1) >= 0
+          if depth_ok && !String::starts_with(rel, prefix = "lib/@vibe/compiler/") && !String::starts_with(rel, prefix = "lib/@vibe/cli/") {
+            Array::push(out, value = rel)
           } else {
             ()
           }
@@ -318,14 +318,14 @@ fn contracts(root: String) -> Array[String] with Fs {
 }
 
 fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process::exit {
-  let root = option("--root", ".")
+  let root = option(name = "--root", fallback = ".")
   let allow_path = "\{root}/scripts/method_style_naming_allowlist.txt"
   let allowed = if Fs::is_file(allow_path) {
-    allowlist(Fs::read_file(allow_path))
+    allowlist(text = Fs::read_file(allow_path))
   } else {
     []
   }
-  let vpkgs = contracts(root)
+  let vpkgs = contracts(root = root)
   if Array::length(vpkgs) == 0 {
     Stderr::write_stream("method-style-naming lint: no index.vpkg files found under lib/@vibe or lib/@vibex\n")
     exit(1)
@@ -336,14 +336,14 @@ fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process
     let mut known_debt = 0
     let mut v = 0
     while v < Array::length(vpkgs) {
-      let vpkg = Array::get(vpkgs, v)
-      let lines = String::split(Fs::read_file("\{root}/\{vpkg}"), "\n")
+      let vpkg = Array::get(vpkgs, at = v)
+      let lines = String::split(Fs::read_file("\{root}/\{vpkg}"), sep = "\n")
       let types: Array[String] = []
       let mut i = 0
       while i < Array::length(lines) {
-        let ty = declared_type(Array::get(lines, i))
-        if ty != "" && !contains(primitives(), ty) {
-          Array::push(types, ty)
+        let ty = declared_type(line = Array::get(lines, at = i))
+        if ty != "" && !contains(xs = primitives(), x = ty) {
+          Array::push(types, value = ty)
         } else {
           ()
         }
@@ -353,9 +353,9 @@ fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process
         let qualified: Array[String] = []
         let mut q = 0
         while q < Array::length(lines) {
-          let c = companion(Array::get(lines, q), types)
+          let c = companion(line = Array::get(lines, at = q), types = types)
           if c != "" {
-            Array::push(qualified, c)
+            Array::push(qualified, value = c)
           } else {
             ()
           }
@@ -363,17 +363,17 @@ fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process
         }
         let mut r = 0
         while r < Array::length(lines) {
-          let (name, ty) = recv_shaped(Array::get(lines, r), types)
+          let (name, ty) = recv_shaped(line = Array::get(lines, at = r), types = types)
           if name != "" {
             checked = checked + 1
-            let is_gap = !contains(qualified, "\{ty}::\{name}")
-            let listed = is_allowed(allowed, vpkg, name)
+            let is_gap = !contains(xs = qualified, x = "\{ty}::\{name}")
+            let listed = is_allowed(allowed = allowed, path = vpkg, name = name)
             if is_gap && listed {
               known_debt = known_debt + 1
             } else if is_gap {
-              Array::push(violations, "\{vpkg}: \{name}(recv: \{ty}, ...)")
+              Array::push(violations, value = "\{vpkg}: \{name}(recv: \{ty}, ...)")
             } else if listed {
-              Array::push(stale, "\{vpkg} \{name}")
+              Array::push(stale, value = "\{vpkg} \{name}")
             } else {
               ()
             }
@@ -391,7 +391,7 @@ fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process
       Stderr::write_stream("method-style-naming lint: note -- these allowlist entries now have a Type::method companion; remove them from \{allow_path} to shrink the ratchet:\n")
       let mut s = 0
       while s < Array::length(stale) {
-        Stderr::write_stream("  \{Array::get(stale, s)}\n")
+        Stderr::write_stream("  \{Array::get(stale, at = s)}\n")
         s = s + 1
       }
     } else {
@@ -401,7 +401,7 @@ fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process
       Stderr::write_stream("method-style-naming lint: found \{Array::length(violations)} new function(s) without a Type::method companion:\n")
       let mut k = 0
       while k < Array::length(violations) {
-        Stderr::write_stream("  \{Array::get(violations, k)}\n")
+        Stderr::write_stream("  \{Array::get(violations, at = k)}\n")
         k = k + 1
       }
       Stderr::write_stream("method-style-naming lint: add an export fn Type::name(recv, ...) companion, or a justified entry in \{allow_path}\n")

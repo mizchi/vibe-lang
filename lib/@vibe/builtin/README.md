@@ -87,8 +87,8 @@ exported namespaced operations visible:
 import @vibe/builtin { trait Iterator }
 
 let arrays = [1, 2]
-  |> Iterator::map((x) -> { x + 1 })
-  |> Iterator::map((x) -> { x * 2 })
+  |> Iterator::map(f = (x) -> { x + 1 })
+  |> Iterator::map(f = (x) -> { x * 2 })
 ```
 
 Implementing `Iterator` with `iter_length` and `iter_get` makes
