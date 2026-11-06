@@ -100,12 +100,8 @@ done
 
 compiler="${VIBE_MD_COMPILER:-}"
 if [ -z "$compiler" ]; then
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    if [ -s "${gen}stage2.wasm" ]; then
-      compiler="${gen}stage2.wasm"
-      break
-    fi
-  done
+  . scripts/resolve_stage2.sh
+  compiler="$(resolve_stage2_generation vibe-md "$PWD")" || compiler=""
   if [ -z "$compiler" ]; then
     compiler="bootstrap/seed/compiler.wasm"
   fi

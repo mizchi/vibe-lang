@@ -16,9 +16,9 @@ backend X(wasm-gc lane 等)でコンパイルしたコンパイラ(以下「X-co
 ```bash
 # 1. Build the linear CLI with the fix (stage2e): regenerate the flat module source
 #    (lib/@vibe/compiler/_cli_adapter_module_source.vibe; a ~1s no-op when current),
-#    then compile it with the latest stage2
+#    then compile it with the stage2 built from this checkout
 bash scripts/ensure_generated.sh
-STAGE2="$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
+STAGE2="$(bash scripts/generations.sh out-dir)/stage2.wasm"
 env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   lib/@vibe/compiler/_cli_adapter_module_source.vibe _build/gc538/stage2e.wasm cli_main

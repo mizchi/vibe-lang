@@ -45,7 +45,8 @@ export VIBE_NODE_WASM_FLAGS
 
 CLI_WASM="${1:-${VIBE_GC_SELFBUILD_CLI_WASM:-}}"
 if [ -z "$CLI_WASM" ]; then
-  CLI_WASM="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  CLI_WASM="$(resolve_stage2_generation test-gc-selfbuild "$ROOT_DIR")" || CLI_WASM=""
 fi
 if [ -z "$CLI_WASM" ] || [ ! -s "$CLI_WASM" ]; then
   echo "[gc-selfbuild] SKIP: no selfhost compiler wasm (run scripts/generations.sh build, or pass one)"

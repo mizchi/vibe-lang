@@ -23,10 +23,8 @@ STAGE2="${CLI_NL_STAGE2:-}"
 if [ -n "$STAGE2" ]; then
   [ -f "$STAGE2" ] || { echo "cli-line-termination: CLI_NL_STAGE2=$STAGE2 does not exist" >&2; exit 1; }
 else
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    [ -s "${gen}stage2.wasm" ] && { STAGE2="${gen}stage2.wasm"; break; }
-  done
-  [ -n "${STAGE2:-}" ] || STAGE2="bootstrap/seed/compiler.wasm"
+  . scripts/resolve_stage2.sh
+  STAGE2="$(resolve_stage2_generation_or_seed check-cli-line-termination "$PWD")" || STAGE2=""
   [ -s "$STAGE2" ] || { echo "cli-line-termination: no compiler available" >&2; exit 1; }
 fi
 

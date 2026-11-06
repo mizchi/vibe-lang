@@ -7,12 +7,8 @@ cd "$ROOT"
 
 stage2="${PLAYGROUND_STAGE2:-}"
 if [ -z "$stage2" ]; then
-  for generation in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    if [ -s "${generation}stage2.wasm" ]; then
-      stage2="${generation}stage2.wasm"
-      break
-    fi
-  done
+  . scripts/resolve_stage2.sh
+  stage2="$(resolve_stage2_generation build-playground-compiler "$PWD")" || stage2=""
 fi
 if [ -z "$stage2" ] || [ ! -s "$stage2" ]; then
   echo "playground: build a stage2 or set PLAYGROUND_STAGE2 to this checkout's stage2.wasm" >&2

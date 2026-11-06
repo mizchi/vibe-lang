@@ -86,8 +86,8 @@ elif [ -n "${VIBE_STAGE2_WASM:-}" ]; then
   CLI="$VIBE_STAGE2_WASM"
   [ -f "$CLI" ] || { echo "check-freeze-surface: VIBE_STAGE2_WASM does not exist: $CLI" >&2; exit 1; }
 else
-  CLI="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
-  [ -n "$CLI" ] && [ -f "$CLI" ] || CLI="$ROOT_DIR/bootstrap/seed/compiler.wasm"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  CLI="$(resolve_stage2_generation_or_seed check-freeze-surface "$ROOT_DIR")" || CLI=""
   [ -f "$CLI" ] || { echo "check-freeze-surface: no compiler wasm (build a generation or run ensure_seed.sh)" >&2; exit 1; }
 fi
 

@@ -20,8 +20,8 @@ mkdir -p "$OUT_DIR"
 # answered?" trap in AGENTS.md, from the reporting side.
 S2="${LANG_REVIEW_STAGE2:-}"
 if [ -z "$S2" ] || [ ! -f "$S2" ]; then
-  S2=$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm
-  [ -f "$S2" ] || S2=bootstrap/seed/compiler.wasm
+  . scripts/resolve_stage2.sh
+  S2="$(resolve_stage2_generation lang-review "$PWD")" || S2=bootstrap/seed/compiler.wasm
 fi
 if [ "$S2" = "bootstrap/seed/compiler.wasm" ]; then
   echo "[lang-review] NOTE: no stage2 available -- measuring the COMMITTED SEED." >&2

@@ -132,6 +132,80 @@ case "$result" in
        fail "strict refused a non-checkout without saying why" ;;
 esac
 
+# --- resolve_stage2_generation / _or_seed (#3866) ---------------------------
+# The fallback scripts run when no compiler was named. They take a ROOT and
+# answer with absolute paths, so the run below is made from elsewhere.
+run_gen() { # <repo> <fn>
+  local repo="$1" fn="$2" out rc
+  set +e
+  out="$(cd "$work" && . "$resolver" && "$fn" probe "$repo" 2>"$work/stderr")"
+  rc=$?
+  set -e
+  printf '%s|%s' "$rc" "$out"
+}
+age() { # <repo> <generation> <touch -t stamp>
+  touch -t "$3" "$1/_build/selfhost/generations/$2"
+}
+
+# 7. HEAD's generation wins over a NEWER one for another commit -- the case
+#    `ls -t ... | head -1` answered wrong -- and needs no NOTE.
+repo="$(new_repo gen_head)"
+sha="$(git -C "$repo" rev-parse --short HEAD)"
+plant_generation "$repo" "$sha"
+plant_generation "$repo" deadbee
+age "$repo" "seed_$sha" 202601010101
+age "$repo" seed_deadbee 202601020101
+result="$(run_gen "$repo" resolve_stage2_generation)"
+case "$result" in
+  "0|$repo/_build/selfhost/generations/seed_$sha/stage2.wasm") : ;;
+  *) fail "generation did not take HEAD's own generation over a newer one: $result" ;;
+esac
+[ ! -s "$work/stderr" ] || fail "generation narrated a clean resolution: $(cat "$work/stderr")"
+
+# 8. No generation for HEAD: the newest one that HAS a stage2.wasm, with a
+#    NOTE. A newer directory whose stage2.wasm is empty (a build still running
+#    or interrupted) is passed over.
+repo="$(new_repo gen_newest)"
+plant_generation "$repo" aaaaaaa
+plant_generation "$repo" bbbbbbb
+plant_generation "$repo" ccccccc ""
+age "$repo" seed_aaaaaaa 202601010101
+age "$repo" seed_bbbbbbb 202601020101
+age "$repo" seed_ccccccc 202601030101
+result="$(run_gen "$repo" resolve_stage2_generation)"
+case "$result" in
+  "0|$repo/_build/selfhost/generations/seed_bbbbbbb/stage2.wasm")
+    grep -q "NOTE no generation for HEAD" "$work/stderr" ||
+      fail "generation took a stale generation without a NOTE" ;;
+  *) fail "generation did not take the newest complete generation: $result" ;;
+esac
+
+# 9. No generation at all: status 1 and silence, so the caller's own message
+#    is the one shown. The seed is NOT offered, even when it is there.
+repo="$(new_repo gen_none)"
+mkdir -p "$repo/bootstrap/seed"
+printf 'seed' > "$repo/bootstrap/seed/compiler.wasm"
+result="$(run_gen "$repo" resolve_stage2_generation)"
+case "$result" in
+  "1|") [ ! -s "$work/stderr" ] || fail "generation narrated an empty tree: $(cat "$work/stderr")" ;;
+  *) fail "generation answered on a tree with no generation: $result" ;;
+esac
+# 10. ... and the _or_seed form offers that seed, saying so.
+result="$(run_gen "$repo" resolve_stage2_generation_or_seed)"
+case "$result" in
+  "0|$repo/bootstrap/seed/compiler.wasm")
+    grep -q "falling back to the committed SEED" "$work/stderr" ||
+      fail "or_seed took the seed without a NOTE" ;;
+  *) fail "or_seed did not fall back to the seed: $result" ;;
+esac
+# 11. With no seed either, _or_seed has nothing to offer.
+repo="$(new_repo gen_nothing)"
+result="$(run_gen "$repo" resolve_stage2_generation_or_seed)"
+case "$result" in
+  1\|*) : ;;
+  *) fail "or_seed answered with nothing to answer: $result" ;;
+esac
+
 if [ "$failures" -ne 0 ]; then
   echo "[resolve-stage2-test] FAIL: $failures case(s)" >&2
   exit 1

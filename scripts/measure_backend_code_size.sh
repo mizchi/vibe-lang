@@ -37,7 +37,8 @@ cd "$ROOT_DIR"
 
 STAGE2="${1:-}"
 if [ -z "$STAGE2" ]; then
-  STAGE2="$(ls -1t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . scripts/resolve_stage2.sh
+  STAGE2="$(resolve_stage2_generation measure-backend-code-size "$PWD")" || STAGE2=""
 fi
 [ -n "$STAGE2" ] || STAGE2="$(ls -1t _build/_unit_test_gen/stage2.wasm 2>/dev/null | head -1 || true)"
 [ -n "$STAGE2" ] || STAGE2="bootstrap/seed/compiler.wasm"

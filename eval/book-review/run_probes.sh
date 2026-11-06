@@ -25,9 +25,10 @@ if [ -n "${BOOK_REVIEW_STAGE2:-}" ]; then
   fi
   S2="$BOOK_REVIEW_STAGE2"
 else
-  gen_dir=$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1)
-  S2="${gen_dir}stage2.wasm"
-  if [ -z "$gen_dir" ] || [ ! -f "$S2" ]; then
+  . scripts/resolve_stage2.sh
+  S2="$(resolve_stage2_generation book-review "$PWD")" || S2=""
+  gen_dir="${S2%stage2.wasm}"
+  if [ -z "$S2" ] || [ ! -f "$S2" ]; then
     echo "[book-review] no stage2 found. Build one first:" >&2
     echo "[book-review]   bash scripts/generations.sh build" >&2
     echo "[book-review] or pass BOOK_REVIEW_STAGE2=<stage2.wasm>." >&2

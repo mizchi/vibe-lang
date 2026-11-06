@@ -45,12 +45,10 @@ if [ -z "${WASMTIME_BIN:-}" ] || ! "$WASMTIME_BIN" --version >/dev/null 2>&1; th
 fi
 echo "[async-component-gate] wasmtime: $("$WASMTIME_BIN" --version)"
 
+. "$PROJECT_ROOT/scripts/resolve_stage2.sh"
 COMPILER="${VIBE_ASYNC_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  # `|| true`: no generations dir => ls exits nonzero => pipefail would abort
-  # before the seed fallback below could run.
-  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
-  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  COMPILER="$(resolve_stage2_generation_or_seed test-async-component-gate "$PROJECT_ROOT")" || COMPILER=""
 fi
 echo "[async-component-gate] compiler: $COMPILER"
 

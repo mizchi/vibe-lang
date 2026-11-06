@@ -339,12 +339,13 @@ local testSeedValidationReuse = new Task {
 local checkBenchCorpus = vibexTask("check-bench-corpus", "scripts/check_bench_corpus.vibex")
 local testCheckBenchCorpus =
   scriptTask("test-check-bench-corpus", "scripts/check_bench_corpus_test.sh")
-// #3830: a step that runs a compiler names it, rather than taking the newest
-// generation directory by mtime -- which is a question about directories, not
-// about the compiler this run built.
-// NOT `vibexTask` / `scriptTask`: the scanned corpus is the workflows and the
-// lane sources, which neither factory lists, so a workflow-only edit that put
-// the spelling back would replay a cached pass (#3835 review).
+// #3830 / #3866: a step that runs a compiler names it, rather than taking the
+// newest generation directory by mtime -- which is a question about
+// directories, not about the compiler this run built.
+// NOT `vibexTask` / `scriptTask`: the scanned corpus includes the workflows,
+// the lane sources, Taskfile.pkl, the fuzz and eval drivers and the allowlist,
+// which neither factory lists, so an edit to one of them that put the spelling
+// back would replay a cached pass (#3835 review).
 local checkGenerationChoice = new Task {
   name = "check-generation-choice"
   cmd = "bash scripts/vibe_run.sh scripts/check_generation_choice.vibex"
@@ -353,6 +354,10 @@ local checkGenerationChoice = new Task {
     ...scriptSources
     ".github/workflows/*.yml"
     "tests/gates/**/*.sh"
+    "Taskfile.pkl"
+    "tests/fuzz/*.sh"
+    "eval/**/*.sh"
+    "scripts/generation_choice_allowlist.txt"
     "runtime/vibe"
   }
 }
@@ -364,6 +369,10 @@ local testCheckGenerationChoice = new Task {
     ...scriptSources
     ".github/workflows/*.yml"
     "tests/gates/**/*.sh"
+    "Taskfile.pkl"
+    "tests/fuzz/*.sh"
+    "eval/**/*.sh"
+    "scripts/generation_choice_allowlist.txt"
     "runtime/vibe"
   }
 }
@@ -2381,12 +2390,13 @@ local vibeMdTutorialGated = new Task {
   description =
     "tutorial executable-docs check against a stage2 built for THIS checkout (release-check / CI form)"
   cmd =
-    "gen=\"$(ls -dt _build/selfhost/generations/*/ | head -1)\"; VIBE_MD_COMPILER=\"${gen}stage2.wasm\" VIBE_MD_STAGE2=\"${gen}stage2.wasm\" bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md"
+    "gen=\"$(bash scripts/generations.sh out-dir)/\"; VIBE_MD_COMPILER=\"${gen}stage2.wasm\" VIBE_MD_STAGE2=\"${gen}stage2.wasm\" bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md"
   // Build and run both the markdown tool and its extracted blocks with the
   // checkout's stage2. Naming both variables is deliberate: VIBE_MD_COMPILER
   // selects the compiler for vibe_md.vibex itself, while VIBE_MD_STAGE2 is
   // consumed by that tool for each tutorial block. Neither can fall back to
-  // the committed seed.
+  // the committed seed. `generations.sh out-dir` names the directory the
+  // `selfhostGeneration` dep just built, not the newest one on disk (#3866).
   cache = false
   deps { selfhostGeneration }
 }
@@ -2500,8 +2510,12 @@ local selfhostOnlyGate = new Task {
     "scripts/check_scripts_inventory.vibex"
     "scripts/check_scripts_inventory_test.sh"
     "scripts/inventory.tsv"
-    // check-generation-choice scans the workflows (#3830).
+    // check-generation-choice scans the workflows (#3830), the fuzz and eval
+    // drivers, and reads its allowlist (#3866).
     ".github/workflows/*.yml"
+    "tests/fuzz/*.sh"
+    "eval/**/*.sh"
+    "scripts/generation_choice_allowlist.txt"
   }
   deps { ensureViberun }
 }
@@ -2540,8 +2554,12 @@ local releaseCompilerGate = new Task {
     "scripts/check_scripts_inventory.vibex"
     "scripts/check_scripts_inventory_test.sh"
     "scripts/inventory.tsv"
-    // check-generation-choice scans the workflows (#3830).
+    // check-generation-choice scans the workflows (#3830), the fuzz and eval
+    // drivers, and reads its allowlist (#3866).
     ".github/workflows/*.yml"
+    "tests/fuzz/*.sh"
+    "eval/**/*.sh"
+    "scripts/generation_choice_allowlist.txt"
   }
   deps { ensureViberun }
 }
