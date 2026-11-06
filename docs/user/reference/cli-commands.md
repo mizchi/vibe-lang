@@ -230,6 +230,17 @@ over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
 `+ - * / % << >>` and comparisons, `&&` / `||` / `!`, and calls to other functions
 of the file with such signatures. `Int` is a mathematical integer plus one
 no-overflow obligation per operation, which is exact for the 63-bit `Int`.
+`Int32` / `UInt32` (#3827) are SMT 32-bit words instead: `+ - *` wrap as
+the runtime does, so they owe no overflow; the bitwise operators are exact;
+comparisons, `/`, `%` and `>>` read the bits signed on `Int32` and unsigned
+on `UInt32`; a shift count is taken mod 32; and `/` / `%` owe a non-zero
+divisor. A parameter is declared as the number it reads as, so a
+counterexample shows it in decimal. `Int32::to_int` / `UInt32::to_int` and
+`Int::wrap_int32` / `Int::wrap_uint32` are exact, and a literal written beside
+a word (or as a word argument, or a `let x: Int32 = 5`) is that word; any
+other `Int` beside a word is unsupported, and so is `Int::to_int32` /
+`Int::to_uint32`, which answer an `Option`. A relation the solver must carry
+across `to_int` symbolically can time out, which is `unknown`, a failure.
 `/` and `%` truncate toward zero as the runtime does (`-7 / 2 == -3`,
 `-7 % 2 == -1`) and also owe a non-zero divisor, since a zero one aborts; the
 code after them assumes it was not zero. `<<` and `>>` are admitted by a

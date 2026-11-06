@@ -1,7 +1,11 @@
+import @vibe/compiler/config {
+  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+
 //# Imports
 
 import ./header_cache.vibe {
-  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl_with_config, merge_impl_raws_dedupe
 }
 
 import @vibe/core {
@@ -13,7 +17,7 @@ import @vibe/compiler/cache {
   compact_string_fingerprint,
   fingerprint_file_fs,
   normalize_persistent_cache_text,
-  persistent_manifest_header_cache_path
+  persistent_manifest_header_cache_path_in_namespace
 }
 
 import @vibe/compiler/core {
@@ -510,7 +514,7 @@ fn manifest_header_tail_has_top_level_import(source: String, from: Int) -> Bool 
   found
 }
 
-fn collect_manifest_header_deps_from_source(path: String, raw_source: String, manifest_path_index: Map[String, Bool]) -> Array[String] with Env + Exception + Fs {
+fn collect_manifest_header_deps_from_source(path: String, raw_source: String, manifest_path_index: Map[String, Bool], cfg: TargetCfg) -> Array[String] with Env + Exception + Fs {
   let deps = array_empty()
   let base_dir = dir_of_path(path)
   let source = manifest_header_scan_source(path = path, source = raw_source)
@@ -558,7 +562,7 @@ fn collect_manifest_header_deps_from_source(path: String, raw_source: String, ma
   // (`resolve_manifest_dep_path`), so this can only ADD the deps that were
   // missing, never re-resolve one that was already found.
   let scanned = if pos < len && manifest_header_tail_has_top_level_import(source = source, from = pos) {
-    merge_impl_raws_dedupe(explicit = deps, discovered = load_or_parse_module_header_deps_with_context(path = path, source = raw_source))
+    merge_impl_raws_dedupe(explicit = deps, discovered = load_or_parse_module_header_deps_with_context(path = path, source = raw_source, cfg = cfg))
   } else {
     deps
   }
@@ -588,9 +592,9 @@ fn collect_manifest_header_deps_from_source(path: String, raw_source: String, ma
   }
 }
 
-fn collect_manifest_header_deps_from_source_with_context(path: String, source: String, manifest_path_index: Map[String, Bool]) -> Array[String] with Env + Exception + Fs {
+fn collect_manifest_header_deps_from_source_with_context(path: String, source: String, manifest_path_index: Map[String, Bool], cfg: TargetCfg) -> Array[String] with Env + Exception + Fs {
   handle {
-    collect_manifest_header_deps_from_source(path = path, raw_source = source, manifest_path_index = manifest_path_index)
+    collect_manifest_header_deps_from_source(path = path, raw_source = source, manifest_path_index = manifest_path_index, cfg = cfg)
   } with { Exception::Throw(err) => throw("manifest header scan failed for " + path + ": " + err) }
 }
 
@@ -606,9 +610,9 @@ fn should_schedule_manifest_dep(dep_path: String, manifest_path_index: Map[Strin
   }
 }
 
-fn load_or_parse_module_header_deps_with_context(path: String, source: String) -> Array[String] with Env + Exception + Fs {
+fn load_or_parse_module_header_deps_with_context(path: String, source: String, cfg: TargetCfg) -> Array[String] with Env + Exception + Fs {
   handle {
-    let (deps, _, _) = load_or_parse_module_header_fs_impl(path = path, source = source, parse_count = 0)
+    let (deps, _, _) = load_or_parse_module_header_fs_impl_with_config(path = path, source = source, parse_count = 0, cfg = cfg)
     deps
   } with { Exception::Throw(err) => throw("module header parse failed for " + path + ": " + err) }
 }
@@ -1109,8 +1113,8 @@ fn matches_cached_file_spec(path: String, stat_token_text: String, source_finger
   }
 }
 
-fn load_persistent_manifest_header_cache_if_valid(entry_path: String, manifest_path: String, manifest_path_index: Map[String, Bool]) -> Option[Array[(String, String, String, String)]] with Env + Exception + Fs {
-  let cache_path = persistent_manifest_header_cache_path(entry_path)
+fn load_persistent_manifest_header_cache_if_valid(entry_path: String, manifest_path: String, manifest_path_index: Map[String, Bool], cfg: TargetCfg) -> Option[Array[(String, String, String, String)]] with Env + Exception + Fs {
+  let cache_path = persistent_manifest_header_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg))
   if !(Fs::exists(cache_path)) {
     None
   } else {
@@ -1158,8 +1162,8 @@ fn build_persistent_manifest_header_cache_text(manifest_path: String, rows: Arra
   out
 }
 
-fn store_persistent_manifest_header_cache(entry_path: String, manifest_path: String, rows: Array[(String, String, String, String)]) -> Unit with Env + Exception + Fs {
-  Fs::write_file(persistent_manifest_header_cache_path(entry_path), contents = build_persistent_manifest_header_cache_text(manifest_path = manifest_path, rows = rows))
+fn store_persistent_manifest_header_cache(entry_path: String, manifest_path: String, rows: Array[(String, String, String, String)], cfg: TargetCfg) -> Unit with Env + Exception + Fs {
+  Fs::write_file(persistent_manifest_header_cache_path_in_namespace(entry_path, namespace = target_cfg_namespace(cfg)), contents = build_persistent_manifest_header_cache_text(manifest_path = manifest_path, rows = rows))
 }
 
 fn manifest_header_deps_lookup(rows: Array[(String, String, String, String)], path: String) -> Option[Array[String]] {
@@ -1186,7 +1190,7 @@ fn manifest_header_deps_lookup(rows: Array[(String, String, String, String)], pa
 /// entries unique by construction. `visited` stays an insertion-ordered
 /// array — it is the returned needed-paths list. (Same pattern in the two
 /// sibling collectors below.)
-fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index: Map[String, Bool], rows: Array[(String, String, String, String)]) -> Array[String] with Env + Exception + Fs {
+fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index: Map[String, Bool], rows: Array[(String, String, String, String)], cfg: TargetCfg) -> Array[String] with Env + Exception + Fs {
   let visited = array_empty()
   let worklist = array_empty()
   let scheduled = path_set_new()
@@ -1205,9 +1209,9 @@ fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index:
       None => {
         let source = cache_read_source_fs(current)
         if Map::has_key(manifest_path_index, key = current) {
-          collect_manifest_header_deps_from_source_with_context(path = current, source = source, manifest_path_index = manifest_path_index)
+          collect_manifest_header_deps_from_source_with_context(path = current, source = source, manifest_path_index = manifest_path_index, cfg = cfg)
         } else {
-          load_or_parse_module_header_deps_with_context(path = current, source = source)
+          load_or_parse_module_header_deps_with_context(path = current, source = source, cfg = cfg)
         }
       }
     }
@@ -1227,7 +1231,7 @@ fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index:
   visited
 }
 
-fn collect_needed_paths_and_manifest_headers(path: String, manifest_path_index: Map[String, Bool]) -> (Array[(String, String, String, String)], Array[String]) with Env + Exception + Fs {
+fn collect_needed_paths_and_manifest_headers(path: String, manifest_path_index: Map[String, Bool], cfg: TargetCfg) -> (Array[(String, String, String, String)], Array[String]) with Env + Exception + Fs {
   let rows = empty_manifest_header_cache_rows()
   let visited = array_empty()
   let worklist = array_empty()
@@ -1247,9 +1251,9 @@ fn collect_needed_paths_and_manifest_headers(path: String, manifest_path_index: 
       Some(found) => found,
       None => {
         let parsed_deps = if Map::has_key(manifest_path_index, key = current) {
-          collect_manifest_header_deps_from_source_with_context(path = current, source = source, manifest_path_index = manifest_path_index)
+          collect_manifest_header_deps_from_source_with_context(path = current, source = source, manifest_path_index = manifest_path_index, cfg = cfg)
         } else {
-          load_or_parse_module_header_deps_with_context(path = current, source = source)
+          load_or_parse_module_header_deps_with_context(path = current, source = source, cfg = cfg)
         }
         Array::push(rows, value = (current, __to_string(Fs::stat_token(current)), compact_string_fingerprint(source), join_header_values(parsed_deps)))
         parsed_deps
@@ -1271,7 +1275,7 @@ fn collect_needed_paths_and_manifest_headers(path: String, manifest_path_index: 
   (rows, visited)
 }
 
-fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Map[String, Bool]) -> Array[String] with Env + Exception + Fs {
+fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Map[String, Bool], cfg: TargetCfg) -> Array[String] with Env + Exception + Fs {
   let visited = array_empty()
   let worklist = array_empty()
   let scheduled = path_set_new()
@@ -1287,9 +1291,9 @@ fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Ma
     Array::push(visited, value = current)
     let source = cache_read_source_fs(current)
     let deps = if Map::has_key(manifest_path_index, key = current) {
-      collect_manifest_header_deps_from_source_with_context(path = current, source = source, manifest_path_index = manifest_path_index)
+      collect_manifest_header_deps_from_source_with_context(path = current, source = source, manifest_path_index = manifest_path_index, cfg = cfg)
     } else {
-      load_or_parse_module_header_deps_with_context(path = current, source = source)
+      load_or_parse_module_header_deps_with_context(path = current, source = source, cfg = cfg)
     }
     let mut dep_i = 0
     while dep_i < Array::length(deps) {
@@ -1307,23 +1311,28 @@ fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Ma
   visited
 }
 
-fn load_or_collect_manifest_header_rows(entry_path: String, manifest_path: String, manifest_path_index: Map[String, Bool]) -> Array[(String, String, String, String)] with Env + Exception + Fs {
-  match load_persistent_manifest_header_cache_if_valid(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index) {
+fn load_or_collect_manifest_header_rows(entry_path: String, manifest_path: String, manifest_path_index: Map[String, Bool], cfg: TargetCfg) -> Array[(String, String, String, String)] with Env + Exception + Fs {
+  match load_persistent_manifest_header_cache_if_valid(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index, cfg = cfg) {
     Some(cached_rows) => cached_rows,
     None => {
-      let (built_rows, _) = collect_needed_paths_and_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index)
-      store_persistent_manifest_header_cache(entry_path = entry_path, manifest_path = manifest_path, rows = built_rows)
+      let (built_rows, _) = collect_needed_paths_and_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, cfg = cfg)
+      store_persistent_manifest_header_cache(entry_path = entry_path, manifest_path = manifest_path, rows = built_rows, cfg = cfg)
       built_rows
     }
   }
 }
 
 export fn probe_manifest_header_rows_count(_ entry_path: String) -> Int with Env + Exception + Fs {
+  probe_manifest_header_rows_count_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn probe_manifest_header_rows_count_with_config(_ entry_path: String, cfg: TargetCfg) -> Int with Env + Exception + Fs {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir = base_dir, rel_path = "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir = base_dir, rows = rows)
-      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index)
+      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index, cfg = cfg)
       Array::length(header_rows)
     },
     None => throw("manifest rows unavailable")
@@ -1331,10 +1340,15 @@ export fn probe_manifest_header_rows_count(_ entry_path: String) -> Int with Env
 }
 
 export fn probe_manifest_header_rows_uncached_count(_ entry_path: String) -> Int with Env + Exception + Fs {
+  probe_manifest_header_rows_uncached_count_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn probe_manifest_header_rows_uncached_count_with_config(_ entry_path: String, cfg: TargetCfg) -> Int with Env + Exception + Fs {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir = base_dir, rows = rows)
-      let (header_rows, _) = collect_needed_paths_and_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index)
+      let (header_rows, _) = collect_needed_paths_and_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, cfg = cfg)
       Array::length(header_rows)
     },
     None => throw("manifest rows unavailable")
@@ -1342,12 +1356,17 @@ export fn probe_manifest_header_rows_uncached_count(_ entry_path: String) -> Int
 }
 
 export fn probe_manifest_needed_paths_count(_ entry_path: String) -> Int with Env + Exception + Fs {
+  probe_manifest_needed_paths_count_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn probe_manifest_needed_paths_count_with_config(_ entry_path: String, cfg: TargetCfg) -> Int with Env + Exception + Fs {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir = base_dir, rel_path = "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir = base_dir, rows = rows)
-      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index)
-      let needed_paths = collect_needed_paths_from_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, rows = header_rows)
+      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index, cfg = cfg)
+      let needed_paths = collect_needed_paths_from_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, rows = header_rows, cfg = cfg)
       Array::length(needed_paths)
     },
     None => throw("manifest rows unavailable")
@@ -1355,10 +1374,15 @@ export fn probe_manifest_needed_paths_count(_ entry_path: String) -> Int with En
 }
 
 export fn probe_manifest_scan_paths_count(_ entry_path: String) -> Int with Env + Exception + Fs {
+  probe_manifest_scan_paths_count_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn probe_manifest_scan_paths_count_with_config(_ entry_path: String, cfg: TargetCfg) -> Int with Env + Exception + Fs {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir = base_dir, rows = rows)
-      let needed_paths = collect_needed_paths_from_manifest_scan(path = entry_path, manifest_path_index = manifest_path_index)
+      let needed_paths = collect_needed_paths_from_manifest_scan(path = entry_path, manifest_path_index = manifest_path_index, cfg = cfg)
       Array::length(needed_paths)
     },
     None => throw("manifest rows unavailable")
@@ -1403,12 +1427,17 @@ fn verify_manifest_needed_paths(base_dir: String, manifest_path: String, manifes
 }
 
 export fn try_collect_manifest_sources_fs(_ entry_path: String) -> Option[(String, Array[(String, String)])] with Env + Exception + Fs {
+  try_collect_manifest_sources_fs_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn try_collect_manifest_sources_fs_with_config(_ entry_path: String, cfg: TargetCfg) -> Option[(String, Array[(String, String)])] with Env + Exception + Fs {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir = base_dir, rel_path = "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir = base_dir, rows = rows)
-      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index)
-      let needed_paths = collect_needed_paths_from_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, rows = header_rows)
+      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index, cfg = cfg)
+      let needed_paths = collect_needed_paths_from_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, rows = header_rows, cfg = cfg)
       verify_manifest_needed_paths(base_dir = base_dir, manifest_path = manifest_path, manifest_path_index = manifest_path_index, needed_paths = needed_paths)
       let needed_path_index = build_manifest_path_index(needed_paths)
       let sources = load_manifest_sources_by_path_index(base_dir = base_dir, rows = rows, needed_path_index = needed_path_index)
@@ -1419,12 +1448,17 @@ export fn try_collect_manifest_sources_fs(_ entry_path: String) -> Option[(Strin
 }
 
 export fn try_collect_manifest_source_groups_fs(_ entry_path: String) -> Option[(String, Array[(String, Array[(String, String)])])] with Env + Exception + Fs {
+  try_collect_manifest_source_groups_fs_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// The same operation with caller-owned target flags and cache identity.
+export fn try_collect_manifest_source_groups_fs_with_config(_ entry_path: String, cfg: TargetCfg) -> Option[(String, Array[(String, Array[(String, String)])])] with Env + Exception + Fs {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir = base_dir, rel_path = "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir = base_dir, rows = rows)
-      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index)
-      let needed_paths = collect_needed_paths_from_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, rows = header_rows)
+      let header_rows = load_or_collect_manifest_header_rows(entry_path = entry_path, manifest_path = manifest_path, manifest_path_index = manifest_path_index, cfg = cfg)
+      let needed_paths = collect_needed_paths_from_manifest_headers(path = entry_path, manifest_path_index = manifest_path_index, rows = header_rows, cfg = cfg)
       verify_manifest_needed_paths(base_dir = base_dir, manifest_path = manifest_path, manifest_path_index = manifest_path_index, needed_paths = needed_paths)
       let needed_path_index = build_manifest_path_index(needed_paths)
       let groups = load_manifest_source_groups_by_path_index(base_dir = base_dir, rows = rows, needed_path_index = needed_path_index)

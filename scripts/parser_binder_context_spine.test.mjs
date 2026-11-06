@@ -459,7 +459,8 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   // entries too.
   assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)"], ["parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
   assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)"], ["parse_impl_methods(tokens, [], hp, simpl, context)"]);
-  for (const ordinaryProgram of ["parse_program_preserving", "parse_program_recovering"]) {
+  assert.equal(normalize(functionBody(parserSource, "parse_program_preserving")), normalize("parse_program_preserving_with_cfg(tokens, cfg_flags = cfg_ambient_flags)"), "legacy preserving entry must delegate exactly to the flag-only core");
+  for (const ordinaryProgram of ["parse_program_preserving_with_cfg", "parse_program_recovering"]) {
     assertBody(parserSource, ordinaryProgram, [
       "parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)",
       "parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)",
@@ -468,6 +469,9 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
       "parse_impl_methods(tokens, [], hp, simpl, context)",
     ]);
   }
+  assert.equal(normalize(functionBody(parserSource, "parse_program_preserving_located")), normalize("parse_program_preserving_impl(tokens = tokens, starts = starts, source = source, located = true, cfg_flags = cfg_ambient_flags)"));
+  assert.equal(normalize(functionBody(parserSource, "parse_program_preserving_located_with_cfg")), normalize("parse_program_preserving_impl(tokens = tokens, starts = starts, source = source, located = true, cfg_flags = cfg_flags)"));
+  assert.equal(normalize(functionBody(parserSource, "parse_program_with_cfg")), normalize("attach_qualified_pattern_refs(expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving_with_cfg(tokens, cfg_flags = cfg_flags))))"));
 
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
     "parse_impl_stmt_dispatch_with_binder_context(tokens = tokens, pos = dnext + 1, context = context)",

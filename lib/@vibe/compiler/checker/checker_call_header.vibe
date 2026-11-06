@@ -3,7 +3,17 @@ import ./checker_parameter_defaults.vibe {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin, Expr, Stmt, Type, TypeEnv, env_bind, env_bind_with_origin, env_lookup, env_lookup_binding, param_names_prefix
+  BindingOrigin,
+  Expr,
+  Stmt,
+  Type,
+  TypeEnv,
+  canonical_builtin_name,
+  env_bind,
+  env_bind_with_origin,
+  env_lookup,
+  env_lookup_binding,
+  param_names_prefix
 }
 
 /// ADR-0120 D3 (#3681): the `_` slots of the program being checked, from its
@@ -209,5 +219,65 @@ export fn checker_call_header_defaults(env: TypeEnv, name: String) -> Option[Arr
       _ => None
     },
     None => None
+  }
+}
+
+/// #3832: the binding that records which builtin an imported alias stands for.
+/// `import @vibe/builtin { String as S }` binds `S::starts_with` with the
+/// builtin's signature (#3758); this marker, bound beside it to a one-field
+/// record naming `String::starts_with`, lets call placement and the label
+/// sites check `S::starts_with("ab", prefix = "a")` by the builtin's own
+/// labels, the way the canonical spelling is checked. The import-alias rewrite
+/// spells the call canonically before code generation, so the labels checked
+/// are the labels the lowering reads. No source identifier can spell it.
+export fn builtin_alias_marker(_ name: String) -> String {
+  String::concat("#builtin-alias:", name)
+}
+
+/// The builtin `name` stands for when an import aliased it, else `None`.
+///
+/// The marker is a binding of its own, so a later binding of `name` -- a
+/// local `let sw = (text: String, suffix: String) -> ..` -- does not hide it
+/// (Codex on #3839). It counts only while the binding `name` resolves to is
+/// still the import that bound it: an imported origin whose source is the
+/// builtin itself.
+///
+/// This runs for every call placement checks and every qualified value
+/// reference, so the binding is read first and the marker key is built and
+/// looked up only for a renamed import.
+export fn checker_builtin_alias_target(env: TypeEnv, name: String) -> Option[String] {
+  let source = match env_lookup_binding(env = env, name = name) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(_, original) => original,
+      BindingOriginReExportSurface(_, original) => original,
+      _ => name
+    },
+    None => name
+  }
+  if source == name {
+    None
+  } else {
+    match env_lookup(env = env, name = builtin_alias_marker(name)) {
+      Some(CtRecord(fields)) => if Array::length(fields) == 1 {
+        let (canonical, _) = Array::get(fields, at = 0)
+        if canonical_builtin_name(source) == canonical {
+          Some(canonical)
+        } else {
+          None
+        }
+      } else {
+        None
+      },
+      _ => None
+    }
+  }
+}
+
+/// The spelling to check a call to `name` as: the builtin an import aliased
+/// it to, or `name` itself.
+export fn checker_builtin_call_name(env: TypeEnv, name: String) -> String {
+  match checker_builtin_alias_target(env = env, name = name) {
+    Some(canonical) => canonical,
+    None => name
   }
 }

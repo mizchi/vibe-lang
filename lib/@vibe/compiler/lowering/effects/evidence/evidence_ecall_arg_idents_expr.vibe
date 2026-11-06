@@ -1,7 +1,16 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children, expr_children_into, generated_owner_of, generated_owner_tag, is_runtime_scheduled_effect
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  expr_children,
+  expr_children_into,
+  generated_owner_current,
+  generated_owner_enter,
+  generated_owner_of,
+  is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -276,12 +285,13 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   let mut i = 0
   while i < Array::length(stmts) {
     // #3829: snapshots count within this statement's owner.
-    let owner_tag = generated_owner_tag(generated_owner_of(Array::get(stmts, at = i)))
-    Array::set(edp_snap_counter, at = 0, value = match MutMap::get(owner_counts, k = owner_tag) {
+    let owner = generated_owner_of(Array::get(stmts, at = i))
+    let owner_before = match MutMap::get(owner_counts, k = owner) {
       Some(n) => n,
       None => 0
-    })
-    Array::set(edp_snap_owner, at = 0, value = owner_tag)
+    }
+    Array::set(edp_snap_counter, at = 0, value = owner_before)
+    generated_owner_enter(cell = edp_snap_owner, source = owner, suffix = "")
     edp_stamp_returned_closure(stmts = stmts, i = i, pure_names = pure_names)
     let stmt = Array::get(stmts, at = i)
     let body = match stmt {
@@ -321,7 +331,11 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
       },
       None => ()
     }
-    MutMap::set(owner_counts, k = owner_tag, v = Array::get(edp_snap_counter, at = 0))
+    if Array::get(edp_snap_counter, at = 0) != owner_before {
+      MutMap::set(owner_counts, k = owner, v = Array::get(edp_snap_counter, at = 0))
+    } else {
+      ()
+    }
     i = i + 1
   }
   ()
@@ -1026,10 +1040,11 @@ let edp_snap_slots: Array[Int] = []
 let edp_snap_fresh: Array[String] = []
 let edp_snap_src: Array[String] = []
 let edp_snap_counter: Array[Int] = [0]
-// #3829: the tag of the top-level statement being stamped. A snapshot's name
-// is numbered within that statement and carries the tag, so it does not
-// depend on the statements before it and stays unique across the program.
-let edp_snap_owner: Array[String] = [""]
+// #3829: the top-level statement being stamped, as a `generated_owner_enter`
+// cell. A snapshot's name is numbered within that statement and carries its
+// tag, so it does not depend on the statements before it and stays unique
+// across the program.
+let edp_snap_owner: Array[String] = ["", "", "", "1"]
 
 /// Every name the program binds or declares, so a snapshot's name is one
 /// nothing in the program spells. Filled from `edp_snap_program` on the first
@@ -1066,7 +1081,7 @@ fn edp_snap_fresh_name(_ name: String) -> String {
   while !found {
     let k = Array::get(edp_snap_counter, at = 0)
     Array::set(edp_snap_counter, at = 0, value = k + 1)
-    fresh = String::concat("__edpc", String::concat(Int::to_string(k), String::concat("o", String::concat(Array::get(edp_snap_owner, at = 0), String::concat("_", name)))))
+    fresh = String::concat("__edpc", String::concat(Int::to_string(k), String::concat("o", String::concat(generated_owner_current(edp_snap_owner), String::concat("_", name)))))
     found = Array::length(edp_snap_taken) == 0 || !MutSet::has(Array::get(edp_snap_taken, at = 0), x = fresh)
   }
   if Array::length(edp_snap_taken) > 0 {

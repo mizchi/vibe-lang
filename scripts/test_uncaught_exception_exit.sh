@@ -69,13 +69,52 @@ fn main() -> Unit allows Process::exit {
 }
 EOF
 
+# #3720: the library helpers carry the one operation, so a program that only
+# exits through them is granted `Process::exit` and nothing that runs
+# commands. `finish(0)` returns, so `lib_finish` reaches the `exit(3)`.
+cat >"$WORK/lib_exit.vibe" <<'EOF'
+import @vibe/process {
+  exit
+}
+
+fn main() -> Unit allows Process::exit {
+  exit(5)
+}
+EOF
+cat >"$WORK/lib_die.vibe" <<'EOF'
+import @vibex/tasks {
+  die
+}
+
+fn main() -> Unit allows Stderr + Process::exit {
+  die("task failed")
+}
+EOF
+cat >"$WORK/lib_finish.vibe" <<'EOF'
+import @vibe/process {
+  exit
+}
+import @vibex/tasks {
+  finish
+}
+
+fn main() -> Unit allows Process::exit {
+  finish(0)
+  exit(3)
+}
+EOF
+
 compile_core() {
   # Two statements: bash expands every word of one `local` before assigning
   # any, so `out` would read the caller's `name`/`backend`, not these.
   local backend="$1" name="$2"
   local out="$WORK/${name}_${backend}.wasm"
+  # A `lib_*` case imports a package, which the gc lane reaches only through
+  # the filesystem module graph; the others stay on direct single-file mode.
+  local fs_compile=0
+  case "$name" in lib_*) fs_compile=1 ;; esac
   if [ "$backend" = "gc" ]; then
-    env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_BACKEND=gc \
+    env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_BACKEND=gc VIBE_FS_COMPILE="$fs_compile" \
       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$COMPILER" \
       "$WORK/$name.vibe" "$out" main >/dev/null
   else
@@ -105,14 +144,21 @@ run_core() {
 }
 
 for backend in linear gc; do
-  for name in uncaught handled explicit explicit_op; do
+  for name in uncaught handled explicit explicit_op lib_exit lib_finish; do
     compile_core "$backend" "$name"
   done
   run_core "$backend" uncaught 1
   run_core "$backend" handled 0
   run_core "$backend" explicit 7
   run_core "$backend" explicit_op 9
+  run_core "$backend" lib_exit 5
+  run_core "$backend" lib_finish 3
 done
+# `die` prints through `eprintln`, whose `Stderr::write_char` is a host import
+# the gc lane gates out (scripts/builtin_parity_classification.tsv), so it
+# runs on linear only.
+compile_core linear lib_die
+run_core linear lib_die 1
 
 # #3023: `vibe run` (scripts/vibe_run.sh) and the node runner invoke the entry
 # export DIRECTLY, without `_start`. The gc lane used to initialize computed
@@ -324,4 +370,4 @@ if [ ! -s "$component_exit_local" ]; then
   exit 1
 fi
 
-echo "[exception-exit] ok (linear/gc status+diagnostic via _start and main, handled=0, explicit=7, Process::exit=9, component non-zero, component user exit refused (both spellings), local of that name built)"
+echo "[exception-exit] ok (linear/gc status+diagnostic via _start and main, handled=0, explicit=7, Process::exit=9, library exit/finish/die=5/3/1, component non-zero, component user exit refused (both spellings), local of that name built)"

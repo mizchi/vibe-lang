@@ -1,0 +1,210 @@
+import @vibe/compiler/config {
+  Config, target_cfg_from_csv, target_cfg_namespace
+}
+import @vibe/compiler/cache {
+  persistent_source_group_cache_path_in_namespace, set_persistent_cache_cfg_flags
+}
+import @vibe/compiler/loader {
+  collect_source_groups_fs_configured,
+  flatten_group_sources,
+  try_collect_manifest_source_groups_fs_with_config,
+  vpkg_types_module_path_prefix
+}
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+fn loader_cfg_reset() -> Unit {
+  set_cfg_ambient_flags([])
+  set_persistent_cache_cfg_flags("")
+}
+
+fn loader_cfg_plain(_ root: String) -> String with Fs {
+  Fs::mkdir_p(root)
+  Fs::write_file("\{root}/alpha.vibe", contents = "export fn only() -> Int { 11 }\n")
+  Fs::write_file("\{root}/beta.vibe", contents = "export fn only() -> Int { 22 }\n")
+  let path = "\{root}/main.vibe"
+  Fs::write_file(path, contents = "#cfg(alpha)\nimport ./alpha.vibe { only }\n#cfg(beta)\nimport ./beta.vibe { only }\n#cfg(poison)\nimport ./missing.vibe {}\nfn main() -> Int { only() }\n")
+  path
+}
+
+fn loader_cfg_collect(path: String, flags: String) -> Array[(String, String)] with Env + Exception + Fs {
+  handle {
+    flatten_group_sources(collect_source_groups_fs_configured(path))
+  } with { Config::CfgFlags() => resume(flags) }
+}
+
+fn loader_cfg_has(sources: Array[(String, String)], path: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (p, _) = Array::get(sources, at = i)
+    found = found || p == path
+    i = i + 1
+  }
+  found
+}
+
+fn loader_cfg_expect_plain(root: String, sources: Array[(String, String)], alpha: Bool) -> Unit with Exception {
+  assert(loader_cfg_has(sources = sources, path = "\{root}/main.vibe"))
+  assert_eq(loader_cfg_has(sources = sources, path = "\{root}/alpha.vibe"), alpha)
+  assert_eq(loader_cfg_has(sources = sources, path = "\{root}/beta.vibe"), !alpha)
+}
+
+fn loader_cfg_cache(path: String, flags: String) -> String with Env {
+  persistent_source_group_cache_path_in_namespace(path, namespace = target_cfg_namespace(target_cfg_from_csv(flags)))
+}
+
+test "source closure and disk caches follow scoped flags with poisoned legacy cells" {
+  let root = "_build/config_loader_plain_\{Profiler::now_us()}"
+  let path = loader_cfg_plain(root)
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_collect(path = path, flags = " alpha, "), alpha = true)
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_collect(path = path, flags = "beta"), alpha = false)
+    assert(loader_cfg_cache(path = path, flags = "alpha") != loader_cfg_cache(path = path, flags = "beta"))
+    assert(Fs::exists(loader_cfg_cache(path = path, flags = "alpha")))
+    assert(Fs::exists(loader_cfg_cache(path = path, flags = "beta")))
+    Fs::remove(loader_cfg_cache(path = path, flags = "alpha"))
+    // Same entry text and unchanged files: each warm lookup must retain its
+    // own dependency closure, including the source-list fallback namespace.
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_collect(path = path, flags = "alpha"), alpha = true)
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_collect(path = path, flags = "beta"), alpha = false)
+    loader_cfg_reset()
+  } with { Exception::Throw(message) => {
+    loader_cfg_reset()
+    throw(message)
+  } }
+}
+
+fn loader_cfg_manifest(path: String, flags: String) -> Array[(String, String)] with Env + Exception + Fs {
+  let found = try_collect_manifest_source_groups_fs_with_config(path, cfg = target_cfg_from_csv(flags))
+  match found {
+    Some((_, groups)) => flatten_group_sources(groups),
+    None => throw("expected the test manifest to be selected")
+  }
+}
+
+test "manifest headers and their warm closure use the captured configuration" {
+  let root = "_build/config_loader_manifest_\{Profiler::now_us()}"
+  let path = loader_cfg_plain(root)
+  Fs::write_file("\{root}/compiler_sources_manifest.tsv", contents = "# group\tpath\ncore\talpha.vibe\ncore\tbeta.vibe\nentry\tmain.vibe\n")
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_manifest(path = path, flags = "alpha"), alpha = true)
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_manifest(path = path, flags = "beta"), alpha = false)
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_manifest(path = path, flags = "alpha"), alpha = true)
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_manifest(path = path, flags = "beta"), alpha = false)
+    loader_cfg_reset()
+  } with { Exception::Throw(message) => {
+    loader_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "an outer source collection resumes after successful and failed inner calls" {
+  let root = "_build/config_loader_nested_\{Profiler::now_us()}"
+  let path = loader_cfg_plain(root)
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let outer = handle {
+      flatten_group_sources(collect_source_groups_fs_configured(path))
+    } with { Config::CfgFlags() => {
+      loader_cfg_expect_plain(root = root, sources = loader_cfg_collect(path = path, flags = "beta"), alpha = false)
+      let failed = handle {
+        let _ = loader_cfg_collect(path = path, flags = "poison")
+        false
+      } with { Exception::Throw(_) => true }
+      assert(failed)
+      resume("alpha")
+    } }
+    loader_cfg_expect_plain(root = root, sources = outer, alpha = true)
+    loader_cfg_expect_plain(root = root, sources = loader_cfg_collect(path = path, flags = "alpha"), alpha = true)
+    loader_cfg_reset()
+  } with { Exception::Throw(message) => {
+    loader_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "contract conformance and warm facades use the same scoped flags as headers" {
+  let root = "_build/config_loader_contract_\{Profiler::now_us()}"
+  Fs::mkdir_p(root)
+  let path = "\{root}/index.vpkg"
+  Fs::write_file(path, contents = "version 0.0.1\nimport ./impl.vibe {}\nfn selected() -> Int\n")
+  Fs::write_file("\{root}/impl.vibe", contents = "#cfg(alpha)\nexport fn selected() -> Int { 11 }\n#cfg(beta)\nexport fn selected() -> Int { 22 }\n#cfg(poison)\nexport let selected: Bool = false\n")
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    for flags in ["alpha", "beta", "alpha", "beta"] {
+      let sources = loader_cfg_collect(path = path, flags = flags)
+      assert(loader_cfg_has(sources = sources, path = path))
+      assert(loader_cfg_has(sources = sources, path = "\{root}/impl.vibe"))
+    }
+    loader_cfg_reset()
+  } with { Exception::Throw(message) => {
+    loader_cfg_reset()
+    throw(message)
+  } }
+}
+
+fn loader_cfg_types_count(_ sources: Array[(String, String)]) -> Int {
+  let mut count = 0
+  for source in sources {
+    let (path, _) = source
+    if String::starts_with(path, prefix = vpkg_types_module_path_prefix) {
+      count = count + 1
+    } else {
+      ()
+    }
+  }
+  count
+}
+
+test "re-export type-parameter memo answers do not authorize another configuration" {
+  let root = "_build/config_loader_params_\{Profiler::now_us()}"
+  Fs::mkdir_p("\{root}/parent")
+  Fs::write_file("\{root}/types.vibe", contents = "#cfg(alpha)\nexport type Container[F[_]] = F[Int]\n")
+  let path = "\{root}/parent/index.vpkg"
+  Fs::write_file(path, contents = "opaque type Container[F[_]]\n")
+  Fs::write_file("\{root}/parent/mid.vibe", contents = "export ../types.vibe { Container }\n")
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let _ = loader_cfg_collect(path = path, flags = "alpha")
+    let message = handle {
+      let _ = loader_cfg_collect(path = path, flags = "beta")
+      ""
+    } with { Exception::Throw(error) => error }
+    assert(String::contains(message, needle = "has no implementation"))
+    let _ = loader_cfg_collect(path = path, flags = "alpha")
+    loader_cfg_reset()
+  } with { Exception::Throw(message) => {
+    loader_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "a generated-types registry entry from another configuration is not injected" {
+  let root = "_build/config_loader_types_\{Profiler::now_us()}"
+  Fs::mkdir_p(root)
+  let path = "\{root}/index.vpkg"
+  let alpha = "version 0.0.1\nstruct Alpha { n: Int }\n"
+  Fs::write_file(path, contents = alpha)
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    assert_eq(loader_cfg_types_count(loader_cfg_collect(path = path, flags = "alpha")), 1)
+    Fs::write_file(path, contents = "version 0.0.1\nstruct Beta { s: String }\n")
+    assert_eq(loader_cfg_types_count(loader_cfg_collect(path = path, flags = "beta")), 1)
+    Fs::write_file(path, contents = alpha)
+    assert_eq(loader_cfg_types_count(loader_cfg_collect(path = path, flags = "alpha")), 1)
+    loader_cfg_reset()
+  } with { Exception::Throw(message) => {
+    loader_cfg_reset()
+    throw(message)
+  } }
+}

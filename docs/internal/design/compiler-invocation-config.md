@@ -1,7 +1,7 @@
 # Compiler invocation configuration (#1953)
 
-Target `#cfg` flags have scoped entries for the flat-source RC compiler and
-the shared FS parser with its per-file AST cache. These are migration slices,
+Target `#cfg` flags have scoped entries for the flat-source RC compiler,
+shared FS parsing and complete filesystem source collection. These are migration slices,
 not completion of #1953 or a claim that the compiler as a whole is reentrant.
 
 ## Boundary and authority
@@ -42,12 +42,12 @@ for both loading and publishing. Recording a parse receives the captured
 string; it never rereads ambient flags after a nested invocation.
 
 The compatibility `parse_program_located_shared_fs` copies the parser's exact
-ambient flags and their CSV identity with `cfg_ambient_flags_snapshot` at its
+ambient flags with `cfg_ambient_flags_snapshot` and derives their exact identity at its
 boundary. It does not reinterpret the compatibility setter's array as CSV.
 If a compatibility array element contains a literal comma, its CSV would
 alias several directive flags; shared parsing preserves that exact array
 without memoizing or persisting it, and prefetch declines that identity.
-AST prefetch captures the ambient CSV too; both use the same explicit
+AST prefetch captures the ambient identity too; both use the same explicit
 AST-cache functions. This also keeps parsing and cache identity paired if a
 legacy caller updates only the parser's flags. The pure shared parse uses the
 same explicit parser and memo implementation. Existing shallow-copy and
@@ -61,18 +61,54 @@ The other identity dimensions and filesystem/environment authority remain
 unchanged. These functions do not make the mutable ASTs or cache state safe
 for arbitrary concurrent mutation.
 
-Whole-file compilation still enters through legacy orchestration. Its header,
-contract, checked-module and final-artifact cache families must migrate
-together before that boundary can promise invocation isolation. A configured
-shared parse by itself is not a configured whole-file compiler.
+## Filesystem source collection
+
+`collect_source_groups_fs_configured` and `collect_all_sources_fs_configured`
+capture `Config` once through `target_cfg_capture`. The opaque `TargetCfg`
+value retains the exact flags, parser identity and compiler/flag cache namespace.
+Its constructor is hidden by the package contract; the array accessor returns
+a copy. It carries target flags only, with no host or generated-source authority.
+
+The collection, manifest, header and contract helpers receive that value as
+an explicit parameter. Their signatures retain the existing `Source`,
+`ModuleParse`, `ContractIngest`, `Env` and `Fs` authority boundaries. Legacy
+entries capture the compatibility flags at their outer boundary and delegate
+to the same implementations. The cache namespace is derived from those flags,
+so changing only the old persistent-cache cell cannot select another parse's
+header or source group.
+
+Source-list, source-group, manifest-header, module-header, contract-facade and
+vpkg-prefix paths use `*_in_namespace` adapters. The legacy adapters delegate
+to the same key recipes. A cold path and every warm/fallback path retain the
+same snapshot. Import-name and re-export type-parameter memos carry its identity,
+and generated-type registry entries are filtered by it. The contract provider's
+re-export visiting stack belongs to that walk rather than to the process.
+
+`cfg_flags_identity` preserves ordinary CSV identities, including `""` for no
+flags. A compatibility array containing an empty element or literal comma uses
+a comma-prefixed sequence of length-delimited elements. No ordinary array can
+produce that prefix. This distinguishes `["a,b"]`, `["a", "b"]` and
+`["", "3:a", "b"]` without reinterpreting the setter's exact values. Legacy
+semantic-use observations read the same identity as their parse memo.
+
+Unlocated and located-preserving parser variants accept explicit flags too;
+their lowering, diagnostics and `None` binder-authority paths are preserved.
+The structural binder-context gate pins both the compatibility delegations
+and the explicit variants.
+
+Whole-file checking, merge/codegen and final-artifact orchestration still need
+the snapshot passed onward from collection. Their current CLI entry remains
+legacy, and mutable caches still need ownership or synchronization before
+arbitrary concurrent compiler calls. Source-collection isolation is one stage
+of that migration.
 
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
 | --- | --- | --- |
-| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | FS/import orchestration, tooling, legacy compile APIs, and worker entry points still use compatibility cells. The configured shared FS parse bypasses them. |
-| Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | The shared FS parser and AST prefetch pass explicit flags to the AST cache. Header, contract, typing and whole-artifact caches still require the legacy namespace; migrate their invocation boundary together. The configured flat RC lane has no persistent cache. |
-| In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe`: `cfg_ambient_flags_csv()` | Shared parse lookup and recording take the same captured CSV as parsing. Contract type-parameter memo identity and legacy semantic-use observations still read ambient flags. |
+| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection uses explicit `TargetCfg`; whole-file checking/merge, tooling and worker entry points still need the same snapshot passed through. Legacy parser entries retain compatibility reads. |
+| Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Parse-derived collection caches and AST storage use captured identities. Typing, checked-module, final-artifact and content-only fingerprint/stamp cache adapters still need migration; the latter values are independent of target flags. |
+| In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection uses exact scoped identities for parse, import-name, re-export and generated-type reuse. Legacy checker semantic-use observations still enter through compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
 | Generated-source authority | positional CLI's `VIBE_INTERNAL_TRUSTED_SOURCE`; source compilers receive `trusted_generated` | Preserve the out-of-band authorization; source bytes must never enable the bypass. It is not granted by the flag-only `Config` effect. |
 | Checked Exception-row mode | `checker/effects/checker_effects_dh_call_to_binding.vibe`: `error_row_mode_cell`, CLI `VIBE_CHECK_ERROR_ROW` | Migrate the checker/effect-pass policy together after the target flags. This remains shared configuration, unlike checked type facts belonging to a compilation. |
@@ -106,6 +142,15 @@ The latter also evicts through the real memo bound before checking disk-warm
 answers, so an in-memory hit cannot impersonate persistent-cache reuse.
 The bootstrap gate runs that enabled-policy case with its own freshly built
 stage2; the ordinary unit shard also exercises the default policy.
+
+`target_cfg_test.vibe` checks normalization, exact identities, copied array
+access, independent namespaces and nested captures. `invocation_config_loader_test.vibe`
+poisons both old cells, exercises recursive and manifest collection, forces
+the source-list fallback, and checks warm flag switches, nested successful and
+failed calls, re-export memo separation and generated-type registry filtering.
+Mutations selecting ambient flags, a global source-list namespace, another
+configuration's registry rows or another configuration's type-parameter memo
+must fail at runtime. The bootstrap gate also runs these with AST caching on.
 
 Next, carry the snapshot through whole-file orchestration and its remaining
 cache families, then migrate authority reads and checker policies. Only after
