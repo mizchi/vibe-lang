@@ -544,7 +544,7 @@ export fn evidence_split_handler_sets(_ stmts: Array[Stmt]) -> Array[String] {
     let es_names = array_empty()
     let es_members = array_empty()
     edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members)
-    let fx = (fn_defs, edp_fn_row_label_table(fn_defs = fn_defs, es_names = es_names, es_members_list = es_members), edp_collect_program_binders(stmts))
+    let fx = (edp_ao_fn_positions(fn_defs), edp_fn_row_label_table(fn_defs = fn_defs, es_names = es_names, es_members_list = es_members), edp_collect_program_binders(stmts))
     edp_split_handler_sets(stmts = stmts, indices = statements, may = (e: Expr, y: String) -> edp_ao_arm_may_perform(expr = e, y = y, fx = fx, hof_arg = false), at = (e: Expr, y: String) -> edp_ao_perform_offset(expr = e, y = y, fx = fx), errs = errs)
   } else ()
   errs
@@ -2032,7 +2032,7 @@ fn edp_order_plans_for_arm_performs(stmts: Array[Stmt], plans: Array[(String, Ar
     } else {
       edp_collect_program_binders(stmts)
     }
-    let fx = (fn_defs, row_labels, binders)
+    let fx = (edp_ao_fn_positions(fn_defs), row_labels, binders)
     // (E, Y, offset of the arm's perform of Y): Y must be applied before E.
     let edges: Array[(String, String, Int)] = []
     for s in stmts {
@@ -2119,7 +2119,7 @@ fn edp_ao_push_edge(edges: Array[(String, String, Int)], from: String, to: Strin
   } else ()
 }
 
-fn edp_ao_collect_edges(expr: Expr, names: Array[String], fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), edges: Array[(String, String, Int)]) -> Unit {
+fn edp_ao_collect_edges(expr: Expr, names: Array[String], fx: (MutMap[String, Int], Array[Array[String]], MutSet[String]), edges: Array[(String, String, Int)]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       let inner: Array[(String, Expr)] = []
@@ -2179,8 +2179,8 @@ fn edp_ao_nested_handles(expr: Expr, names: Array[String], out: Array[(String, E
 /// name shadows a top-level function), a computed callee, a row variable --
 /// and so does a local binding handed to a builtin that may call it
 /// (`hof_arg`).
-fn edp_ao_arm_may_perform(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), hof_arg: Bool) -> Bool {
-  let (fn_defs, row_labels, binders) = fx
+fn edp_ao_arm_may_perform(expr: Expr, y: String, fx: (MutMap[String, Int], Array[Array[String]], MutSet[String]), hof_arg: Bool) -> Bool {
+  let (positions, row_labels, binders) = fx
   match expr {
     ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" {
@@ -2195,7 +2195,7 @@ fn edp_ao_arm_may_perform(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, St
       } else if MutSet::has(binders, x = nm) {
         true
       } else {
-        let fi = edp_ao_fn_index(fn_defs = fn_defs, nm = nm)
+        let fi = edp_ao_fn_index(positions = positions, nm = nm)
         if fi >= 0 {
           if edp_ao_labels_reach(labels = Array::get(row_labels, at = fi), y = y) {
             true
@@ -2217,7 +2217,7 @@ fn edp_ao_arm_may_perform(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, St
     EIdent(nm, _) => if MutSet::has(binders, x = nm) {
       hof_arg
     } else {
-      let fi = edp_ao_fn_index(fn_defs = fn_defs, nm = nm)
+      let fi = edp_ao_fn_index(positions = positions, nm = nm)
       fi >= 0 && edp_ao_labels_reach(labels = Array::get(row_labels, at = fi), y = y)
     },
     _ => edp_ao_any_may_perform(es = expr_children(expr), y = y, fx = fx, hof_arg = false)
@@ -2302,7 +2302,7 @@ fn edp_ao_type_has_fn(_ t: Type) -> Bool {
   }
 }
 
-fn edp_ao_any_may_perform(es: Array[Expr], y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), hof_arg: Bool) -> Bool {
+fn edp_ao_any_may_perform(es: Array[Expr], y: String, fx: (MutMap[String, Int], Array[Array[String]], MutSet[String]), hof_arg: Bool) -> Bool {
   let mut hit = false
   let mut i = 0
   while i < Array::length(es) && !hit {
@@ -2312,17 +2312,25 @@ fn edp_ao_any_may_perform(es: Array[Expr], y: String, fx: (Array[(Int, Bool, Boo
   hit
 }
 
-fn edp_ao_fn_index(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String) -> Int {
-  let mut found = 0 - 1
+/// Each function name's position in `fn_defs`, the last one when a name is
+/// defined twice, so edp_ao_fn_index answers without a scan per call node.
+fn edp_ao_fn_positions(_ fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> MutMap[String, Int] {
+  let positions: MutMap[String, Int] = MutMap::new_string()
   let mut i = 0
   while i < Array::length(fn_defs) {
     let (_, _, _, fname, _, _) = Array::get(fn_defs, at = i)
-    if fname == nm {
-      found = i
-    } else ()
+    MutMap::set(positions, k = fname, v = i)
     i = i + 1
   }
-  found
+  positions
+}
+
+/// The position of the last definition of `nm` in `fn_defs`, or -1.
+fn edp_ao_fn_index(positions: MutMap[String, Int], nm: String) -> Int {
+  match MutMap::get(positions, k = nm) {
+    Some(i) => i,
+    None => -1
+  }
 }
 
 fn edp_ao_labels_reach(labels: Array[String], y: String) -> Bool {
@@ -2338,7 +2346,7 @@ fn edp_ao_labels_reach(labels: Array[String], y: String) -> Bool {
 /// The source offset of the call in `expr` that may perform `y` -- the
 /// innermost one, so the diagnostic points at the `perform` (its operation)
 /// or the call, not at an enclosing expression. -1 when none carries one.
-fn edp_ao_perform_offset(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String])) -> Int {
+fn edp_ao_perform_offset(expr: Expr, y: String, fx: (MutMap[String, Int], Array[Array[String]], MutSet[String])) -> Int {
   let kids = expr_children(expr)
   let mut found = 0 - 1
   let mut i = 0
@@ -2433,7 +2441,7 @@ fn edp_isolate_nested_arm_handlers(_ stmts: Array[Stmt]) -> Unit {
     let es_members_list = array_empty()
     edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
     let row_labels = edp_fn_row_label_table(fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
-    let fx = (fn_defs, row_labels, edp_collect_program_binders(stmts))
+    let fx = (edp_ao_fn_positions(fn_defs), row_labels, edp_collect_program_binders(stmts))
     // Every effect name the program already spells -- declared (imported
     // declarations are statements of the merged program too), handled,
     // performed, or named in a row -- so a generated copy never takes one.
@@ -2588,7 +2596,7 @@ fn edp_iso_has_nested_pair(expr: Expr, names: Array[String]) -> Bool {
 }
 
 /// `stack` holds (effect, arms) for every handle whose BODY encloses `expr`.
-fn edp_iso_expr(expr: Expr, stack: Array[(String, Array[(Pat, Expr)])], names: Array[String], decls: Array[Stmt], fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), fresh: Array[Stmt]) -> Expr {
+fn edp_iso_expr(expr: Expr, stack: Array[(String, Array[(Pat, Expr)])], names: Array[String], decls: Array[Stmt], fx: (MutMap[String, Int], Array[Array[String]], MutSet[String]), fresh: Array[Stmt]) -> Expr {
   match expr {
     EHandle(body, arms) => {
       let inner_stack = Array::concat(stack, [])
@@ -2706,7 +2714,7 @@ fn edp_iso_handles(arms: Array[(Pat, Expr)], y: String) -> Bool {
 /// the rename did not reach, a lambda, or any call that may perform it? The
 /// walk uses the complete child list, so a node the rebuild does not know
 /// still counts.
-fn edp_iso_still_reaches(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String])) -> Bool {
+fn edp_iso_still_reaches(expr: Expr, y: String, fx: (MutMap[String, Int], Array[Array[String]], MutSet[String])) -> Bool {
   if !edp_iso_has_handle_for(expr = expr, y = y) {
     // No nested handler for `y` below: the plain question, renamed performs
     // no longer naming `y`.
@@ -2767,7 +2775,7 @@ fn edp_iso_has_handle_for(expr: Expr, y: String) -> Bool {
   }
 }
 
-fn edp_iso_any_still_reaches(es: Array[Expr], y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String])) -> Bool {
+fn edp_iso_any_still_reaches(es: Array[Expr], y: String, fx: (MutMap[String, Int], Array[Array[String]], MutSet[String])) -> Bool {
   let mut hit = false
   let mut i = 0
   while i < Array::length(es) && !hit {

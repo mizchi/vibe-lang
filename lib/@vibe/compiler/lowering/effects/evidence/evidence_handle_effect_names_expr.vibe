@@ -660,8 +660,7 @@ export fn edp_append_effect_irrelevant_row_fns_with_binders(stmts: Array[Stmt], 
   // arguments cannot perform `ename`.
   edp_argcond_reset(ename)
   edp_argcond_use_binders(binders)
-  let base_len = Array::length(pure_fns)
-  let mut names: Array[String] = []
+  let candidates: Array[String] = []
   let mut i = 0
   while i < Array::length(fn_defs) {
     let (_, _, _, name, _, _) = Array::get(fn_defs, at = i)
@@ -679,36 +678,18 @@ export fn edp_append_effect_irrelevant_row_fns_with_binders(stmts: Array[Stmt], 
         None => ()
       }
     } else {
-      // Copy the existing prefix only when a row can contribute a name.
-      if Array::length(names) == 0 {
-        names = Array::slice(pure_fns, start = 0, end = base_len)
-      }
-      Array::push(names, value = name)
+      Array::push(candidates, value = name)
     }
     i = i + 1
   }
-  if Array::length(names) > base_len {
-    // A stable sort puts any existing entry before candidates of the same
-    // name, and the first candidate before its duplicates. Mark only those
-    // first occurrences, then append in original order. The result keeps
-    // the existing prefix exactly, without a growing linear membership scan.
-    let order = sort_perm_by_names(names)
-    let append_flags = Bytes::new()
-    Bytes::fill(append_flags, value = 0, count = Array::length(names) - base_len)
-    i = 0
-    while i < Array::length(order) {
-      let slot = Array::get(order, at = i)
-      if slot >= base_len && (i == 0 || Array::get(names, at = slot) != Array::get(names, at = Array::get(order, at = i - 1))) {
-        Bytes::set(append_flags, at = slot - base_len, value = 1)
-      }
-      i = i + 1
-    }
-    i = base_len
-    while i < Array::length(names) {
-      if Bytes::get(append_flags, at = i - base_len) == 1 {
-        Array::push(pure_fns, value = Array::get(names, at = i))
-      }
-      i = i + 1
+  if Array::length(candidates) > 0 {
+    // Append each candidate not already listed, once, in candidate order.
+    let listed = edp_listed_candidates(pure_fns = pure_fns, candidates = candidates)
+    for name in candidates {
+      if !MutSet::has(listed, x = name) {
+        MutSet::add(listed, x = name)
+        Array::push(pure_fns, value = name)
+      } else ()
     }
   }
 }
@@ -736,18 +717,38 @@ fn edp_fn_is_perform_free(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, S
   }
 }
 
+/// The members of `candidates` that `pure_fns` already lists: one pass over
+/// `pure_fns` against a set of the candidates. A scan of `pure_fns` per
+/// candidate, or a sort of both to find the repeats, costs more, since
+/// `pure_fns` is the whole inert base.
+fn edp_listed_candidates(pure_fns: Array[String], candidates: Array[String]) -> MutSet[String] {
+  let wanted = edp_name_set(candidates)
+  let listed: MutSet[String] = MutSet::new_string()
+  if Array::length(candidates) > 0 {
+    for name in pure_fns {
+      if MutSet::has(wanted, x = name) {
+        MutSet::add(listed, x = name)
+      } else ()
+    }
+  } else ()
+  listed
+}
+
 export fn edp_append_perform_free_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
   // #1875 R2: candidates from the pre-parsed row label table -- this fn
   // used to rebuild the effectset tables AND re-parse every row string on
   // every call (once per effect, inside the migration planner's loop).
   let candidates = edp_needing_names_tab(fn_defs = fn_defs, row_labels = row_labels, ename = ename)
+  // `listed` follows `pure_fns`: what it held on entry, and each name pushed.
+  let listed = edp_listed_candidates(pure_fns = pure_fns, candidates = candidates)
   let mut i = 0
   while i < Array::length(candidates) {
     let nm = Array::get(candidates, at = i)
-    if edp_str_array_contains(arr = pure_fns, v = nm) {
+    if MutSet::has(listed, x = nm) {
       ()
     } else if edp_fn_is_perform_free(stmts = stmts, fn_defs = fn_defs, nm = nm, ename = ename, base_inert = pure_fns) {
       Array::push(pure_fns, value = nm)
+      MutSet::add(listed, x = nm)
     } else {
       ()
     }
@@ -829,13 +830,16 @@ export fn edp_append_self_discharging_row_fns(stmts: Array[Stmt], fn_defs: Array
   // used to rebuild the effectset tables AND re-parse every row string on
   // every call (once per effect, inside the migration planner's loop).
   let candidates = edp_needing_names_tab(fn_defs = fn_defs, row_labels = row_labels, ename = ename)
+  // `listed` follows `pure_fns`: what it held on entry, and each name pushed.
+  let listed = edp_listed_candidates(pure_fns = pure_fns, candidates = candidates)
   let mut i = 0
   while i < Array::length(candidates) {
     let nm = Array::get(candidates, at = i)
-    if edp_str_array_contains(arr = pure_fns, v = nm) {
+    if MutSet::has(listed, x = nm) {
       ()
     } else if edp_fn_is_self_discharging_inert(stmts = stmts, fn_defs = fn_defs, nm = nm, ename = ename, base_inert = pure_fns) {
       Array::push(pure_fns, value = nm)
+      MutSet::add(listed, x = nm)
     } else {
       ()
     }
