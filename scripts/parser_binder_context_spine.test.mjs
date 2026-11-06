@@ -247,6 +247,9 @@ test("balanced-token inventory classifies every production EFn site", () => {
     // (parse_one_param_with_binder_context), so no row is captured for it.
     ["parser_expr.vibe:param_default_ascription", [1, "deliberately ineligible"]],
     ["parser_expr_core.vibe:parse_call_arg", [1, "source-captured"]],
+    // ADR-0120 Phase 4: the value of a labeled argument, so `f = x -> body`
+    // captures its binder from the source as an unlabeled `x -> body` does.
+    ["parser_expr_core.vibe:parse_call_arg_value", [1, "source-captured"]],
     ["parser_expr_core.vibe:wrap_placeholder_arg", [1, "synthetic-captured"]],
     ["parser_expr_dispatch.vibe:ascribe_wrap", [1, "synthetic-captured"]],
     ["parser_expr_dispatch.vibe:distribute_local_fn_ann", [2, "slot-preserving reconstruction"]],

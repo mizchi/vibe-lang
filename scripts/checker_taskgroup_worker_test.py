@@ -33,7 +33,7 @@ for name,ids,count in [('one',[0],1),('two',[0,1],1),('four',list(range(4)),1),(
     text=head
     for i in ids:
         body=''.join(f'let s{j} = await(host_future_named("checker-{i}"))\nif s{j} != 0 {{ throw("worker failed") }} else ()\n' for j in range(count))
-        text+=f'let t{i} = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {{\n{body}0\n}})\n'
+        text+=f'let t{i} = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {{\n{body}0\n}})\n'
         for j in range(count):
             job=out/f'{name}-job{i}-{j}';job.mkdir()
             manifest=f'version\t1\npath\t{out}/source{i}.vibe\n'
@@ -42,7 +42,7 @@ for name,ids,count in [('one',[0],1),('two',[0,1],1),('four',list(range(4)),1),(
                 assert mutated!=manifest and 'version\t999\n' in mutated
                 manifest=mutated
             (job/'job.txt').write_text(manifest)
-            (job/'source.vibe').write_text('\n'.join(f'fn f{k}(x: Int) -> Int {{ x + {k} }}' for k in range(1000))+'\nfn double_id(x: Float64) -> Float64 { x }\nexport fn main() -> Int { let d = double_id(x = 1.5); if d == 1.5 { f999(1) } else { 0 } }\n')
+            (job/'source.vibe').write_text('\n'.join(f'fn f{k}(x: Int) -> Int {{ x + {k} }}' for k in range(1000))+'\nfn double_id(x: Float64) -> Float64 { x }\nexport fn main() -> Int { let d = double_id(x = 1.5); if d == 1.5 { f999(x = 1) } else { 0 } }\n')
     text+='TaskGroup::pump_all(g)\n'+' + '.join(f'TaskHandle::join(t{i})' for i in ids)+'\n })\n}\n'
     src=out/f'{name}.vibe';src.write_text(text)
     env={**base,'VIBE_FS_COMPILE':'1','VIBE_LIB':str(root/'lib'),'VIBE_PREOPEN_DIR':str(root),

@@ -155,7 +155,7 @@ def assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, pr
     target = repo / "lib/@vibe/function_build/phases/entry.vibe"
     source = target.read_text()
     before = "finish_function_assembly(state = assembly, products = merged)"
-    after = 'compile_file_fs_mode_rc_body_cached(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off")'
+    after = 'compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off")'
     assert source.count(before) == 1
     overlay = private / "serial-finisher.vibe"
     overlay.write_text(source.replace(before, after))
@@ -190,9 +190,9 @@ def assert_original_phase_receipt_bound(repo, compiler, artifacts, runner, env, 
     source = target.read_text()
     marker = '  Fs::write_bytes(directory + "/function.assembly", bytes = packet)\n'
     assert source.count(marker) == 1
-    rewrite = '''  Array::push(assembly.replay.guard_layout, 9)
-  let changed_packet = write_function_assembly(assembly, context_digest)
-  Fs::write_bytes(directory + "/function.assembly", changed_packet)
+    rewrite = '''  Array::push(assembly.replay.guard_layout, value = 9)
+  let changed_packet = write_function_assembly(state = assembly, context_digest = context_digest)
+  Fs::write_bytes(directory + "/function.assembly", bytes = changed_packet)
 '''
     for bound in (True, False):
         private = project / ("receipt-bound" if bound else "receipt-stale")
