@@ -28,7 +28,7 @@
 # runs. The result is checked before it is installed: no imports, and every
 # export the binding needs.
 #
-# Needs: clang / clang++ 18 with wasm-ld, llvm-ar, a wasm32-wasi sysroot with
+# Needs: clang / clang++ 18 (clang-18, preferred from /usr/lib/llvm-18/bin) with wasm-ld, llvm-ar, a wasm32-wasi sysroot with
 # libc++ (Debian/Ubuntu: wasi-libc libc++-18-dev-wasm32
 # libclang-rt-18-dev-wasm32), cmake, ninja, git, python3 (z3's code
 # generators), node and npm (binaryen). About 25 minutes on 4 cores and 1 GB
@@ -53,9 +53,20 @@ EXPORTS="malloc free Z3_mk_config Z3_del_config Z3_mk_context Z3_del_context
   Z3_set_error_handler Z3_eval_smtlib2_string Z3_get_full_version"
 
 fail() { echo "[z3-wasi] FAIL $*" >&2; exit 1; }
+# The wasm32 libc++ / compiler-rt packages are LLVM 18's, so the compiler has
+# to be 18 too: a newer plain `clang` (21 on a recent Ubuntu) looks for its
+# own version's runtime and cannot link for wasm32-wasi. Debian/Ubuntu put an
+# unversioned clang, clang++, llvm-ar and wasm-ld under /usr/lib/llvm-18/bin.
+if [ -x /usr/lib/llvm-18/bin/clang ]; then
+  PATH="/usr/lib/llvm-18/bin:$PATH"
+  export PATH
+fi
 for tool in clang clang++ wasm-ld llvm-ar cmake ninja git python3 node npm; do
   command -v "$tool" >/dev/null 2>&1 || fail "\`$tool\` is not on PATH (see the header for what this build needs)"
 done
+clang_major="$(clang -dumpversion 2>/dev/null | cut -d. -f1)"
+[ "$clang_major" = 18 ] \
+  || fail "clang is version ${clang_major:-unknown}, but the wasm32 runtime packages are LLVM 18's: install clang-18 lld-18 llvm-18 (Debian/Ubuntu)"
 echo 'int main(void){return 0;}' | clang --target=wasm32-wasi -x c - -o /dev/null 2>/dev/null \
   || fail "clang cannot link for wasm32-wasi: install a WASI sysroot (Debian/Ubuntu: wasi-libc libc++-18-dev-wasm32 libclang-rt-18-dev-wasm32)"
 
