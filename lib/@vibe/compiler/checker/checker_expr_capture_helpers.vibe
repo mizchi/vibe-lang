@@ -175,10 +175,11 @@ fn pinned_struct_literal_refusal(defs: Array[TypeDef], name: String, target: Typ
 /// `b.get()` answered "no method `get` on `SB`: declare a top-level `fn
 /// SB::get(...)`" for a method that exists. Only a binding whose origin is the
 /// type's own companion qualifies, so a local alias's own `fn M::tag` is never
-/// reached from a value of the aliased type.
+/// reached from a value of the aliased type. A receiver with a field of the
+/// method's name keeps the field call it made before (Codex on #3893).
 export fn dot_call_qualified_name(env: TypeEnv, defs: Array[TypeDef], type_prefix: String, method: String) -> String {
   let qualified = String::concat(type_prefix, String::concat("::", method))
-  if type_prefix == "" || (env_lookup(env = env, name = qualified) is Some(_)) {
+  if type_prefix == "" || (env_lookup(env = env, name = qualified) is Some(_)) || struct_has_field(defs = defs, name = type_prefix, field = method) {
     qualified
   } else {
     let mut found = qualified
@@ -197,6 +198,20 @@ export fn dot_call_qualified_name(env: TypeEnv, defs: Array[TypeDef], type_prefi
       }
     }
     found
+  }
+}
+
+fn struct_has_field(defs: Array[TypeDef], name: String, field: String) -> Bool {
+  match find_struct_typedef(defs = defs, name = name) {
+    Some(TDStruct(_, fields, _, _)) => {
+      let mut found = false
+      for entry in fields {
+        let (fname, _) = entry
+        found = found || fname == field
+      }
+      found
+    },
+    _ => false
   }
 }
 
