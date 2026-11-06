@@ -1,0 +1,315 @@
+import @vibe/checker/engine {
+  engine_parse_program_with_path_with_config
+}
+import @vibe/compiler/core {
+  Expr, Stmt, expr_any_node
+}
+import @vibe/checker/lowering {
+  CheckedLoweringInputs,
+  bind_checked_lowering_context,
+  capture_checked_lowering_inputs,
+  record_checked_lowering,
+  reset_checked_lowering_memo
+}
+import @vibe/compiler/config {
+  target_cfg_from_csv
+}
+import @vibe/compiler/linker/merge {
+  merged_stmts_and_offsets_with_config
+}
+import @vibe/compiler/runtime {
+  TypeDb, db_checked_lowering_inputs, db_new, db_set_source, db_typecheck_count, db_typecheck_fs_with_config, db_typecheck_with_config
+}
+import @vibe/compiler/syntax {
+  print_program
+}
+import @vibe/ast {
+  TypeExpr, impl_target_key
+}
+import @vibe/compiler/core {
+  merged_offset_owner, resolved_callee_row_rebase
+}
+
+fn owned_publish(offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> Unit {
+  record_checked_lowering(path = "owned.vibe", fingerprint = "fp", offsets = offsets, eq_offs = eq_offs, eq_keys = eq_keys)
+  bind_checked_lowering_context(path = "owned.vibe", fingerprint = "fp", source = "source", cfg_identity = "alpha")
+}
+
+test "owned rows copy all channels and survive original mutation and memo reset" {
+  reset_checked_lowering_memo()
+  let callee = (9 * 65536 + 14) * 16 + 7
+  let offsets = [17, callee, 14]
+  let eq_offs = [12]
+  let eq_keys = [impl_target_key(TyName("Int"))]
+  owned_publish(offsets = offsets, eq_offs = eq_offs, eq_keys = eq_keys)
+  let inputs = capture_checked_lowering_inputs(requests = [
+    ("owned.vibe", "source", "fp")
+  ], cfg_identity = "alpha")
+  Array::set(offsets, at = 0, value = 99)
+  Array::set(eq_offs, at = 0, value = 99)
+  Array::set(eq_keys, at = 0, value = "broken")
+  let borrowed = CheckedLoweringInputs::for_path(inputs, path = "owned.vibe")
+  Array::set(borrowed, at = 0, value = 99)
+  reset_checked_lowering_memo()
+  assert_eq(CheckedLoweringInputs::for_path(inputs, path = "owned.vibe"), [
+    17,
+    callee,
+    14
+  ])
+  assert_eq(CheckedLoweringInputs::union_lowering(inputs, flat_paths = [
+    "owned.vibe"
+  ], flat_bases = [100], clone_float_offsets = [33]), [
+    1617,
+    resolved_callee_row_rebase(row = callee, base = 100),
+    14,
+    33
+  ])
+  let (eo, ek) = CheckedLoweringInputs::union_eq_rows(inputs, flat_paths = [
+    "owned.vibe"
+  ], flat_bases = [100])
+  assert_eq(eo, [112])
+  assert_eq(ek, [impl_target_key(TyName("Int"))])
+}
+
+test "capture refuses an unbound source, stale fingerprint and another context" {
+  reset_checked_lowering_memo()
+  record_checked_lowering(path = "owned.vibe", fingerprint = "fp", offsets = [], eq_offs = [
+  ], eq_keys = [])
+  let unbound = handle {
+    let _ = capture_checked_lowering_inputs(requests = [
+      ("owned.vibe", "source", "fp")
+    ], cfg_identity = "alpha"); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(unbound, needle = "recheck"))
+  owned_publish(offsets = [], eq_offs = [], eq_keys = [])
+  for request in [
+    ("owned.vibe", "edit", "fp"),
+    ("owned.vibe", "source", "old"),
+    ("missing.vibe", "source", "fp")
+  ] {
+    let error = handle {
+      let _ = capture_checked_lowering_inputs(requests = [request], cfg_identity = "alpha"); ""
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(error, needle = "recheck"))
+  }
+  let wrong_cfg = handle {
+    let _ = capture_checked_lowering_inputs(requests = [
+      ("owned.vibe", "source", "fp")
+    ], cfg_identity = "beta"); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(wrong_cfg, needle = "target flags"))
+}
+
+test "empty complete channels remain distinct from malformed equality rows" {
+  reset_checked_lowering_memo()
+  owned_publish(offsets = [], eq_offs = [], eq_keys = [])
+  let inputs = capture_checked_lowering_inputs(requests = [
+    ("owned.vibe", "source", "fp")
+  ], cfg_identity = "alpha")
+  assert_eq(CheckedLoweringInputs::for_path(inputs, path = "owned.vibe"), [])
+  CheckedLoweringInputs::validate(inputs, sources = [("owned.vibe", "source")], cfg_identity = "alpha")
+  owned_publish(offsets = [], eq_offs = [1], eq_keys = [])
+  let error = handle {
+    let _ = capture_checked_lowering_inputs(requests = [
+      ("owned.vibe", "source", "fp")
+    ], cfg_identity = "alpha"); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(error, needle = "mismatched equality"))
+}
+
+fn owned_source() -> String {
+  "#cfg(alpha)\nfn value() -> String { \"a\" }\n#cfg(beta)\nfn value() -> Int { 2 }\nfn chosen() -> Bool { let x = value(); let y = value(); let _ = x + y; x == y }\n"
+}
+
+fn owned_db(_ flags: String) -> TypeDb with Env + Exception {
+  db_typecheck_with_config(db = db_set_source(db = db_new(), path = "owned/main.vibe", source = owned_source()), path = "owned/main.vibe", cfg = target_cfg_from_csv(flags))
+}
+
+test "a typed merge retains String and equality rows after another target check" {
+  reset_checked_lowering_memo()
+  let alpha = target_cfg_from_csv("alpha")
+  let beta = target_cfg_from_csv("beta")
+  let a_db = owned_db("alpha")
+  let a = db_checked_lowering_inputs(db = a_db, cfg = alpha)
+  let b_db = owned_db("beta")
+  let b = db_checked_lowering_inputs(db = b_db, cfg = beta)
+  let stale = handle {
+    let _ = db_checked_lowering_inputs(db = a_db, cfg = alpha); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(stale, needle = "recheck"))
+  let groups = [("owned", [("owned/main.vibe", owned_source())])]
+  let (a_stmts, _, _, _, a_eo, a_ek) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = alpha, inputs = a)
+  let a_text = print_program(a_stmts)
+  let (b_stmts, _, _, _, b_eo, b_ek) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = beta, inputs = b)
+  assert(String::contains(a_text, needle = "String::concat"))
+  assert(!String::contains(print_program(b_stmts), needle = "String::concat"))
+  assert(Array::length(a_eo) > 0)
+  assert(Array::length(b_eo) > 0)
+  assert(a_ek != b_ek)
+  reset_checked_lowering_memo()
+  let (again, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = alpha, inputs = a)
+  assert_eq(print_program(again), a_text)
+}
+
+test "a configured typed merge refuses wrong target, edited source and missing rows" {
+  let alpha = target_cfg_from_csv("alpha")
+  let db = owned_db("alpha")
+  let inputs = db_checked_lowering_inputs(db = db, cfg = alpha)
+  let _ = merged_stmts_and_offsets_with_config(source_groups = [
+    ("good", [("owned/main.vibe", owned_source())])
+  ], cfg = alpha, inputs = inputs)
+  let owner = owned_location()
+  let wrong_db = handle {
+    let _ = db_checked_lowering_inputs(db = db, cfg = target_cfg_from_csv("beta")); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(wrong_db, needle = "target flags"))
+  for sources in [
+    [("owned/main.vibe", "fn edited() -> Int { 3 }")],
+    [("missing.vibe", owned_source())]
+  ] {
+    let error = handle {
+      let _ = merged_stmts_and_offsets_with_config(source_groups = [
+        ("bad", sources)
+      ], cfg = alpha, inputs = inputs); ""
+    } with { Exception::Throw(message) => message }
+    assert(error != "")
+    assert_eq(owned_location(), owner)
+  }
+  let wrong_cfg = handle {
+    let _ = merged_stmts_and_offsets_with_config(source_groups = [
+      ("bad", [("owned/main.vibe", owned_source())])
+    ], cfg = target_cfg_from_csv("beta"), inputs = inputs); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(wrong_cfg, needle = "target flags"))
+}
+
+test "resident and disk-warm FS providers publish context-bound rows" {
+  let root = "_build/owned_lowering_\{Profiler::now_us()}"
+  Fs::mkdir_p(root)
+  let path = "\{root}/main.vibe"
+  Fs::write_file(path, contents = owned_source())
+  let cfg = target_cfg_from_csv("alpha")
+  let db = db_typecheck_fs_with_config(db = db_set_source(db = db_new(), path = path, source = owned_source()), path = path, cfg = cfg)
+  let first = db_checked_lowering_inputs(db = db, cfg = cfg)
+  let warm = db_typecheck_fs_with_config(db = db, path = path, cfg = cfg)
+  assert_eq(db_typecheck_count(warm), db_typecheck_count(db))
+  let _ = db_checked_lowering_inputs(db = warm, cfg = cfg)
+  reset_checked_lowering_memo()
+  let disk = db_typecheck_fs_with_config(db = db_set_source(db = db_new(), path = path, source = owned_source()), path = path, cfg = cfg)
+  let restored = db_checked_lowering_inputs(db = disk, cfg = cfg)
+  let groups = [("fs", [(path, owned_source())])]
+  let (a, _, _, _, ae, ak) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg, inputs = first)
+  let (b, _, _, _, be, bk) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg, inputs = restored)
+  assert_eq(print_program(a), print_program(b))
+  assert(String::contains(print_program(b), needle = "String::concat"))
+  assert_eq(ae, be)
+  assert_eq(ak, bk)
+  Fs::remove(path)
+  reset_checked_lowering_memo()
+}
+
+fn owned_location() -> String {
+  match merged_offset_owner(0) {
+    Some((path, source, base)) => "\{path}:\{source}:\{base}",
+    None => "missing"
+  }
+}
+
+// Return copied call cells, so later raw-parser reuse cannot rewrite evidence.
+fn owned_cells(stmts: Array[Stmt]) -> Array[Int] {
+  let cells: Array[Int] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, body) => {
+        let _ = expr_any_node(expr = body, pred = (expr) -> {
+          match expr {
+            ECall(_, _, _, cell) => for item in cell {
+              Array::push(cells, value = item)
+            },
+            _ => []
+          }
+          false
+        })
+      },
+      _ => ()
+    }
+  }
+  cells
+}
+
+test "owned parsing restores call placements after the same source changes target" {
+  let path = "owned/labels.vibe"
+  let source = "#cfg(alpha)\nfn pick(a: Int, b: Int) -> Int { a - b }\n#cfg(beta)\nfn pick(b: Int, a: Int) -> Int { a - b }\nfn run() -> Int { pick(a = 7, b = 2) }\n"
+  let cfg_a = target_cfg_from_csv("alpha")
+  let cfg_b = target_cfg_from_csv("beta")
+  let groups = [("labels", [(path, source)])]
+  let db = db_set_source(db = db_new(), path = path, source = source)
+  let a_db = db_typecheck_with_config(db = db, path = path, cfg = cfg_a)
+  let a = db_checked_lowering_inputs(db = a_db, cfg = cfg_a)
+  let (before, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg_a, inputs = a)
+  let cells_a = owned_cells(before)
+  assert(Array::length(cells_a) > 0)
+  let b_db = db_typecheck_with_config(db = db, path = path, cfg = cfg_b)
+  let b = db_checked_lowering_inputs(db = b_db, cfg = cfg_b)
+  let (other, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg_b, inputs = b)
+  assert(owned_cells(other) != cells_a)
+  let (after, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg_a, inputs = a)
+  assert_eq(owned_cells(after), cells_a)
+}
+
+test "owned parsing restores builtin identity after a configured program shadow" {
+  let path = "owned/builtin.vibe"
+  let source = "#cfg(beta)\nfn Array::push(xs: Array[Int], value: Int) -> Unit { () }\nfn run(xs: Array[Int]) -> Unit { Array::push(xs, 7) }\n"
+  let cfg_a = target_cfg_from_csv("alpha")
+  let cfg_b = target_cfg_from_csv("beta")
+  let groups = [("builtin", [(path, source)])]
+  let db = db_set_source(db = db_new(), path = path, source = source)
+  let a_db = db_typecheck_with_config(db = db, path = path, cfg = cfg_a)
+  let a = db_checked_lowering_inputs(db = a_db, cfg = cfg_a)
+  let (before, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg_a, inputs = a)
+  let cells_a = owned_cells(before)
+  assert(Array::length(cells_a) > 0)
+  assert_eq(Array::get(cells_a, at = 0), 14)
+  let b_db = db_typecheck_with_config(db = db, path = path, cfg = cfg_b)
+  let b = db_checked_lowering_inputs(db = b_db, cfg = cfg_b)
+  let (other, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg_b, inputs = b)
+  assert_eq(Array::get(owned_cells(other), at = 0), -1)
+  let (after, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg_a, inputs = a)
+  assert_eq(owned_cells(after), cells_a)
+}
+
+test "owned parsing clears shared call facts absent from its complete rows" {
+  let path = "owned/reset.vibe"
+  let source = "fn f() -> Int { 3 }\nfn main() -> Int { f() }\n"
+  let cfg = target_cfg_from_csv("")
+  let raw = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg)
+  for stmt in raw {
+    match stmt {
+      SLet(_, _, _, _, body) => {
+        let _ = expr_any_node(expr = body, pred = (expr) -> {
+          match expr {
+            ECall(_, _, _, cell) => {
+              Array::truncate(cell, length = 0); Array::push(cell, value = 14)
+            },
+            _ => ()
+          }
+          false
+        })
+      },
+      _ => ()
+    }
+  }
+  assert_eq(owned_cells(raw), [14])
+  // Model an accepted provider's empty complete channel independently of the
+  // shared parser cell. Only the published rows may reach the owned consumer.
+  record_checked_lowering(path = path, fingerprint = "reset-fp", offsets = [], eq_offs = [
+  ], eq_keys = [])
+  bind_checked_lowering_context(path = path, fingerprint = "reset-fp", source = source, cfg_identity = "")
+  let inputs = capture_checked_lowering_inputs(requests = [
+    (path, source, "reset-fp")
+  ], cfg_identity = "")
+  let (stmts, _, _, _, _, _) = merged_stmts_and_offsets_with_config(source_groups = [
+    ("reset", [(path, source)])
+  ], cfg = cfg, inputs = inputs)
+  assert_eq(owned_cells(stmts), [])
+}

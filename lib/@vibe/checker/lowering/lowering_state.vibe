@@ -19,6 +19,10 @@ let module_typed_lowering_memo_fps: Array[String] = []
 // A path alone must never authorize restoring identities into another text.
 let module_typed_lowering_memo_sources: Array[Option[String]] = []
 
+// A configured publication binds its exact target identity. Legacy raw rows
+// remain unbound until their accepting checker/cache provider supplies it.
+let module_typed_lowering_memo_cfgs: Array[Option[String]] = []
+
 let module_typed_lowering_memo_offsets: Array[Array[Int]] = []
 
 // #2441: the typed-`==` rows ride the same memo lifecycle as the Int table
@@ -32,6 +36,7 @@ export fn reset_checked_lowering_memo() -> Unit {
   Array::truncate(module_typed_lowering_memo_paths, length = 0)
   Array::truncate(module_typed_lowering_memo_fps, length = 0)
   Array::truncate(module_typed_lowering_memo_sources, length = 0)
+  Array::truncate(module_typed_lowering_memo_cfgs, length = 0)
   Array::truncate(module_typed_lowering_memo_offsets, length = 0)
   Array::truncate(module_typed_lowering_memo_eq_offs, length = 0)
   Array::truncate(module_typed_lowering_memo_eq_keys, length = 0)
@@ -46,6 +51,7 @@ export fn record_checked_lowering(path: String, fingerprint: String, offsets: Ar
       if Array::get(module_typed_lowering_memo_fps, at = i) != fingerprint {
         Array::set(module_typed_lowering_memo_sources, at = i, value = None)
       }
+      Array::set(module_typed_lowering_memo_cfgs, at = i, value = None)
       Array::set(module_typed_lowering_memo_fps, at = i, value = fingerprint)
       Array::set(module_typed_lowering_memo_offsets, at = i, value = offsets)
       Array::set(module_typed_lowering_memo_eq_offs, at = i, value = eq_offs)
@@ -60,6 +66,7 @@ export fn record_checked_lowering(path: String, fingerprint: String, offsets: Ar
     Array::push(module_typed_lowering_memo_paths, value = path)
     Array::push(module_typed_lowering_memo_fps, value = fingerprint)
     Array::push(module_typed_lowering_memo_sources, value = None)
+    Array::push(module_typed_lowering_memo_cfgs, value = None)
     Array::push(module_typed_lowering_memo_offsets, value = offsets)
     Array::push(module_typed_lowering_memo_eq_offs, value = eq_offs)
     Array::push(module_typed_lowering_memo_eq_keys, value = eq_keys)
@@ -74,10 +81,40 @@ export fn bind_checked_lowering_source(path: String, fingerprint: String, source
   let mut i = 0
   while i < Array::length(module_typed_lowering_memo_paths) {
     if Array::get(module_typed_lowering_memo_paths, at = i) == path && Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint {
+      if Array::get(module_typed_lowering_memo_sources, at = i) != Some(source) {
+        Array::set(module_typed_lowering_memo_cfgs, at = i, value = None)
+      }
       Array::set(module_typed_lowering_memo_sources, at = i, value = Some(source))
     }
     i = i + 1
   }
+}
+
+/// Bind a source and target identity after a configured check/cache acceptance.
+/// This is a publication operation; raw compatibility records stay unbound.
+export fn bind_checked_lowering_context(path: String, fingerprint: String, source: String, cfg_identity: String) -> Unit {
+  bind_checked_lowering_source(path = path, fingerprint = fingerprint, source = source)
+  let mut i = 0
+  while i < Array::length(module_typed_lowering_memo_paths) {
+    if Array::get(module_typed_lowering_memo_paths, at = i) == path && Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint {
+      Array::set(module_typed_lowering_memo_cfgs, at = i, value = Some(cfg_identity))
+    }
+    i = i + 1
+  }
+}
+
+fn module_typed_lowering_cfg_for_fp(_ fingerprint: String) -> Option[String] {
+  let mut i = 0
+  let mut answer: Option[String] = None
+  while i < Array::length(module_typed_lowering_memo_fps) {
+    if Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint {
+      answer = Array::get(module_typed_lowering_memo_cfgs, at = i)
+      i = Array::length(module_typed_lowering_memo_fps)
+    } else {
+      i = i + 1
+    }
+  }
+  answer
 }
 
 fn module_typed_lowering_source_for_fp(_ fingerprint: String) -> Option[String] {
@@ -233,13 +270,7 @@ export fn union_checked_lowering(flat_paths: Array[String], flat_bases: Array[In
   while i < Array::length(flat_paths) {
     match checked_lowering_for_path(Array::get(flat_paths, at = i)) {
       Some(offsets) => {
-        let base = Array::get(flat_bases, at = i)
-        let mut j = 0
-        while j < Array::length(offsets) {
-          let row = Array::get(offsets, at = j)
-          Array::push(out, value = resolved_callee_row_rebase(row = row, base = base))
-          j = j + 1
-        }
+        append_lowering_rows_rebased(out = out, offsets = offsets, base = Array::get(flat_bases, at = i))
       },
       None => ()
     }
@@ -301,19 +332,7 @@ export fn union_checked_eq_rows(flat_paths: Array[String], flat_bases: Array[Int
   while i < Array::length(flat_paths) {
     match checked_eq_rows_for_path(Array::get(flat_paths, at = i)) {
       Some((eq_offs, eq_keys)) => {
-        let rename = namespace_private_renamer_for_path(Array::get(flat_paths, at = i))
-        let base = Array::get(flat_bases, at = i)
-        let mut j = 0
-        while j < Array::length(eq_offs) {
-          match impl_target_from_key(Array::get(eq_keys, at = j)) {
-            Some(te) => {
-              Array::push(out_offs, value = Array::get(eq_offs, at = j) + base)
-              Array::push(out_keys, value = impl_target_key(eq_key_rename_ty(rename = rename, te = te)))
-            },
-            None => ()
-          }
-          j = j + 1
-        }
+        append_eq_rows_rebased(out_offs = out_offs, out_keys = out_keys, path = Array::get(flat_paths, at = i), eq_offs = eq_offs, eq_keys = eq_keys, base = Array::get(flat_bases, at = i))
       },
       None => ()
     }
@@ -407,9 +426,13 @@ export fn rebind_checked_lowering(path: String, fingerprint: String) -> Bool {
   match checked_lowering_by_fingerprint(fingerprint) {
     Some((offsets, eq_offs, eq_keys)) => {
       let source = module_typed_lowering_source_for_fp(fingerprint)
+      let cfg = module_typed_lowering_cfg_for_fp(fingerprint)
       record_checked_lowering(path = path, fingerprint = fingerprint, offsets = offsets, eq_offs = eq_offs, eq_keys = eq_keys)
       match source {
-        Some(text) => bind_checked_lowering_source(path = path, fingerprint = fingerprint, source = text),
+        Some(text) => match cfg {
+          Some(identity) => bind_checked_lowering_context(path = path, fingerprint = fingerprint, source = text, cfg_identity = identity),
+          None => bind_checked_lowering_source(path = path, fingerprint = fingerprint, source = text)
+        },
         None => ()
       }
       true
@@ -432,5 +455,152 @@ export fn ensure_checked_lowering_for_source(path: String, fingerprint: String, 
     true
   } else {
     false
+  }
+}
+
+/// Accepting callers have already validated this fingerprint for source/cfg.
+export fn ensure_checked_lowering_for_source_in_context(path: String, fingerprint: String, source: String, cfg_identity: String) -> Bool {
+  if rebind_checked_lowering(path = path, fingerprint = fingerprint) {
+    bind_checked_lowering_context(path = path, fingerprint = fingerprint, source = source, cfg_identity = cfg_identity)
+    true
+  } else {
+    false
+  }
+}
+
+struct OwnedLoweringRow {
+  path: String;
+  source: String;
+  fingerprint: String;
+  offsets: Array[Int];
+  eq_offs: Array[Int];
+  eq_keys: Array[String]
+}
+
+/// Owned copies of accepted source-bound lowering rows for one target context.
+/// The contract hides the constructor; queries never expose retained arrays.
+export enum CheckedLoweringInputs {
+  CheckedLoweringInputs(String, Array[OwnedLoweringRow])
+}
+
+/// Capture only exact, configured publications. A stale/missing row is an
+/// error, not an empty complete channel. Strings are immutable; arrays copy.
+export fn capture_checked_lowering_inputs(requests: Array[(String, String, String)], cfg_identity: String) -> CheckedLoweringInputs with Exception {
+  let rows: Array[OwnedLoweringRow] = Array::with_capacity(Array::length(requests))
+  for request in requests {
+    let (path, source, fingerprint) = request
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(module_typed_lowering_memo_paths) && !found {
+      if Array::get(module_typed_lowering_memo_paths, at = i) == path && Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint && Array::get(module_typed_lowering_memo_sources, at = i) == Some(source) && Array::get(module_typed_lowering_memo_cfgs, at = i) == Some(cfg_identity) {
+        let offsets = Array::get(module_typed_lowering_memo_offsets, at = i)
+        let eq_offs = Array::get(module_typed_lowering_memo_eq_offs, at = i)
+        let eq_keys = Array::get(module_typed_lowering_memo_eq_keys, at = i)
+        if Array::length(eq_offs) != Array::length(eq_keys) {
+          throw("recheck '\{path}' before capturing lowering: mismatched equality rows")
+        }
+        Array::push(rows, value = OwnedLoweringRow::{
+          path,
+          source,
+          fingerprint,
+          offsets: Array::slice(offsets, start = 0, end = Array::length(offsets)),
+          eq_offs: Array::slice(eq_offs, start = 0, end = Array::length(eq_offs)),
+          eq_keys: Array::slice(eq_keys, start = 0, end = Array::length(eq_keys))
+        })
+        found = true
+      }
+      i = i + 1
+    }
+    if !found {
+      throw("recheck '\{path}' with the selected target flags before capturing lowering")
+    }
+  }
+  CheckedLoweringInputs(cfg_identity, rows)
+}
+
+fn owned_lowering_row(inputs: CheckedLoweringInputs, path: String) -> OwnedLoweringRow with Exception {
+  match inputs {
+    CheckedLoweringInputs(_, rows) => {
+      for row in rows {
+        if row.path == path {
+          return row
+        }
+      }
+      throw("check '\{path}' before merging: no owned lowering input")
+    }
+  }
+}
+
+/// Validate the target and every exact source before consuming any merge state.
+export fn CheckedLoweringInputs::validate(_ inputs: CheckedLoweringInputs, sources: Array[(String, String)], cfg_identity: String) -> Unit with Exception {
+  match inputs {
+    CheckedLoweringInputs(identity, _) => if identity != cfg_identity {
+      throw("capture lowering with the selected target flags before merging")
+    }
+  }
+  for source in sources {
+    let row = owned_lowering_row(inputs = inputs, path = source.0)
+    if row.source != source.1 {
+      throw("recheck '\{source.0}' before merging: source differs from its owned lowering input")
+    }
+  }
+  ()
+}
+
+/// Return a copy for an alias-clone consumer; never lend the retained array.
+export fn CheckedLoweringInputs::for_path(_ inputs: CheckedLoweringInputs, path: String) -> Array[Int] with Exception {
+  let row = owned_lowering_row(inputs = inputs, path = path)
+  Array::slice(row.offsets, start = 0, end = Array::length(row.offsets))
+}
+
+/// Union owned rows using the same tag-aware rebase as compatibility merging.
+export fn CheckedLoweringInputs::union_lowering(_ inputs: CheckedLoweringInputs, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets: Array[Int]) -> Array[Int] with Exception {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(flat_paths) {
+    let row = owned_lowering_row(inputs = inputs, path = Array::get(flat_paths, at = i))
+    append_lowering_rows_rebased(out = out, offsets = row.offsets, base = Array::get(flat_bases, at = i))
+    i = i + 1
+  }
+  for row in clone_float_offsets {
+    Array::push(out, value = row)
+  }
+  out
+}
+
+/// Rebase typed equality rows through this merge's private-name mapping.
+export fn CheckedLoweringInputs::union_eq_rows(_ inputs: CheckedLoweringInputs, flat_paths: Array[String], flat_bases: Array[Int]) -> (Array[Int], Array[String]) with Exception {
+  let out_offs: Array[Int] = []
+  let out_keys: Array[String] = []
+  let mut i = 0
+  while i < Array::length(flat_paths) {
+    let path = Array::get(flat_paths, at = i)
+    let row = owned_lowering_row(inputs = inputs, path = path)
+    append_eq_rows_rebased(out_offs = out_offs, out_keys = out_keys, path = path, eq_offs = row.eq_offs, eq_keys = row.eq_keys, base = Array::get(flat_bases, at = i))
+    i = i + 1
+  }
+  (out_offs, out_keys)
+}
+
+fn append_lowering_rows_rebased(out: Array[Int], offsets: Array[Int], base: Int) -> Unit {
+  let mut i = 0
+  while i < Array::length(offsets) {
+    Array::push(out, value = resolved_callee_row_rebase(row = Array::get(offsets, at = i), base = base))
+    i = i + 1
+  }
+}
+
+fn append_eq_rows_rebased(out_offs: Array[Int], out_keys: Array[String], path: String, eq_offs: Array[Int], eq_keys: Array[String], base: Int) -> Unit {
+  let rename = namespace_private_renamer_for_path(path)
+  let mut j = 0
+  while j < Array::length(eq_offs) {
+    match impl_target_from_key(Array::get(eq_keys, at = j)) {
+      Some(te) => {
+        Array::push(out_offs, value = Array::get(eq_offs, at = j) + base)
+        Array::push(out_keys, value = impl_target_key(eq_key_rename_ty(rename = rename, te = te)))
+      },
+      None => ()
+    }
+    j = j + 1
   }
 }

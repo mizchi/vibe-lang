@@ -1,5 +1,5 @@
 import @vibe/compiler/config {
-  Config, TargetCfg, target_cfg_ambient, target_cfg_capture
+  Config, TargetCfg, target_cfg_ambient, target_cfg_capture, target_cfg_identity
 }
 import @vibe/compiler/syntax {
   print_program
@@ -64,11 +64,11 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/checker/engine {
-  engine_parse_program_with_path_with_config
+  engine_parse_program_with_lowering, engine_parse_program_with_path_with_config
 }
 
 import @vibe/checker/lowering {
-  checked_lowering_for_path, split_checked_lowering, union_checked_eq_rows, union_checked_lowering_with_clones
+  CheckedLoweringInputs, checked_lowering_for_path, split_checked_lowering, union_checked_eq_rows, union_checked_lowering_with_clones
 }
 
 fn string_array_contains(items: Array[String], target: String) -> Bool {
@@ -99,10 +99,17 @@ fn lookup_source_stmts_by_path(sources: Array[(String, String)], source_stmts: A
   found
 }
 
+fn merge_lowering_for_path(inputs: Option[CheckedLoweringInputs], path: String) -> Option[Array[Int]] with Exception {
+  match inputs {
+    Some(owned) => Some(CheckedLoweringInputs::for_path(owned, path = path)),
+    None => checked_lowering_for_path(path)
+  }
+}
+
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int]) -> Array[String] with Exception {
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], lowering_inputs: Option[CheckedLoweringInputs]) -> Array[String] with Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -141,7 +148,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
                   // clone's delta; entries for provider statements the clone
                   // does not contain match no call node and stay inert.
                   match lookup_flat_base(flat_paths = flat_paths, flat_bases = flat_bases, path = resolved) {
-                    Some(provider_base) => match checked_lowering_for_path(resolved) {
+                    Some(provider_base) => match merge_lowering_for_path(inputs = lowering_inputs, path = resolved) {
                       Some(provider_offsets) => {
                         let mut k = 0
                         while k < Array::length(provider_offsets) {
@@ -201,14 +208,17 @@ fn lookup_flat_base(flat_paths: Array[String], flat_bases: Array[Int], path: Str
 /// program (the merge output of one file depends on the export surfaces of ALL
 /// files: ambiguous exported names are renamed at their defs and at importing
 /// files' references).
-fn parse_sources_for_merge(_ sources: Array[(String, String)], cfg: TargetCfg) -> (Array[String], Array[Array[Stmt]]) with Exception {
+fn parse_sources_for_merge(_ sources: Array[(String, String)], cfg: TargetCfg, lowering_inputs: Option[CheckedLoweringInputs]) -> (Array[String], Array[Array[Stmt]]) with Exception {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let mut si = 0
   while si < Array::length(sources) {
     let (path, source) = Array::get(sources, at = si)
     Array::push(file_paths, value = path)
-    Array::push(file_stmts, value = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg))
+    Array::push(file_stmts, value = match lowering_inputs {
+      Some(inputs) => engine_parse_program_with_lowering(path = path, source = source, cfg = cfg, rows = CheckedLoweringInputs::for_path(inputs, path = path)),
+      None => engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg)
+    })
     si = si + 1
   }
   (file_paths, file_stmts)
@@ -218,7 +228,7 @@ fn parse_sources_for_merge(_ sources: Array[(String, String)], cfg: TargetCfg) -
 /// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
 /// (entry keeps its private names), and `plan`/`sources` drive the export-name
 /// rewriting and the collision-def fallback.
-fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], units: Array[LinkedUnit], shipped_default_paths: Array[String]) -> Unit with Exception {
+fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], units: Array[LinkedUnit], shipped_default_paths: Array[String], lowering_inputs: Option[CheckedLoweringInputs]) -> Unit with Exception {
   let unit_start = Array::length(merged)
   // Preserve the proof that an optimized trait namespace came from the
   // standard module. Desugaring consumes this source-local marker before
@@ -252,7 +262,7 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
     // collision local with no value to clone (a type, a constructor) keeps
     // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
     // also arrived through a re-export of the same module.
-    let skipped_locals = append_import_alias_collision_defs_from_sources(merged = merged, current_path = path, stmts = stmts, sources = sources, source_stmts = source_stmts, plan = plan, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = fallback_clone_offset_span, excluded_locals = import_value_rename_locals(import_renames), flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets_out = clone_float_offsets_out)
+    let skipped_locals = append_import_alias_collision_defs_from_sources(merged = merged, current_path = path, stmts = stmts, sources = sources, source_stmts = source_stmts, plan = plan, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = fallback_clone_offset_span, excluded_locals = import_value_rename_locals(import_renames), flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets_out = clone_float_offsets_out, lowering_inputs = lowering_inputs)
     append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = namespaced_stmts, skipped_locals = skipped_locals, extra_renames = import_renames)
   } else {
     append_non_import_stmts_without_alias_rewrite(merged = merged, stmts = namespaced_stmts)
@@ -311,14 +321,18 @@ fn shipped_core_default_paths(paths: Array[String], stmts_list: Array[Array[Stmt
 /// consume it. Counts and statement IDs describe every flat source seat,
 /// including repeated paths and empty files; clone bodies belong to their
 /// importing source's contribution.
-fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], stmt_file_id_out: Array[Int], collect_stmt_ids: Bool, file_fps_out: Array[String], file_counts_out: Array[Int], collect_file_counts: Bool, cfg: TargetCfg) -> Array[Stmt] with Exception {
+fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], stmt_file_id_out: Array[Int], collect_stmt_ids: Bool, file_fps_out: Array[String], file_counts_out: Array[Int], collect_file_counts: Bool, cfg: TargetCfg, lowering_inputs: Option[CheckedLoweringInputs]) -> Array[Stmt] with Exception {
+  let flat_sources = flatten_group_sources(source_groups)
+  match lowering_inputs {
+    Some(inputs) => CheckedLoweringInputs::validate(inputs, sources = flat_sources, cfg_identity = target_cfg_identity(cfg)),
+    None => ()
+  }
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
   // #716: the plan spans ALL groups (imports cross group boundaries), so the
   // flat source list is parsed once here and reused per group.
-  let flat_sources = flatten_group_sources(source_groups)
-  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources, cfg = cfg)
+  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources, cfg = cfg, lowering_inputs = lowering_inputs)
   let fallback_clone_offset_delta = [0]
   // #3090: record the offset space this merge builds, and only a DISJOINT one:
   // without the rebase every file's offsets start at 0, so a merged offset
@@ -386,7 +400,7 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
       // call-result table is keyed by those offsets, so merging files without
       // rebasing lets one file's Double call classify another file's Int call.
       // Shift before the namespace/import rewrites; they preserve locations.
-      append_merged_stmts_for_file(merged = merged, path = path, stmts = stmts, is_entry_source = flat_idx == flat_total - 1, plan = plan, sources = flat_sources, source_stmts = located_file_stmts, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = fallback_clone_offset_span, flat_paths = flat_paths_out, flat_bases = flat_bases_out, clone_float_offsets_out = clone_float_offsets_out, units = units, shipped_default_paths = shipped_default_paths)
+      append_merged_stmts_for_file(merged = merged, path = path, stmts = stmts, is_entry_source = flat_idx == flat_total - 1, plan = plan, sources = flat_sources, source_stmts = located_file_stmts, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = fallback_clone_offset_span, flat_paths = flat_paths_out, flat_bases = flat_bases_out, clone_float_offsets_out = clone_float_offsets_out, units = units, shipped_default_paths = shipped_default_paths, lowering_inputs = lowering_inputs)
       // Everything this file contributed, including the alias-collision
       // fallback definitions it pulls in from providers, belongs to it: they
       // are emitted into this file's region and rewritten against its imports.
@@ -421,7 +435,7 @@ export fn build_grouped_merged_stmts(_ source_groups: Array[(String, Array[(Stri
 /// Typed lowering, location metadata and observation sinks retain their owners.
 export fn build_grouped_merged_stmts_with_config(_ source_groups: Array[(String, Array[(String, String)])], cfg: TargetCfg) -> Array[Stmt] with Exception {
   build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = false, flat_paths_out = array_empty(), flat_bases_out = array_empty(), clone_float_offsets_out = array_empty(), stmt_file_id_out = array_empty(), collect_stmt_ids = false, file_fps_out = [
-  ], file_counts_out = [], collect_file_counts = false, cfg = cfg)
+  ], file_counts_out = [], collect_file_counts = false, cfg = cfg, lowering_inputs = None)
 }
 
 /// Capture target flags once and return the selected linked source as text.
@@ -432,7 +446,7 @@ export fn build_grouped_merged_source_configured(_ source_groups: Array[(String,
 
 export fn build_grouped_merged_stmts_gc(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
   build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = array_empty(), flat_bases_out = array_empty(), clone_float_offsets_out = array_empty(), stmt_file_id_out = array_empty(), collect_stmt_ids = false, file_fps_out = [
-  ], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient())
+  ], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient(), lowering_inputs = None)
 }
 
 /// #2391: the merge every offsets-consuming linear FS lane shares -- each file
@@ -448,24 +462,37 @@ export fn build_grouped_merged_stmts_gc(_ source_groups: Array[(String, Array[(S
 /// both sides compute the anchor identically by construction.
 export fn merged_stmts_and_offsets(_ source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Env + Exception {
   merged_stmts_and_offsets_impl(source_groups = source_groups, stmt_file_id_out = [
-  ], collect_stmt_ids = false)
+  ], collect_stmt_ids = false, cfg = target_cfg_ambient(), lowering_inputs = None)
 }
 
 /// The typed merge retaining one owner ID per merged statement. The String
 /// binop rewrite preserves the count, so the IDs remain aligned afterwards.
 export fn merged_stmts_and_offsets_prov(source_groups: Array[(String, Array[(String, String)])], stmt_file_id_out: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Env + Exception {
-  merged_stmts_and_offsets_impl(source_groups = source_groups, stmt_file_id_out = stmt_file_id_out, collect_stmt_ids = true)
+  merged_stmts_and_offsets_impl(source_groups = source_groups, stmt_file_id_out = stmt_file_id_out, collect_stmt_ids = true, cfg = target_cfg_ambient(), lowering_inputs = None)
 }
 
-fn merged_stmts_and_offsets_impl(source_groups: Array[(String, Array[(String, String)])], stmt_file_id_out: Array[Int], collect_stmt_ids: Bool) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Env + Exception {
+/// Merge typed products captured for these exact sources and target flags.
+/// Namespace and location metadata remain owned by the serial merge phase.
+export fn merged_stmts_and_offsets_with_config(source_groups: Array[(String, Array[(String, String)])], cfg: TargetCfg, inputs: CheckedLoweringInputs) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+  merged_stmts_and_offsets_impl(source_groups = source_groups, stmt_file_id_out = [
+  ], collect_stmt_ids = false, cfg = cfg, lowering_inputs = Some(inputs))
+}
+
+fn merged_stmts_and_offsets_impl(source_groups: Array[(String, Array[(String, String)])], stmt_file_id_out: Array[Int], collect_stmt_ids: Bool, cfg: TargetCfg, lowering_inputs: Option[CheckedLoweringInputs]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
   let merged = build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = flat_paths, flat_bases_out = flat_bases, clone_float_offsets_out = clone_float_offsets, stmt_file_id_out = stmt_file_id_out, collect_stmt_ids = collect_stmt_ids, file_fps_out = [
-  ], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient())
-  let (floats, rels, pluses, int_renders, bool_renders) = split_checked_lowering(union_checked_lowering_with_clones(flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets = clone_float_offsets))
+  ], file_counts_out = [], collect_file_counts = false, cfg = cfg, lowering_inputs = lowering_inputs)
+  let (floats, rels, pluses, int_renders, bool_renders) = split_checked_lowering(match lowering_inputs {
+    Some(inputs) => CheckedLoweringInputs::union_lowering(inputs, flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets = clone_float_offsets),
+    None => union_checked_lowering_with_clones(flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets = clone_float_offsets)
+  })
   // #2441: the typed-`==` rows ride the same disjoint offset spaces.
-  let (eq_offs, eq_keys) = union_checked_eq_rows(flat_paths = flat_paths, flat_bases = flat_bases)
+  let (eq_offs, eq_keys) = match lowering_inputs {
+    Some(inputs) => CheckedLoweringInputs::union_eq_rows(inputs, flat_paths = flat_paths, flat_bases = flat_bases),
+    None => union_checked_eq_rows(flat_paths = flat_paths, flat_bases = flat_bases)
+  }
   (rewrite_string_binops_stmts(stmts = merged, rels = rels, pluses = pluses, anchor = typed_lowering_binop_anchor), floats, int_renders, bool_renders, eq_offs, eq_keys)
 }
 
@@ -546,7 +573,7 @@ fn file_newline_offsets(_ src: String) -> Array[Int] {
 export fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with Env + Exception {
   let stmt_file_id = array_empty()
   let merged = build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = flat_paths_out, flat_bases_out = flat_bases_out, clone_float_offsets_out = clone_float_offsets_out, stmt_file_id_out = stmt_file_id, collect_stmt_ids = true, file_fps_out = [
-  ], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient())
+  ], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient(), lowering_inputs = None)
   let flat_sources = flatten_group_sources(source_groups)
   let files = array_empty()
   let file_nls = array_empty()
@@ -581,7 +608,7 @@ export fn build_grouped_merged_stmts_counted(_ source_groups: Array[(String, Arr
   let bases: Array[Int] = []
   let clones: Array[Int] = []
   let merged = build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = paths, flat_bases_out = bases, clone_float_offsets_out = clones, stmt_file_id_out = [
-  ], collect_stmt_ids = false, file_fps_out = fps, file_counts_out = counts, collect_file_counts = true, cfg = target_cfg_ambient())
+  ], collect_stmt_ids = false, file_fps_out = fps, file_counts_out = counts, collect_file_counts = true, cfg = target_cfg_ambient(), lowering_inputs = None)
   (merged, paths, fps, counts, bases, clones)
 }
 
@@ -635,14 +662,14 @@ export fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[I
 /// the caller to rebase its own typed-lowering rows.
 export fn build_inline_merged_stmts(sources: Array[(String, String)], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> Array[Stmt] with Exception {
   build_grouped_merged_stmts_impl(source_groups = [("", sources)], disjoint_offset_spaces = true, flat_paths_out = flat_paths_out, flat_bases_out = flat_bases_out, clone_float_offsets_out = clone_float_offsets_out, stmt_file_id_out = [
-  ], collect_stmt_ids = false, file_fps_out = [], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient())
+  ], collect_stmt_ids = false, file_fps_out = [], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient(), lowering_inputs = None)
 }
 
 /// Located merge without statement provenance, retaining the shared file bases.
 export fn build_grouped_merged_stmts_with_offsets(source_groups: Array[(String, Array[(String, String)])], flat_paths: Array[String], flat_bases: Array[Int]) -> Array[Stmt] with Env + Exception {
   build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = flat_paths, flat_bases_out = flat_bases, clone_float_offsets_out = [
   ], stmt_file_id_out = [], collect_stmt_ids = false, file_fps_out = [], file_counts_out = [
-  ], collect_file_counts = false, cfg = target_cfg_ambient())
+  ], collect_file_counts = false, cfg = target_cfg_ambient(), lowering_inputs = None)
 }
 
 /// #1872 boundary 4: the in-db artifact fingerprint of a merged or module
