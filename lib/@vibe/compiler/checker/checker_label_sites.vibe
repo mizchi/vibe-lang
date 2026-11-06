@@ -189,15 +189,17 @@ fn args_have_positional(_ args: Array[Expr]) -> Bool {
 /// (`checker_call_header_is_declaration`). A call through a local lambda or a
 /// value stays positional. The message lists every label the call is missing,
 /// in written order.
-export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
+/// `ident_len` is the length of the token at `ident_offset` -- the written
+/// method name of `p.bump(..)`, not the resolved `P::bump` (Codex on #3881).
+export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, ident_len: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
   if Array::get(required_labels_suspended, at = 0) || offset < 0 || ident_offset < 0 || !args_have_positional(args) || checker_call_header_is_probe() {
     ()
   } else {
     match required_builtin_labels(env = env, name = name, ident_offset = ident_offset) {
-      Some(names) => report_required_labels(name = name, ident_offset = ident_offset, args = args, names = names, method_call = method_call, builtin = true, errors = errors),
+      Some(names) => report_required_labels(name = name, ident_offset = ident_offset, ident_len = ident_len, args = args, names = names, method_call = method_call, builtin = true, errors = errors),
       None => if checker_call_header_is_declaration(env = env, name = name) {
         match checker_call_header_names(env = env, name = name) {
-          Some(names) => report_required_labels(name = name, ident_offset = ident_offset, args = args, names = names, method_call = method_call, builtin = false, errors = errors),
+          Some(names) => report_required_labels(name = name, ident_offset = ident_offset, ident_len = ident_len, args = args, names = names, method_call = method_call, builtin = false, errors = errors),
           None => ()
         }
       } else {
@@ -211,7 +213,7 @@ export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset
 /// that labels some arguments and not others is reported as mixing: either
 /// says what to fix first. A method call's receiver fills the first name, so
 /// its written arguments start one slot in.
-fn report_required_labels(name: String, ident_offset: Int, args: Array[Expr], names: Array[String], method_call: Bool, builtin: Bool, errors: Array[String]) -> Unit {
+fn report_required_labels(name: String, ident_offset: Int, ident_len: Int, args: Array[Expr], names: Array[String], method_call: Bool, builtin: Bool, errors: Array[String]) -> Unit {
   let skip = if method_call && Array::length(names) > 0 {
     1
   } else {
@@ -222,7 +224,7 @@ fn report_required_labels(name: String, ident_offset: Int, args: Array[Expr], na
   } else {
     let message = required_labels_message_from(name = name, args = args, names = names, skip = skip)
     if message != "" {
-      Array::push(errors, value = message + off_marker_len(off = ident_offset, len = String::length(name)))
+      Array::push(errors, value = message + off_marker_len(off = ident_offset, len = ident_len))
     } else {
       ()
     }

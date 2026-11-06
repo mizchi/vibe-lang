@@ -200,3 +200,13 @@ test "a printed program's `_` slots do not outlive it" {
   let shown = print_stmt(Array::get(other, at = 0))
   inspect(String::contains(shown, needle = "_ x"), content = "false")
 }
+
+test "a method call's missing-label span is the written method name" {
+  // Codex on #3881: the span was sized by the resolved `P::bump`, so it ran
+  // past `bump` into the arguments.
+  let source = "struct P {\n  v: Int\n}\nfn P::bump(self: P, n: Int) -> Int {\n  self.v + n\n}\nfn main() -> Int {\n  let p = P::{ v: 1 }\n  p.bump(1)\n}\n"
+  let start = String::index_of(source, needle = "p.bump(1)") + 2
+  let message = first_error(source)
+  inspect(String::contains(message, needle = "label the arguments of P::bump: write `n = ` before argument 1"), content = "true")
+  inspect(String::contains(message, needle = "[@off=\{start}:\{start + 4}]"), content = "true")
+}
