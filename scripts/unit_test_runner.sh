@@ -63,6 +63,10 @@ EXCLUDE_PATTERNS=(
   # runs node, which refuses to instantiate one. scripts/test_wasm_import_gate.sh
   # runs it on viberun with `vibe test`, on both RC lanes.
   '^fixtures/wasm_import/narrow_import_test\.vibe$'
+  # #3719: imports z3_wasi.wasm, which scripts/build_z3_wasi.sh builds (about
+  # 25 minutes) and which is not committed, so it is absent here. The CI job
+  # `prove-wasm` builds or restores it and runs this file with `vibe test`.
+  '^lib/@vibex/z3_wasi/z3_wasi_test\.vibe$'
   # wasi p3 http client: currently failing, under active work on a separate
   # branch. Remove once that lands.
   '^fixtures/runtime/http_p3_client_test\.vibe$'
