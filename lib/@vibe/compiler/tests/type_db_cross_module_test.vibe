@@ -831,7 +831,7 @@ fn projected_checked_env(source: String, path: String, deps: Array[String], full
 
 test "imported helpers retain region dependency contracts" {
   let dep_source = "export struct Slot { callback: () -> Array[Int] }\nexport fn unwrap(slot: Slot) -> () -> Array[Int] {\n  let callback = slot.callback\n  callback\n}"
-  let main_source = "import ./dep.vibe { Slot, unwrap }\nlet escaped = region r {\n  let values = MutList::empty(r)\n  unwrap(Slot::{ callback: () -> Array[Int] { MutList::to_array(values) } })\n}\nlet _ = escaped()"
+  let main_source = "import ./dep.vibe { Slot, unwrap }\nlet escaped = region r {\n  let values = MutList::empty(r)\n  unwrap(slot = Slot::{ callback: () -> Array[Int] { MutList::to_array(values) } })\n}\nlet _ = escaped()"
   let message = typecheck_db_pair_error(dep_src = dep_source, main_src = main_source)
   assert(String::contains(message, needle = "region escapes its scope"))
 }
@@ -1083,7 +1083,7 @@ test "projected checker rejects two imports binding the same local" {
 /// quietly substituted function of the same shape.
 test "typedb walk resolves an aliased import to the import, not the local name it shadows (#2915)" {
   let dep_src = "export fn f(a: Int, b: Int, c: Int) -> Int {\n  a + b + c\n}"
-  let main_src = "import ./dep.vibe { f as nf }\nfn f(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}"
+  let main_src = "import ./dep.vibe { f as nf }\nfn f(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a = a, b = a, c = a)\n}"
   // Before the fix: "function arity mismatch for nf: expected 2 args, got 3".
   inspect(typecheck_db_pair_error(dep_src = dep_src, main_src = main_src), "")
 }
@@ -1094,7 +1094,7 @@ test "typedb walk resolves an aliased import to the import, not the local name i
 /// errors.
 test "typedb walk: a non-colliding local was never affected (#2915 control)" {
   let dep_src = "export fn f(a: Int, b: Int, c: Int) -> Int {\n  a + b + c\n}"
-  let main_src = "import ./dep.vibe { f as nf }\nfn g(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}"
+  let main_src = "import ./dep.vibe { f as nf }\nfn g(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a = a, b = a, c = a)\n}"
   inspect(typecheck_db_pair_error(dep_src = dep_src, main_src = main_src), "")
 }
 
@@ -1429,7 +1429,7 @@ test "#2357: imported trait namespaces reject conflicting local operations" {
   let dep_path = "workspace/dep.vibe"
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
   let dep_env = checked_test_env(dep_source)
-  let source = "import ./dep.vibe { trait Measurable }\nfn Measurable::measure(_value: Int) -> Int { 0 }\nlet answer = Measurable::measure(42)"
+  let source = "import ./dep.vibe { trait Measurable }\nfn Measurable::measure(_value: Int) -> Int { 0 }\nlet answer = Measurable::measure(_value = 42)"
   let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
   ], full_cache = [(dep_path, dep_env)])
@@ -1444,7 +1444,7 @@ test "#2357: aliased trait namespaces reject conflicting local operations" {
   let dep_path = "workspace/dep.vibe"
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
   let dep_env = checked_test_env(dep_source)
-  let source = "import ./dep.vibe { trait Measurable as Metric }\nfn Metric::measure(_value: Int) -> Int { 0 }\nlet answer = Metric::measure(42)"
+  let source = "import ./dep.vibe { trait Measurable as Metric }\nfn Metric::measure(_value: Int) -> Int { 0 }\nlet answer = Metric::measure(_value = 42)"
   let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
   ], full_cache = [(dep_path, dep_env)])
@@ -1530,7 +1530,7 @@ test "db_typecheck_fs: missing imported trait impl fails cold and with a warm de
   let dep_path = "/tmp/vibe_compiler_trait_authority_missing_impl_dep.vibe"
   let main_path = "/tmp/vibe_compiler_trait_authority_missing_impl_main.vibe"
   let dep_src = "export trait Required\nexport fn accept[T: Required](x: T) -> Int { let _ = x; 1 }"
-  let main_src = "import ./vibe_compiler_trait_authority_missing_impl_dep.vibe { trait Required, accept }\nexport let result = accept(1)"
+  let main_src = "import ./vibe_compiler_trait_authority_missing_impl_dep.vibe { trait Required, accept }\nexport let result = accept(x = 1)"
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
@@ -1579,7 +1579,7 @@ test "db_typecheck_fs: selected generic impl bounds retain authority cold and wa
   let dep_path = "/tmp/vibe_compiler_trait_authority_generic_dep.vibe"
   let main_path = "/tmp/vibe_compiler_trait_authority_generic_main.vibe"
   let dep_src = "export trait Marker { mark(Self) -> Int }\ntrait Other\nimpl Other for Int\nimpl [T: Other] Marker for Array[T] { mark(self) -> Int { Array::length(self) } }\nexport fn accept[T: Marker](x: T) -> Int { let _ = x; 1 }"
-  let main_src = "import ./vibe_compiler_trait_authority_generic_dep.vibe { trait Marker, accept }\nexport let result = accept([1])"
+  let main_src = "import ./vibe_compiler_trait_authority_generic_dep.vibe { trait Marker, accept }\nexport let result = accept(x = [1])"
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
@@ -1600,7 +1600,7 @@ test "db_typecheck_fs: selected trait alias publishes only its projected authori
   let dep_path = "/tmp/vibe_compiler_trait_authority_selected_dep.vibe"
   let main_path = "/tmp/vibe_compiler_trait_authority_selected_main.vibe"
   let dep_src = "export trait Marker\nimpl Marker for Int\nexport fn accept[T: Marker](x: T) -> Int { let _ = x; 1 }"
-  let main_src = "import ./vibe_compiler_trait_authority_selected_dep.vibe { accept, trait Marker as Local }\nexport { Local }\nexport let result = accept(1)"
+  let main_src = "import ./vibe_compiler_trait_authority_selected_dep.vibe { accept, trait Marker as Local }\nexport { Local }\nexport let result = accept(x = 1)"
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
@@ -1695,7 +1695,7 @@ test "db_typecheck_fs: one trait reached through a re-export module is not a con
   let main_path = "/tmp/vibe_compiler_trait_reexport_main.vibe"
   let base_src = "export trait Marker { tag(Self) -> Int }\nimpl Marker for Int { tag(self) -> Int { 1 } }"
   let facade_src = "import ./vibe_compiler_trait_reexport_base.vibe { trait Marker }\nexport { Marker }"
-  let main_src = "import ./vibe_compiler_trait_reexport_base.vibe { trait Marker }\nimport ./vibe_compiler_trait_reexport_facade.vibe { trait Marker }\nexport fn use_it[T: Marker](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(1)"
+  let main_src = "import ./vibe_compiler_trait_reexport_base.vibe { trait Marker }\nimport ./vibe_compiler_trait_reexport_facade.vibe { trait Marker }\nexport fn use_it[T: Marker](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(x = 1)"
   Fs::write_bytes(base_path, bytes = string_to_bytes(base_src))
   Fs::write_bytes(facade_path, bytes = string_to_bytes(facade_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
@@ -1726,7 +1726,7 @@ test "db_typecheck_fs: a re-export that aliases the supertrait is still the same
   let main_path = "/tmp/vibe_compiler_trait_reexport_super_alias_main.vibe"
   let base_src = "export trait Parent { pa(Self) -> Int }\nexport trait Child: Parent { ch(Self) -> Int }\nimpl Parent for Int { pa(self) -> Int { 1 } }\nimpl Child for Int { ch(self) -> Int { 2 } }"
   let facade_src = "import ./vibe_compiler_trait_reexport_super_alias_base.vibe { trait Parent as P, trait Child }\nexport { Child }"
-  let main_src = "import ./vibe_compiler_trait_reexport_super_alias_base.vibe { trait Child }\nimport ./vibe_compiler_trait_reexport_super_alias_facade.vibe { trait Child }\nexport fn use_it[T: Child](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(1)"
+  let main_src = "import ./vibe_compiler_trait_reexport_super_alias_base.vibe { trait Child }\nimport ./vibe_compiler_trait_reexport_super_alias_facade.vibe { trait Child }\nexport fn use_it[T: Child](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(x = 1)"
   Fs::write_bytes(base_path, bytes = string_to_bytes(base_src))
   Fs::write_bytes(facade_path, bytes = string_to_bytes(facade_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
@@ -1966,8 +1966,8 @@ test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)
   let dir = "/tmp/vibe_compiler_export_surface_private"
   let dep_path = String::concat(dir, "/dep.vibe")
   let main_path = String::concat(dir, "/main.vibe")
-  let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x)\n}\n"
-  let main_src = "import ./dep.vibe { private_fn }\nexport let m = private_fn(1)\n"
+  let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x = x)\n}\n"
+  let main_src = "import ./dep.vibe { private_fn }\nexport let m = private_fn(x = 1)\n"
   Fs::mkdir_p(dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
@@ -1984,8 +1984,8 @@ test "db_typecheck_fs: the exported name from the same module imports cleanly (#
   let dir = "/tmp/vibe_compiler_export_surface_public"
   let dep_path = String::concat(dir, "/dep.vibe")
   let main_path = String::concat(dir, "/main.vibe")
-  let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x)\n}\n"
-  let main_src = "import ./dep.vibe { public_fn }\nexport let m = public_fn(1)\n"
+  let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x = x)\n}\n"
+  let main_src = "import ./dep.vibe { public_fn }\nexport let m = public_fn(x = 1)\n"
   Fs::mkdir_p(dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
@@ -2004,8 +2004,8 @@ test "db_typecheck_fs: a pass-through import is not on the middleman's surface (
   let mid_path = String::concat(dir, "/mid.vibe")
   let main_path = String::concat(dir, "/main.vibe")
   let dep_src = "export fn public_fn(x: Int) -> Int {\n  x + 1\n}\n"
-  let mid_src = "import ./dep.vibe { public_fn }\n\nexport fn mid_fn(x: Int) -> Int {\n  public_fn(x)\n}\n"
-  let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(1)\n"
+  let mid_src = "import ./dep.vibe { public_fn }\n\nexport fn mid_fn(x: Int) -> Int {\n  public_fn(x = x)\n}\n"
+  let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(x = 1)\n"
   Fs::mkdir_p(dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
@@ -2034,7 +2034,7 @@ test "db_typecheck_fs: a local parameter shadows a same-named import (#1583)" {
   let dep_path = String::concat(dir, "/dep.vibe")
   let main_path = String::concat(dir, "/main.vibe")
   let dep_src = "export fn helper(env: Int) -> Int {\n  env + 100\n}\n"
-  let main_src = "import ./dep.vibe { helper }\n\nfn use_it(helper: Int) -> Int {\n  helper + 1\n}\n\nexport let m = use_it(5) + helper(1)\n"
+  let main_src = "import ./dep.vibe { helper }\n\nfn use_it(helper: Int) -> Int {\n  helper + 1\n}\n\nexport let m = use_it(helper = 5) + helper(env = 1)\n"
   Fs::mkdir_p(dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
@@ -2054,7 +2054,7 @@ test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 c
   let main_path = String::concat(dir, "/main.vibe")
   let dep_src = "export fn public_fn(x: Int) -> Int {\n  x + 1\n}\n"
   let mid_src = "export ./dep.vibe { public_fn }\n"
-  let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(1)\n"
+  let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(x = 1)\n"
   Fs::mkdir_p(dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
@@ -2079,7 +2079,7 @@ test "db_typecheck_fs: an aliased re-export stays importable by a consumer (#228
   let main_path = String::concat(dir, "/main.vibe")
   let dep_src = "export fn public_fn(x: Int) -> Int {\n  x + 1\n}\n"
   let mid_src = "export ./dep.vibe { public_fn as forwarded }\n"
-  let main_src = "import ./mid.vibe { forwarded }\nexport let m = forwarded(1)\n"
+  let main_src = "import ./mid.vibe { forwarded }\nexport let m = forwarded(x = 1)\n"
   Fs::mkdir_p(dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
   Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
@@ -2301,7 +2301,7 @@ test "db_typecheck: empty local dependencies cannot grant ambient authority (#15
 
 test "db_typecheck_fs: @vibe/fs contract explicitly grants Fs authority (#1549)" {
   let path = "lib/@vibe/compiler/tests/type_db_package_fs_authority.vibe"
-  let source = "import @vibe/fs { Fs }\nexport fn write(path: String) -> Unit with Fs { perform Fs::WriteFile(path, \"ok\") }\n"
+  let source = "import @vibe/fs { Fs }\nexport fn write(path: String) -> Unit with Fs { perform Fs::WriteFile(path, contents = \"ok\") }\n"
   let contract_path = "lib/@vibe/fs/index.vpkg"
   let contract_source = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
   let fs_path = "lib/@vibe/fs/fs.vibe"

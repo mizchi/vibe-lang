@@ -80,8 +80,14 @@ fn program_declares(name: String, argc: Int) -> TypeEnv {
 /// What the checker answers for `name(0, 1, ..)` whose callee carries
 /// `callee_off`: the call's type, or the first diagnostic when there is one.
 fn call_answer(env: TypeEnv, name: String, argc: Int, callee_off: Int) -> String {
+  call_answer_args(env = env, name = name, args = int_args(argc), callee_off = callee_off)
+}
+
+/// `call_answer` with the arguments spelled out, for a call that must label
+/// its arguments the way the builtin declares them.
+fn call_answer_args(env: TypeEnv, name: String, args: Array[Expr], callee_off: Int) -> String {
   let errors: Array[String] = []
-  let (ty, s, _) = check_expr(expr = ECall(EIdent(name, callee_off), int_args(argc), 0, [
+  let (ty, s, _) = check_expr(expr = ECall(EIdent(name, callee_off), args, 0, [
   ]), env = env, defs = array_empty(), s = SubstEmpty, c = 0, errors = errors, tytab = array_empty())
   if Array::length(errors) > 0 {
     String::concat("error: ", Array::get(errors, at = 0))
@@ -175,21 +181,25 @@ test "#3179 a compiler-synthesized call still takes the builtin arm" {
 
 test "#3179 an unshadowed spelling still takes its builtin arm" {
   // With no binding of the program, `Array::get(0, 1)` is the builtin's call
-  // and its receiver is refused, as before.
-  assert(String::starts_with(call_answer(env = EnvEmpty, name = "Array::get", argc = 2, callee_off = 5), prefix = "error: argument type mismatch for Array::get"))
+  // and its receiver is refused, as before. The index carries its `at` label,
+  // so the refusal is about the receiver and not about a missing label.
+  assert(String::starts_with(call_answer_args(env = EnvEmpty, name = "Array::get", args = [
+    EInt(0),
+    ELabeledArg("at", "~", EInt(1))
+  ], callee_off = 5), prefix = "error: argument type mismatch for Array::get"))
 }
 
 test "#3179 the issue's program: the program's Array::get is typed String on the per-module lane" {
-  let bad = String::concat(own_array_get(), "fn f() -> Int {\n  let v = Array::get([1, 2], 0)\n  v + 1\n}\n")
+  let bad = String::concat(own_array_get(), "fn f() -> Int {\n  let v = Array::get(xs = [1, 2], i = 0)\n  v + 1\n}\n")
   assert(String::contains(diag_of(bad), needle = "type mismatch in '+'"))
-  let ok = String::concat(own_array_get(), "fn f() -> String {\n  Array::get([1, 2], 0)\n}\n")
+  let ok = String::concat(own_array_get(), "fn f() -> String {\n  Array::get(xs = [1, 2], i = 0)\n}\n")
   inspect(diag_of(ok), content = "")
 }
 
 test "#3179 the program's own Array::get charges its own row, not the builtin's" {
   // The effect pass already reads a program definition's row (#2107); the
   // call it charges is the same one the checker now types from that definition.
-  let src = "fn Array::get(xs: Array[Int], i: Int) -> String with Console {\n  println(\"own\")\n  let _ = xs\n  let _ = i\n  \"own\"\n}\n\nfn f() -> String {\n  Array::get([1, 2], 0)\n}\n"
+  let src = "fn Array::get(xs: Array[Int], i: Int) -> String with Console {\n  println(\"own\")\n  let _ = xs\n  let _ = i\n  \"own\"\n}\n\nfn f() -> String {\n  Array::get(xs = [1, 2], i = 0)\n}\n"
   assert(String::contains(diag_of(src), needle = "missing { Console }"))
 }
 
@@ -201,7 +211,7 @@ test "#3179 index sugar still reads the builtin under the program's Array::get a
 test "#3185 the slice sugar keeps the builtin under the program's own __slice and __len" {
   // `xs[a:b]` / `xs[a:]` parse to `__slice` / `__len` spelled `builtin_ref`,
   // so a program's own functions of those names answer only its direct calls.
-  let src = "fn __slice(a: Int, b: Int, c: Int) -> String {\n  let _ = a\n  let _ = b\n  let _ = c\n  \"own\"\n}\n\nfn __len(a: Int) -> String {\n  let _ = a\n  \"own\"\n}\n\nfn f() -> Int {\n  let xs = [1, 2, 3]\n  let ys = xs[1:]\n  let zs = xs[0:2]\n  Array::length(ys) + Array::length(zs)\n}\n\nfn g() -> String {\n  __slice(1, 2, 3)\n}\n"
+  let src = "fn __slice(a: Int, b: Int, c: Int) -> String {\n  let _ = a\n  let _ = b\n  let _ = c\n  \"own\"\n}\n\nfn __len(a: Int) -> String {\n  let _ = a\n  \"own\"\n}\n\nfn f() -> Int {\n  let xs = [1, 2, 3]\n  let ys = xs[1:]\n  let zs = xs[0:2]\n  Array::length(ys) + Array::length(zs)\n}\n\nfn g() -> String {\n  __slice(a = 1, b = 2, c = 3)\n}\n"
   inspect(diag_of(src), content = "")
 }
 
@@ -209,13 +219,13 @@ test "#3185 the field-write sugar keeps the builtin under the program's own __se
   // `c.v = 5` parses to `__set_field` spelled `builtin_ref`: the write is typed
   // (and `mut`-checked) as the builtin, and the program's function answers
   // only its direct call.
-  let src = "struct C {\n  mut v: Int\n}\n\nfn __set_field(a: Int, b: Int, c: Int) -> String {\n  let _ = a\n  let _ = b\n  let _ = c\n  \"own\"\n}\n\nfn f() -> Int {\n  let c = C::{ v: 1 }\n  c.v = 5\n  c.v\n}\n\nfn g() -> String {\n  __set_field(1, 2, 3)\n}\n"
+  let src = "struct C {\n  mut v: Int\n}\n\nfn __set_field(a: Int, b: Int, c: Int) -> String {\n  let _ = a\n  let _ = b\n  let _ = c\n  \"own\"\n}\n\nfn f() -> Int {\n  let c = C::{ v: 1 }\n  c.v = 5\n  c.v\n}\n\nfn g() -> String {\n  __set_field(a = 1, b = 2, c = 3)\n}\n"
   inspect(diag_of(src), content = "")
   let immutable = "struct D {\n  v: Int\n}\n\nfn __set_field(a: Int, b: Int, c: Int) -> String {\n  let _ = a\n  let _ = b\n  let _ = c\n  \"own\"\n}\n\nfn f() -> Int {\n  let d = D::{ v: 1 }\n  d.v = 5\n  d.v\n}\n"
   assert(String::contains(diag_of(immutable), needle = "mut"))
 }
 
 test "#3185 the region sugar keeps the builtin under the program's own __region_run" {
-  let src = "fn __region_run(a: Int) -> String {\n  let _ = a\n  \"own\"\n}\n\nfn f() -> Int {\n  region r {\n    let m = MutList::empty(r)\n    MutList::push(m, 3)\n    MutList::length(m)\n  }\n}\n\nfn g() -> String {\n  __region_run(4)\n}\n"
+  let src = "fn __region_run(a: Int) -> String {\n  let _ = a\n  \"own\"\n}\n\nfn f() -> Int {\n  region r {\n    let m = MutList::empty(r)\n    MutList::push(m, 3)\n    MutList::length(m)\n  }\n}\n\nfn g() -> String {\n  __region_run(a = 4)\n}\n"
   inspect(diag_of(src), content = "")
 }

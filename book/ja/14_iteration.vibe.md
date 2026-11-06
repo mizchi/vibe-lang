@@ -60,7 +60,7 @@ import @vibe/builtin {
 fn main allows Console {
   let n = "  vibe  " |> String::trim |> String::length
   let xs = [1, 2, 3]
-  let ys = xs |> Iterator::map(f = _, _ * 10)
+  let ys = xs |> Iterator::map(_, f = _ * 10)
   println("trimmed length = \{n}")
   println("ys[1] = \{Array::get(ys, at = 1)}")
 }

@@ -24,7 +24,7 @@ fn diags_of(_ body: String) -> Array[String] with Exception {
 }
 
 test "a different closed argument is refused" {
-  let d = diags_of("fn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(\"abc\")\n}\n")
+  let d = diags_of("fn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(x = \"abc\")\n}\n")
   assert(eq(Array::length(d), 1))
   assert(String::contains(Array::get(d, at = 0), needle = "missing { State[String] }"))
 }
@@ -43,15 +43,15 @@ test "the same closed argument is authorized, spacing aside" {
 test "a callee's formal is instantiated at the call" {
   let getter = "fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\n"
   // The call instantiates `S` at `String`, which `State[Int]` does not cover.
-  let wrong = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(\"abc\")\n}\n"))
+  let wrong = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(x = \"abc\")\n}\n"))
   assert(eq(Array::length(wrong), 1))
   assert(String::contains(Array::get(wrong, at = 0), needle = "missing { State[String] }"))
   // ... and the requirement names the instantiation, not the callee's formal.
-  let bare = diags_of(String::concat(getter, "fn caller() -> Int {\n  get(\"abc\")\n}\n"))
+  let bare = diags_of(String::concat(getter, "fn caller() -> Int {\n  get(x = \"abc\")\n}\n"))
   assert(eq(Array::length(bare), 1))
   assert(String::contains(Array::get(bare, at = 0), needle = "missing { State[String] }"))
   // The matching instantiation is authorized.
-  let right = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(1)\n}\n"))
+  let right = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(x = 1)\n}\n"))
   assert(eq(Array::length(right), 0))
 }
 
@@ -72,10 +72,10 @@ test "a higher-kinded formal is instantiated with its constructor" {
   // Codex on #3055: `F[_]` applied as `F[Int]` resolves to the argument's
   // constructor, so `use([1])` requires `Read[Array]`, not an open `Read[F]`.
   let src = "effect Read[F[_]] {\n  Size() -> Int\n}\n\nfn use[F[_]](xs: F[Int]) -> Int with Read[F] {\n  1\n}\n\n"
-  let wrong = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Option] {\n  use([1])\n}\n"))
+  let wrong = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Option] {\n  use(xs = [1])\n}\n"))
   assert(eq(Array::length(wrong), 1))
   assert(String::contains(Array::get(wrong, at = 0), needle = "missing { Read[Array] }"))
-  let right = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Array] {\n  use([1])\n}\n"))
+  let right = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Array] {\n  use(xs = [1])\n}\n"))
   assert(eq(Array::length(right), 0))
 }
 
@@ -83,11 +83,11 @@ test "an exported generic is still instantiated in its own module (#3051)" {
   // The exported binding carries its published row (`State[S$0]`); a call in
   // the same module resolves it, and the message spells the formal as written.
   let getter = "export fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\n"
-  let wrong = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(\"abc\")\n}\n"))
+  let wrong = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(x = \"abc\")\n}\n"))
   assert(eq(Array::length(wrong), 1))
   assert(String::contains(Array::get(wrong, at = 0), needle = "missing { State[String] }"))
   assert(!String::contains(Array::get(wrong, at = 0), needle = "$"))
-  let right = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(1)\n}\n"))
+  let right = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(x = 1)\n}\n"))
   assert(eq(Array::length(right), 0))
 }
 
@@ -96,14 +96,14 @@ test "a type named like a published formal is not read as one (#3056)" {
   // marker is `$`, which no identifier contains, so this row keeps naming the
   // struct: the call does not rewrite it to `State[String]`, and `State[Int]`
   // is judged against `State[Box__f0]` by base name, as before.
-  let src = "struct Box__f0 {\n  v: Int\n}\n\nexport fn f[T](x: T) -> Int with State[Box__f0] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  f(\"abc\")\n}\n"
+  let src = "struct Box__f0 {\n  v: Int\n}\n\nexport fn f[T](x: T) -> Int with State[Box__f0] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  f(x = \"abc\")\n}\n"
   assert(eq(Array::length(diags_of(src)), 0))
 }
 
 test "an open or declared spelling keeps the base-name answer" {
   // A formal, an alias and a declared type are not builtin names, so this
   // syntactic test does not judge them (#3053 tracks the formal half).
-  let formal = diags_of("fn g[T](x: T) -> Int with State[T] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(1)\n}\n")
+  let formal = diags_of("fn g[T](x: T) -> Int with State[T] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(x = 1)\n}\n")
   assert(eq(Array::length(formal), 0))
   let alias = diags_of("type N = Int\n\nfn g() -> Int with State[N] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g()\n}\n")
   assert(eq(Array::length(alias), 0))
@@ -115,18 +115,18 @@ test "a formal that shadows a builtin name is not judged as that builtin" {
   // `String` either, so the call is refused rather than left open. Neither
   // result below is `Int`: a body returning the builtin would fix the formal
   // to it, which #3318 refuses for a formal the row names.
-  let d = diags_of("fn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller[Int](x: Int) -> Bool with State[Int] {\n  g(\"abc\") > 0\n}\n")
+  let d = diags_of("fn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller[Int](x: Int) -> Bool with State[Int] {\n  g(x = \"abc\") > 0\n}\n")
   assert(eq(Array::length(d), 1))
   assert(String::contains(Array::get(d, at = 0), needle = "missing { State[String] }"))
   // The formal passed through is covered by the formal.
-  let ok = diags_of("fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\nfn caller[Int](x: Int) -> Bool with State[Int] {\n  get(x) > 0\n}\n")
+  let ok = diags_of("fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\nfn caller[Int](x: Int) -> Bool with State[Int] {\n  get(x = x) > 0\n}\n")
   assert(eq(Array::length(ok), 0))
 }
 
 test "a shadowing formal elsewhere does not switch the check off here" {
   // Codex on #3054: the shadow set is per declaration. `id` shadows `Int`,
   // but `caller`'s `State[Int]` is the builtin and is still judged.
-  let d = diags_of("fn id[Int](x: Int) -> Int {\n  x\n}\n\nfn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(\"abc\")\n}\n")
+  let d = diags_of("fn id[Int](x: Int) -> Int {\n  x\n}\n\nfn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(x = \"abc\")\n}\n")
   assert(eq(Array::length(d), 1))
   assert(String::contains(Array::get(d, at = 0), needle = "missing { State[String] }"))
 }

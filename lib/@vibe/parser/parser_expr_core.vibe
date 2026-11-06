@@ -132,7 +132,18 @@ fn index_expr(cur_expr: Expr, idx: Expr, bracket_off: Int) -> Expr {
 fn pipe_arg_is_hole(_ arg: Expr) -> Bool {
   match source_expr(arg) {
     EIdent(n, _) => n == "_",
+    // ADR-0117: a labeled slot (`x |> f(1, b = _)`) takes the piped value
+    // under its own label.
+    ELabeledArg(_, _, value) => pipe_arg_is_hole(value),
     _ => false
+  }
+}
+
+/// The piped value placed in the hole `hole`, keeping a labeled hole's label.
+fn pipe_fill_hole(hole: Expr, lhs: Expr) -> Expr {
+  match source_expr(hole) {
+    ELabeledArg(name, kind, _) => source_rewrap_expr(original = hole, replacement = ELabeledArg(name, kind, lhs)),
+    _ => lhs
   }
 }
 
@@ -155,7 +166,7 @@ fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
         while j < Array::length(args) {
           let a = Array::get(args, at = j)
           if pipe_arg_is_hole(a) {
-            Array::push(out, value = lhs)
+            Array::push(out, value = pipe_fill_hole(hole = a, lhs = lhs))
           } else {
             Array::push(out, value = a)
           }
@@ -182,6 +193,20 @@ fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
   }
 }
 
+/// A labeled argument's value: an argument-position `x -> body` lambda is a
+/// lambda under a label too (`Array::map(xs, f = x -> x + 1)`, ADR-0120).
+fn parse_call_arg_value(tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  match (peek(tokens = tokens, pos = pos), peek(tokens = tokens, pos = pos + 1)) {
+    (TIdent(name), TThinArrow) => {
+      binder_capture_source(context = context, name = name, first_token = pos, last_token = pos)
+      source_record_slot(kind = "param", name = name, first = pos, next = pos + 1, context = context)
+      let (body, end) = parse_recur(tokens, pos + 2, 0, context)
+      (EFn(_no_tp(), _no_tb(), [(name, None)], None, None, body), end)
+    },
+    _ => parse_recur(tokens, pos, 0, context)
+  }
+}
+
 fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   let (expr, next) = match peek(tokens = tokens, pos = pos) {
     TIdent(name) => match peek(tokens = tokens, pos = pos + 1) {
@@ -193,7 +218,7 @@ fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recu
       },
       TTilde => match peek(tokens = tokens, pos = pos + 2) {
         TEq => {
-          let (val, end) = parse_recur(tokens, pos + 3, 0, context)
+          let (val, end) = parse_call_arg_value(tokens = tokens, pos = pos + 3, parse_recur = parse_recur, context = context)
           (ELabeledArg(name, "~", val), end)
         },
         // #2974: `x~: v` is the PARAMETER spelling; a call names its labeled
@@ -204,13 +229,13 @@ fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recu
       },
       TQuestion => match peek(tokens = tokens, pos = pos + 2) {
         TEq => {
-          let (val, end) = parse_recur(tokens, pos + 3, 0, context)
+          let (val, end) = parse_call_arg_value(tokens = tokens, pos = pos + 3, parse_recur = parse_recur, context = context)
           (ELabeledArg(name, "?", val), end)
         },
         _ => parse_recur(tokens, pos, 0, context)
       },
       TEq => {
-        let (val, end) = parse_recur(tokens, pos + 2, 0, context)
+        let (val, end) = parse_call_arg_value(tokens = tokens, pos = pos + 2, parse_recur = parse_recur, context = context)
         (ELabeledArg(name, "~", val), end)
       },
       _ => parse_recur(tokens, pos, 0, context)
@@ -231,6 +256,8 @@ fn has_placeholder_arg(_ arg: Expr) -> Bool {
   match source_expr(arg) {
     EIdent(n, _) => n == "_",
     EBinOp(_, l, r, _) => has_placeholder_arg(l) || has_placeholder_arg(r),
+    // ADR-0120: a section is a section under a label too (`f = _ * 2`).
+    ELabeledArg(_, _, value) => has_placeholder_arg(value),
     _ => false
   }
 }
@@ -386,6 +413,7 @@ fn placeholder_count(_ arg: Expr) -> Int {
       0
     },
     EBinOp(_, l, r, _) => placeholder_count(l) + placeholder_count(r),
+    ELabeledArg(_, _, value) => placeholder_count(value),
     _ => 0
   }
 }
@@ -417,7 +445,11 @@ fn desugar_placeholder_args(args: Array[Expr], context: Option[ParserBinderConte
       // piped value at this position; compound placeholders still lower.
       Array::push(out, value = arg)
     } else if has_placeholder_arg(arg) {
-      Array::push(out, value = wrap_placeholder_arg(arg = arg, _context = context))
+      let wrapped = match source_expr(arg) {
+        ELabeledArg(name, kind, value) => source_rewrap_expr(original = arg, replacement = ELabeledArg(name, kind, wrap_placeholder_arg(arg = value, _context = context))),
+        _ => wrap_placeholder_arg(arg = arg, _context = context)
+      }
+      Array::push(out, value = wrapped)
     } else {
       Array::push(out, value = arg)
     }

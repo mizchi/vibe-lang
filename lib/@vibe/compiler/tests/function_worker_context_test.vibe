@@ -42,8 +42,8 @@ import @vibe/compiler/cache {
 // Inspect the independent wire boundary, not a decoded round trip: the first
 // sorted-name reference must require the already decoded function-name pool.
 fn check_metadata_references(_ encoded: Bytes) -> Unit with Exception {
-  let stale = Bytes::slice(encoded, 0, Bytes::length(encoded))
-  Bytes::set(stale, String::length("vibe-function-context-7"), 52)
+  let stale = Bytes::slice(encoded, start = 0, end = Bytes::length(encoded))
+  Bytes::set(stale, at = String::length("vibe-function-context-7"), value = 52)
   let unsupported = handle {
     read_function_context(stale); "accepted"
   } with { Exception::Throw(msg) => msg }
@@ -78,10 +78,10 @@ fn check_metadata_references(_ encoded: Bytes) -> Unit with Exception {
     if length == 1152921504606846976 {
       let index = ast_binary_read_varint_checked(r)
       assert(index >= 0 && index < names)
-      let corrupt = Bytes::slice(encoded, 0, start)
-      ast_binary_write_varint(corrupt, length)
-      ast_binary_write_varint(corrupt, names)
-      Bytes::blit(corrupt, encoded, r.pos, Bytes::length(encoded))
+      let corrupt = Bytes::slice(encoded, start = 0, end = start)
+      ast_binary_write_varint(buf = corrupt, v = length)
+      ast_binary_write_varint(buf = corrupt, v = names)
+      Bytes::blit(corrupt, src = encoded, start = r.pos, end = Bytes::length(encoded))
       let invalid = handle {
         read_function_context(corrupt); "accepted"
       } with { Exception::Throw(msg) => msg }
@@ -100,25 +100,25 @@ fn same_bytes(a: Bytes, b: Bytes) -> Bool {
   let mut same = Bytes::length(a) == Bytes::length(b)
   let mut i = 0
   while same && i < Bytes::length(a) {
-    same = Bytes::get(a, i) == Bytes::get(b, i); i = i + 1
+    same = Bytes::get(a, at = i) == Bytes::get(b, at = i); i = i + 1
   }
   same
 }
 
 fn compile_source(source: String, rc: Bool) -> Bytes with Exception {
   merged_offset_space_reset()
-  merged_offset_space_add("input.vibe", source, 0)
+  merged_offset_space_add(path = "input.vibe", source = source, base = 0)
   let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   let ids: Array[Int] = []
   for stmt in stmts {
-    Array::push(ids, 0)
+    Array::push(ids, value = 0)
   }
   let nls: Array[Int] = []
   let mut i = 0
   while i < String::length(source) {
-    if String::char_code_at(source, i) == 10 {
-      Array::push(nls, i)
+    if String::char_code_at(source, at = i) == 10 {
+      Array::push(nls, value = i)
     } else ()
     i = i + 1
   }
@@ -127,7 +127,7 @@ fn compile_source(source: String, rc: Bool) -> Bytes with Exception {
     stmt_file_id: ids,
     file_nls: [nls]
   }
-  compile_wasi_module_linked_impl(stmts, "main", [("input.vibe", source)], [], false, rc, false, false, false, false, false, prov, codegen_body_cache_discard(), codegen_body_cache_discard(), 0, -1)
+  compile_wasi_module_linked_impl(stmts = stmts, entry_name = "main", srcs = [("input.vibe", source)], linked_imports = [], library_mode = false, enable_rc = rc, coverage = false, debug_trace = false, debug_break = false, rc_shadow = false, enable_late_dce = false, prov = prov, body_cache_in = codegen_body_cache_discard(), body_cache_out = codegen_body_cache_discard(), slice_lo = 0, slice_hi = -1)
 }
 
 fn clone_product(_ c: CodegenBodyCache) -> CodegenBodyCache with Exception {
@@ -145,9 +145,9 @@ fn refuse_product(ctx: FunctionContext, c: CodegenBodyCache) -> Unit with Except
     Array::length(ctx.input.body_cache_out.fn_indices)
   ]
   let error = handle {
-    FunctionContext::replay_function_products(ctx, c); "accepted"
+    FunctionContext::replay_function_products(ctx, products = c); "accepted"
   } with { Exception::Throw(msg) => msg }
-  assert(String::starts_with(error, "function product:"))
+  assert(String::starts_with(error, prefix = "function product:"))
   let after = [
     Array::length(ctx.input.lt_w.bodies),
     Array::length(ctx.input.table_slots_used),
@@ -168,90 +168,90 @@ fn plan_wire_assert(ok: Bool, observation: String) -> Unit with Exception {
 // compiler's syntax and mutable name/provenance tables have gone away.
 fn assert_validation_owns_authority(ctx: FunctionContext, product: CodegenBodyCache) -> Unit with Exception {
   let n = ctx.input.num_user_funcs
-  validate_function_product_plan(ctx.validation, product, 0, n)
+  validate_function_product_plan(plan = ctx.validation, c = product, lo = 0, hi = n)
   let wire = write_function_product_plan(ctx.validation)
-  let in_pool = ast_binary_with_string_pool(FrozenArray::from_array(ctx.validation.fn_names), () -> Bytes with Exception {
+  let in_pool = ast_binary_with_string_pool(strings = FrozenArray::from_array(ctx.validation.fn_names), action = () -> Bytes with Exception {
     write_function_product_plan(ctx.validation)
   })
-  plan_wire_assert(same_bytes(wire, in_pool), "ambient string pool changed the standalone packet")
+  plan_wire_assert(ok = same_bytes(a = wire, b = in_pool), observation = "ambient string pool changed the standalone packet")
   let restored = read_function_product_plan(wire)
-  let wrong_version = Bytes::slice(wire, 0, Bytes::length(wire))
-  Bytes::set(wrong_version, String::length("vibe-function-product-plan-1"), 57)
+  let wrong_version = Bytes::slice(wire, start = 0, end = Bytes::length(wire))
+  Bytes::set(wrong_version, at = String::length("vibe-function-product-plan-1"), value = 57)
   let unsupported = handle {
     read_function_product_plan(wrong_version); "accepted"
   } with { Exception::Throw(msg) => msg }
-  plan_wire_assert(unsupported == "function product plan: unsupported format", "version refusal: " + unsupported)
-  let truncated = Bytes::slice(wire, 0, Bytes::length(wire) - 1)
+  plan_wire_assert(ok = unsupported == "function product plan: unsupported format", observation = "version refusal: " + unsupported)
+  let truncated = Bytes::slice(wire, start = 0, end = Bytes::length(wire) - 1)
   let short = handle {
     read_function_product_plan(truncated); "accepted"
   } with { Exception::Throw(msg) => msg }
-  plan_wire_assert(short != "accepted", "truncation was accepted")
-  let trailing = Bytes::slice(wire, 0, Bytes::length(wire))
-  Bytes::push(trailing, 0)
+  plan_wire_assert(ok = short != "accepted", observation = "truncation was accepted")
+  let trailing = Bytes::slice(wire, start = 0, end = Bytes::length(wire))
+  Bytes::push(trailing, value = 0)
   let extra = handle {
     read_function_product_plan(trailing); "accepted"
   } with { Exception::Throw(msg) => msg }
-  plan_wire_assert(extra == "function product plan: trailing bytes", "trailing refusal: " + extra)
+  plan_wire_assert(ok = extra == "function product plan: trailing bytes", observation = "trailing refusal: " + extra)
   let reader = ast_binary_reader_new(wire)
-  plan_wire_assert(ast_binary_read_string_checked(reader) == "vibe-function-product-plan-1", "header differs")
-  plan_wire_assert(ast_binary_read_varint_checked(reader) == n, "function count differs")
+  plan_wire_assert(ok = ast_binary_read_string_checked(reader) == "vibe-function-product-plan-1", observation = "header differs")
+  plan_wire_assert(ok = ast_binary_read_varint_checked(reader) == n, observation = "function count differs")
   ast_binary_read_svarint_checked(reader)
   ast_binary_read_svarint_checked(reader)
   ast_binary_read_svarint_checked(reader)
   ast_binary_read_bool_checked(reader)
   let count_at = reader.pos
-  plan_wire_assert(ast_binary_read_varint_checked(reader) == n, "name count differs")
-  let columns = Bytes::slice(wire, 0, count_at)
-  ast_binary_write_varint(columns, n + 1)
+  plan_wire_assert(ok = ast_binary_read_varint_checked(reader) == n, observation = "name count differs")
+  let columns = Bytes::slice(wire, start = 0, end = count_at)
+  ast_binary_write_varint(buf = columns, v = n + 1)
   let prefix_length = Bytes::length(columns)
-  Bytes::blit(columns, wire, reader.pos, Bytes::length(wire))
-  plan_wire_assert(Bytes::length(columns) == prefix_length + Bytes::length(wire) - reader.pos, "count mutation lost its suffix")
+  Bytes::blit(columns, src = wire, start = reader.pos, end = Bytes::length(wire))
+  plan_wire_assert(ok = Bytes::length(columns) == prefix_length + Bytes::length(wire) - reader.pos, observation = "count mutation lost its suffix")
   let mismatched = handle {
     read_function_product_plan(columns); "accepted"
   } with { Exception::Throw(msg) => msg }
-  plan_wire_assert(mismatched == "function product plan: function name count differs", "column refusal: " + mismatched)
-  Bytes::fill(wire, 0, Bytes::length(wire))
-  let name = Array::get(ctx.input.fn_names_list, 0)
-  let base = Array::get(ctx.plan.lambda_bases, 0)
-  let file = match MutMap::get(ctx.input.lc_fn_file_of, name) {
+  plan_wire_assert(ok = mismatched == "function product plan: function name count differs", observation = "column refusal: " + mismatched)
+  Bytes::fill(wire, value = 0, count = Bytes::length(wire))
+  let name = Array::get(ctx.input.fn_names_list, at = 0)
+  let base = Array::get(ctx.plan.lambda_bases, at = 0)
+  let file = match MutMap::get(ctx.input.lc_fn_file_of, k = name) {
     Some(value) => value,
     None => throw("test requires an actual source-file binding")
   }
-  let bodies = Array::slice(ctx.plan.bodies, 0, Array::length(ctx.plan.bodies))
-  let stmts = Array::slice(ctx.input.stmts, 0, Array::length(ctx.input.stmts))
-  Array::truncate(ctx.plan.bodies, 0)
-  Array::truncate(ctx.input.stmts, 0)
-  Array::set(ctx.input.fn_names_list, 0, "changed-after-snapshot")
-  Array::set(ctx.plan.lambda_bases, 0, base + 1)
-  MutMap::set(ctx.input.lc_fn_file_of, name, file + 1)
-  validate_function_product_plan(ctx.validation, product, 0, n)
-  validate_function_product_plan(restored, product, 0, n)
-  MutMap::set(ctx.input.lc_fn_file_of, name, file)
-  Array::set(ctx.plan.lambda_bases, 0, base)
-  Array::set(ctx.input.fn_names_list, 0, name)
+  let bodies = Array::slice(ctx.plan.bodies, start = 0, end = Array::length(ctx.plan.bodies))
+  let stmts = Array::slice(ctx.input.stmts, start = 0, end = Array::length(ctx.input.stmts))
+  Array::truncate(ctx.plan.bodies, length = 0)
+  Array::truncate(ctx.input.stmts, length = 0)
+  Array::set(ctx.input.fn_names_list, at = 0, value = "changed-after-snapshot")
+  Array::set(ctx.plan.lambda_bases, at = 0, value = base + 1)
+  MutMap::set(ctx.input.lc_fn_file_of, k = name, v = file + 1)
+  validate_function_product_plan(plan = ctx.validation, c = product, lo = 0, hi = n)
+  validate_function_product_plan(plan = restored, c = product, lo = 0, hi = n)
+  MutMap::set(ctx.input.lc_fn_file_of, k = name, v = file)
+  Array::set(ctx.plan.lambda_bases, at = 0, value = base)
+  Array::set(ctx.input.fn_names_list, at = 0, value = name)
   for body in bodies {
-    Array::push(ctx.plan.bodies, body)
+    Array::push(ctx.plan.bodies, value = body)
   }
   for stmt in stmts {
-    Array::push(ctx.input.stmts, stmt)
+    Array::push(ctx.input.stmts, value = stmt)
   }
   ()
 }
 
 fn assert_snapshot_parity(source: String, rc: Bool, require_pool: Bool) -> Unit with Env + Exception + Fs {
-  let expected = compile_source(source, rc)
+  let expected = compile_source(source = source, rc = rc)
   let calls = [0]
-  let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+  let actual = function_with_executor(executor = (plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
     assert(!coverage)
-    Array::set(calls, 0, Array::get(calls, 0) + 1)
-    let context = function_context_new(plan, input, debug_break, debug_trace, enable_rc, rc_shadow)
+    Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
+    let context = function_context_new(plan = plan, input = input, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow)
     let encoded = FunctionContext::write_function_context(context)
     if require_pool {
       check_metadata_references(encoded)
     } else ()
     let restored = read_function_context(encoded)
     // References share the owned name pool, never the mutable wire buffer.
-    Bytes::fill(encoded, 0, Bytes::length(encoded))
+    Bytes::fill(encoded, value = 0, count = Bytes::length(encoded))
     assert(restored.input.all_fn_names_sorted == input.all_fn_names_sorted)
     assert(restored.input.fn_names_list == input.fn_names_list)
     assert(restored.input.str_strs == input.str_strs)
@@ -262,84 +262,84 @@ fn assert_snapshot_parity(source: String, rc: Bool, require_pool: Bool) -> Unit 
     // Simulate a fresh worker instance with no parent source-location cells.
     merged_offset_space_reset()
     let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-    let first_job = FunctionContext::write_function_job(context, digest, 0, n / 2)
+    let first_job = FunctionContext::write_function_job(context, digest = digest, lo = 0, hi = n / 2)
     let wrong_context = handle {
-      FunctionContext::read_function_job(restored, first_job, "wrong"); "accepted"
+      FunctionContext::read_function_job(restored, bytes = first_job, digest = "wrong"); "accepted"
     } with { Exception::Throw(msg) => msg }
     assert(wrong_context != "accepted")
-    let truncated = Bytes::slice(first_job, 0, Bytes::length(first_job) - 1)
+    let truncated = Bytes::slice(first_job, start = 0, end = Bytes::length(first_job) - 1)
     let bad = handle {
-      FunctionContext::read_function_job(restored, truncated, digest); "accepted"
+      FunctionContext::read_function_job(restored, bytes = truncated, digest = digest); "accepted"
     } with { Exception::Throw(msg) => msg }
     assert(bad != "accepted")
-    let trailing = Bytes::slice(first_job, 0, Bytes::length(first_job))
-    Bytes::push(trailing, 0)
+    let trailing = Bytes::slice(first_job, start = 0, end = Bytes::length(first_job))
+    Bytes::push(trailing, value = 0)
     let extra = handle {
-      FunctionContext::read_function_job(restored, trailing, digest); "accepted"
+      FunctionContext::read_function_job(restored, bytes = trailing, digest = digest); "accepted"
     } with { Exception::Throw(msg) => msg }
     assert(extra != "accepted")
     assert_eq(restored.loaded_lo, 0)
     assert_eq(restored.loaded_hi, 0)
     let unloaded = handle {
-      FunctionContext::run_function_range(restored, 0, n / 2); "accepted"
+      FunctionContext::run_function_range(restored, lo = 0, hi = n / 2); "accepted"
     } with { Exception::Throw(msg) => msg }
     assert(unloaded != "accepted")
-    FunctionContext::read_function_job(restored, first_job, digest)
-    let first = FunctionContext::run_function_range(restored, 0, n / 2)
-    FunctionContext::read_function_job(restored, FunctionContext::write_function_job(context, digest, n / 2, n), digest)
-    let second = FunctionContext::run_function_range(restored, n / 2, n)
+    FunctionContext::read_function_job(restored, bytes = first_job, digest = digest)
+    let first = FunctionContext::run_function_range(restored, lo = 0, hi = n / 2)
+    FunctionContext::read_function_job(restored, bytes = FunctionContext::write_function_job(context, digest = digest, lo = n / 2, hi = n), digest = digest)
+    let second = FunctionContext::run_function_range(restored, lo = n / 2, hi = n)
     assert_eq(Array::length(first.fn_indices) + Array::length(second.fn_indices), n)
-    let merged = codegen_body_cache_merge(second, first)
-    assert_validation_owns_authority(context, merged)
+    let merged = codegen_body_cache_merge(a = second, b = first)
+    assert_validation_owns_authority(ctx = context, product = merged)
     let malformed = clone_product(merged)
-    Array::truncate(malformed.fn_meta_i64, 0)
-    refuse_product(context, malformed)
+    Array::truncate(malformed.fn_meta_i64, length = 0)
+    refuse_product(ctx = context, c = malformed)
     let duplicate = clone_product(merged)
-    Array::set(duplicate.fn_indices, 0, Array::get(duplicate.fn_indices, 1))
-    refuse_product(context, duplicate)
+    Array::set(duplicate.fn_indices, at = 0, value = Array::get(duplicate.fn_indices, at = 1))
+    refuse_product(ctx = context, c = duplicate)
     let renamed = clone_product(merged)
-    Array::set(renamed.fn_names, 0, "another-function")
-    refuse_product(context, renamed)
+    Array::set(renamed.fn_names, at = 0, value = "another-function")
+    refuse_product(ctx = context, c = renamed)
     let filtered = clone_product(merged)
-    Array::push(filtered.consumer_src_limit, 0)
-    refuse_product(context, filtered)
+    Array::push(filtered.consumer_src_limit, value = 0)
+    refuse_product(ctx = context, c = filtered)
     if Array::length(merged.lam_owner) > 0 {
       let wrong_lambda = clone_product(merged)
-      Array::set(wrong_lambda.lam_owner, 0, n)
-      refuse_product(context, wrong_lambda)
+      Array::set(wrong_lambda.lam_owner, at = 0, value = n)
+      refuse_product(ctx = context, c = wrong_lambda)
     } else ()
     if Array::length(merged.blind_offsets) > 0 {
       let wrong_reference = clone_product(merged)
-      Array::set(wrong_reference.blind_offsets, 0, 100000000)
-      refuse_product(context, wrong_reference)
+      Array::set(wrong_reference.blind_offsets, at = 0, value = 100000000)
+      refuse_product(ctx = context, c = wrong_reference)
     } else ()
     if Array::length(merged.lm_file_ids) > 0 {
       let wrong_file = clone_product(merged)
-      Array::set(wrong_file.lm_file_ids, 0, 100000000)
-      refuse_product(context, wrong_file)
+      Array::set(wrong_file.lm_file_ids, at = 0, value = 100000000)
+      refuse_product(ctx = context, c = wrong_file)
     } else ()
-    FunctionContext::replay_function_products(context, merged)
-  }, () -> Bytes with Env + Exception + Fs {
-    compile_source(source, rc)
+    FunctionContext::replay_function_products(context, products = merged)
+  }, action = () -> Bytes with Env + Exception + Fs {
+    compile_source(source = source, rc = rc)
   })
-  assert_eq(Array::get(calls, 0), 1)
-  assert(same_bytes(expected, actual))
-  assert(same_bytes(expected, compile_source(source, rc)))
-  assert_eq(Array::get(calls, 0), 1)
+  assert_eq(Array::get(calls, at = 0), 1)
+  assert(same_bytes(a = expected, b = actual))
+  assert(same_bytes(a = expected, b = compile_source(source = source, rc = rc)))
+  assert_eq(Array::get(calls, at = 0), 1)
 }
 
 test "function snapshots: disjoint ranges replay identically in both RC modes" {
   let outcome = handle {
     for rc in [false, true] {
       let long_name = "worker_identifier_qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
-      assert_snapshot_parity("fn " + long_name + "(a: Int) -> Int { a - 3 }\nfn main() -> Int { " + long_name + "(11) }", rc, true)
-      assert_snapshot_parity("fn div(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { div(43, 4) }", rc, false)
-      assert_snapshot_parity("fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(13, 4) }", rc, false)
-      assert_snapshot_parity("fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", rc, false)
+      assert_snapshot_parity(source = "fn " + long_name + "(a: Int) -> Int { a - 3 }\nfn main() -> Int { " + long_name + "(11) }", rc = rc, require_pool = true)
+      assert_snapshot_parity(source = "fn div(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { div(43, 4) }", rc = rc, require_pool = false)
+      assert_snapshot_parity(source = "fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(13, 4) }", rc = rc, require_pool = false)
+      assert_snapshot_parity(source = "fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", rc = rc, require_pool = false)
       // #2669: constructor tags are recorded at emission (kind 105), and the
       // worker product validator has to accept them -- an enum construction
       // and match, and a struct construction and field access.
-      assert_snapshot_parity("enum Shape { Dot; Line(Int) }\nstruct Pt { x: Int; y: Int }\nfn area(s: Shape) -> Int { match s { Dot => 0, Line(n) => n } }\nfn main() -> Int { area(Line(3)) + Pt::{ x: 1, y: 2 }.y }", rc, false)
+      assert_snapshot_parity(source = "enum Shape { Dot; Line(Int) }\nstruct Pt { x: Int; y: Int }\nfn area(s: Shape) -> Int { match s { Dot => 0, Line(n) => n } }\nfn main() -> Int { area(Line(3)) + Pt::{ x: 1, y: 2 }.y }", rc = rc, require_pool = false)
     }
     "accepted"
   } with { Exception::Throw(message) => message }
@@ -355,58 +355,58 @@ test "function replay survives discarded preparation syntax" {
           "fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nfn main() -> Unit allows Console { let f = make(2); println(f(9)) }",
           "fn fail(n: Int) -> Int with Exception { if n > 0 { throw(\"boom\") } else { n } }\nfn main() -> Int allows Exception { handle { fail(1) } with { Exception::Throw(_) => 7 } }"
         ] {
-          let expected = compile_source(source, rc)
+          let expected = compile_source(source = source, rc = rc)
           let calls = [0]
-          let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
-            Array::set(calls, 0, Array::get(calls, 0) + 1)
-            let ctx = function_context_new(plan, input, debug_break, debug_trace, enable_rc, rc_shadow)
+          let actual = function_with_executor(executor = (plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+            Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
+            let ctx = function_context_new(plan = plan, input = input, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow)
             let worker = read_function_context(FunctionContext::write_function_context(ctx))
             let n = input.num_user_funcs
             assert(n >= 2)
             let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            FunctionContext::read_function_job(worker, FunctionContext::write_function_job(ctx, digest, 0, n / 2), digest)
-            let first = FunctionContext::run_function_range(worker, 0, n / 2)
-            FunctionContext::read_function_job(worker, FunctionContext::write_function_job(ctx, digest, n / 2, n), digest)
-            let second = FunctionContext::run_function_range(worker, n / 2, n)
-            let products = codegen_body_cache_merge(second, first)
+            FunctionContext::read_function_job(worker, bytes = FunctionContext::write_function_job(ctx, digest = digest, lo = 0, hi = n / 2), digest = digest)
+            let first = FunctionContext::run_function_range(worker, lo = 0, hi = n / 2)
+            FunctionContext::read_function_job(worker, bytes = FunctionContext::write_function_job(ctx, digest = digest, lo = n / 2, hi = n), digest = digest)
+            let second = FunctionContext::run_function_range(worker, lo = n / 2, hi = n)
+            let products = codegen_body_cache_merge(a = second, b = first)
             assert(Array::length(ctx.plan.bodies) > 0 && Array::length(ctx.input.stmts) > 0)
-            Array::truncate(ctx.plan.bodies, 0)
-            Array::truncate(ctx.plan.source_types, 0)
-            Array::truncate(ctx.input.stmts, 0)
-            Array::truncate(ctx.input.fn_stmt_indices, 0)
+            Array::truncate(ctx.plan.bodies, length = 0)
+            Array::truncate(ctx.plan.source_types, length = 0)
+            Array::truncate(ctx.input.stmts, length = 0)
+            Array::truncate(ctx.input.fn_stmt_indices, length = 0)
             assert(Array::length(ctx.plan.bodies) == 0 && Array::length(ctx.plan.source_types) == 0 && Array::length(ctx.input.stmts) == 0 && Array::length(ctx.input.fn_stmt_indices) == 0)
             if direct {
-              let state = function_replay_state_new(ctx.validation, ctx.input, enable_rc, rc_shadow)
+              let state = function_replay_state_new(plan = ctx.validation, input = ctx.input, enable_rc = enable_rc, rc_shadow = rc_shadow)
               let invalid = clone_product(products)
-              Array::truncate(invalid.fn_meta_i64, 0)
+              Array::truncate(invalid.fn_meta_i64, length = 0)
               let guard_count = Array::length(state.cache.guard_layout)
               let error = handle {
-                replay_function_state(state, invalid); "accepted"
+                replay_function_state(state = state, products = invalid); "accepted"
               } with { Exception::Throw(message) => message }
-              assert(String::starts_with(error, "function product:"))
+              assert(String::starts_with(error, prefix = "function product:"))
               assert(!state.used && Array::length(state.lambdas.bodies) == 0 && Array::length(state.cache.guard_layout) == guard_count)
               let placed_count = Array::length(state.placed_files)
-              Array::push(state.placed_files, -1)
+              Array::push(state.placed_files, value = -1)
               let bad_state = handle {
-                replay_function_state(state, products); "accepted"
+                replay_function_state(state = state, products = products); "accepted"
               } with { Exception::Throw(message) => message }
               assert(bad_state == "function product: replay line placement rows differ")
               assert(!state.used && Array::length(state.lambdas.bodies) == 0 && Array::length(state.cache.guard_layout) == guard_count)
-              Array::truncate(state.placed_files, placed_count)
-              let result = replay_function_state(state, products)
+              Array::truncate(state.placed_files, length = placed_count)
+              let result = replay_function_state(state = state, products = products)
               let reused = handle {
-                replay_function_state(state, products); "accepted"
+                replay_function_state(state = state, products = products); "accepted"
               } with { Exception::Throw(message) => message }
               assert(reused == "function product: replay state was already consumed")
               result
             } else {
-              FunctionContext::replay_function_products(ctx, products)
+              FunctionContext::replay_function_products(ctx, products = products)
             }
-          }, () -> Bytes with Env + Exception + Fs {
-            compile_source(source, rc)
+          }, action = () -> Bytes with Env + Exception + Fs {
+            compile_source(source = source, rc = rc)
           })
-          assert(Array::get(calls, 0) == 1)
-          if !same_bytes(expected, actual) {
+          assert(Array::get(calls, at = 0) == 1)
+          if !same_bytes(a = expected, b = actual) {
             throw("section bytes differ after AST disposal")
           } else ()
         }
@@ -445,16 +445,16 @@ test "product plan names use literal UTF-8 bytes and reject invalid spans" {
   let utf8 = [99, 97, 102, 195, 169, 240, 159, 152, 128]
   let mut i = 0
   while i < Array::length(utf8) {
-    assert(Bytes::get(bytes, name_at + i) == Array::get(utf8, i))
+    assert(Bytes::get(bytes, at = name_at + i) == Array::get(utf8, at = i))
     i = i + 1
   }
   let restored = read_function_product_plan(bytes)
-  let invalid = Bytes::slice(bytes, 0, Bytes::length(bytes))
-  Bytes::set(invalid, name_at + 3, 255)
+  let invalid = Bytes::slice(bytes, start = 0, end = Bytes::length(bytes))
+  Bytes::set(invalid, at = name_at + 3, value = 255)
   let refused = handle {
     read_function_product_plan(invalid); "accepted"
   } with { Exception::Throw(message) => message }
   assert(refused == "ast_binary: string is not well-formed UTF-8 within its declared length")
-  Bytes::fill(bytes, 0, Bytes::length(bytes))
-  inspect(Array::get(restored.fn_names, 0), content = "café😀")
+  Bytes::fill(bytes, value = 0, count = Bytes::length(bytes))
+  inspect(Array::get(restored.fn_names, at = 0), content = "café😀")
 }

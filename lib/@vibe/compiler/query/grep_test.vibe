@@ -207,19 +207,19 @@ test "grep: no match is empty output, in both text and JSON form" {
 }
 
 test "grep --where: filter a capture by its inferred type" {
-  let src = "let f = (v: Int) -> Int { v }\nlet g = (v: String) -> String { v }\nlet n = 1\nlet s = \"x\"\nlet a = f(n)\nlet b = g(s)\n"
+  let src = "let f = (_ v: Int) -> Int { v }\nlet g = (_ v: String) -> String { v }\nlet n = 1\nlet s = \"x\"\nlet a = f(n)\nlet b = g(s)\n"
   inspect(scan_where(source = src, pattern = "$(c:id)($(x:exp))", where_clause = "$x : Int"), "a.vibe:5:9: f(n)\t$c=f\t$x=n\n")
   inspect(scan_where(source = src, pattern = "$(c:id)($(x:exp))", where_clause = "$x : String"), "a.vibe:6:9: g(s)\t$c=g\t$x=s\n")
 }
 
 test "grep --where: `_` is a wildcard inside the requested type" {
-  let src = "let f = (v: Array[Int]) -> Int { 0 }\nlet xs = [\n  1\n]\nlet a = f(xs)\n"
+  let src = "let f = (_ v: Array[Int]) -> Int { 0 }\nlet xs = [\n  1\n]\nlet a = f(xs)\n"
   inspect(scan_where(source = src, pattern = "f($(x:exp))", where_clause = "$x : Array[_]"), "a.vibe:5:9: f(xs)\t$x=xs\n")
   inspect(scan_where(source = src, pattern = "f($(x:exp))", where_clause = "$x : Array[String]"), "")
 }
 
 test "grep --where: `=` compares the RESOLVED name, seeing through an alias" {
-  let src = "import ./dep.vibe {\n  helper as h\n}\nlet other = (v: Int) -> Int { v }\nlet a = h(1)\nlet b = other(1)\n"
+  let src = "import ./dep.vibe {\n  helper as h\n}\nlet other = (_ v: Int) -> Int { v }\nlet a = h(1)\nlet b = other(1)\n"
   inspect(scan_where(source = src, pattern = "$(f:id)($(_:exp))", where_clause = "$f = helper"), "a.vibe:5:9: h(1)\t$f=h\n")
   inspect(scan_where(source = src, pattern = "$(f:id)($(_:exp))", where_clause = "$f = h"), "")
 }
@@ -231,17 +231,17 @@ test "grep: `exp` declines a labeled argument, `arg` takes one" {
 }
 
 test "grep --where-row: keep or drop by what a callee's effect row carries" {
-  let src = "let readit = (p: String) -> String with Fs {\n  Fs::read_file(p)\n}\nlet plain = (p: String) -> String {\n  p\n}\nlet run = (q: String) -> String with Fs {\n  let a = readit(q)\n  plain(a)\n}\n"
+  let src = "let readit = (_ p: String) -> String with Fs {\n  Fs::read_file(p)\n}\nlet plain = (_ p: String) -> String {\n  p\n}\nlet run = (q: String) -> String with Fs {\n  let a = readit(q)\n  plain(a)\n}\n"
   // A capability builtin carries the row too, so it is a genuine hit here.
   inspect(scan_row(source = src, pattern = "$(f:id)($(x:id))", row_clause = "$f with Fs"), "a.vibe:2:3: Fs::read_file(p)\t$f=Fs::read_file\t$x=p\na.vibe:8:11: readit(q)\t$f=readit\t$x=q\n")
   inspect(scan_row(source = src, pattern = "$(f:id)($(x:id))", row_clause = "$f without Fs"), "a.vibe:9:3: plain(a)\t$f=plain\t$x=a\n")
 }
 
 test "grep --only-well-typed / --only-ill-typed split a file by its type error" {
-  let good = "let f = (x: Int) -> Int { x }\nlet a = f(1)\n"
+  let good = "let f = (_ x: Int) -> Int { x }\nlet a = f(1)\n"
   inspect(scan_only(source = good, pattern = "f($(x:exp))", only = "well"), "a.vibe:2:9: f(1)\t$x=1\n")
   inspect(scan_only(source = good, pattern = "f($(x:exp))", only = "ill"), "")
-  let bad = "let f = (x: Int) -> Int { x }\nlet a = f(\"s\")\n"
+  let bad = "let f = (_ x: Int) -> Int { x }\nlet a = f(\"s\")\n"
   inspect(scan_only(source = bad, pattern = "f($(x:exp))", only = "ill"), "a.vibe:2:9: f(\"s\")\t$x=\"s\"\n")
   inspect(scan_only(source = bad, pattern = "f($(x:exp))", only = "well"), "")
 }
@@ -250,7 +250,7 @@ test "grep: a file whose typing failed outright is never reported well-typed" {
   // The FS tier lands here whenever the import graph itself fails to check
   // (grep_fs.vibe). An empty context would call the file clean; this one must
   // not. Typed filters fail closed rather than dropping matches silently.
-  let src = "let f = (x: Int) -> Int { x }\nlet a = f(1)\n"
+  let src = "let f = (_ x: Int) -> Int { x }\nlet a = f(1)\n"
   inspect(grep_scan_source(path = "a.vibe", source = src, pattern = "f($(x:exp))", wheres = no_strings(), where_rows = no_strings(), only = "well", json = false), "a.vibe:2:9: f(1)\t$x=1\n")
   inspect(grep_error_scan(source = src, pattern = "f($(x:exp))", only = "well"), "")
   inspect(grep_error_scan(source = src, pattern = "f($(x:exp))", only = "ill"), "a.vibe:2:9: f(1)\t$x=1\n")
