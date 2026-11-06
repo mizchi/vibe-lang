@@ -1,3 +1,7 @@
+import @vibe/checker/engine {
+  engine_parse_program_with_path_with_config
+}
+
 import @vibe/compiler/loader {
   collect_all_sources_fs_with_config
 }
@@ -60,7 +64,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./typecheck_fs.vibe {
-  ensure_fingerprint_fs_impl, ensure_fingerprint_fs_impl_with_config, parse_program_with_path, rebind_module_typed_lowering_offsets
+  ensure_fingerprint_fs_impl, ensure_fingerprint_fs_impl_with_config, rebind_module_typed_lowering_offsets
 }
 
 import @vibe/compiler/syntax {
@@ -398,8 +402,17 @@ export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb
   }
 }
 
-fn build_merge_fingerprint(entry_path: String, sources: Array[(String, String)]) -> String {
-  compilation_input_fingerprint(sources = sources, entry_path = entry_path)
+fn merge_fingerprint_for_cfg(fingerprint: String, cfg: TargetCfg) -> String {
+  let identity = target_cfg_identity(cfg)
+  if identity == "" {
+    fingerprint
+  } else {
+    compact_string_fingerprint("\{String::length(identity)}:\{identity}#\{fingerprint}")
+  }
+}
+
+fn build_merge_fingerprint(entry_path: String, sources: Array[(String, String)], cfg: TargetCfg) -> String {
+  merge_fingerprint_for_cfg(fingerprint = compilation_input_fingerprint(sources = sources, entry_path = entry_path), cfg = cfg)
 }
 
 fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) -> Option[String] {
@@ -420,7 +433,7 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Array[String] with Env + Exception {
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String], cfg: TargetCfg) -> Array[String] with Env + Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -431,7 +444,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
       let resolved = resolve_import_path(base_dir = base_dir, raw_path = raw_path)
       match lookup_source_by_path(sources = sources, target_path = resolved) {
         Some(source) => {
-          let source_stmts = namespace_private_value_stmts_after_renames(path = resolved, stmts = parse_program_with_path(path = resolved, source = source), export_renames = export_plan_renames_for(plan = plan, path = resolved))
+          let source_stmts = namespace_private_value_stmts_after_renames(path = resolved, stmts = engine_parse_program_with_path_with_config(path = resolved, source = source, cfg = cfg), export_renames = export_plan_renames_for(plan = plan, path = resolved))
           let mut j = 0
           let mut done = false
           while j < Array::length(source_stmts) && !done {
@@ -456,14 +469,14 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
 
 /// #716: parse every source once and expose (paths, stmts) for the export-
 /// rename plan; the merge itself reuses the parsed statements.
-fn parse_merge_sources(_ sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
+fn parse_merge_sources(_ sources: Array[(String, String)], cfg: TargetCfg) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let mut si = 0
   while si < Array::length(sources) {
     let (path, source) = Array::get(sources, at = si)
     Array::push(file_paths, value = path)
-    let stmts = parse_program_with_path(path = path, source = source)
+    let stmts = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg)
     reject_user_iterator_serialized_boundaries(stmts)
     Array::push(file_stmts, value = stmts)
     si = si + 1
@@ -476,7 +489,7 @@ fn parse_merge_sources(_ sources: Array[(String, String)]) -> (Array[String], Ar
 /// impl-overlap check. `collision_sources` spans the whole program so a
 /// collision-def import that crosses a group boundary still resolves. The
 /// caller runs the check once the WHOLE program is in `merged` (#3544, #3551).
-fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit], entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> Unit with Env + Exception {
+fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit], entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)], cfg: TargetCfg) -> Unit with Env + Exception {
   // #2205: no reset here -- db_grouped_merged_source calls this once per
   // cache-missing GROUP, and a per-call reset would discard the mappings of
   // every earlier group (Codex round 4 on #2213). The whole-merge entry
@@ -516,7 +529,7 @@ fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit]
       // collision local with no value to clone (a type, a constructor) keeps
       // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
       // also arrived through a re-export of the same module.
-      let skipped_locals = append_import_alias_collision_defs_from_sources(merged = merged, current_path = path, stmts = stmts, sources = collision_sources, plan = plan, excluded_locals = import_value_rename_locals(import_renames))
+      let skipped_locals = append_import_alias_collision_defs_from_sources(merged = merged, current_path = path, stmts = stmts, sources = collision_sources, plan = plan, excluded_locals = import_value_rename_locals(import_renames), cfg = cfg)
       append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = namespaced_stmts, skipped_locals = skipped_locals, extra_renames = import_renames)
     } else {
       append_non_import_stmts_without_alias_rewrite(merged = merged, stmts = namespaced_stmts)
@@ -527,10 +540,10 @@ fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit]
   }
 }
 
-fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with Env + Exception {
+fn build_merged_source(entry_path: String, sources: Array[(String, String)], cfg: TargetCfg) -> String with Env + Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
-  let (file_paths, file_stmts) = parse_merge_sources(sources)
+  let (file_paths, file_stmts) = parse_merge_sources(sources, cfg = cfg)
   let plan_entry = if entry_path == "" {
     if Array::length(file_paths) > 0 {
       Array::get(file_paths, at = Array::length(file_paths) - 1)
@@ -543,7 +556,7 @@ fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> 
   let plan = build_export_rename_plan(paths = file_paths, stmts_list = file_stmts, entry_path = plan_entry)
   let merged = empty_stmt_array()
   let units: Array[LinkedUnit] = []
-  append_merged_sources_with_plan(merged = merged, units = units, entry_path = entry_path, sources = sources, file_paths = file_paths, file_stmts = file_stmts, plan = plan, collision_sources = sources)
+  append_merged_sources_with_plan(merged = merged, units = units, entry_path = entry_path, sources = sources, file_paths = file_paths, file_stmts = file_stmts, plan = plan, collision_sources = sources, cfg = cfg)
   // #3544: two modules' impls of one method name would collapse to one here.
   refuse_linked_impl_overlaps(merged = merged, units = units)
   print_program(merged)
@@ -567,14 +580,20 @@ fn join_group_sources(_ group_sources: Array[String]) -> String {
 }
 
 export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with Env + Exception {
+  db_merged_source_with_config(db = db, _entry_path = _entry_path, sources = sources, cfg = target_cfg_ambient())
+}
+
+/// Merge with captured target flags and their resident-cache identity.
+export fn db_merged_source_with_config(db: TypeDb, _entry_path: String, sources: Array[(String, String)], cfg: TargetCfg) -> (String, String, TypeDb) with Env + Exception {
+  let db = db_for_target_cfg(db = db, cfg = cfg)
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) => {
-      let merge_fingerprint = build_merge_fingerprint(entry_path = _entry_path, sources = sources)
+      let merge_fingerprint = build_merge_fingerprint(entry_path = _entry_path, sources = sources, cfg = cfg)
       let merge_cache_key = "merged"
       match lookup_source_cache(cache = merged_cache, path = merge_cache_key, fingerprint = merge_fingerprint) {
         Some(merged_source) => (merged_source, merge_fingerprint, db),
         None => {
-          let merged_source = build_merged_source(entry_path = _entry_path, sources = sources)
+          let merged_source = build_merged_source(entry_path = _entry_path, sources = sources, cfg = cfg)
           let next_merged_cache = upsert_source_cache(cache = merged_cache, path = merge_cache_key, fingerprint = merge_fingerprint, source = merged_source)
           (merged_source, merge_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, merge_count + 1, module_source_count, codegen_count, cfg_identity)))
         }
@@ -584,6 +603,12 @@ export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(Stri
 }
 
 export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with Env + Exception {
+  db_grouped_merged_source_with_config(db = db, groups = groups, cfg = target_cfg_ambient())
+}
+
+/// Merge with captured target flags and their resident-cache identity.
+export fn db_grouped_merged_source_with_config(db: TypeDb, groups: Array[(String, Array[(String, String)])], cfg: TargetCfg) -> (String, String, TypeDb) with Env + Exception {
+  let db = db_for_target_cfg(db = db, cfg = cfg)
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) => {
       // Keep per-group results in side buffers, then append cache misses
@@ -595,7 +620,7 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
       // not run for them.
       namespace_rename_originals_reset()
       let group_sources = empty_strings()
-      let mut grouped_fingerprint = "merged-groups"
+      let mut grouped_fingerprint = merge_fingerprint_for_cfg(fingerprint = "merged-groups", cfg = cfg)
       let new_group_cache_entries = empty_string_triples()
       let mut merge_count_acc = merge_count
       // #716: the export-rename plan spans ALL groups (imports cross group
@@ -614,7 +639,7 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
         }
         fgi = fgi + 1
       }
-      let (flat_paths, flat_stmts) = parse_merge_sources(flat_sources)
+      let (flat_paths, flat_stmts) = parse_merge_sources(flat_sources, cfg = cfg)
       let plan_entry = if Array::length(flat_paths) > 0 {
         Array::get(flat_paths, at = Array::length(flat_paths) - 1)
       } else {
@@ -622,11 +647,13 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
       }
       let plan = build_export_rename_plan(paths = flat_paths, stmts_list = flat_stmts, entry_path = plan_entry)
       let plan_fp = compact_string_fingerprint(export_plan_fingerprint_text(plan))
+      // Group products stay inside this configuration-validated DB. Bind the
+      // flags once in the whole-program identity above, not in every group.
       let group_fingerprints = empty_strings()
       let mut gfi = 0
       while gfi < Array::length(groups) {
         let (group_name, sources) = Array::get(groups, at = gfi)
-        let fingerprint = compact_string_fingerprint(String::concat(build_merge_fingerprint(entry_path = plan_entry, sources = sources), String::concat("#", plan_fp)))
+        let fingerprint = compact_string_fingerprint(String::concat(compilation_input_fingerprint(sources = sources, entry_path = plan_entry), String::concat("#", plan_fp)))
         Array::push(group_fingerprints, value = fingerprint)
         let grouped_next = String::concat(grouped_fingerprint, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
         grouped_fingerprint = compact_string_fingerprint(grouped_next)
@@ -659,7 +686,7 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
               // The merge records the rename metadata the replay below would.
               let group_paths = Array::slice(flat_paths, start = group_start, end = group_start + Array::length(sources))
               let group_stmts = Array::slice(flat_stmts, start = group_start, end = group_start + Array::length(sources))
-              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources)
+              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources, cfg = cfg)
               Array::push(linked_groups, value = StringTriple(cache_key, fingerprint, ""))
             } else {
               // #2205: the cached TEXT already contains the mangled names, but
@@ -695,7 +722,7 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
               // desugar_trait_dict.vibe, ...) were missing their `_exp_`
               // defs while callers referenced them.
               let group_start_stmt = Array::length(program)
-              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources)
+              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources, cfg = cfg)
               let source = print_program(Array::slice(program, start = group_start_stmt, end = Array::length(program)))
               Array::push(new_group_cache_entries, value = StringTriple(cache_key, fingerprint, source))
               merge_count_acc = merge_count_acc + 1

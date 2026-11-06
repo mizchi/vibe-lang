@@ -1,0 +1,112 @@
+import @vibe/compiler/linker/merge {
+  build_grouped_merged_stmts
+}
+import @vibe/compiler/runtime {
+  db_grouped_merged_source, db_merge_count, db_new
+}
+import @vibe/compiler/cache {
+  compact_string_fingerprint, set_persistent_cache_cfg_flags
+}
+import @vibe/compiler/syntax {
+  print_program
+}
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+fn merge_graph(_ modules: Int) -> Array[(String, Array[(String, String)])] {
+  let groups: Array[(String, Array[(String, String)])] = []
+  let mut i = 0
+  while i < modules {
+    Array::push(groups, value = ("group_\{i}", [
+      ("merge_perf/node_\{i}.vibe", "export fn step_\{i}() -> Int { \{i} }\n#cfg(alpha)\nexport fn extra_\{i}() -> Int { \{i + 1} }\n")
+    ]))
+    i = i + 1
+  }
+  Array::push(groups, value = ("entry", [
+    ("merge_perf/main.vibe", "fn main() -> Int { 7 }\n")
+  ]))
+  groups
+}
+
+fn merge_shared(groups: Array[(String, Array[(String, String)])], modules: Int, repetitions: Int, alpha: Bool) -> (Int, Int, Int, Int, String) with Env + Exception + Profiler {
+  let heap_start = Profiler::heap_bytes()
+  let start = Profiler::now_us()
+  let cold = build_grouped_merged_stmts(groups)
+  let cold_us = Profiler::now_us() - start
+  let cold_bytes = Profiler::heap_bytes() - heap_start
+  assert_eq(Array::length(cold), modules * (if alpha {
+    3
+  } else {
+    2
+  }) + 2)
+  let text = print_program(cold)
+  let mut warm = cold
+  let warm_heap_start = Profiler::heap_bytes()
+  let warm_start = Profiler::now_us()
+  let mut i = 0
+  while i < repetitions {
+    warm = build_grouped_merged_stmts(groups)
+    assert_eq(Array::length(warm), Array::length(cold))
+    i = i + 1
+  }
+  let warm_us = Profiler::now_us() - warm_start
+  let warm_bytes = Profiler::heap_bytes() - warm_heap_start
+  assert_eq(print_program(warm), text)
+  (cold_us, cold_bytes, warm_us, warm_bytes, compact_string_fingerprint(text))
+}
+
+fn merge_resident(groups: Array[(String, Array[(String, String)])], repetitions: Int) -> (Int, Int, Int, Int, String) with Env + Exception + Profiler {
+  let db = db_new()
+  let heap_start = Profiler::heap_bytes()
+  let start = Profiler::now_us()
+  let (cold, fingerprint, checked) = db_grouped_merged_source(db = db, groups = groups)
+  let cold_us = Profiler::now_us() - start
+  let cold_bytes = Profiler::heap_bytes() - heap_start
+  assert_eq(db_merge_count(checked), 130)
+  assert(String::contains(cold, needle = "step_127"))
+  let mut warm = checked
+  let mut output = cold
+  let mut output_fp = fingerprint
+  let warm_heap_start = Profiler::heap_bytes()
+  let warm_start = Profiler::now_us()
+  let mut i = 0
+  while i < repetitions {
+    let (text, fp, next) = db_grouped_merged_source(db = warm, groups = groups)
+    warm = next
+    output = text
+    output_fp = fp
+    assert_eq(db_merge_count(warm), 130)
+    i = i + 1
+  }
+  let warm_us = Profiler::now_us() - warm_start
+  let warm_bytes = Profiler::heap_bytes() - warm_heap_start
+  assert_eq(output, cold)
+  assert_eq(output_fp, fingerprint)
+  (cold_us, cold_bytes, warm_us, warm_bytes, compact_string_fingerprint(output))
+}
+
+fn main allows Env + Exception + Console + Profiler {
+  let case = Env::get("MERGE_CFG_BENCH_CASE")
+  let alpha = String::ends_with(case, suffix = "alpha")
+  let flags = if alpha {
+    ["alpha"]
+  } else {
+    []
+  }
+  set_cfg_ambient_flags(flags)
+  set_persistent_cache_cfg_flags(if alpha {
+    "alpha"
+  } else {
+    ""
+  })
+  let modules = 128
+  let repetitions = 16
+  let groups = merge_graph(modules)
+  let (cold_us, cold_bytes, warm_us, warm_bytes, identity) = if String::starts_with(case, prefix = "shared-") {
+    merge_shared(groups = groups, modules = modules, repetitions = repetitions, alpha = alpha)
+  } else {
+    merge_resident(groups = groups, repetitions = repetitions)
+  }
+  println("merge-check\t\{case}\t\{modules}\t\{repetitions}\t\{cold_us}\t\{cold_bytes}\t\{warm_us}\t\{warm_bytes}\t\{identity}")
+}
