@@ -49,6 +49,17 @@ fi
 if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
   echo "[prove-selftest] FAIL: the gate accepted an array read that can be out of bounds" >&2; exit 1
 fi
+# #3827: a word sum that no longer wraps to the minimum: `wrap_top` adds 2,
+# so its `ensures: result == -2147483648` fails. (Encoding `+` on a word as
+# unbounded `Int` addition is caught by the gate itself: `word_next` and
+# `word_local_wraps` would prove.)
+sed 's/^  Int32::to_int(x + 1)$/  Int32::to_int(x + 2)/' fixtures/prove/proved.vibe > "$work/proved.vibe"
+if cmp -s fixtures/prove/proved.vibe "$work/proved.vibe"; then
+  echo "[prove-selftest] FAIL: the word mutation did not apply" >&2; exit 1
+fi
+if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
+  echo "[prove-selftest] FAIL: the gate accepted a word sum that no longer wraps" >&2; exit 1
+fi
 # A loop that no longer breaks: `find_negative` records the index and goes
 # on, so `found == -1` does not hold at the next checkpoint.
 python3 -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(s.replace("      found = i\n      break\n", "      found = i\n", 1))' fixtures/prove/proved.vibe "$work/proved.vibe"

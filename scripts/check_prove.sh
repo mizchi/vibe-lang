@@ -81,7 +81,12 @@ $dir/unproved.vibe:225:5: unproved: the index of xs[2] is within the array, in \
 $dir/unproved.vibe:230:1: unproved: ensures (result == 1) of \`overwritten\` -- counterexample: <model>
 $dir/unproved.vibe:237:1: unproved: ensures (result == 0) of \`length_kept\` -- counterexample: <model>
 $dir/unproved.vibe:248:1: unproved: ensures (result == 0) of \`nested_write\` -- counterexample: <model>
-$dir/unproved.vibe:258:1: unproved: ensures (result == 0) of \`read_after_index_write\` -- counterexample: <model>"
+$dir/unproved.vibe:258:1: unproved: ensures (result == 0) of \`read_after_index_write\` -- counterexample: <model>
+$dir/unproved.vibe:267:1: unproved: ensures (result > x) of \`word_next\` -- counterexample: <model>
+$dir/unproved.vibe:272:1: unproved: ensures (result > 0) of \`word_local_wraps\` -- counterexample: <model>
+$dir/unproved.vibe:278:5: unproved: the divisor of (x / d) is not zero, in \`word_udiv\` -- counterexample: <model>
+$dir/unproved.vibe:282:1: unproved: ensures result of \`word_unsigned_low\` -- counterexample: <model>
+$dir/unproved.vibe:288:1: unproved: ensures result of \`word_join\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
@@ -96,7 +101,8 @@ $dir/unsupported.vibe:98:3: unsupported: \`Array::length\` has no \`where\` cont
 $dir/unsupported.vibe:103:1: unsupported: a write to the parameter \`xs\`, which its caller holds: only a local array is written (in \`param_write\`)
 $dir/unsupported.vibe:109:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`aliased\`)
 $dir/unsupported.vibe:117:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`iterated\`)
-$dir/unsupported.vibe:126:1: unsupported: a write to \`xs\`, which is not bound exactly once, by \`let\`, to an array literal (in \`rebound\`)"
+$dir/unsupported.vibe:126:1: unsupported: a write to \`xs\`, which is not bound exactly once, by \`let\`, to an array literal (in \`rebound\`)
+$dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\`, which is not modelled; test the range and use \`Int::wrap_int32\` (in \`checked_word\`)"
 run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per
