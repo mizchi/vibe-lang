@@ -266,7 +266,7 @@ What each verb writes:
 | `vibe bench x_bench.vibe` | `.vibe/build/bench/x_bench.wasm` |
 | `vibe build x.vibex`, `vibe compile x.vibe` without `-o` | `.vibe/build/out/x.wasm` (`--wit`: `.vibe/build/out/x.wit`); the path is printed |
 | `-o <path>` | as given, relative to the directory you ran from. A sidecar (`.funcmap`, `.diag`) lives next to the artifact it describes, never next to a source |
-| `vibe check`, `symbols`, `type-at`, `binding-at`, `deps`, `grep`, `escapes`, `rc-classify`, `rc-plan`, `allocs`, `doc-at`, `fmt`, `normalize`, `shell` | scratch under the OS temp dir, removed on exit. The compiler cache they warm goes to `.vibe/build/cache/` like any other verb |
+| `vibe check`, `symbols`, `type-at`, `binding-at`, `deps`, `grep`, `escapes`, `rc-classify`, `rc-plan`, `rc-validate`, `allocs`, `doc-at`, `fmt`, `normalize`, `shell` | scratch under the OS temp dir, removed on exit. The compiler cache they warm goes to `.vibe/build/cache/` like any other verb |
 | `vibe add`, `vibe fetch` | `.vibe/store/`, the root `index.vpkg` |
 | `vibe pkg install` (without `--store`) | `$VIBE_HOME/lib/` |
 

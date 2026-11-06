@@ -6,14 +6,18 @@
 #   proved.vibe       every obligation proved -> no output, exit 0
 #   datatypes.vibe    structs / enums as SMT datatypes and `match` as a case
 #                     split, every obligation proved -> no output, exit 0
+#   ranges.vibe       `Int::range_all` / `Int::range_any` imported from
+#                     `@vibe/builtin` as quantifiers over an index range:
+#                     three proved, two unproved, exit 1
 #   unproved.vibe     a false ensures, an Int overflow, a callee's unmet
 #                     requires, a parameter the body shadows, a branch-local
 #                     `let`, `for` / `loop` contracts that do not hold ->
 #                     one line each with a counterexample, exit 1
 #   unsupported.vibe  constructs outside the fragment, a call to a function
 #                     with no contract, an array write another name could
-#                     see, and a recursive
-#                     cycle, are reported, exit 1
+#                     see, a recursive cycle, and an `Array::all` /
+#                     `Array::any` predicate the prover cannot quantify,
+#                     are reported, exit 1
 #   unknown.vibe      the solver running out of time is `unknown`, which
 #                     fails, exit 1
 #
@@ -55,6 +59,8 @@ run_case() {
 
 run_case proved 0 ""
 run_case datatypes 0 ""
+run_case ranges 1 "$dir/ranges.vibe:32:62: unproved: the index of xs[(i + 1)] is within the array, in \`off_by_one\` -- counterexample: <model>
+$dir/ranges.vibe:38:12: unproved: ensures (result > 0) of \`any_not_first\` -- counterexample: <model>"
 run_case unproved 1 "$dir/unproved.vibe:5:57: unproved: ensures (result > x) of \`dec\` -- counterexample: <model>
 $dir/unproved.vibe:12:5: unproved: overflow in (x + 1) in \`inc\` -- counterexample: <model>
 $dir/unproved.vibe:21:3: unproved: requires of half: (x >= 0), called in \`call_half\` -- counterexample: <model>
@@ -86,7 +92,10 @@ $dir/unproved.vibe:267:50: unproved: ensures (result > x) of \`word_next\` -- co
 $dir/unproved.vibe:272:53: unproved: ensures (result > 0) of \`word_local_wraps\` -- counterexample: <model>
 $dir/unproved.vibe:278:5: unproved: the divisor of (x / d) is not zero, in \`word_udiv\` -- counterexample: <model>
 $dir/unproved.vibe:282:58: unproved: ensures result of \`word_unsigned_low\` -- counterexample: <model>
-$dir/unproved.vibe:288:72: unproved: ensures result of \`word_join\` -- counterexample: <model>"
+$dir/unproved.vibe:288:72: unproved: ensures result of \`word_join\` -- counterexample: <model>
+$dir/unproved.vibe:298:58: unproved: ensures Array::all(xs, f=(x) -> { (x >= 0) }) of \`claims_nonneg\` -- counterexample: <model>
+$dir/unproved.vibe:305:12: unproved: ensures (result >= 0) of \`any_is_not_first\` -- counterexample: <model>
+$dir/unproved.vibe:312:31: unproved: overflow in (x + 1) in \`succ_any\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
@@ -102,7 +111,10 @@ $dir/unsupported.vibe:103:1: unsupported: a write to the parameter \`xs\`, which
 $dir/unsupported.vibe:109:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`aliased\`)
 $dir/unsupported.vibe:117:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`iterated\`)
 $dir/unsupported.vibe:126:1: unsupported: a write to \`xs\`, which is not bound exactly once, by \`let\`, to an array literal (in \`rebound\`)
-$dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\`, which is not modelled; test the range and use \`Int::wrap_int32\` (in \`checked_word\`)"
+$dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\`, which is not modelled; test the range and use \`Int::wrap_int32\` (in \`checked_word\`)
+$dir/unsupported.vibe:147:3: unsupported: \`Array::all\`'s predicate must be a lambda written at the call (in \`named_pred\`)
+$dir/unsupported.vibe:152:3: unsupported: a call inside \`Array::all\`'s predicate: its result would be one value for every element (in \`called_pred\`)
+$dir/unsupported.vibe:158:11: unsupported: \`Array::all\`'s predicate assigns \`n\` (in \`counting_pred\`)"
 run_case unknown 1 "$dir/unknown.vibe:7:12: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per

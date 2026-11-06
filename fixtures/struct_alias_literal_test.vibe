@@ -1,0 +1,161 @@
+//# #3837: a struct literal through a type alias builds the aliased struct.
+//# `type M = L`, `import ./dep { P as Q }` and an alias re-exported by
+//# another module all register the name as an alias, and `Q::{ .. }` used to
+//# answer "`Q` is not a struct" while `fn f(p: Q)` and `Q::get(p)` worked.
+//# The literal writes its fields out of order on purpose: each must land in
+//# its declared slot. Each value also carries the struct's own name: `SA` and
+//# `SB` below share a field set, and a literal laid out by shape alone printed
+//# and dispatched as `SA` (Codex on #3855).
+
+import ./_struct_alias_literal_dep.vibe {
+  P, P as Q
+}
+
+import ./_struct_alias_literal_shapes_dep.vibe {
+  SA, SB as BQ
+}
+
+struct L {
+  a: Int;
+  b: String
+} derive (Eq, Show)
+
+type M = L
+
+struct C {
+  a: Int;
+  b: String
+} derive (Show)
+
+struct E {
+  v: Int
+} derive (Show)
+
+struct F {
+  v: Int
+} derive (Show)
+
+fn E::get(_ e: E) -> String {
+  "E"
+}
+
+fn F::get(_ f: F) -> String {
+  "F"
+}
+
+type FA = F
+
+type BA = BQ
+
+// A chain longer than any fixed budget: each walk is bounded by the number of
+// declarations, so `F18` still reaches `F` rather than stopping a hop short and
+// laying the literal out as the same-shaped `E` (Codex on #3855).
+type F1 = F
+
+type F2 = F1
+
+type F3 = F2
+
+type F4 = F3
+
+type F5 = F4
+
+type F6 = F5
+
+type F7 = F6
+
+type F8 = F7
+
+type F9 = F8
+
+type F10 = F9
+
+type F11 = F10
+
+type F12 = F11
+
+type F13 = F12
+
+type F14 = F13
+
+type F15 = F14
+
+type F16 = F15
+
+type F17 = F16
+
+type F18 = F17
+
+struct Box[T] {
+  v: T
+} derive (Eq, Show)
+
+type B[T] = Box[T]
+
+// A value binder that spells an import alias shadows the VALUE, not the type:
+// `BQ::{ .. }` in its scope still names `SB`, and the checker says so. Before
+// the fix the rewrite dropped the alias with the value and these printed
+// `SA { .. }` (Codex on #3855).
+fn shadowed_by_param(BQ: Int) -> String {
+  let b = BQ::{ v: BQ }
+  "\{b}"
+}
+
+fn shadowed_by_let() -> String {
+  let BQ = 4
+  let b = BQ::{ v: BQ }
+  "\{b}"
+}
+
+fn shadowed_under_local_alias(BQ: Int) -> String {
+  let b = BA::{ v: BQ }
+  "\{b}"
+}
+
+test "an import alias of a struct builds the struct" {
+  let q = Q::{ z: true, y: "why", x: 7 }
+  inspect(q.x, content = "7")
+  inspect(q.y, content = "why")
+  inspect(q.z, content = "true")
+  inspect(Q::get(q), content = "7")
+  inspect(q == P::{ x: 7, y: "why", z: true }, content = "true")
+}
+
+test "a local alias builds the struct, a generic rename too" {
+  let m = M::{ b: "bee", a: 3 }
+  inspect(m.a, content = "3")
+  inspect(m == L::{ a: 3, b: "bee" }, content = "true")
+  let b: Box[Int] = B::{ v: 5 }
+  inspect(b.v, content = "5")
+}
+
+test "an alias-built value keeps its struct's name among same-shaped structs" {
+  let a = SA::{ v: 0 }
+  let e = E::{ v: 0 }
+  let c = C::{ a: 0, b: "c" }
+  let f = FA::{ v: 1 }
+  inspect(f.get(), content = "F")
+  inspect("\{f}", content = "F { v: 1 }")
+  let b = BQ::{ v: 2 }
+  inspect(BQ::get(b), content = "SB")
+  inspect("\{b}", content = "SB { v: 2 }")
+  let ba = BA::{ v: 3 }
+  inspect("\{ba}", content = "SB { v: 3 }")
+  inspect(a.get() + e.get() + "\{c.a}", content = "SAE0")
+}
+
+test "a value binder spelling an import alias leaves the type alias alone" {
+  let a = SA::{ v: 0 }
+  inspect(shadowed_by_param(1), content = "SB { v: 1 }")
+  inspect(shadowed_by_let(), content = "SB { v: 4 }")
+  inspect(shadowed_under_local_alias(5), content = "SB { v: 5 }")
+  inspect(a.get(), content = "SA")
+}
+
+test "a long alias chain still names its struct" {
+  let e = E::{ v: 0 }
+  let f = F18::{ v: 9 }
+  inspect(f.get(), content = "F")
+  inspect("\{f}", content = "F { v: 9 }")
+  inspect(e.get(), content = "E")
+}

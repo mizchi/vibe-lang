@@ -1,0 +1,213 @@
+//# Imports
+
+// #3718 slice 1: `vibe rc-validate` checks each function's Perceus plan
+// against the linear ownership discipline. The clean shapes below must answer
+// "" (every checked binding balances on every path); the mutation cases edit
+// ONE row of a real plan through the test seam and pin the line the validator
+// gives for it, so a validator that stopped counting would fail here rather
+// than stay quiet. The skip cases pin the shapes slice 1 reports as not
+// checked instead of guessing at.
+
+import @vibe/compiler/query {
+  rc_plan_source, rc_validate_source, rc_validate_source_borrowing, rc_validate_source_edited
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction, pa_is_consume_mark, pa_is_drop, pa_is_dup, pa_is_path_drop
+}
+
+//# Functions
+
+// `keep` consumes its argument (it stores it), `len` only reads it.
+let prologue = "enum D {\n  A(Array[Int])\n}\nlet keep: (D) -> Int = (d) -> {\n  let b = [d]\n  Array::length(b)\n}\nlet len: (D) -> Int = (d) -> {\n  match d {\n    A(xs) => Array::length(xs) + 0\n  }\n}\n"
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  run(true)\n}"
+
+fn program(_ body: String) -> String {
+  String::concat(prologue, String::concat(body, epilogue))
+}
+
+fn validate(_ body: String) -> String with Exception {
+  rc_validate_source(source = program(body), fn_filter = "run")
+}
+
+fn plan(_ body: String) -> String with Exception {
+  rc_plan_source(source = program(body), fn_filter = "run")
+}
+
+/// The plan without its first row `pick` accepts.
+fn drop_first(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool) -> Array[PerceusAction] {
+  let out: Array[PerceusAction] = []
+  let mut done = false
+  for a in plan {
+    if !done && pick(a) {
+      done = true
+    } else {
+      Array::push(out, value = a)
+    }
+  }
+  out
+}
+
+/// The plan with its first row `pick` accepts written twice.
+fn twice_first(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool) -> Array[PerceusAction] {
+  let out: Array[PerceusAction] = []
+  let mut done = false
+  for a in plan {
+    Array::push(out, value = a)
+    if !done && pick(a) {
+      done = true
+      Array::push(out, value = a)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// The plan with every consume mark of `name` moved to source offset `off`.
+fn move_marks(plan: Array[PerceusAction], name: String, off: Int) -> Array[PerceusAction] {
+  let out: Array[PerceusAction] = []
+  for a in plan {
+    if pa_is_consume_mark(a) && a.name == name {
+      Array::push(out, value = PerceusAction::{
+        kind: a.kind,
+        name: a.name,
+        binding_id: a.binding_id,
+        use_offset: off,
+        extra: a.extra
+      })
+    } else {
+      Array::push(out, value = a)
+    }
+  }
+  out
+}
+
+fn edited(body: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception {
+  rc_validate_source_edited(source = program(body), fn_filter = "run", edit = edit)
+}
+
+let two_consumes = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  keep(d) + keep(d)\n}"
+
+let borrow_then_consume = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let n = len(d)\n  n + keep(d)\n}"
+
+let split = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    keep(d)\n  } else {\n    0\n  }\n}"
+
+let merge = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    keep(d)\n  } else {\n    len(d)\n  }\n}"
+
+//# Clean plans
+
+test "two consumes of one binding take one dup" {
+  inspect(plan(two_consumes), content = "run d dup 1")
+  inspect(validate(two_consumes), content = "")
+}
+
+test "a borrow before the consume keeps the drop" {
+  inspect(validate(borrow_then_consume), content = "")
+}
+
+test "a split release balances both branches" {
+  inspect(validate(split), content = "")
+}
+
+test "a branch-dependent dup balances both branches" {
+  inspect(validate(merge), content = "")
+}
+
+test "an alias that transfers and one that dups both balance" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let e = d\n  keep(e)\n}"), content = "")
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let e = d\n  keep(e) + keep(d)\n}"), content = "")
+}
+
+test "the same name in both branches is one consume" {
+  inspect(validate("let run: (Bool) -> D = (c) -> {\n  let d = A([1])\n  if c {\n    d\n  } else {\n    d\n  }\n}"), content = "")
+}
+
+test "labeled arguments are planned through the checker's placement" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  Array::get(t, at = 0) + Array::length(t)\n}"), content = "")
+}
+
+//# Mutated plans
+
+test "a deleted scope-end drop leaks" {
+  let out = edited(body = borrow_then_consume, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_drop(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d -: owned value not consumed")
+}
+
+test "a deleted dup releases one more than held" {
+  let out = edited(body = two_consumes, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_dup(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d -: owned value released 1 more than held")
+}
+
+test "a duplicated dup leaks" {
+  let out = edited(body = two_consumes, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    twice_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_dup(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d -: owned value not consumed")
+}
+
+test "a deleted path drop leaks on the branch that did not consume" {
+  let out = edited(body = split, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_path_drop(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d if1:else: owned value not consumed")
+}
+
+test "a deleted consume mark releases twice on the consuming branch" {
+  let out = edited(body = split, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_consume_mark(a) && a.name == "d"
+    })
+  })
+  inspect(out, content = "run d if1:then: owned value released 1 more than held")
+}
+
+test "a consume mark on a borrowed occurrence is structural" {
+  let out = edited(body = split, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    move_marks(plan = p, name = "d", off = 1)
+  })
+  inspect(out, content = "run d -: consume mark at offset 1 is not a consuming occurrence\nrun d if1:then: owned value released 1 more than held")
+}
+
+test "a borrowed parameter consumed without a dup" {
+  let src = program("let run: (Bool) -> Int = (c) -> {\n  sink(A([1]))\n}\nlet sink: (D) -> Int = (d) -> {\n  keep(d)\n}")
+  inspect(rc_validate_source_borrowing(source = src, fn_filter = "sink", borrow_fn = "sink", borrow_mask = 1), content = "sink d -: borrowed parameter consumed without a dup")
+  inspect(rc_validate_source(source = src, fn_filter = "sink"), content = "")
+}
+
+//# Known leaks
+
+test "a binding consumed on one branch and read in place on the other" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  if c {\n    keep(A(t))\n  } else {\n    Array::get(t, at = 0)\n  }\n}"), content = "run t if1:else: owned value not consumed")
+}
+
+//# Not checked
+
+test "a loop over the binding is not checked" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    k = k + keep(d)\n  }\n  k\n}"), content = "run d -: not checked: loop")
+}
+
+test "an early return is not checked" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d -: not checked: early exit")
+}
+
+test "a closure capture is not checked" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let f = () -> keep(d)\n  f()\n}"), content = "run d -: not checked: closure capture\nrun * -: not checked: lambda body")
+}
+
+test "a reuse row is not checked" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let e = match d {\n    A(xs) => A(xs)\n  }\n  keep(e)\n}"), content = "run d -: not checked: reuse row\nrun * -: not checked: 1 pattern binders, 0 let mut")
+}

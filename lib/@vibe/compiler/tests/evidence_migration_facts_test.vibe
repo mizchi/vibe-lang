@@ -99,6 +99,24 @@ test "migration facts give the walked base and census, through marked rewrites a
   assert(facts_agree(facts = facts, stmts = stmts))
 }
 
+test "a rewrite that stops binding a spelling to a lambda takes it out of the base" {
+  // Two statements bind `twin` to a pure lambda, so every binder of the
+  // spelling is a candidate and `twin` joins the base. Rewriting one of them
+  // to bind `twin` to a plain value leaves one candidate against two binders.
+  let use_twin = ECall(EIdent("twin", -1), [EInt(1)], -1, [])
+  let stmts = [
+    top_fn(name = "first", params = [], body = ELet("twin", pure_lambda(), use_twin, -1)),
+    top_fn(name = "second", params = [], body = ELet("twin", pure_lambda(), use_twin, -1))
+  ]
+  let facts = edp_mf_new()
+  assert(facts_agree(facts = facts, stmts = stmts))
+  inspect(String::contains(walked_base(stmts), needle = "twin"), content = "true")
+  edp_mf_set_stmt(stmts = stmts, i = 1, stmt = top_fn(name = "second", params = [
+  ], body = ELet("twin", EInt(5), EIdent("twin", -1), -1)))
+  assert(facts_agree(facts = facts, stmts = stmts))
+  inspect(String::contains(walked_base(stmts), needle = "twin"), content = "false")
+}
+
 test "an unmarked rewrite is not seen, which is why every migration write is marked" {
   let stmts = program()
   let facts = edp_mf_new()

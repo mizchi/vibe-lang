@@ -1,0 +1,21 @@
+// #3718 (Codex review on #3859): a heap PARAMETER whose plan holds a dup
+// before the parameter-drop suffix and a scope-end drop in it. `keep` takes
+// `xs` and `Array::length(xs)` reads it afterwards, so the plan is
+// `xs dup 1`, `ys drop 1`, `xs drop 1`. `vibe rc-validate --mutate drop-dups`
+// must then report `f xs` releasing more than it holds: the deleted dup used
+// to shift the suffix below its recorded start, the validator stopped
+// counting `xs`'s drop, and the over-release read as balanced.
+// scripts/check_rc_validate_corpus_test.sh pins that line.
+
+fn keep(xs: Array[Int]) -> Array[Int] {
+  xs
+}
+
+fn f(xs: Array[Int]) -> Int {
+  let ys = keep(xs)
+  Array::length(xs) + Array::length(ys)
+}
+
+test "a kept parameter is still readable" {
+  inspect(f([1, 2, 3]), content = "6")
+}

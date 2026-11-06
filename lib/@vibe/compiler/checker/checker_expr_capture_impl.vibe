@@ -1,5 +1,5 @@
 import ./checker_expr_capture_helpers.vibe {
-  assign_target_marker, erased_throw_binder_settle, match_temp_anchor_key
+  assign_target_marker, erased_throw_binder_settle, match_temp_anchor_key, struct_literal_refusal, struct_literal_typedef
 }
 
 import ./checker_scalar_locals.vibe {
@@ -2470,9 +2470,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // field silently landed in another field's slot. Anonymous literals
       // (rn == "") keep the field-set path unchanged.
       if rn != "" {
-        match find_typedef(defs = defs, name = rn) {
+        // #3837: through a type alias too; the value has the struct's type.
+        match struct_literal_typedef(defs = defs, name = rn) {
           Some(td) => match td {
-            TDStruct(_, dfields, _, s_tparams) => {
+            TDStruct(sname, dfields, _, s_tparams) => {
+              let rn = sname
               // Unknown literal fields (present in the literal, absent from
               // the declaration).
               let mut ui = 0
@@ -2637,7 +2639,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             },
             _ => {
-              Array::push(errors, value = String::concat("`", String::concat(rn, "` is not a struct (struct literal)")))
+              Array::push(errors, value = struct_literal_refusal(defs = defs, name = rn))
               (CtUnknown, s1, c1)
             }
           },

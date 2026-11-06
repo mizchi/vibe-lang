@@ -278,7 +278,21 @@ to an array also used as a value (bound to another name, passed, reassigned,
 the iterand of a `for`), is unsupported, and so is a write in a loop's
 clause. A loop that writes an array knows of it, past the checkpoint, only
 what its invariants say. `==` on arrays is unsupported, since their
-contents past the length are not modelled. A
+contents past the length are not modelled. `Array::all(xs, f = (x) -> p)`
+and `Array::any(xs, f = (x) -> p)` are quantifiers over the indices (#3719):
+`p` holds of the element at every / some `0 <= i < length`, so a contract
+states a property of every element in the call the runtime already
+evaluates. The predicate is a one-parameter lambda written at the call; one
+that returns, assigns, writes an array or calls a function is unsupported.
+What the predicate owes (an overflow, an index) is owed for every element,
+which is stronger than the runtime needs when the call stops early, never
+weaker, and a quantified query the solver cannot settle in time is
+`unknown`, a failure. `Int::range_all(lo, hi, f = (i) -> p)` and
+`Int::range_any`, imported from `@vibe/builtin`, quantify the index itself
+over `lo <= i < hi`, so a contract states what each index owes the next:
+`Int::range_all(0, Array::length(xs) - 1, f = (i) -> xs[i] <= xs[i + 1])`
+says `xs` is sorted. Imported under another name, or from anywhere else,
+they are ordinary calls. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
@@ -501,6 +515,7 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | `symbols [--legend] <file>` | Declaration outline (`NAME KIND START END [DOC]` per line) |
 | `rc-classify <file>` | RC classifier sets (`NAME SET[,SET...]`; empty = none) |
 | `rc-plan [--fn NAME] <file>` | Perceus plan (`FN BINDING ACTION COUNT`; empty = no actions) |
+| `rc-validate [--fn NAME] [--mutate drop-dups] <file>` | Each Perceus plan checked against the linear ownership discipline (`FN BINDING PATH: MESSAGE` per violation or skipped binding; empty = every checked binding balances on every path). The file is checked alone, the build's `elaborate_heap_params` / `return_control_annotate_calls` rewrites do not run, and a heap value the planner classified as scalar is not caught in general. `--mutate drop-dups` is a self-test seam: it validates each plan with every dup row deleted, so `scripts/check_rc_validate_corpus_test.sh` can show the corpus gate fails on a wrong plan |
 | `deps [--direct] <file>` | Resolved import closure, dependency first |
 | `grep --pattern '<pat>' [paths]` | AST pattern search, with checker-backed filters |
 | `hash [--write] <pkg_dir>` | Package content hash |

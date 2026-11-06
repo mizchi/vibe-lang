@@ -81,6 +81,7 @@ import @vibe/compiler/core {
   subst_resolves_to_double,
   subst_resolves_to_string,
   trait_defined,
+  typed_add32_call_row_head,
   typed_add_row_head,
   typed_f32_assign_verdict,
   typed_f32_binop_verdict,
@@ -1216,7 +1217,65 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
     }
     out_i = out_i + 1
   }
+  add32_call_rows(checked = checked, capture = capture, offs = out_offs, keys = out_keys)
   (out_offs, out_keys)
+}
+
+/// #3825: one row per generic call that instantiates an `Add`-bounded formal
+/// at `Int32` / `UInt32` (kind 14, filed at the callee's offset by
+/// `record_add32_call`): `#add32[Int32]` / `#add32[UInt32]` when every such
+/// formal of the call is that type, `#add32[mixed]` when a 32-bit one sits
+/// beside any other type. A call none of whose `Add` formals is 32-bit files
+/// nothing: its witness is the one its arguments name.
+fn add32_call_rows(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture, offs: Array[Int], keys: Array[String]) -> Unit {
+  let site_offs: Array[Int] = []
+  let site_kinds: Array[String] = []
+  let n = Array::length(capture.binop_offsets)
+  let mut i = 0
+  while i + 1 < n {
+    if Array::get(capture.binop_kinds, at = i) == 22 {
+      let off = Array::get(capture.binop_offsets, at = i)
+      let kind = match subst_apply(s = checked.final_subst, ty = Array::get(capture.binop_types, at = i)) {
+        CtInt32 => "Int32",
+        CtUInt32 => "UInt32",
+        _ => "other"
+      }
+      let mut idx = 0 - 1
+      let mut k = 0
+      while k < Array::length(site_offs) {
+        if Array::get(site_offs, at = k) == off {
+          idx = k
+          k = Array::length(site_offs)
+        } else {
+          k = k + 1
+        }
+      }
+      if idx < 0 {
+        Array::push(site_offs, value = off)
+        Array::push(site_kinds, value = kind)
+      } else if Array::get(site_kinds, at = idx) != kind {
+        Array::set(site_kinds, at = idx, value = "mixed")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 2
+  }
+  let mut j = 0
+  while j < Array::length(site_offs) {
+    let kind = Array::get(site_kinds, at = j)
+    if kind != "other" {
+      Array::push(offs, value = Array::get(site_offs, at = j))
+      Array::push(keys, value = impl_target_key(TyApp(typed_add32_call_row_head(), [
+        TyName(kind)
+      ])))
+    } else {
+      ()
+    }
+    j = j + 1
+  }
 }
 
 //# #3133: index receiver rows

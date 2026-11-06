@@ -1,7 +1,7 @@
 # Compiler invocation configuration (#1953)
 
 Target `#cfg` flags have scoped entries for the flat-source RC compiler,
-shared FS parsing and complete filesystem source collection. These are migration slices,
+shared FS parsing, source collection and filesystem typechecking. These are migration slices,
 not completion of #1953 or a claim that the compiler as a whole is reentrant.
 
 ## Boundary and authority
@@ -96,19 +96,62 @@ their lowering, diagnostics and `None` binder-authority paths are preserved.
 The structural binder-context gate pins both the compatibility delegations
 and the explicit variants.
 
-Whole-file checking, merge/codegen and final-artifact orchestration still need
-the snapshot passed onward from collection. Their current CLI entry remains
-legacy, and mutable caches still need ownership or synchronization before
-arbitrary concurrent compiler calls. Source-collection isolation is one stage
-of that migration.
+## Filesystem typechecking
+
+`check_file_fs_configured` captures `Config` once and carries the same `TargetCfg`
+through source collection, import planning and the module checking walk. It owns
+the DB and returns `Unit`. `module_plan_manifest_fs_configured` supplies the same
+boundary for a separately requested dependency plan. The reusable DB entry,
+`db_typecheck_fs_with_config`, accepts immutable data directly.
+
+A caller retaining a DB handles the flag read before passing a snapshot to that
+data entry. The closure-escape checker conservatively treats an opaque result
+as potentially holding a function; putting an effectful opaque-DB return inside
+a handler does not prove it handler-independent. The configured file check
+keeps that result internal. No exception to the escape rule is introduced.
+
+`TypeDb` records the exact target-flag identity of its derived results. A change
+forgets resident fingerprints, dependency edges, environments and downstream
+merge/artifact products, while preserving source inputs, source-set revision and
+cumulative work counters. An unchanged identity retains warm reuse. Non-empty
+flag identities also enter conservative module fingerprints, so shared memos
+keyed by those fingerprints cannot conflate two configurations. The empty-flag
+fingerprint retains its previous representation. Compatibility fingerprint
+helpers keep their original input-only recipe, independently of ambient flags.
+The legacy in-memory coordinator uses the checker's flag-aware fingerprint
+for its warm lookup too; configuration switches still discard its derived results.
+Its parsing and other policy reads remain a separate migration slice.
+
+Storage helpers take only an explicit namespace, not a parser configuration.
+`*_in_namespace` adapters share the legacy storage recipes; compatibility cache
+APIs capture `persistent_cache_namespace_current`, preserving the old cache
+setter's behavior independently of parser flags. Scoped callers pass
+`target_cfg_namespace` instead. This covers dependency lists, leaf fingerprints,
+module environments, TDRE aliases/witnesses and checked-module products. The
+scoped alias input key binds non-empty flags too; its direct and segmented encoders
+agree, and empty flags retain the previous bytes. Compatibility alias-key
+functions retain their original declared inputs and framing, without acquiring
+a new dependency on the ambient flag cells. A checked-module product
+binds its namespace inside its exact input context, so moving a payload into
+another flag set's valid outer storage envelope still forces a fresh check.
+
+The checker parse, first-semantic-use observation and optional interface
+observations use the same snapshot as planning. Legacy semantic-use observations
+keep their constant-time ambient identity getter. Cache mode and checked-row
+policy are separate remaining configuration; mutable contents still need
+ownership or synchronization before arbitrary concurrent compiler calls.
+
+Merge/codegen, final-artifact orchestration, worker/tooling boundaries and CLI
+integration remain later slices. Existing CLI entries retain compatibility
+behavior rather than granting the whole compiler reentrancy.
 
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
 | --- | --- | --- |
-| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection uses explicit `TargetCfg`; whole-file checking/merge, tooling and worker entry points still need the same snapshot passed through. Legacy parser entries retain compatibility reads. |
-| Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Parse-derived collection caches and AST storage use captured identities. Typing, checked-module, final-artifact and content-only fingerprint/stamp cache adapters still need migration; the latter values are independent of target flags. |
-| In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection uses exact scoped identities for parse, import-name, re-export and generated-type reuse. Legacy checker semantic-use observations still enter through compatibility APIs. |
+| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection and FS checking use explicit `TargetCfg`; memory-only checking, merge/codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
+| Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Collection, AST, typing and checked-module storage use captured identities in the scoped lane. Final-artifact and content-only fingerprint/stamp adapters remain; the latter values are independent of target flags. Cache-only compatibility APIs retain the legacy cell. |
+| In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection and checking use scoped identities for parse, semantic use, import-name, re-export and generated-type reuse. Other merge/tooling entries retain compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
 | Generated-source authority | positional CLI's `VIBE_INTERNAL_TRUSTED_SOURCE`; source compilers receive `trusted_generated` | Preserve the out-of-band authorization; source bytes must never enable the bypass. It is not granted by the flag-only `Config` effect. |
 | Checked Exception-row mode | `checker/effects/checker_effects_dh_call_to_binding.vibe`: `error_row_mode_cell`, CLI `VIBE_CHECK_ERROR_ROW` | Migrate the checker/effect-pass policy together after the target flags. This remains shared configuration, unlike checked type facts belonging to a compilation. |
@@ -152,6 +195,17 @@ Mutations selecting ambient flags, a global source-list namespace, another
 configuration's registry rows or another configuration's type-parameter memo
 must fail at runtime. The bootstrap gate also runs these with AST caching on.
 
-Next, carry the snapshot through whole-file orchestration and its remaining
-cache families, then migrate authority reads and checker policies. Only after
-every supported entry and artifact uses scoped configuration can #1953 close.
+`invocation_config_typecheck_test.vibe` checks resident flag switches, unchanged
+warm reuse, scoped plans and dependency-list storage, checked-module disk hits,
+first semantic use, successful/failing nested calls, flag-bound fingerprints and
+alias keys, and refusal/repair of a product copied across namespaces. The
+bootstrap gate runs it against its own fresh stage2 with AST caching on. Negative
+controls must fail at runtime when parsing reads ambient flags, resident results
+survive a flag change, dependency-list storage selects the global namespace,
+fingerprints or alias keys omit flags, checked-module input context reads the legacy namespace, or a compatibility
+logical key acquires an ambient flag dependency. `incremental_test.vibe` pins preserved inputs/revision/counters
+when derived results are forgotten.
+
+Next, carry the snapshot into CLI orchestration, merge/codegen and final
+artifacts, then migrate remaining authority reads and checker policies. Only
+after every supported entry and artifact uses scoped configuration can #1953 close.

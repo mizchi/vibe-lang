@@ -138,14 +138,26 @@ export fn rewrite_addition(l: Expr, r: Expr, rl: Expr, rr: Expr, off: Int, binds
 /// Float and Double are boxed f64 values. The identity conversion tells code
 /// generation to unbox BOTH operands. Float rounds at this step, even if the
 /// caller never directly mentions Float (or calls the generic repeatedly).
+/// `Int32` / `UInt32` are held as the `Int` they read as, so their witness
+/// adds those `Int`s and wraps the sum at 32 bits (#3825), the generic `+`
+/// then answering what the concrete `+` at that type does. It is built after
+/// the `Int32` pass has erased both types, so it is written as that pass's
+/// output: `Int` parameters and the pass's wrap,
+/// `((a + b + 2^31) & (2^32 - 1)) - 2^31` for `Int32` and
+/// `(a + b) & (2^32 - 1)` for `UInt32`.
 export fn scalar_add_witness(cname: String, m: String) -> Option[Expr] {
-  if m != "add" || (cname != "Int" && cname != "String" && cname != "Float64" && cname != "Float32" && cname != "f32") {
+  if m != "add" || (cname != "Int" && cname != "String" && cname != "Float64" && cname != "Float32" && cname != "f32" && cname != "Int32" && cname != "UInt32") {
     None
   }
   else {
+    let held = if cname == "Int32" || cname == "UInt32" {
+      "Int"
+    } else {
+      cname
+    }
     let params: Array[(String, Option[TypeExpr])] = [
-      ("__add_a", Some(TyName(cname))),
-      ("__add_b", Some(TyName(cname)))
+      ("__add_a", Some(TyName(held))),
+      ("__add_b", Some(TyName(held)))
     ]
     let a = EIdent("__add_a", -1)
     let b = EIdent("__add_b", -1)
@@ -154,6 +166,12 @@ export fn scalar_add_witness(cname: String, m: String) -> Option[Expr] {
     }
     else if cname == "Int" {
       EBinOp("+", a, b, -1)
+    }
+    else if cname == "Int32" {
+      EBinOp("-", EBinOp("&", EBinOp("+", EBinOp("+", a, b, -1), EInt(2147483648), -1), EInt(4294967295), -1), EInt(2147483648), -1)
+    }
+    else if cname == "UInt32" {
+      EBinOp("&", EBinOp("+", a, b, -1), EInt(4294967295), -1)
     }
     else {
       let sum = EBinOp("+", ECall(builtin_ref("Float32::to_float64"), [a], -1, [
@@ -165,6 +183,6 @@ export fn scalar_add_witness(cname: String, m: String) -> Option[Expr] {
         ECall(builtin_ref("Float64::to_float32"), [sum], -1, [])
       }
     }
-    Some(EFn(array_empty(), array_empty(), params, Some(TyName(cname)), None, body))
+    Some(EFn(array_empty(), array_empty(), params, Some(TyName(held)), None, body))
   }
 }

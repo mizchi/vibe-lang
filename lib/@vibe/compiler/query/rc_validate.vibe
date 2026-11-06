@@ -1,0 +1,201 @@
+//# `vibe rc-validate` (issue 3718, slice 1).
+//#
+//# Builds every function's Perceus plan on the `rc-plan` lane (the same
+//# parse, check, prelude, classifier tables and normalization) and checks it
+//# against the linear ownership discipline with
+//# `perceus_validate_fn`. One line per violation; empty output means every
+//# binding the validator could check balances on every path.
+//#
+//# Lane gaps, shared with `rc-plan`: the file is checked alone, and the
+//# compile pipeline's `elaborate_heap_params` and
+//# `return_control_annotate_calls` do not run here, so a plan the build
+//# makes from a rewritten body can differ from the one checked.
+
+import @vibe/compiler/core {
+  Expr
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction, build_perceus_plan_with_params_split, pa_is_dup, perceus_last_plan_classes, perceus_validate_fn
+}
+
+import ./rc_query.vibe {
+  rcq_planned_fns
+}
+
+fn rcv_identity(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
+  plan
+}
+
+/// `--mutate drop-dups`: the plan without any of its PaDup rows.
+fn rcv_drop_dups(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
+  let out: Array[PerceusAction] = []
+  for a in plan {
+    if pa_is_dup(a) {
+      ()
+    } else {
+      Array::push(out, value = a)
+    }
+  }
+  out
+}
+
+/// The plan the validator is given, and its parameter-drop boundary. An edit
+/// that may delete rows on both sides of the boundary (`split_edit`, which
+/// `--mutate drop-dups` is) runs on each side separately, and the boundary
+/// moves to the edited prefix's length: a deleted dup row before the suffix
+/// would otherwise shift a parameter's scope-end drop below `start`, where
+/// the validator does not count it, and an over-release would read as
+/// balanced (Codex review on #3859). A whole-plan edit (the test seam) keeps
+/// `start`; it edits by position and must keep the boundary itself.
+fn rcv_edit_plan(fname: String, plan: Array[PerceusAction], start: Int, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], split_edit: Bool) -> (Array[PerceusAction], Int) {
+  if !split_edit {
+    (edit(fname, plan), start)
+  } else {
+    let cut = if start < 0 {
+      0
+    } else if start > Array::length(plan) {
+      Array::length(plan)
+    } else {
+      start
+    }
+    let head: Array[PerceusAction] = []
+    let tail: Array[PerceusAction] = []
+    let mut i = 0
+    while i < Array::length(plan) {
+      if i < cut {
+        Array::push(head, value = Array::get(plan, at = i))
+      } else {
+        Array::push(tail, value = Array::get(plan, at = i))
+      }
+      i = i + 1
+    }
+    let new_head = edit(fname, head)
+    let out: Array[PerceusAction] = []
+    for a in new_head {
+      Array::push(out, value = a)
+    }
+    for a in edit(fname, tail) {
+      Array::push(out, value = a)
+    }
+    (out, Array::length(new_head))
+  }
+}
+
+fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], split_edit: Bool, borrow_fn: String, borrow_mask: Int) -> String with Exception {
+  let names: Array[String] = []
+  let fns: Array[Expr] = []
+  let tables: Array[Array[String]] = []
+  let masks: Array[Int] = []
+  rcq_planned_fns(source = source, fn_filter = fn_filter, verb = "rc-validate", out_names = names, out_fns = fns, tables = tables, masks = masks)
+  let borrow_ret = Array::get(tables, at = 0)
+  let borrow_param = Array::get(tables, at = 1)
+  let view_ret = Array::get(tables, at = 2)
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < Array::length(fns) {
+    let fname = Array::get(names, at = i)
+    match Array::get(fns, at = i) {
+      EFn(_, _, params, _, _, body) => {
+        let drop_start: Array[Int] = []
+        let plan = build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret, out_param_drop_start = drop_start)
+        let class_names: Array[String] = []
+        let class_bits: Array[Int] = []
+        perceus_last_plan_classes(out_names = class_names, out_bits = class_bits)
+        let start = if Array::length(drop_start) > 0 {
+          Array::get(drop_start, at = 0)
+        } else {
+          0
+        }
+        let (vfns, vmasks) = rcv_masks(fname = fname, borrow_param = borrow_param, masks = masks, borrow_fn = borrow_fn, borrow_mask = borrow_mask)
+        let (vplan, vstart) = rcv_edit_plan(fname = fname, plan = plan, start = start, edit = edit, split_edit = split_edit)
+        let lines = perceus_validate_fn(fname = fname, params = params, body = body, plan = vplan, param_drop_start = vstart, class_names = class_names, class_bits = class_bits, borrow_param_fns = vfns, masks = vmasks)
+        let mut j = 0
+        while j < Array::length(lines) {
+          if first {
+            first = false
+          } else {
+            StringBuilder::push(acc, value = "\n")
+          }
+          StringBuilder::push(acc, value = Array::get(lines, at = j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+/// The borrow masks the VALIDATOR reads, with `borrow_fn`'s own entry
+/// replaced by `borrow_mask` (none when `borrow_fn` is empty). The planner
+/// always keeps the real ones, so a test can state "this ABI borrows the
+/// parameter the plan consumes" without a program that makes it so.
+fn rcv_masks(fname: String, borrow_param: Array[String], masks: Array[Int], borrow_fn: String, borrow_mask: Int) -> (Array[String], Array[Int]) {
+  if borrow_fn == "" || borrow_fn != fname {
+    (borrow_param, masks)
+  } else {
+    let names: Array[String] = []
+    let bits: Array[Int] = []
+    let mut found = false
+    let mut i = 0
+    while i < Array::length(borrow_param) {
+      let n = Array::get(borrow_param, at = i)
+      Array::push(names, value = n)
+      if n == borrow_fn {
+        Array::push(bits, value = borrow_mask)
+        found = true
+      } else if i < Array::length(masks) {
+        Array::push(bits, value = Array::get(masks, at = i))
+      } else {
+        Array::push(bits, value = 0)
+      }
+      i = i + 1
+    }
+    if found {
+      ()
+    } else {
+      Array::push(names, value = borrow_fn)
+      Array::push(bits, value = borrow_mask)
+    }
+    (names, bits)
+  }
+}
+
+/// #3718: `vibe rc-validate`. One line per plan that violates the linear
+/// ownership discipline (see `perceus_validate_fn` for the line forms);
+/// empty when every checked binding balances. `fn_filter` empty validates
+/// every user function; a filter naming no function throws.
+export fn rc_validate_source(source: String, fn_filter: String) -> String with Exception {
+  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = "", borrow_mask = 0)
+}
+
+/// Test seam: validate the plan `edit` returns for each function instead of
+/// the planner's own, so a test can delete, duplicate or move a row and pin
+/// the line the validator gives for it.
+export fn rc_validate_source_edited(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception {
+  rcv_run(source = source, fn_filter = fn_filter, edit = edit, split_edit = false, borrow_fn = "", borrow_mask = 0)
+}
+
+/// Test seam: validate as if `borrow_fn`'s parameters arrived under
+/// `borrow_mask` (bit i: parameter i is borrowed), while the plan stays the
+/// one built for the real masks.
+export fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow_fn: String, borrow_mask: Int) -> String with Exception {
+  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = borrow_fn, borrow_mask = borrow_mask)
+}
+
+/// Self-test seam behind `vibe rc-validate --mutate MUTATION`: validate a
+/// DELIBERATELY broken copy of each real plan, so a gate's self-test can show
+/// that a wrong plan in the corpus it sweeps makes the gate fail. The one
+/// mutation is `drop-dups` (every PaDup row deleted); any other name throws.
+/// Not a mode for reading results: the lines describe a plan the compiler
+/// never builds.
+export fn rc_validate_source_mutated(source: String, fn_filter: String, mutation: String) -> String with Exception {
+  if mutation == "drop-dups" {
+    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_drop_dups, split_edit = true, borrow_fn = "", borrow_mask = 0)
+  } else {
+    throw("rc-validate: unknown --mutate value: " + mutation + " (expected drop-dups)")
+  }
+}

@@ -141,8 +141,9 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   else { 0 }`, also an array literal `[x, 0]`). A literal is refused when it
   does not fit. Elsewhere, convert with `Int::wrap_int32`.
 - **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
-  `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` refuses
-  them, because a generic `+` would not wrap. A trait whose methods only read
+  `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` holds, and
+  a generic `+` wraps as the concrete one does (`add(2147483647, 1)` is
+  `-2147483648` at `Int32`). A trait whose methods only read
   `Self` is served by `Int`'s impl, which sees the same integer: `[T: Hash]`
   holds, so a `Set[Int32]` works, and they are builtin `Map` keys too. A
   trait is borrowed only when each parameter is `Self` itself or mentions no
@@ -3097,8 +3098,9 @@ call it directly, inside its own module. A key the checker only inferred
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
-`Int::is_even`, `Int::is_odd`, `Int::pow`, `Int::gcd`, `Double::round`,
-`Double::trunc`, `Double::clamp` -- library functions in `@vibe/builtin`, so
+`Int::is_even`, `Int::is_odd`, `Int::pow`, `Int::gcd`, `Int::range_all`,
+`Int::range_any`, `Double::round`, `Double::trunc`, `Double::clamp` -- library
+functions in `@vibe/builtin`, so
 import the ones you call (`import @vibe/builtin { Int::abs, Double::round }`).
 Without the import the call is `unknown name: Int::abs`, and the message names
 that import. `Double::abs`, `Double::max`, `Double::min`, `Double::floor` and

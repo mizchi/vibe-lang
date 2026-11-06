@@ -67,6 +67,7 @@ import @vibe/compiler/core {
   generic_impl_cmp_refusal,
   has_standard_effect_policy,
   has_standard_host_provider,
+  impl_param_add32_marker,
   is_exception_effect_name,
   lookup_registry_builtin,
   rewrite_import_alias_stmt,
@@ -169,7 +170,13 @@ fn unsatisfied_bound_hint(env: TypeEnv, s: Subst, trait_name: String, resolved: 
     String::concat(declared, String::concat(why, String::concat(cost, edit)))
   } else {
     match generic_impl_cmp_refusal(env = env, s = s, trait_name = trait_name, resolved = resolved) {
-      Some((bound, inner, arg)) => {
+      Some((bound, inner, arg)) => if inner == impl_param_add32_marker() {
+        // #3825: `impl [T: Add] Twice for Box[T]` at `Box[Int32]`.
+        let shown = type_to_string(arg)
+        let needs = String::concat(" (its generic impl needs `", String::concat(shown, String::concat(": ", String::concat(trait_reference_display(bound), "`)"))))
+        let why = String::concat(": a generic impl's `Add` witness is built for the erased `Int`, so its `+` would not wrap at 32 bits and the sum would be silently wrong. Convert with `", String::concat(shown, "::to_int` first, or call a generic function whose own `Add`-bounded parameter takes the 32-bit value, where `+` wraps"))
+        String::concat(needs, why)
+      } else {
         // #3350: `impl [T: Eq] Same for Box[T]` at `Box[Pt]`. The impl is
         // declared; what fails is its parameter bound at `Pt`, so say which.
         let needs = String::concat(" (its generic impl needs `", String::concat(type_to_string(arg), String::concat(": ", String::concat(trait_reference_display(bound), "`"))))

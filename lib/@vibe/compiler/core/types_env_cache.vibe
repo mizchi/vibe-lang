@@ -1456,6 +1456,68 @@ export fn env_lookup_binding_including_surface(env: TypeEnv, name: String) -> Op
   result
 }
 
+/// #3837: `find_typedef` for a struct literal, following `TDAlias` hops to the
+/// struct a name denotes. `type Q = P` and `import ./a.vibe { P as Q }` both
+/// register `Q` as an alias, so `Q::{ x: 1 }` used to answer "`Q` is not a
+/// struct" while `fn f(p: Q)` and `Q::get(p)` worked.
+///
+/// An alias is followed only when the struct it names gets exactly the
+/// alias's own parameters (`type Q = P`, `type B[T] = Box[T]`). A pinning
+/// alias (`type IB = Box[Int]`) is not: the literal infers its own type
+/// arguments, so `IB::{ v: "s" }` would build a `Box[String]` under a name
+/// that says `Box[Int]`. That walk stops, and the caller refuses it
+/// (`struct_literal_refusal`). A chain that does not end at a struct answers
+/// what `find_typedef` would, so every other path is unchanged. The walk is
+/// bounded by the number of declarations, so any acyclic chain reaches its end.
+export fn find_struct_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
+  let first = find_typedef(defs = defs, name = name)
+  let mut cur = first
+  let mut fuel = Array::length(defs) + 1
+  let mut result = None
+  while fuel > 0 {
+    fuel = fuel - 1
+    match cur {
+      Some(TDStruct(sn, fs, derives, params)) => {
+        result = Some(TDStruct(sn, fs, derives, params))
+        fuel = 0
+      },
+      Some(TDAlias(_, aparams, target)) => match target {
+        CtStruct(n) => cur = find_typedef(defs = defs, name = n),
+        CtNamed(n, args) => if alias_passes_own_params(params = aparams, args = args) {
+          cur = find_typedef(defs = defs, name = n)
+        } else {
+          fuel = 0
+        },
+        _ => fuel = 0
+      },
+      _ => fuel = 0
+    }
+  }
+  match result {
+    Some(td) => Some(td),
+    None => first
+  }
+}
+
+/// Whether `args` are exactly the formals `params`, in order: inside an alias
+/// body a formal is `CtNamed(<formal>, [])`.
+fn alias_passes_own_params(params: Array[String], args: Array[Type]) -> Bool {
+  if Array::length(params) != Array::length(args) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(args) && ok {
+      ok = match Array::get(args, at = i) {
+        CtNamed(n, inner) => Array::length(inner) == 0 && n == type_param_name(Array::get(params, at = i)),
+        _ => false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
 export fn env_bind_all(env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
   let len = Array::length(bindings)
   let mut i = 0

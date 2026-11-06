@@ -1104,6 +1104,31 @@ fn edp_binder_counts_log() -> EdpBinderCounts {
   (edp_binder_unused_index, edp_binder_unused_values, log, true)
 }
 
+/// The binder counts of the live facts table (`edp_mf_new`), kept up to date
+/// by `edp_mf_refresh`: it subtracts a rewalked statement's old tally log and
+/// adds the new one, so `edp_mf_base` reads the counts instead of replaying
+/// every statement's log. A pass plans several migrations and asks for the
+/// base before each, so that replay ran once per migration over the whole
+/// program (#3856). `edp_mf_counted` is how many statements the counts cover;
+/// a table they do not cover falls back to the replay.
+let edp_mf_counts: Array[EdpBinderCounts] = []
+let edp_mf_counted: Array[Int] = [-1]
+
+/// How many candidate lambdas bind each spelling, kept the same way for the
+/// same table (#3856): a spelling is a sole lambda spelling when this equals
+/// its binder count, so `edp_mf_base` asks that of each candidate instead of
+/// recounting every candidate and building the set of sole spellings first.
+let edp_mf_cand_counts: Array[EdpBinderCounts] = []
+
+/// Undo one `edp_tally`. A count that reaches zero answers like an absent
+/// one: `edp_binder_count` is the only reader.
+fn edp_untally(bcount: EdpBinderCounts, nm: String) -> Unit {
+  match MutMap::get(bcount.0, k = nm) {
+    Some(index) => Array::set(bcount.1, at = index, value = Array::get(bcount.1, at = index) - 1),
+    None => ()
+  }
+}
+
 fn edp_binder_count(counts: EdpBinderCounts, name: String) -> Int {
   match MutMap::get(counts.0, k = name) {
     Some(index) => Array::get(counts.1, at = index),
@@ -1553,7 +1578,7 @@ export fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Arr
     edp_lambda_candidates_stmt(stmt = Array::get(stmts, at = i), names = names, bodies = bodies, bcount = bcount)
     i = i + 1
   }
-  edp_append_visible_pure_from_candidates(stmts = stmts, pure_fns = pure_fns, names = names, bodies = bodies, bcount = bcount)
+  edp_append_visible_pure_from_candidates(stmts = stmts, pure_fns = pure_fns, names = names, bodies = bodies, bcount = bcount, cand = None)
 }
 
 /// One statement's share of the candidate walk. It only appends and tallies,
@@ -1577,8 +1602,17 @@ fn edp_lambda_candidates_stmt(stmt: Stmt, names: Array[String], bodies: Array[Ex
   }
 }
 
-fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[String], names: Array[String], bodies: Array[Expr], bcount: EdpBinderCounts) -> Unit {
-  let sole = edp_lambda_only_spellings(cand_names = names, bcount = bcount)
+/// `cand` is the candidate count of each spelling when the caller keeps one
+/// (`edp_mf_base`); without it the sole spellings are counted here.
+fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[String], names: Array[String], bodies: Array[Expr], bcount: EdpBinderCounts, cand: Option[EdpBinderCounts]) -> Unit {
+  let sole = match cand {
+    Some(_) => MutSet::new_string(),
+    None => edp_lambda_only_spellings(cand_names = names, bcount = bcount)
+  }
+  let is_sole = (nm: String) -> match cand {
+    Some(counts) => edp_binder_count(counts = counts, name = nm) == edp_binder_count(counts = bcount, name = nm),
+    None => MutSet::has(sole, x = nm)
+  }
   // Keep the ordered result (including existing duplicates) while indexing
   // membership once per pass. New names become visible in the same iteration.
   let pure_names: MutSet[String] = MutSet::with_capacity(hash_fn = hash_string, eq_fn = eq_string, capacity = Array::length(pure_fns) * 10 / 7 + 1)
@@ -1592,7 +1626,7 @@ fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[S
     let mut j = 0
     while j < Array::length(names) {
       let nm = Array::get(names, at = j)
-      if MutSet::has(pure_names, x = nm) || !MutSet::has(sole, x = nm) {
+      if MutSet::has(pure_names, x = nm) || !is_sole(nm) {
         ()
       } else if edp_name_bodies_all_pure(name = nm, at = at, bodies = bodies, pure_fns = pure_names) {
         Array::push(pure_fns, value = nm)
@@ -2054,6 +2088,11 @@ type EdpStmtFacts = (Array[String], Array[Expr], Array[String], Array[String], A
 /// Facts of each statement, valid for the tree as of the last refresh.
 export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])] {
   edp_mf_dirty_reset()
+  Array::truncate(edp_mf_counts, length = 0)
+  Array::push(edp_mf_counts, value = edp_binder_counts_new())
+  Array::truncate(edp_mf_cand_counts, length = 0)
+  Array::push(edp_mf_cand_counts, value = edp_binder_counts_new())
+  Array::set(edp_mf_counted, at = 0, value = 0)
   []
 }
 
@@ -2081,19 +2120,54 @@ fn edp_mf_stmt_facts(_ stmt: Stmt) -> EdpStmtFacts {
 /// stands.
 export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt]) -> Unit {
   let known = Array::length(facts)
+  let counted = Array::length(edp_mf_counts) == 1 && Array::get(edp_mf_counted, at = 0) == known
   let walked = MutSet::new_int()
   for i in edp_mf_dirty_indices() {
     if i >= 0 && i < known && !MutSet::has(walked, x = i) {
       MutSet::insert(walked, x = i)
-      Array::set(facts, at = i, value = edp_mf_stmt_facts(Array::get(stmts, at = i)))
+      let fresh = edp_mf_stmt_facts(Array::get(stmts, at = i))
+      if counted {
+        let counts = Array::get(edp_mf_counts, at = 0)
+        let cand = Array::get(edp_mf_cand_counts, at = 0)
+        let (old_names, _, old_tallies, _, _, _, _, _) = Array::get(facts, at = i)
+        for nm in old_tallies {
+          edp_untally(bcount = counts, nm = nm)
+        }
+        for nm in old_names {
+          edp_untally(bcount = cand, nm = nm)
+        }
+        let (new_names, _, new_tallies, _, _, _, _, _) = fresh
+        for nm in new_tallies {
+          edp_tally(bcount = counts, nm = nm)
+        }
+        for nm in new_names {
+          edp_tally(bcount = cand, nm = nm)
+        }
+      } else ()
+      Array::set(facts, at = i, value = fresh)
     } else ()
   }
   edp_mf_dirty_reset()
   let mut i = known
   while i < Array::length(stmts) {
-    Array::push(facts, value = edp_mf_stmt_facts(Array::get(stmts, at = i)))
+    let fresh = edp_mf_stmt_facts(Array::get(stmts, at = i))
+    if counted {
+      let (new_names, _, new_tallies, _, _, _, _, _) = fresh
+      for nm in new_tallies {
+        edp_tally(bcount = Array::get(edp_mf_counts, at = 0), nm = nm)
+      }
+      for nm in new_names {
+        edp_tally(bcount = Array::get(edp_mf_cand_counts, at = 0), nm = nm)
+      }
+    } else ()
+    Array::push(facts, value = fresh)
     i = i + 1
   }
+  Array::set(edp_mf_counted, at = 0, value = if counted {
+    Array::length(facts)
+  } else {
+    -1
+  })
 }
 
 /// The inert base edp_apply_migration_with_tree_facts computes for `stmts`
@@ -2121,7 +2195,12 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
   edp_append_ctor_inert_names(stmts = stmts, pure_fns = fresh)
   let names = empty_str_array()
   let bodies: Array[Expr] = []
-  let bcount = edp_binder_counts_new()
+  let running = Array::length(edp_mf_counts) == 1 && Array::get(edp_mf_counted, at = 0) == Array::length(facts)
+  let bcount = if running {
+    Array::get(edp_mf_counts, at = 0)
+  } else {
+    edp_binder_counts_new()
+  }
   for fact in facts {
     let (fnames, fbodies, tallies, _, _, _, _, _) = fact
     for nm in fnames {
@@ -2130,11 +2209,17 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
     for body in fbodies {
       Array::push(bodies, value = body)
     }
-    for nm in tallies {
-      edp_tally(bcount = bcount, nm = nm)
-    }
+    if !running {
+      for nm in tallies {
+        edp_tally(bcount = bcount, nm = nm)
+      }
+    } else ()
   }
-  edp_append_visible_pure_from_candidates(stmts = stmts, pure_fns = fresh, names = names, bodies = bodies, bcount = bcount)
+  edp_append_visible_pure_from_candidates(stmts = stmts, pure_fns = fresh, names = names, bodies = bodies, bcount = bcount, cand = if running {
+    Some(Array::get(edp_mf_cand_counts, at = 0))
+  } else {
+    None
+  })
   fresh
 }
 

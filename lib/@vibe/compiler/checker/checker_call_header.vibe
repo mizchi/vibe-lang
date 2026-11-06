@@ -1,3 +1,7 @@
+import @vibe/core {
+  array_empty
+}
+
 import ./checker_parameter_defaults.vibe {
   checker_parameter_defaults
 }
@@ -13,7 +17,8 @@ import @vibe/compiler/core {
   env_bind_with_origin,
   env_lookup,
   env_lookup_binding,
-  param_names_prefix
+  param_names_prefix,
+  record_alias_target
 }
 
 import @vibe/core {
@@ -28,7 +33,10 @@ import @vibe/core {
 /// placement, the label sites -- ever sees the marker.
 let positional_rows: Array[(String, Array[Int])] = Array::slice([("", [0])], start = 0, end = 0)
 
-/// The `_` slots written in `stmts`, empty when none.
+/// The `_` slots written in `stmts`, empty when none. #3837: the rows also
+/// name each alias a struct literal may be written through -- a `type` alias
+/// the file declares and a name it imports with `as` -- under a key no
+/// function name can spell (`checker_record_alias_is_local`).
 export fn checker_positional_rows_of(_ stmts: Array[Stmt]) -> Array[(String, Array[Int])] {
   let out: Array[(String, Array[Int])] = []
   for stmt in stmts {
@@ -36,10 +44,71 @@ export fn checker_positional_rows_of(_ stmts: Array[Stmt]) -> Array[(String, Arr
       SPositionalParams(rows) => for row in rows {
         Array::push(out, value = row)
       },
+      STypeAlias(_, name, params, target) => {
+        Array::push(out, value = (record_alias_row_key(name), array_empty()))
+        match record_alias_target(params = params, target = target) {
+          Some(t) => Array::push(out, value = (record_alias_target_row_key(name = name, target = t), array_empty())),
+          None => ()
+        }
+      },
+      SImport(_, items) => for item in items {
+        match item.alias {
+          Some(alias) => {
+            Array::push(out, value = (record_alias_row_key(alias), array_empty()))
+            Array::push(out, value = (record_alias_target_row_key(name = alias, target = item.name), array_empty()))
+          },
+          None => ()
+        }
+      },
       _ => ()
     }
   }
   out
+}
+
+fn record_alias_row_key(_ name: String) -> String {
+  String::concat("#record-alias ", name)
+}
+
+fn record_alias_target_prefix(_ name: String) -> String {
+  String::concat("#record-alias-to ", String::concat(name, " "))
+}
+
+fn record_alias_target_row_key(name: String, target: String) -> String {
+  String::concat(record_alias_target_prefix(name), target)
+}
+
+/// #3837: the name a local alias stands for as the file spells it -- the
+/// head of `type M = R`, or `X` of `import ./a.vibe { X as Q }` -- when the
+/// alias passes its own parameters through. Lowering renames a literal
+/// through the file's own aliases one hop at a time, and through nothing else.
+export fn checker_record_alias_target(_ name: String) -> Option[String] {
+  let prefix = record_alias_target_prefix(name)
+  let mut found = None
+  for row in positional_rows {
+    let (n, _) = row
+    if String::starts_with(n, prefix = prefix) {
+      found = Some(String::substring(n, start = String::length(prefix), end = String::length(n)))
+    }
+  }
+  found
+}
+
+/// #3837: whether the program being checked declares `name` itself, as a
+/// `type` alias or an `as` import. Lowering renames a struct literal written
+/// through such an alias to the struct it names; an alias another module
+/// declares and this one imports under its own name it cannot see through,
+/// so a literal through it would be laid out by its field set alone.
+export fn checker_record_alias_is_local(_ name: String) -> Bool {
+  let key = record_alias_row_key(name)
+  let mut found = false
+  for row in positional_rows {
+    let (n, _) = row
+    if n == key {
+      found = true
+    }
+  }
+  found
 }
 
 /// Publish `rows` and return the ones they replace, for the caller to restore.
@@ -267,22 +336,28 @@ export fn checker_seed_import_call_headers(env: TypeEnv, imported: Array[(String
 /// Only the binding selected by typing can contribute parameter defaults.
 export fn checker_call_header_defaults(env: TypeEnv, name: String) -> Option[Array[Bool]] {
   match env_lookup_binding(env = env, name = name) {
-    Some(binding) => match binding.origin {
-      BindingOriginDefaultedFunctionHeader(_, flags) => Some(flags),
-      // #3440: an imported declaration carries its bits on the header.
-      BindingOriginModuleFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
-        Some(flags)
-      } else {
-        None
-      },
-      BindingOriginReExportFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
-        Some(flags)
-      } else {
-        None
-      },
-      _ => None
-    },
+    Some(binding) => checker_header_defaults_of(binding.origin),
     None => None
+  }
+}
+
+/// The parameter defaults a binding's origin carries, for a caller that has
+/// already looked the binding up.
+export fn checker_header_defaults_of(_ origin: BindingOrigin) -> Option[Array[Bool]] {
+  match origin {
+    BindingOriginDefaultedFunctionHeader(_, flags) => Some(flags),
+    // #3440: an imported declaration carries its bits on the header.
+    BindingOriginModuleFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
+      Some(flags)
+    } else {
+      None
+    },
+    BindingOriginReExportFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
+      Some(flags)
+    } else {
+      None
+    },
+    _ => None
   }
 }
 
@@ -310,13 +385,20 @@ export fn builtin_alias_marker(_ name: String) -> String {
 /// reference, so the binding is read first and the marker key is built and
 /// looked up only for a renamed import.
 export fn checker_builtin_alias_target(env: TypeEnv, name: String) -> Option[String] {
-  let source = match env_lookup_binding(env = env, name = name) {
-    Some(binding) => match binding.origin {
-      BindingOriginModuleExport(_, original) => original,
-      BindingOriginReExportSurface(_, original) => original,
-      _ => name
-    },
-    None => name
+  match env_lookup_binding(env = env, name = name) {
+    Some(binding) => checker_builtin_alias_of(env = env, name = name, origin = binding.origin),
+    None => None
+  }
+}
+
+/// `checker_builtin_alias_target` for a caller that has already looked up
+/// the binding of `name`: the marker key is built and looked up only when the
+/// origin is an import renamed from another source name.
+export fn checker_builtin_alias_of(env: TypeEnv, name: String, origin: BindingOrigin) -> Option[String] {
+  let source = match origin {
+    BindingOriginModuleExport(_, original) => original,
+    BindingOriginReExportSurface(_, original) => original,
+    _ => name
   }
   if source == name {
     None

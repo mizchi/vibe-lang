@@ -769,6 +769,7 @@ test "user dispatch recognizes launcher verbs" {
   assert(user_dispatch_is_verb("escapes"))
   assert(user_dispatch_is_verb("rc-classify"))
   assert(user_dispatch_is_verb("rc-plan"))
+  assert(user_dispatch_is_verb("rc-validate"))
   assert(user_dispatch_is_verb("allocs"))
   assert(user_dispatch_is_verb("deps"))
   assert(user_dispatch_is_verb("diagnostics"))
@@ -1509,6 +1510,45 @@ test "user rc-plan accepts the equals spelling of --fn" {
     "OK"
   } with { Exception::Throw(e) => e }
   assert(result == "not found: /nonexistent/rc.vibe")
+}
+
+/// #3718: `rc-validate` takes the same `--fn` spellings as `rc-plan`.
+test "user rc-validate accepts the equals spelling of --fn" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "rc-validate",
+      "--fn=make",
+      "/nonexistent/rc.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "not found: /nonexistent/rc.vibe")
+}
+
+/// #3718: `--mutate` is parsed in both spellings, and a mutation the seam does
+/// not have is an error rather than an unmutated (green) answer.
+test "user rc-validate parses --mutate and refuses an unknown mutation" {
+  let parsed = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "rc-validate",
+      "--mutate",
+      "drop-dups",
+      "/nonexistent/rc.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(parsed == "not found: /nonexistent/rc.vibe")
+  let file = "/tmp/vibe_user_dispatch_rc_validate_mutate.vibe"
+  Fs::write_bytes(file, bytes = string_to_bytes("fn f(x: Int) -> Int {\n  x\n}\n"))
+  let unknown = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "rc-validate",
+      "--mutate=bogus",
+      file
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(unknown, needle = "unknown --mutate value: bogus"))
 }
 
 /// The scan roots are validated before the recursive walkers read them: a
