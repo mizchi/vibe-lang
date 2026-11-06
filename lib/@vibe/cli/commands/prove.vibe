@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/prove {
-  prove_line_col, prove_obligations, prove_report_line
+  Obligation::report_line, prove_line_col, prove_obligations
 }
 
 import @vibe/compiler/core {
@@ -34,7 +34,7 @@ import ./plans.vibe {
 ///     launcher runs;
 ///   - `auto` (the default): `z3` when it is on PATH, else `wasm` when
 ///     @vibex/z3_wasi is installed, else an error naming both.
-/// Both lanes report through `prove_report_line`, so they print the same
+/// Both lanes report through `Obligation::report_line`, so they print the same
 /// lines; an `unknown` line names the bound the solver ran under.
 ///
 /// With `json`, each file's report is the LSP Diagnostic array `vibe check
@@ -70,7 +70,7 @@ fn prove_with_external_z3(paths: Array[String], json: Bool) -> Int with Exceptio
       } else {
         run_z3(o.query)
       }
-      match prove_report_line(o, answer = answer, limit = "5000 ms limit") {
+      match Obligation::report_line(o, answer = answer, limit = "5000 ms limit") {
         Some(l) => Array::push(lines, value = l),
         None => ()
       }
@@ -117,6 +117,13 @@ fn prove_in_process(paths: Array[String], json: Bool, asked: Bool) -> Int with E
   } else {
     ()
   }
+  // The launcher runs the plan's program in the invocation directory, but
+  // `rewrite_user_argv` has already made each source path relative to the
+  // project root, where this command runs. The guest reads them under
+  // `--root` and reports them as given, the way the external lane does
+  // (Codex review on #3883).
+  Array::push(args, value = "--root")
+  Array::push(args, value = Fs::getcwd())
   for p in paths {
     Array::push(args, value = p)
   }

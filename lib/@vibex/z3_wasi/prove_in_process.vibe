@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/prove {
-  prove_line_col, prove_obligations, prove_report_line
+  Obligation::report_line, prove_line_col, prove_obligations
 }
 
 import @vibe/lsp {
@@ -28,15 +28,22 @@ export let prove_rlimit = 20000000
 /// #3719 (ADR-0121): `vibe check --prove --solver=wasm <file>...`. The same
 /// obligations as the external lane (`prove_obligations`), each answered by
 /// z3_wasi.wasm in a fresh context in this process, and reported through
-/// the same `prove_report_line`: one line per obligation that is not proved,
+/// the same `Obligation::report_line`: one line per obligation that is not proved,
 /// nothing when every one is; the result is 1 when anything was reported.
 /// With `json`, each file's report is the LSP Diagnostic array `vibe check
-/// --json` prints, as on the external lane.
-export fn prove_files_in_process(paths: Array[String], json: Bool) -> Int with Exception + Fs + Console {
+/// --json` prints, as on the external lane. A relative path is read under
+/// `root` (the project root the CLI ran in, while this program runs in the
+/// invocation directory) and reported as given, so both lanes print the same
+/// lines.
+export fn prove_files_in_process(paths: Array[String], json: Bool, root: String) -> Int with Exception + Fs + Console {
   let mut code = 0
   let limit = "rlimit \{prove_rlimit}"
   for path in paths {
-    let source = Fs::read_file(path)
+    let source = Fs::read_file(if root == "" || String::starts_with(path, prefix = "/") {
+      path
+    } else {
+      "\{root}/\{path}"
+    })
     let lines: Array[(Int, String)] = []
     for o in prove_obligations(source) {
       let answer = if o.kind == "unsupported" {
@@ -44,7 +51,7 @@ export fn prove_files_in_process(paths: Array[String], json: Bool) -> Int with E
       } else {
         eval_smtlib2_fresh("(set-option :rlimit \{prove_rlimit})\{o.query}")
       }
-      match prove_report_line(o, answer = answer, limit = limit) {
+      match Obligation::report_line(o, answer = answer, limit = limit) {
         Some(l) => Array::push(lines, value = l),
         None => ()
       }
