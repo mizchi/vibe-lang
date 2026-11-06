@@ -1963,7 +1963,20 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         }
       }
       let with_companions = match ty {
-        CtEnum(enum_name) => engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = enum_name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item),
+        CtEnum(enum_name) => {
+          let by_enum = engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = enum_name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item)
+          // #3837: a facade that re-exports `{ Color as Hue }` publishes the
+          // companions as `Hue::code`, under the spelling it re-exports, while
+          // the type still names `Color`. Reading only `Color::` bound the
+          // variants (they return `Color`) and dropped every other companion,
+          // so `Hue::code` was an unknown name although the facade published
+          // it and an explicit `{ Hue::code }` import was accepted.
+          if name == enum_name {
+            by_enum
+          } else {
+            engine_bind_enum_constructor_companions(acc = by_enum, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item)
+          }
+        },
         _ => if engine_starts_with_upper(name) {
           engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item)
         } else {

@@ -1,0 +1,62 @@
+// The planner widens `pure_fns`, the names a call to which cannot perform the
+// handled effect, by three appends. Each keeps what `pure_fns` held, adds a
+// name only when it is not listed yet, and adds it once, in definition order.
+import @vibe/compiler/core {
+  Stmt
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_append_effect_irrelevant_row_fns,
+  edp_append_perform_free_row_fns,
+  edp_append_self_discharging_row_fns,
+  edp_collect_fn_defs,
+  edp_fn_row_label_table
+}
+
+fn parsed(_ src: String) -> Array[Stmt] with Exception {
+  let (toks, starts, _) = lex_with_offsets(src)
+  parse_program_located(tokens = toks, starts = starts, source = src)
+}
+
+// `twice`, `quiet_twice` and `self_handled` are each defined twice, and
+// `listed` is in `pure_fns` already: none may be appended a second time.
+let program_src = "effect Ask {\n  Get() -> Int\n}\n\neffect Log {\n  Put(Int) -> Unit\n}\n\nfn row_free() -> Int {\n  1\n}\n\nfn logs() -> Unit with Log {\n  perform Log::Put(1)\n}\n\nfn twice() -> Unit with Log {\n  logs()\n}\n\nfn listed() -> Unit with Log {\n  logs()\n}\n\nfn twice() -> Unit with Log {\n  logs()\n}\n\nfn asks() -> Int with Ask {\n  perform Ask::Get()\n}\n\nfn quiet_ask() -> Int with Ask {\n  row_free()\n}\n\nfn self_handled() -> Int with Ask {\n  handle {\n    perform Ask::Get()\n  } with {\n    Ask::Get() => resume(7)\n  }\n}\n\nfn quiet_twice() -> Int with Ask {\n  row_free()\n}\n\nfn quiet_twice() -> Int with Ask {\n  row_free()\n}\n\nfn self_handled() -> Int with Ask {\n  handle {\n    perform Ask::Get()\n  } with {\n    Ask::Get() => resume(7)\n  }\n}\n"
+
+/// `pure_fns` after `append` ran on `program_src` for Ask, starting from
+/// the base list `base`, as one comma-separated line.
+fn appended(base: Array[String], step: String) -> String with Exception {
+  let stmts = parsed(program_src)
+  let fn_defs = edp_collect_fn_defs(stmts)
+  let es_names: Array[String] = []
+  let es_members: Array[Array[String]] = []
+  let labels = edp_fn_row_label_table(fn_defs = fn_defs, es_names = es_names, es_members_list = es_members)
+  let pure_fns: Array[String] = []
+  for name in base {
+    Array::push(pure_fns, value = name)
+  }
+  if step == "irrelevant" {
+    edp_append_effect_irrelevant_row_fns(stmts = stmts, fn_defs = fn_defs, ename = "Ask", pure_fns = pure_fns, row_labels = labels)
+  } else if step == "perform_free" {
+    edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = "Ask", pure_fns = pure_fns, row_labels = labels)
+  } else {
+    edp_append_self_discharging_row_fns(stmts = stmts, fn_defs = fn_defs, ename = "Ask", pure_fns = pure_fns, row_labels = labels)
+  }
+  String::join(pure_fns, sep = ",")
+}
+
+test "rows without the effect are appended once each, after the base" {
+  inspect(appended(base = ["row_free", "listed"], step = "irrelevant"), content = "row_free,listed,logs,twice")
+  inspect(appended(base = [], step = "irrelevant"), content = "logs,twice,listed")
+}
+
+test "perform-free functions of the effect are appended once each" {
+  inspect(appended(base = ["row_free"], step = "perform_free"), content = "row_free,quiet_ask,quiet_twice")
+  inspect(appended(base = ["row_free", "quiet_twice"], step = "perform_free"), content = "row_free,quiet_twice,quiet_ask")
+}
+
+test "self-discharging functions of the effect are appended once each" {
+  inspect(appended(base = ["row_free"], step = "self_discharging"), content = "row_free,self_handled")
+  inspect(appended(base = ["self_handled"], step = "self_discharging"), content = "self_handled")
+}

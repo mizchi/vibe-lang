@@ -2,6 +2,10 @@ import @vibe/compiler/core {
   Expr, Pat, Stmt, canonical_builtin_name, is_exception_throw_handler_name, registry_pure_builtin_names
 }
 
+import @vibe/core {
+  eq_string, hash_string, struct MutSet
+}
+
 /// Builtin call classification for the effect lowerings.
 ///
 /// This package held `inline_direct_performs` -- ADR-0076 Phase 2, the pass
@@ -95,6 +99,17 @@ export fn idp_is_host_stream_named_raw(_ nm: String) -> Bool {
 // rebuild the table (and scan it without early exit) on every probe.
 let idp_pure_builtin_names_table: Array[String] = idp_pure_builtin_names()
 
+// #3856: the same table as a set, since membership is asked per call node.
+let idp_pure_builtin_names_set: MutSet[String] = idp_names_set(idp_pure_builtin_names_table)
+
+fn idp_names_set(_ names: Array[String]) -> MutSet[String] {
+  let out: MutSet[String] = MutSet::with_capacity(hash_fn = hash_string, eq_fn = eq_string, capacity = Array::length(names) * 10 / 7 + 1)
+  for name in names {
+    MutSet::add(out, x = name)
+  }
+  out
+}
+
 /// #3176: the table's spellings the program being lowered declares at top
 /// level, written by `idp_note_program_decls` at the entry of each pass that
 /// reads `idp_is_pure_builtin_call`.
@@ -124,19 +139,7 @@ fn idp_on_pure_table(_ nm: String) -> Bool {
   // judged by its canonical name. The table lists canonical names only;
   // matching the spelling alone refused a handle around `from_byte` and
   // compiled an `Async` serve handler calling it to `unreachable`.
-  let cn = canonical_builtin_name(nm)
-  let names = idp_pure_builtin_names_table
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(names) && !found {
-    if Array::get(names, at = i) == nm || Array::get(names, at = i) == cn {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
+  MutSet::has(idp_pure_builtin_names_set, x = nm) || MutSet::has(idp_pure_builtin_names_set, x = canonical_builtin_name(nm))
 }
 
 /// #3176: does the program being lowered declare a top-level binding that a

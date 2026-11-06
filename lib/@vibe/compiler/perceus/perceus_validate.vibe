@@ -1,4 +1,4 @@
-// lib/@vibe/compiler/perceus/perceus_validate.vibe — #3718 slice 1: check one
+// lib/@vibe/compiler/perceus/perceus_validate.vibe — #3718: check one
 // function's Perceus plan against the linear ownership discipline.
 //
 // The plan says how many references a binding takes (its dups) and gives
@@ -7,10 +7,11 @@
 // binding's scope consumes. This file reads the first off the plan and
 // counts the second with a walk of its own -- it shares no counting code
 // with the planner (no pc_count / pc_emit / pe_* walker), only the planner's
-// heap classification of each binding (`perceus_last_plan_classes`) and the
-// borrow masks the caller hands both. A plan that balances on every path
-// leaks nothing and frees nothing twice; one that does not is reported with
-// a witness path.
+// heap classification of each binding (`perceus_last_plan_classes`), the
+// loop-result shape predicate codegen also asks
+// (`perceus_loop_result_slot`), and the borrow masks the caller hands both.
+// A plan that balances on every path leaks nothing and frees nothing twice;
+// one that does not is reported with a witness path.
 //
 // The model is codegen's realization of a plan:
 //   - a plain `let`'s dups are taken at its declaration and a parameter's at
@@ -22,11 +23,28 @@
 //   - `let a = x` retains `x` when a `PaAliasDup(a)` row exists, does
 //     nothing when `a` is never mentioned and has no drop (the dead-alias
 //     elision), and transfers `x`'s reference into `a` otherwise.
-// A shape outside that model (loops, early exits, closure captures, the
-// rows that change what a release means) is reported as not checked rather
-// than guessed at. A heap value the planner classified as scalar is outside
-// it too and is NOT caught in general -- only the literal aggregates are
-// cross-checked.
+//
+// Loops (slice 2). A loop body runs any number of times, so a path through a
+// loop is taken 0, 1 and 2 times (twice is enough: the ledger is linear, so
+// any per-iteration imbalance shows on the second). A binding declared
+// OUTSIDE the loop is loop-carried there, and codegen retains it at each
+// owning occurrence that is a call or constructor argument, a tuple / array
+// / record / map item, or a collected `for` body value
+// (`cc_is_loop_borrowed_ident`, #706 / #715), so those occurrences consume
+// nothing; the planner counts the call arguments as borrows to match
+// (`pc_loop_call_arg_borrow`). Any other owning occurrence of a loop-carried
+// binding is a branch or block value codegen may or may not retain, and is
+// not checked. `break` ends the loop and `continue` the iteration; neither
+// leaves a loop-carried binding's scope. A parameter retained in a loop with
+// no planned drop is not checked: codegen then decides its epilogue drop
+// itself (#725 / #1085). A parameterized `loop`'s result slot (#3168) holds
+// nothing until a `break v` stores into it and one reference after.
+//
+// A shape outside that model (early exits that leave a binding's scope,
+// closure captures, the rows that change what a release means) is reported
+// as not checked rather than guessed at. A heap value the planner classified
+// as scalar is outside it too and is NOT caught in general -- only the
+// literal aggregates are cross-checked.
 
 import @vibe/compiler/codegen/common_analysis {
   md_borrow_mask_of
@@ -48,6 +66,10 @@ import ./perceus_analyze_calls.vibe {
   pa_is_alias_dup
 }
 
+import ./perceus_pc_emit.vibe {
+  perceus_loop_result_slot
+}
+
 import ./perceus_pctx.vibe {
   pa_is_consume_mark,
   pa_is_drop,
@@ -66,18 +88,25 @@ import ./perceus_pctx.vibe {
 //# Path outcomes
 
 /// One way through a binding's scope: how many consuming occurrences of the
-/// binding it reaches, whether one of them is a planned consume mark, and the
-/// branch choices that lead there (`if1:then,match2:arm1`; empty when no
-/// branch decided anything).
+/// binding it reaches, whether one of them is a planned consume mark, how it
+/// left the innermost loop (`brk` 0 not at all, 1 `break`, 2 `continue` --
+/// the rest of the iteration does not run), how many references a store into
+/// a loop-result slot gave the binding (`acq`), and the branch choices that
+/// lead there (`if1:then,loop1:twice`; empty when no branch decided anything).
 struct RvOut {
   c: Int;
   marked: Bool;
+  brk: Int;
+  acq: Int;
   path: String
 }
 
-/// The walk's state for the ONE binding `x` it counts.
+/// The walk's state for the ONE binding `x` it counts. `slot`: `x` is a
+/// loop-result slot. `loop_sites`: the owning occurrences of a loop-carried
+/// `x` that codegen retains.
 struct RvState {
   x: String;
+  slot: Bool;
   marks: Array[Int];
   alias_dups: Array[String];
   drops: Array[String];
@@ -92,12 +121,18 @@ struct RvState {
   mut if_ord: Int;
   mut match_ord: Int;
   mut logic_ord: Int;
+  mut loop_ord: Int;
   mut loop_depth: Int;
-  mut decl_loop: Int
+  mut decl_loop: Int;
+  mut loop_sites: Int
+}
+
+fn rv_out(c: Int, marked: Bool, brk: Int, acq: Int, path: String) -> RvOut {
+  RvOut::{ c: c, marked: marked, brk: brk, acq: acq, path: path }
 }
 
 fn rv_unit() -> Array[RvOut] {
-  [RvOut::{ c: 0, marked: false, path: "" }]
+  [rv_out(c = 0, marked = false, brk = 0, acq = 0, path = "")]
 }
 
 fn rv_has_int(xs: Array[Int], v: Int) -> Bool {
@@ -130,14 +165,18 @@ fn rv_join(a: String, b: String) -> String {
   }
 }
 
-/// Add `o` unless an outcome with the same count and mark is already there:
-/// the check reads only those two, so the first witness is enough.
+fn rv_key_eq(a: RvOut, b: RvOut) -> Bool {
+  a.c == b.c && a.marked == b.marked && a.brk == b.brk && a.acq == b.acq
+}
+
+/// Add `o` unless an outcome with the same count, mark, loop exit and store
+/// is already there: the check reads only those, so the first witness is
+/// enough.
 fn rv_add(outs: Array[RvOut], o: RvOut) -> Unit {
   let mut i = 0
   let mut dup = false
   while i < Array::length(outs) && !dup {
-    let p = Array::get(outs, at = i)
-    dup = p.c == o.c && p.marked == o.marked
+    dup = rv_key_eq(a = Array::get(outs, at = i), b = o)
     i = i + 1
   }
   if dup {
@@ -147,21 +186,22 @@ fn rv_add(outs: Array[RvOut], o: RvOut) -> Unit {
   }
 }
 
-/// `a` then `b`: every pair of paths, counts added.
+/// `a` then `b`: every pair of paths, counts added. A path of `a` that left
+/// the loop iteration (`break` / `continue`) skips `b`.
 fn rv_seq(a: Array[RvOut], b: Array[RvOut]) -> Array[RvOut] {
   let out: Array[RvOut] = []
   let mut i = 0
   while i < Array::length(a) {
     let oa = Array::get(a, at = i)
-    let mut j = 0
-    while j < Array::length(b) {
-      let ob = Array::get(b, at = j)
-      rv_add(outs = out, o = RvOut::{
-        c: oa.c + ob.c,
-        marked: oa.marked || ob.marked,
-        path: rv_join(a = oa.path, b = ob.path)
-      })
-      j = j + 1
+    if oa.brk != 0 {
+      rv_add(outs = out, o = oa)
+    } else {
+      let mut j = 0
+      while j < Array::length(b) {
+        let ob = Array::get(b, at = j)
+        rv_add(outs = out, o = rv_out(c = oa.c + ob.c, marked = oa.marked || ob.marked, brk = ob.brk, acq = oa.acq + ob.acq, path = rv_join(a = oa.path, b = ob.path)))
+        j = j + 1
+      }
     }
     i = i + 1
   }
@@ -176,8 +216,7 @@ fn rv_same(a: Array[RvOut], b: Array[RvOut]) -> Bool {
     let mut hit = false
     let mut j = 0
     while j < Array::length(b) && !hit {
-      let ob = Array::get(b, at = j)
-      hit = oa.c == ob.c && oa.marked == ob.marked
+      hit = rv_key_eq(a = oa, b = Array::get(b, at = j))
       j = j + 1
     }
     ok = hit
@@ -208,17 +247,69 @@ fn rv_branch(sets: Array[Array[RvOut]], steps: Array[String]) -> Array[RvOut] {
       let mut j = 0
       while j < Array::length(set) {
         let o = Array::get(set, at = j)
-        rv_add(outs = out, o = RvOut::{
-          c: o.c,
-          marked: o.marked,
-          path: rv_join(a = step, b = o.path)
-        })
+        rv_add(outs = out, o = rv_out(c = o.c, marked = o.marked, brk = o.brk, acq = o.acq, path = rv_join(a = step, b = o.path)))
         j = j + 1
       }
       k = k + 1
     }
     out
   }
+}
+
+/// The paths of `outs` that left the iteration the way `want` names (0: ran
+/// to its end or hit `continue`, 1: hit `break`), with the exit cleared --
+/// the loop around them is where it stops mattering.
+fn rv_exits(outs: Array[RvOut], want: Int) -> Array[RvOut] {
+  let out: Array[RvOut] = []
+  let mut i = 0
+  while i < Array::length(outs) {
+    let o = Array::get(outs, at = i)
+    let hit = if want == 1 {
+      o.brk == 1
+    } else {
+      o.brk != 1
+    }
+    if hit {
+      rv_add(outs = out, o = rv_out(c = o.c, marked = o.marked, brk = 0, acq = o.acq, path = o.path))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn rv_union(a: Array[RvOut], b: Array[RvOut]) -> Array[RvOut] {
+  let out: Array[RvOut] = []
+  let mut i = 0
+  while i < Array::length(a) {
+    rv_add(outs = out, o = Array::get(a, at = i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    rv_add(outs = out, o = Array::get(b, at = j))
+    j = j + 1
+  }
+  out
+}
+
+/// A loop whose iteration (`iter`, the condition and body for a `while`) is
+/// taken 0, 1 or 2 times. `stop` is what ends it without a `break` (the
+/// `while` condition read false; unit for a `for`). Linear counts make two
+/// iterations enough to show a per-iteration imbalance.
+fn rv_loop(st: RvState, iter: Array[RvOut], stop: Array[RvOut]) -> Array[RvOut] {
+  st.loop_ord = st.loop_ord + 1
+  let tag = "loop" + __to_string(st.loop_ord)
+  let go_on = rv_exits(outs = iter, want = 0)
+  let broke = rv_exits(outs = iter, want = 1)
+  let once = rv_union(a = rv_seq(a = go_on, b = stop), b = broke)
+  let twice = rv_seq(a = go_on, b = once)
+  rv_branch(sets = [stop, once, twice], steps = [
+    tag + ":never",
+    tag + ":once",
+    tag + ":twice"
+  ])
 }
 
 /// Does `x` occur anywhere in `e`? Shadowing is ignored, so the answer can
@@ -245,6 +336,12 @@ fn rv_bit(mask: Int, i: Int) -> Bool {
   i >= 0 && i < 32 && ((mask>>i)&1) == 1
 }
 
+/// Is an occurrence here of `x` loop-carried -- inside a loop that runs
+/// within `x`'s scope?
+fn rv_carried(_ st: RvState) -> Bool {
+  st.active && st.loop_depth > st.decl_loop
+}
+
 //# The walk
 
 /// The outcomes of evaluating `e`, for `x`. `consume` says whether the
@@ -255,7 +352,15 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
   match e {
     EIdent(n, off) => if n == st.x && consume {
       Array::push(st.cons_offs, value = off)
-      [RvOut::{ c: 1, marked: rv_has_int(xs = st.marks, v = off), path: "" }]
+      if rv_carried(st) {
+        // Not one of the positions codegen retains a loop-carried value at.
+        rv_note(st = st, reason = "loop: consumed through a branch or block value")
+      } else {
+        ()
+      }
+      [
+        rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+      ]
     } else {
       rv_unit()
     },
@@ -341,7 +446,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
     ELetMut(n, v, b, _) => {
       let vo = rv_walk(st = st, e = v, consume = true)
       Array::push(st.bound, value = n)
-      let bo = rv_walk(st = st, e = b, consume = consume)
+      let bo = rv_scope(st = st, n = n, b = b, consume = consume)
       Array::truncate(st.bound, length = Array::length(st.bound) - 1)
       rv_seq(a = vo, b = bo)
     },
@@ -357,35 +462,55 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       Array::truncate(st.bound, length = Array::length(st.bound) - 1)
       rv_seq(a = vo, b = bo)
     },
-    EAssign(_, v, b, _) => rv_seq(a = rv_walk(st = st, e = v, consume = true), b = rv_walk(st = st, e = b, consume = consume)),
+    EAssign(n, v, b, _) => if n == st.x {
+      rv_slot_store(st = st, v = v, b = b, consume = consume)
+    } else {
+      rv_seq(a = rv_walk(st = st, e = v, consume = true), b = rv_walk(st = st, e = b, consume = consume))
+    },
     EAssignOp(_, _, v, b, _) => rv_seq(a = rv_walk(st = st, e = v, consume = true), b = rv_walk(st = st, e = b, consume = consume)),
     // The head of a sequence is discarded without a release.
     ESeq(a, b) => rv_seq(a = rv_walk(st = st, e = a, consume = false), b = rv_walk(st = st, e = b, consume = consume)),
     EWhile(c, body) => {
-      rv_loop_note(st = st, e = e)
       st.loop_depth = st.loop_depth + 1
       let co = rv_walk(st = st, e = c, consume = true)
+      // Each iteration's body value is dropped unreleased.
       let bo = rv_walk(st = st, e = body, consume = false)
       st.loop_depth = st.loop_depth - 1
-      rv_seq(a = co, b = bo)
+      rv_loop(st = st, iter = rv_seq(a = co, b = bo), stop = co)
     },
     EForIn(vn, ix, it, fb) => {
-      rv_loop_note(st = st, e = e)
-      let io = rv_operand(st = st, e = it)
+      // The iterable runs once, but INSIDE the loop's retain context:
+      // `compile_forin_loop` registers the enclosing locals as loop-borrowed
+      // before it compiles the iterable, so `for x in [d]` retains `d` at the
+      // array item rather than transferring it (Codex review on #3880). A
+      // named iterable is read in place.
       st.loop_depth = st.loop_depth + 1
+      let io = rv_operand(st = st, e = it)
       let mark = Array::length(st.bound)
       Array::push(st.bound, value = vn)
       match ix {
         Some(i) => Array::push(st.bound, value = i),
         None => ()
       }
-      let bo = rv_walk(st = st, e = fb, consume = consume)
+      // A collected body value is pushed into the result array, which
+      // retains a loop-carried name there like any array item; a discarded
+      // one is dropped unreleased.
+      let bo = if consume {
+        rv_item(st = st, e = fb)
+      } else {
+        rv_walk(st = st, e = fb, consume = false)
+      }
       Array::truncate(st.bound, length = mark)
       st.loop_depth = st.loop_depth - 1
-      rv_seq(a = io, b = bo)
+      rv_seq(a = io, b = rv_loop(st = st, iter = bo, stop = rv_unit()))
     },
     ELoop(params, lb) => {
-      rv_loop_note(st = st, e = e)
+      // The parser lowers a parameterized `loop` before the plan is built.
+      if rv_mentions(e = e, x = st.x) {
+        rv_note(st = st, reason = "loop: parameterized loop reached the plan unlowered")
+      } else {
+        ()
+      }
       let mut out = rv_unit()
       let mut i = 0
       while i < Array::length(params) {
@@ -405,19 +530,26 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       rv_seq(a = out, b = bo)
     },
     EReturn(v) => {
-      rv_note(st = st, reason = "early exit")
-      rv_walk(st = st, e = v, consume = true)
+      let vo = rv_walk(st = st, e = v, consume = true)
+      rv_note(st = st, reason = "early exit: return")
+      vo
     },
     EBreak(opt) => {
-      rv_leave_note(st)
-      match opt {
+      let vo = match opt {
         Some(v) => rv_walk(st = st, e = v, consume = true),
         None => rv_unit()
       }
+      rv_leave_note(st)
+      rv_seq(a = vo, b = [
+        rv_out(c = 0, marked = false, brk = 1, acq = 0, path = "")
+      ])
     },
     EContinue(args) => {
+      let ao = rv_items(st = st, items = args)
       rv_leave_note(st)
-      rv_items(st = st, items = args)
+      rv_seq(a = ao, b = [
+        rv_out(c = 0, marked = false, brk = 2, acq = 0, path = "")
+      ])
     },
     // Creating a closure borrows what it captures; its body is planned on
     // its own.
@@ -449,19 +581,12 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
   }
 }
 
-fn rv_loop_note(st: RvState, e: Expr) -> Unit {
-  if rv_mentions(e = e, x = st.x) {
-    rv_note(st = st, reason = "loop")
-  } else {
-    ()
-  }
-}
-
 /// A `break` / `continue` at the loop depth `x` was declared at leaves its
-/// scope.
+/// scope, and codegen releases what it holds there by the plan's exit rows,
+/// which this ledger does not model.
 fn rv_leave_note(_ st: RvState) -> Unit {
   if st.loop_depth == st.decl_loop {
-    rv_note(st = st, reason = "early exit")
+    rv_note(st = st, reason = "early exit: break or continue leaves its scope")
   } else {
     ()
   }
@@ -477,11 +602,30 @@ fn rv_operand(st: RvState, e: Expr) -> Array[RvOut] {
   }
 }
 
+/// An owning position codegen retains a loop-carried name at: a call or
+/// constructor argument, an aggregate item, a collected `for` body value
+/// (`cc_is_loop_borrowed_ident`). There a loop-carried `x` consumes nothing;
+/// anywhere else it is an ordinary owning occurrence.
+fn rv_item(st: RvState, e: Expr) -> Array[RvOut] {
+  match e {
+    EIdent(n, off) => if n == st.x && rv_carried(st) {
+      Array::push(st.cons_offs, value = off)
+      st.loop_sites = st.loop_sites + 1
+      [
+        rv_out(c = 0, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+      ]
+    } else {
+      rv_walk(st = st, e = e, consume = true)
+    },
+    _ => rv_walk(st = st, e = e, consume = true)
+  }
+}
+
 fn rv_items(st: RvState, items: Array[Expr]) -> Array[RvOut] {
   let mut out = rv_unit()
   let mut i = 0
   while i < Array::length(items) {
-    out = rv_seq(a = out, b = rv_walk(st = st, e = Array::get(items, at = i), consume = true))
+    out = rv_seq(a = out, b = rv_item(st = st, e = Array::get(items, at = i)))
     i = i + 1
   }
   out
@@ -491,7 +635,7 @@ fn rv_fields(st: RvState, fields: Array[(String, Expr)]) -> Array[RvOut] {
   let mut out = rv_unit()
   let mut i = 0
   while i < Array::length(fields) {
-    out = rv_seq(a = out, b = rv_walk(st = st, e = (Array::get(fields, at = i)).1, consume = true))
+    out = rv_seq(a = out, b = rv_item(st = st, e = (Array::get(fields, at = i)).1))
     i = i + 1
   }
   out
@@ -527,8 +671,10 @@ fn rv_is_throw(st: RvState, callee: Expr, args: Array[Expr]) -> Bool {
 }
 
 fn rv_call(st: RvState, callee: Expr, args: Array[Expr], resolution: Array[Int]) -> Array[RvOut] {
-  if resolved_callee_operation(resolution) == builtin_frame_jump || return_call_site(resolution) >= 0 || rv_is_throw(st = st, callee = callee, args = args) {
-    rv_note(st = st, reason = "early exit")
+  if resolved_callee_operation(resolution) == builtin_frame_jump || return_call_site(resolution) >= 0 {
+    rv_note(st = st, reason = "early exit: frame jump")
+  } else if rv_is_throw(st = st, callee = callee, args = args) {
+    rv_note(st = st, reason = "early exit: throw")
   } else {
     ()
   }
@@ -553,7 +699,7 @@ fn rv_call(st: RvState, callee: Expr, args: Array[Expr], resolution: Array[Int])
       EIdent(_, _) => if rv_bit(mask = mask, i = i) {
         rv_unit()
       } else {
-        rv_walk(st = st, e = arg, consume = true)
+        rv_item(st = st, e = arg)
       },
       _ => rv_walk(st = st, e = arg, consume = true)
     }
@@ -573,8 +719,11 @@ fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOu
         // The dead-alias elision: neither side does anything.
         rv_unit()
       } else {
+        // A transfer; in a loop it runs once per iteration.
         Array::push(st.cons_offs, value = soff)
-        [RvOut::{ c: 1, marked: rv_has_int(xs = st.marks, v = soff), path: "" }]
+        [
+          rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = soff), brk = 0, acq = 0, path = "")
+        ]
       }
     } else {
       rv_unit()
@@ -582,7 +731,15 @@ fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOu
     _ => rv_walk(st = st, e = v, consume = true)
   }
   Array::push(st.bound, value = n)
-  let bo = if n == st.x {
+  let bo = rv_scope(st = st, n = n, b = b, consume = consume)
+  Array::truncate(st.bound, length = Array::length(st.bound) - 1)
+  rv_seq(a = vo, b = bo)
+}
+
+/// The body of a binder `n`; when `n` is the binding being counted, its
+/// scope starts here, and what the body reaches is the binding's ledger.
+fn rv_scope(st: RvState, n: String, b: Expr, consume: Bool) -> Array[RvOut] {
+  if n == st.x {
     let saved = st.active
     st.active = true
     st.found = true
@@ -594,8 +751,28 @@ fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOu
   } else {
     rv_walk(st = st, e = b, consume = consume)
   }
-  Array::truncate(st.bound, length = Array::length(st.bound) - 1)
-  rv_seq(a = vo, b = bo)
+}
+
+/// `x = v` where `x` is the binding counted. Only a loop-result slot is
+/// counted while it is assigned, and its stores are `x = v; break`: the
+/// slot held its `0` placeholder (or nothing a `break` path still reaches)
+/// and now holds the one reference the store gives it.
+fn rv_slot_store(st: RvState, v: Expr, b: Expr, consume: Bool) -> Array[RvOut] {
+  let breaks = match b {
+    EBreak(None) => true,
+    ESeq(EBreak(None), _) => true,
+    _ => false
+  }
+  if !st.slot || !breaks {
+    rv_note(st = st, reason = "let mut assigned outside a loop-result store")
+  } else {
+    ()
+  }
+  let vo = rv_walk(st = st, e = v, consume = true)
+  let stored = rv_seq(a = vo, b = [
+    rv_out(c = 0, marked = false, brk = 0, acq = 1, path = "")
+  ])
+  rv_seq(a = stored, b = rv_walk(st = st, e = b, consume = consume))
 }
 
 //# Declarations
@@ -751,7 +928,7 @@ fn rv_row_reason(plan: Array[PerceusAction], x: String) -> String {
       } else if pa_is_store_dup(a) {
         "store-dup row"
       } else if pa_is_exit_drop(a) {
-        "early exit"
+        "early exit: an exit releases it (exit-drop row)"
       } else {
         ""
       }
@@ -795,7 +972,7 @@ fn rv_line(fname: String, x: String, path: String, msg: String) -> String {
   fname + " " + x + " " + path + ": " + msg
 }
 
-fn rv_new_state(x: String, params: Array[(String, Option[TypeExpr])], plan: Array[PerceusAction], bfns: Array[String], bmasks: Array[Int]) -> RvState {
+fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])], plan: Array[PerceusAction], bfns: Array[String], bmasks: Array[Int]) -> RvState {
   let marks: Array[Int] = []
   let alias_dups: Array[String] = []
   let drops: Array[String] = []
@@ -824,6 +1001,7 @@ fn rv_new_state(x: String, params: Array[(String, Option[TypeExpr])], plan: Arra
   let cons: Array[Int] = []
   RvState::{
     x: x,
+    slot: slot,
     marks: marks,
     alias_dups: alias_dups,
     drops: drops,
@@ -838,15 +1016,21 @@ fn rv_new_state(x: String, params: Array[(String, Option[TypeExpr])], plan: Arra
     if_ord: 0,
     match_ord: 0,
     logic_ord: 0,
+    loop_ord: 0,
     loop_depth: 0,
-    decl_loop: 0
+    decl_loop: 0,
+    loop_sites: 0
   }
 }
 
 /// The ledger for one binding: on every path, the references it holds
 /// (`init` plus its dups) equal the ones the path releases (its consuming
 /// occurrences, the scope-end drop, and the path drop when no marked
-/// occurrence ran). At most one line per kind, with the first witness.
+/// occurrence ran). A loop-result slot holds what its store gave it, with
+/// its dup budget applied again at that store (compile_expr_tail's EAssign
+/// lowering), and a path that stored nothing holds the `0` placeholder,
+/// whose releases are no-ops, so only the paths that stored are checked. At
+/// most one line per kind, with the first witness.
 fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, plan: Array[PerceusAction], drop_from: Int, out: Array[String]) -> Unit {
   let x = st.x
   let mut dups = 0
@@ -888,12 +1072,16 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, plan: Array[P
     }
     mi = mi + 1
   }
-  let held = init + dups
   let mut leak_done = false
   let mut over_done = false
   let mut k = 0
   while k < Array::length(st.scope_out) {
     let o = Array::get(st.scope_out, at = k)
+    let held = if st.slot {
+      o.acq * (1 + dups)
+    } else {
+      init + dups
+    }
     let unguarded = if path_drop == 1 && !o.marked {
       1
     } else {
@@ -905,7 +1093,9 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, plan: Array[P
     } else {
       o.path
     }
-    if held > released && !leak_done {
+    if st.slot && o.acq == 0 {
+      ()
+    } else if held > released && !leak_done {
       let n = held - released
       let suffix = if n > 1 {
         " (" + __to_string(n) + " references)"
@@ -926,6 +1116,43 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, plan: Array[P
       ()
     }
     k = k + 1
+  }
+}
+
+/// Does a `PaDrop` row at or after `from` name `x`?
+fn rv_has_drop(plan: Array[PerceusAction], x: String, from: Int) -> Bool {
+  let mut found = false
+  let mut i = from
+  while i < Array::length(plan) && !found {
+    let a = Array::get(plan, at = i)
+    found = pa_is_drop(a) && a.name == x
+    i = i + 1
+  }
+  found
+}
+
+/// #3168: a parameterized `loop`'s result slot, counted from its stores.
+fn rv_check_slot(fname: String, x: String, params: Array[(String, Option[TypeExpr])], body: Expr, plan: Array[PerceusAction], class_names: Array[String], bfns: Array[String], masks: Array[Int], out: Array[String]) -> Unit {
+  let reason = if rv_class_count(names = class_names, x = x) > 1 {
+    "name shared"
+  } else {
+    rv_row_reason(plan = plan, x = x)
+  }
+  if reason != "" {
+    Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + reason))
+  } else {
+    let st = rv_new_state(x = x, slot = true, params = params, plan = plan, bfns = bfns, bmasks = masks)
+    let _ = rv_walk(st = st, e = body, consume = true)
+    let why = if !st.found {
+      "not planned"
+    } else {
+      st.reason
+    }
+    if why != "" {
+      Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + why))
+    } else {
+      rv_check(fname = fname, st = st, init = 0, borrowed = false, plan = plan, drop_from = 0, out = out)
+    }
   }
 }
 
@@ -1001,19 +1228,25 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
       Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: name shared"))
     } else {
       let row_reason = rv_row_reason(plan = plan, x = x)
-      let st = rv_new_state(x = x, params = params, plan = plan, bfns = borrow_param_fns, bmasks = masks)
+      let st = rv_new_state(x = x, slot = false, params = params, plan = plan, bfns = borrow_param_fns, bmasks = masks)
       st.active = true
       st.found = true
       st.scope_out = rv_walk(st = st, e = body, consume = true)
+      let borrowed = rv_bit(mask = own_mask, i = pi)
       let reason = if row_reason != "" {
         row_reason
-      } else {
+      } else if st.reason != "" {
         st.reason
+      } else if st.loop_sites > 0 && (borrowed || !rv_has_drop(plan = plan, x = x, from = param_drop_start)) {
+        // linked_compile_function_bodies.vibe's epilogue then adds a drop of
+        // its own when every consume is such a site (#725 / #1085).
+        "loop: a parameter retained in a loop with no planned drop"
+      } else {
+        ""
       }
       if reason != "" {
         Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + reason))
       } else {
-        let borrowed = rv_bit(mask = own_mask, i = pi)
         let init = if borrowed {
           0
         } else {
@@ -1051,7 +1284,9 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         ()
       }
     } else if kind == 1 {
-      if heap {
+      if heap && perceus_loop_result_slot(name = x, value = Array::get(d.values, at = di), body = Array::get(d.bodies, at = di)) {
+        rv_check_slot(fname = fname, x = x, params = params, body = body, plan = plan, class_names = class_names, bfns = borrow_param_fns, masks = masks, out = out)
+      } else if heap {
         muts = muts + 1
       } else {
         ()
@@ -1061,7 +1296,7 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         let why = if kind == 2 {
           "let rec"
         } else {
-          "loop"
+          "loop binder (a for element or a loop parameter)"
         }
         Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + why))
       } else {
@@ -1083,7 +1318,7 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
       Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: name shared"))
     } else {
       let row_reason = rv_row_reason(plan = plan, x = x)
-      let st = rv_new_state(x = x, params = params, plan = plan, bfns = borrow_param_fns, bmasks = masks)
+      let st = rv_new_state(x = x, slot = false, params = params, plan = plan, bfns = borrow_param_fns, bmasks = masks)
       let _ = rv_walk(st = st, e = body, consume = true)
       let reason = if row_reason != "" {
         row_reason
