@@ -2906,6 +2906,9 @@ Process::exit(1)   // with Process::exit - set the exit status and stop
 needs `Process::exit` on the row (or `Process`, which includes it), so a
 program that only reports a status can say `fn main allows Fs::read_file +
 Process::exit` without being granted `sh` / `run`, which execute commands.
+`@vibe/process`'s `exit` / `process_exit` and `@vibex/tasks`'s `die` /
+`expect` / `finish` carry that one operation too, so calling them needs only
+`Process::exit` (plus `Stderr` for the two that print).
 `main` returning an `Int` does not set the status: `_start` prints it.
 
 **Profiling** (require `Profiler` effect; linear backend only; use the
