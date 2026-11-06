@@ -1,5 +1,9 @@
 // lib/@vibe/compiler/checker/checker.vibe — lambda expr.
 
+import ./checker_region_tail_args.vibe {
+  tail_formal_args, tail_region_closed_ground_fn
+}
+
 import ./checker_int32.vibe {
   int32_literal_adapt
 }
@@ -1057,26 +1061,22 @@ fn tail_region_check(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   }
 }
 
-fn tail_region_closed_ground_fn(_ expr: Expr) -> Bool {
-  match expr {
-    EFn(tparams, tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(tbounds) == 0 && Array::length(params) == 0 && ret_ty == None && effect == None {
-      match body {
-        EInt(_) => true,
-        EFloat(_) => true,
-        EString(_, _) => true,
-        EBool(_) => true,
-        EUnit => true,
-        _ => false
-      }
+fn tail_formal_mentions_region(args: Array[Expr], cell: Array[Int], index: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_name: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
+  let mut found = false
+  for arg in tail_formal_args(args = args, cell = cell, index = index) {
+    if !found && tail_named_record_mentions_region(expr = arg, env = env, defs = defs, s = s, c = c, region_name = region_name, ce = ce) {
+      found = true
     } else {
-      false
-    },
-    _ => false
+      ()
+    }
   }
+  found
 }
 
 export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_name: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
   match expr {
+    // A labeled argument depends on what its value does.
+    ELabeledArg(_, _, value) => tail_named_record_mentions_region(expr = value, env = env, defs = defs, s = s, c = c, region_name = region_name, ce = ce),
     ELet(name, val, body, _) => {
       let (val_ty, s1, c1) = tail_region_check(expr = val, env = env, defs = defs, s = s, c = c, ce = ce)
       let next_env = bind_named_record_provenance(name = name, val = val, env = env_bind(env = env, name = name, ty = val_ty), defs = defs, s = s1, c = c1, ce = ce)
@@ -1096,7 +1096,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
       }
       tail_named_record_mentions_region(expr = right, env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce)
     },
-    ECall(callee, args, _, _) => {
+    ECall(callee, args, _, cell) => {
       let throwaway = array_empty()
       let throwtab = array_empty()
       let (callee_ty, s1, c1) = ce(callee, env, defs, s, c, throwaway, throwtab)
@@ -1113,9 +1113,9 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
         CtFn(param_tys, ret_ty, callee_effect) => {
           let resolved_ret = subst_apply(s = s1, ty = ret_ty)
           let mut found = false
-          let limit = min_int(a = Array::length(param_tys), b = Array::length(args))
+          // Ask each parameter of the argument filling it (ADR-0120 placement).
           let mut i = 0
-          while i < limit {
+          while i < Array::length(param_tys) {
             let markers = array_empty()
             collect_internal_provenance(ty = Array::get(param_tys, at = i), out = markers)
             let mut depends = false
@@ -1129,7 +1129,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
                 None => ()
               }
             }
-            if depends && tail_named_record_mentions_region(expr = Array::get(args, at = i), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
+            if depends && tail_formal_mentions_region(args = args, cell = cell, index = i, env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
               found = true
             }
             i = i + 1
@@ -1146,7 +1146,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
                     index = index * 10 + (String::char_code_at(label, at = p) - 48)
                     p = p + 1
                   }
-                  if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(expr = Array::get(args, at = index), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
+                  if index >= 0 && tail_formal_mentions_region(args = args, cell = cell, index = index, env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
                     found = true
                   }
                 }
@@ -1167,7 +1167,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
                   index = index * 10 + (String::char_code_at(label, at = p) - 48)
                   p = p + 1
                 }
-                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(expr = Array::get(args, at = index), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
+                if index >= 0 && tail_formal_mentions_region(args = args, cell = cell, index = index, env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
                   found = true
                 }
               }
@@ -1178,7 +1178,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
             EIdent(callee_name, _) => match env_lookup(env = env, name = String::concat("__field_contract__", callee_name)) {
               Some(CtNamed(index_text, _)) => {
                 let index = decimal_index(index_text)
-                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(expr = Array::get(args, at = index), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
+                if index >= 0 && tail_formal_mentions_region(args = args, cell = cell, index = index, env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
                   found = true
                 }
               },
