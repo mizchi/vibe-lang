@@ -1,0 +1,132 @@
+// The vacuity loop asks "which functions reach E" once per effect. One graph
+// kept across those questions must answer each of them exactly as building
+// it again for that effect does, including after a rewrite refreshed some
+// statements' facts.
+import @vibe/compiler/core {
+  Expr, Stmt, sorted_names_of
+}
+import @vibe/core {
+  struct MutMap, struct MutSet
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_collect_fn_defs,
+  edp_collect_performing_fns_from_facts,
+  edp_collect_performing_fns_in,
+  edp_name_set,
+  edp_performing_graph_new,
+  edp_performing_graph_refresh,
+  edp_refresh_statement_perform_facts,
+  edp_statement_perform_facts
+}
+
+fn call(_ name: String) -> Expr {
+  ECall(EIdent(name, -1), [], -1, [])
+}
+
+fn perform_op(_ op: String) -> Expr {
+  ECall(EIdent("perform", -1), [call(op)], -1, [])
+}
+
+fn top_fn(name: String, body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [], None, None, body))
+}
+
+fn program() -> Array[Stmt] {
+  [
+    top_fn(name = "a", body = call("b")),
+    top_fn(name = "b", body = perform_op("Ask::Get")),
+    top_fn(name = "c", body = call("d")),
+    top_fn(name = "d", body = call("String::length")),
+    top_fn(name = "e", body = perform_op("Other::Get")),
+    top_fn(name = "f", body = ESeq(call("e"), call("a"))),
+    // `mystery` is no function and not inert: `g` reaches an opaque call, so
+    // `g` and its caller `k` may perform any effect.
+    top_fn(name = "g", body = call("mystery")),
+    top_fn(name = "k", body = call("g"))
+  ]
+}
+
+let effects = ["Ask", "Other", "Missing"]
+
+/// The kept graph's answer for every effect, each checked against a graph
+/// built for that effect alone, as `effect=names` with the names sorted: the
+/// kept graph answers the same set in another order.
+fn answers(graph: (Array[String], Array[Option[(Bool, Array[String], Array[String])]], Array[Int], Array[(MutMap[String, Array[String]], Array[String], MutSet[String])]), stmts: Array[Stmt], facts: Array[Option[(Bool, Array[String], Array[String])]]) -> String {
+  let fn_defs = edp_collect_fn_defs(stmts)
+  let lines: Array[String] = []
+  for effect in effects {
+    let kept = sorted_names_of(edp_collect_performing_fns_in(graph = graph, stmts = stmts, fn_defs = fn_defs, facts = facts, ename = effect))
+    let fresh = sorted_names_of(edp_collect_performing_fns_from_facts(stmts = stmts, fn_defs = fn_defs, facts = facts, ename = effect))
+    assert(kept == fresh)
+    Array::push(lines, value = String::concat(effect, String::concat("=", String::join(kept, sep = ","))))
+  }
+  String::join(lines, sep = " ")
+}
+
+fn inert() -> MutSet[String] {
+  edp_name_set(["String::length", "Ask::Get", "Other::Get"])
+}
+
+fn fn_names(_ stmts: Array[Stmt]) -> MutSet[String] {
+  let names: Array[String] = []
+  for def in edp_collect_fn_defs(stmts) {
+    let (_, _, _, name, _, _) = def
+    Array::push(names, value = name)
+  }
+  edp_name_set(names)
+}
+
+/// Replace statement `at`, then refresh the facts and the graph as the
+/// vacuity loop does after an erase.
+fn rewrite(graph: (Array[String], Array[Option[(Bool, Array[String], Array[String])]], Array[Int], Array[(MutMap[String, Array[String]], Array[String], MutSet[String])]), stmts: Array[Stmt], facts: Array[Option[(Bool, Array[String], Array[String])]], at: Int, stmt: Stmt) -> Unit {
+  Array::set(stmts, at = at, value = stmt)
+  edp_refresh_statement_perform_facts(stmts = stmts, facts = facts, indices = [
+    at
+  ], inert = inert(), fn_names = fn_names(stmts))
+  edp_performing_graph_refresh(graph = graph, stmts = stmts, facts = facts, indices = [
+    at
+  ])
+}
+
+test "one graph answers every effect as a graph built for that effect" {
+  let stmts = program()
+  let facts = edp_statement_perform_facts(stmts = stmts, inert = inert(), fn_names = fn_names(stmts))
+  let graph = edp_performing_graph_new()
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f,g,k Other=e,f,g,k Missing=g,k")
+  // Asked again, the kept graph gives the same answers.
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f,g,k Other=e,f,g,k Missing=g,k")
+}
+
+test "a rewrite that changes a function's calls reaches the kept graph" {
+  let stmts = program()
+  let facts = edp_statement_perform_facts(stmts = stmts, inert = inert(), fn_names = fn_names(stmts))
+  let graph = edp_performing_graph_new()
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f,g,k Other=e,f,g,k Missing=g,k")
+  // `d` now calls `e`, so `c` and `d` reach Other.
+  rewrite(graph = graph, stmts = stmts, facts = facts, at = 3, stmt = top_fn(name = "d", body = call("e")))
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f,g,k Other=c,d,e,f,g,k Missing=g,k")
+}
+
+test "a rewrite that changes only what a function performs reaches the kept graph" {
+  let stmts = program()
+  let facts = edp_statement_perform_facts(stmts = stmts, inert = inert(), fn_names = fn_names(stmts))
+  let graph = edp_performing_graph_new()
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f,g,k Other=e,f,g,k Missing=g,k")
+  // `c` keeps its one call and now performs Ask itself.
+  rewrite(graph = graph, stmts = stmts, facts = facts, at = 2, stmt = top_fn(name = "c", body = ESeq(call("d"), perform_op("Ask::Get"))))
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,c,f,g,k Other=e,f,g,k Missing=g,k")
+  // `b` no longer performs anything, so only `c` is left performing Ask.
+  rewrite(graph = graph, stmts = stmts, facts = facts, at = 1, stmt = top_fn(name = "b", body = EInt(0)))
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=c,g,k Other=e,f,g,k Missing=g,k")
+}
+
+test "a rewrite that removes an opaque call reaches the kept graph" {
+  let stmts = program()
+  let facts = edp_statement_perform_facts(stmts = stmts, inert = inert(), fn_names = fn_names(stmts))
+  let graph = edp_performing_graph_new()
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f,g,k Other=e,f,g,k Missing=g,k")
+  // `g` keeps one call, now to an inert target, so nothing reaches an
+  // opaque call any more.
+  rewrite(graph = graph, stmts = stmts, facts = facts, at = 6, stmt = top_fn(name = "g", body = call("String::length")))
+  inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f Other=e,f Missing=")
+}
