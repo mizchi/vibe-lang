@@ -78,12 +78,11 @@ import @vibe/compiler/checker/effects {
 }
 
 import ./checker_escape.vibe {
-  diag_report_into
+  diag_report_into, expr_free_in
 }
 
 import ./checker_merge_capture_provenance.vibe {
   checker_string_array_has,
-  collect_result_param_indices,
   direct_result_field_param_index,
   direct_result_param_index,
   eq_formal_arity,
@@ -822,12 +821,13 @@ export fn direct_result_enum_payload_param_indices(body: Expr, params: Array[(St
 /// The parameters whose values the enum constructor at the body's TAIL holds
 /// (#3862): a statement before the tail (`let _ = 0; Pair(a, b)`) does not hide
 /// it. A `let` that holds a parameter is an alias of it, and one that holds
-/// none shadows a parameter of its name (`collect_result_param_indices`).
+/// none shadows a parameter of its name. What an expression holds is read by
+/// `value_held_params`.
 fn result_enum_payload_params(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
   match body {
     ECall(EIdent(ctor_name, _), args, _, _) => if is_enum_ctor_name(name = ctor_name, defs = defs) {
       for call_arg in args {
-        collect_result_param_indices(body = call_arg, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
+        value_held_params(e = call_arg, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
       }
     } else {
       ()
@@ -836,41 +836,128 @@ fn result_enum_payload_params(body: Expr, params: Array[(String, Option[TypeExpr
     ELet(name, value, rest, _) => {
       let alias_mark = Array::length(alias_names)
       let held: Array[Int] = []
-      collect_result_param_indices(body = value, params = params, alias_names = alias_names, alias_indices = alias_indices, found = held)
-      // The new binder hides every earlier alias of its name, for its scope:
-      // `collect_result_param_indices` unions all entries of a name.
-      let hidden: Array[Int] = []
-      let mut k = 0
-      while k < alias_mark {
-        if Array::get(alias_names, at = k) == name {
-          Array::push(hidden, value = k)
-          Array::set(alias_names, at = k, value = "#shadowed")
-        } else {
-          ()
-        }
-        k = k + 1
-      }
-      if Array::length(held) == 0 {
-        Array::push(alias_names, value = name)
-        Array::push(alias_indices, value = -1)
-      } else {
-        for index in held {
-          Array::push(alias_names, value = name)
-          Array::push(alias_indices, value = index)
-        }
-      }
+      value_held_params(e = value, params = params, alias_names = alias_names, alias_indices = alias_indices, found = held)
+      let hidden = bind_let_alias(name = name, held = held, alias_names = alias_names, alias_indices = alias_indices)
       result_enum_payload_params(body = rest, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
-      Array::truncate(alias_names, length = alias_mark)
-      Array::truncate(alias_indices, length = alias_mark)
-      for k_hidden in hidden {
-        Array::set(alias_names, at = k_hidden, value = name)
-      }
+      unbind_let_alias(name = name, hidden = hidden, mark = alias_mark, alias_names = alias_names, alias_indices = alias_indices)
     },
     EIf(_, then_expr, else_expr) => {
       result_enum_payload_params(body = then_expr, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
       result_enum_payload_params(body = else_expr, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
     },
     _ => ()
+  }
+}
+
+/// A `let` binder over the aliases: an alias of each parameter its value
+/// holds, or a shadow (-1) when it holds none. It hides every earlier alias of
+/// its name for its scope, because a reading unions all entries of a name.
+/// Returns the hidden entries, for `unbind_let_alias`.
+fn bind_let_alias(name: String, held: Array[Int], alias_names: Array[String], alias_indices: Array[Int]) -> Array[Int] {
+  let hidden: Array[Int] = []
+  let mut k = 0
+  while k < Array::length(alias_names) {
+    if Array::get(alias_names, at = k) == name {
+      Array::push(hidden, value = k)
+      Array::set(alias_names, at = k, value = "#shadowed")
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  if Array::length(held) == 0 {
+    Array::push(alias_names, value = name)
+    Array::push(alias_indices, value = -1)
+  } else {
+    for index in held {
+      Array::push(alias_names, value = name)
+      Array::push(alias_indices, value = index)
+    }
+    ()
+  }
+  hidden
+}
+
+fn unbind_let_alias(name: String, hidden: Array[Int], mark: Int, alias_names: Array[String], alias_indices: Array[Int]) -> Unit {
+  Array::truncate(alias_names, length = mark)
+  Array::truncate(alias_indices, length = mark)
+  for k_hidden in hidden {
+    Array::set(alias_names, at = k_hidden, value = name)
+  }
+  ()
+}
+
+/// The parameters the VALUE of `e` may hold (Codex on #3872). A block's
+/// discarded statements and a `let` its tail never reads are not part of it
+/// (`{ let ignored = first; 0 }` holds nothing); a branch's value is either
+/// arm's. Any other form -- a call, a literal, a closure, a `match` -- may
+/// hold whatever is free in it (`free_held_params`).
+fn value_held_params(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  match e {
+    ESeq(_, right) => value_held_params(e = right, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found),
+    ELet(name, value, rest, _) => {
+      let alias_mark = Array::length(alias_names)
+      let held: Array[Int] = []
+      value_held_params(e = value, params = params, alias_names = alias_names, alias_indices = alias_indices, found = held)
+      let hidden = bind_let_alias(name = name, held = held, alias_names = alias_names, alias_indices = alias_indices)
+      value_held_params(e = rest, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
+      unbind_let_alias(name = name, hidden = hidden, mark = alias_mark, alias_names = alias_names, alias_indices = alias_indices)
+    },
+    EIf(_, then_expr, else_expr) => {
+      value_held_params(e = then_expr, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
+      value_held_params(e = else_expr, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
+    },
+    _ => free_held_params(e = e, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
+  }
+}
+
+/// The parameters `e` may hold: each parameter, and each alias of one, that
+/// is free in it (#3862, Codex on #3868). Free means unshadowed, so `{ let
+/// first = 0; first }` holds no parameter; and anywhere, so a parameter
+/// wrapped in a literal (`Holder::{ v: first }`, `Some(first)`) is held. A
+/// name with an alias entry is that local, not the parameter it spells.
+fn free_held_params(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  let mut k = 0
+  while k < Array::length(alias_names) {
+    let index = Array::get(alias_indices, at = k)
+    if index >= 0 && expr_free_in(expr = e, name = Array::get(alias_names, at = k)) {
+      push_unique_held_index(out = found, index = index)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  let mut i = 0
+  while i < Array::length(params) {
+    let (raw_name, _) = Array::get(params, at = i)
+    let nlen = String::length(raw_name)
+    let name = if nlen > 0 && (String::byte_at(raw_name, at = nlen - 1) == '~' || String::byte_at(raw_name, at = nlen - 1) == '?') {
+      String::substring(raw_name, start = 0, end = nlen - 1)
+    } else {
+      raw_name
+    }
+    if !checker_string_array_has(items = alias_names, wanted = name) && expr_free_in(expr = e, name = name) {
+      push_unique_held_index(out = found, index = i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn push_unique_held_index(out: Array[Int], index: Int) -> Unit {
+  let mut seen = false
+  for existing in out {
+    if existing == index {
+      seen = true
+    } else {
+      ()
+    }
+  }
+  if !seen {
+    Array::push(out, value = index)
+  } else {
+    ()
   }
 }
 
