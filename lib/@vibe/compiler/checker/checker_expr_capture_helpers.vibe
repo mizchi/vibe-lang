@@ -2,7 +2,11 @@
 // file under the source-size limit.
 
 import @vibe/compiler/core {
-  Subst, Type, TypeDef, find_typedef, subst_apply, type_to_string, unify
+  Subst, Type, TypeDef, find_struct_typedef, find_typedef, subst_apply, type_to_string, unify
+}
+
+import ./checker_call_header.vibe {
+  checker_record_alias_is_local
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -56,14 +60,43 @@ export fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: 
   }
 }
 
+/// #3837: the declaration a struct literal `Name::{ .. }` builds. An alias is
+/// followed only when this program declares it (`type M = E`, or
+/// `import ./a.vibe { B as Q }`): lowering renames the literal through those
+/// to the struct it names. Through an alias another module declares, the
+/// literal would reach lowering under the alias's name and be laid out by its
+/// field set alone -- `N::{ v: 3 }` printed as another same-shaped struct --
+/// so it is refused instead (`struct_literal_refusal`).
+export fn struct_literal_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
+  if checker_record_alias_is_local(name) {
+    find_struct_typedef(defs = defs, name = name)
+  } else {
+    find_typedef(defs = defs, name = name)
+  }
+}
+
 /// #3837: the refusal for `Name::{ .. }` when `Name` names no struct. An alias
 /// that fixes or reorders a struct's arguments (`type IB = Box[Int]`,
-/// `type Rev[A, B] = Pair[B, A]`) is named with the edit, since
-/// `find_struct_typedef` does not follow it.
+/// `type Rev[A, B] = Pair[B, A]`), or one declared by another module, is
+/// named with the edit.
 export fn struct_literal_refusal(defs: Array[TypeDef], name: String) -> String {
   match find_typedef(defs = defs, name = name) {
-    Some(TDAlias(_, _, CtNamed(head, args))) => if Array::length(args) > 0 && (find_typedef(defs = defs, name = head) is Some(TDStruct(_, _, _, _))) {
-      "`" + name + "` is an alias of `" + type_to_string(CtNamed(head, args)) + "`; a struct literal follows an alias only when the alias passes its own parameters through in order -- write `" + head + "::{ .. }` and annotate the binding as `" + name + "`"
+    Some(TDAlias(_, _, target)) => match find_struct_typedef(defs = defs, name = name) {
+      Some(TDStruct(head, _, _, _)) => if checker_record_alias_is_local(name) {
+        "`" + name + "` is an alias of `" + type_to_string(target) + "`; a struct literal follows an alias only when the alias passes its own parameters through in order -- write `" + head + "::{ .. }` and annotate the binding as `" + name + "`"
+      } else {
+        "`" + name + "` is an alias of `" + head + "` declared in another module, and a struct literal follows only an alias this file declares or imports with `as` -- write `" + head + "::{ .. }`"
+      },
+      _ => pinned_struct_literal_refusal(defs = defs, name = name, target = target)
+    },
+    _ => "`" + name + "` is not a struct (struct literal)"
+  }
+}
+
+fn pinned_struct_literal_refusal(defs: Array[TypeDef], name: String, target: Type) -> String {
+  match target {
+    CtNamed(head, args) => if Array::length(args) > 0 && (find_typedef(defs = defs, name = head) is Some(TDStruct(_, _, _, _))) {
+      "`" + name + "` is an alias of `" + type_to_string(target) + "`; a struct literal follows an alias only when the alias passes its own parameters through in order -- write `" + head + "::{ .. }` and annotate the binding as `" + name + "`"
     } else {
       "`" + name + "` is not a struct (struct literal)"
     },

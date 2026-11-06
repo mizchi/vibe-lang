@@ -1,3 +1,7 @@
+import @vibe/core {
+  array_empty
+}
+
 import ./checker_parameter_defaults.vibe {
   checker_parameter_defaults
 }
@@ -24,7 +28,10 @@ import @vibe/compiler/core {
 /// placement, the label sites -- ever sees the marker.
 let positional_rows: Array[(String, Array[Int])] = Array::slice([("", [0])], start = 0, end = 0)
 
-/// The `_` slots written in `stmts`, empty when none.
+/// The `_` slots written in `stmts`, empty when none. #3837: the rows also
+/// name each alias a struct literal may be written through -- a `type` alias
+/// the file declares and a name it imports with `as` -- under a key no
+/// function name can spell (`checker_record_alias_is_local`).
 export fn checker_positional_rows_of(_ stmts: Array[Stmt]) -> Array[(String, Array[Int])] {
   let out: Array[(String, Array[Int])] = []
   for stmt in stmts {
@@ -32,10 +39,38 @@ export fn checker_positional_rows_of(_ stmts: Array[Stmt]) -> Array[(String, Arr
       SPositionalParams(rows) => for row in rows {
         Array::push(out, value = row)
       },
+      STypeAlias(_, name, _, _) => Array::push(out, value = (record_alias_row_key(name), array_empty())),
+      SImport(_, items) => for item in items {
+        match item.alias {
+          Some(alias) => Array::push(out, value = (record_alias_row_key(alias), array_empty())),
+          None => ()
+        }
+      },
       _ => ()
     }
   }
   out
+}
+
+fn record_alias_row_key(_ name: String) -> String {
+  String::concat("#record-alias ", name)
+}
+
+/// #3837: whether the program being checked declares `name` itself, as a
+/// `type` alias or an `as` import. Lowering renames a struct literal written
+/// through such an alias to the struct it names; an alias another module
+/// declares and this one imports under its own name it cannot see through,
+/// so a literal through it would be laid out by its field set alone.
+export fn checker_record_alias_is_local(_ name: String) -> Bool {
+  let key = record_alias_row_key(name)
+  let mut found = false
+  for row in positional_rows {
+    let (n, _) = row
+    if n == key {
+      found = true
+    }
+  }
+  found
 }
 
 /// Publish `rows` and return the ones they replace, for the caller to restore.
