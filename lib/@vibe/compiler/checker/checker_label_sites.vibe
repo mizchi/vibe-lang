@@ -155,24 +155,17 @@ fn missing_label_name(_ raw: String) -> String {
   }
 }
 
-/// The parameter names of a call to `name`, when every argument must be
-/// labeled unless its parameter is declared `_`: a builtin, or a declaration
-/// (`checker_call_header_is_declaration`). A local lambda or a value answers
-/// None: those calls stay positional. A method call's receiver fills the
-/// first name, so its written arguments start one slot in (`skip`).
-fn required_label_names(env: TypeEnv, name: String, ident_offset: Int) -> Option[Array[String]] {
-  // #3832: a builtin reached through an import alias takes the builtin's labels.
+/// The parameter labels of a builtin call to `name`, or None when the call
+/// does not run a builtin. The label table has a row for every builtin the
+/// checker admits (tests/builtin_param_labels_test.vibe), so a row is how a
+/// builtin is recognized here -- `lookup_builtin` would build its type.
+/// #3832: a builtin reached through an import alias takes the builtin's labels.
+fn required_builtin_labels(env: TypeEnv, name: String, ident_offset: Int) -> Option[Array[String]] {
   let bname = checker_builtin_call_name(env = env, name = name)
-  if builtin_resolves_at(env = env, name = bname, ident_off = ident_offset) && (lookup_builtin(bname) is Some(_)) {
-    if canonical_builtin_name(bname) == "sh_lines" {
-      None
-    } else {
-      builtin_param_labels(bname)
-    }
-  } else if checker_call_header_is_declaration(env = env, name = name) {
-    checker_call_header_names(env = env, name = name)
-  } else {
+  if !builtin_resolves_at(env = env, name = bname, ident_off = ident_offset) || canonical_builtin_name(bname) == "sh_lines" {
     None
+  } else {
+    builtin_param_labels(bname)
   }
 }
 
@@ -192,33 +185,46 @@ fn args_have_positional(_ args: Array[Expr]) -> Bool {
 }
 
 /// ADR-0120 Phase 4: an argument to a parameter that is not declared `_` names
-/// it. The message lists every label the call is missing, in written order.
+/// it, at a call to a builtin or to a declaration
+/// (`checker_call_header_is_declaration`). A call through a local lambda or a
+/// value stays positional. The message lists every label the call is missing,
+/// in written order.
 export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
   if Array::get(required_labels_suspended, at = 0) || offset < 0 || ident_offset < 0 || !args_have_positional(args) || checker_call_header_is_probe() {
     ()
   } else {
-    match required_label_names(env = env, name = name, ident_offset = ident_offset) {
-      // More arguments than parameters is an arity error, and a declaration's
-      // call that labels some arguments and not others is reported as mixing:
-      // either says what to fix first.
-      Some(names) => {
-        let skip = if method_call && Array::length(names) > 0 {
-          1
-        } else {
-          0
+    match required_builtin_labels(env = env, name = name, ident_offset = ident_offset) {
+      Some(names) => report_required_labels(name = name, ident_offset = ident_offset, args = args, names = names, method_call = method_call, builtin = true, errors = errors),
+      None => if checker_call_header_is_declaration(env = env, name = name) {
+        match checker_call_header_names(env = env, name = name) {
+          Some(names) => report_required_labels(name = name, ident_offset = ident_offset, args = args, names = names, method_call = method_call, builtin = false, errors = errors),
+          None => ()
         }
-        if Array::length(args) > Array::length(names) - skip || (!(lookup_builtin(checker_builtin_call_name(env = env, name = name)) is Some(_)) && checker_args_mix_labels(args)) {
-          ()
-        } else {
-          let message = required_labels_message_from(name = name, args = args, names = names, skip = skip)
-          if message != "" {
-            Array::push(errors, value = message + off_marker_len(off = ident_offset, len = String::length(name)))
-          } else {
-            ()
-          }
-        }
-      },
-      None => ()
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+/// More arguments than parameters is an arity error, and a declaration's call
+/// that labels some arguments and not others is reported as mixing: either
+/// says what to fix first. A method call's receiver fills the first name, so
+/// its written arguments start one slot in.
+fn report_required_labels(name: String, ident_offset: Int, args: Array[Expr], names: Array[String], method_call: Bool, builtin: Bool, errors: Array[String]) -> Unit {
+  let skip = if method_call && Array::length(names) > 0 {
+    1
+  } else {
+    0
+  }
+  if Array::length(args) > Array::length(names) - skip || (!builtin && checker_args_mix_labels(args)) {
+    ()
+  } else {
+    let message = required_labels_message_from(name = name, args = args, names = names, skip = skip)
+    if message != "" {
+      Array::push(errors, value = message + off_marker_len(off = ident_offset, len = String::length(name)))
+    } else {
+      ()
     }
   }
 }
