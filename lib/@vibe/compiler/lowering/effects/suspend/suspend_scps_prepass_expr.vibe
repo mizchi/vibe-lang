@@ -25,7 +25,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import @vibe/compiler/lowering/effects/direct {
@@ -520,11 +520,12 @@ export fn suspend_prepass_splits(stmts: Array[Stmt], eff: String) -> Bool {
 /// itself (`scps_rename_ident`). An ascribed alias (`let sp: T = f`) is the
 /// same alias. The `let` is dropped once nothing reads it.
 fn scps_inline_fn_aliases_stmts(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
-  let fn_names = array_empty_str()
+  // A set: every `let` of the program asks whether its value names one.
+  let fn_names: MutSet[String] = MutSet::new_string()
   let mut fi = 0
   while fi < Array::length(fn_defs) {
     let (_, _, _, fnm, _, _) = Array::get(fn_defs, at = fi)
-    Array::push(fn_names, value = fnm)
+    MutSet::add(fn_names, x = fnm)
     fi = fi + 1
   }
   let mut i = 0
@@ -545,9 +546,9 @@ fn scps_inline_fn_aliases_stmts(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, B
 /// "". `fn_names` are the program's top-level functions; a target some local
 /// binder also spells is not trusted, since that binder may be what the name
 /// resolves to where it is read.
-fn scps_fn_alias_target(v: Expr, fn_names: Array[String]) -> String {
+fn scps_fn_alias_target(v: Expr, fn_names: MutSet[String]) -> String {
   match v {
-    EIdent(t, _) => if edp_str_array_contains(arr = fn_names, v = t) && !edp_is_program_binder(t) {
+    EIdent(t, _) => if MutSet::has(fn_names, x = t) && !edp_is_program_binder(t) {
       t
     } else {
       ""
@@ -561,7 +562,7 @@ fn scps_fn_alias_target(v: Expr, fn_names: Array[String]) -> String {
   }
 }
 
-fn scps_inline_fn_aliases(e: Expr, fn_names: Array[String]) -> Expr {
+fn scps_inline_fn_aliases(e: Expr, fn_names: MutSet[String]) -> Expr {
   match e {
     ELet(x, v, b, off) => {
       let v2 = scps_inline_fn_aliases(e = v, fn_names = fn_names)
@@ -609,7 +610,7 @@ fn scps_inline_fn_aliases(e: Expr, fn_names: Array[String]) -> Expr {
   }
 }
 
-fn scps_inline_fn_aliases_exprs(es: Array[Expr], fn_names: Array[String]) -> Array[Expr] {
+fn scps_inline_fn_aliases_exprs(es: Array[Expr], fn_names: MutSet[String]) -> Array[Expr] {
   let out = array_empty_expr()
   let mut i = 0
   while i < Array::length(es) {
@@ -619,7 +620,7 @@ fn scps_inline_fn_aliases_exprs(es: Array[Expr], fn_names: Array[String]) -> Arr
   out
 }
 
-fn scps_inline_fn_aliases_pairs(pairs: Array[(String, Expr)], fn_names: Array[String]) -> Array[(String, Expr)] {
+fn scps_inline_fn_aliases_pairs(pairs: Array[(String, Expr)], fn_names: MutSet[String]) -> Array[(String, Expr)] {
   let out = scps_empty_pairs()
   let mut i = 0
   while i < Array::length(pairs) {
@@ -630,7 +631,7 @@ fn scps_inline_fn_aliases_pairs(pairs: Array[(String, Expr)], fn_names: Array[St
   out
 }
 
-fn scps_inline_fn_aliases_arms(arms: Array[(Pat, Expr)], fn_names: Array[String]) -> Array[(Pat, Expr)] {
+fn scps_inline_fn_aliases_arms(arms: Array[(Pat, Expr)], fn_names: MutSet[String]) -> Array[(Pat, Expr)] {
   let out = scps_empty_arms()
   let mut i = 0
   while i < Array::length(arms) {
