@@ -172,6 +172,10 @@ import ./checker_int32.vibe {
   int32_literal_adapt
 }
 
+import ./checker_expr_numeric_observation.vibe {
+  record_add32_call
+}
+
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture,
   callback_row_unreadable,
@@ -1509,6 +1513,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 let (vid, bounds) = Array::get(new_bounds, at = bi)
                 if Array::length(bounds) != 0 {
                   note_bound_var_site(vid = vid, off = callee_off, len = String::length(name))
+                  record_add32_call(capture = capture, off = callee_off, vid = vid, bounds = bounds, env = env)
                   s0 = subst_add_bound(s = s0, id = vid, bounds = bounds)
                 } else {
                   ()
@@ -2027,6 +2032,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                         let (vid, bounds) = Array::get(new_bounds, at = bi)
                         if Array::length(bounds) != 0 {
                           note_bound_var_site(vid = vid, off = callee_off, len = String::length(name))
+                          record_add32_call(capture = capture, off = callee_off, vid = vid, bounds = bounds, env = env)
                           sbound = subst_add_bound(s = sbound, id = vid, bounds = bounds)
                         }
                         bi = bi + 1
@@ -2274,7 +2280,16 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let method_binding = env_lookup(env = env, name = qualified)
               let method_ty = match method_binding {
                 Some(t) => {
-                  let (ti0, c20, _) = instantiate(ty = t, c = c1)
+                  let (ti0, c20, method_bounds) = instantiate(ty = t, c = c1)
+                  // #3825 (Codex on #3857): a dot-method call files its
+                  // 32-bit `Add` rows at the method name's offset, which is
+                  // the offset the desugar's method path consumes them at.
+                  let mut mbi = 0
+                  while mbi < Array::length(method_bounds) {
+                    let (vid, bounds) = Array::get(method_bounds, at = mbi)
+                    record_add32_call(capture = capture, off = qcall_field_off, vid = vid, bounds = bounds, env = env)
+                    mbi = mbi + 1
+                  }
                   // #3386 (Codex on #3414): as for a call by name.
                   let (ti, s1r, c2) = label_row_only_formals(scheme = t, inst = ti0, defs = defs, s = s1, c = c20)
                   (ti, s1r, c2)

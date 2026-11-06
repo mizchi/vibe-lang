@@ -40,7 +40,9 @@ query surface passes them through unconverted. Two spellings of the same thing:
 | `vibe type-at` **in** | `<line> <col>` | line, byte column | 1 | — |
 | `vibe binding-at` **in** | `<line> <col>` | line, byte column | 1 | — |
 
-`vibe rc-classify` and `vibe rc-plan` report no positions at all.
+`vibe rc-classify` and `vibe rc-plan` report no positions at all. `vibe rc-validate`
+reports one: `consume mark at offset N`, where N is the plan row's own
+0-based byte offset of the occurrence.
 
 This table is enforced. `scripts/check_source_range_contract.sh`
 (`pkf run check-source-ranges`) probes every row against a source with two

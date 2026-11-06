@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `vibe rc-classify --help` / `vibe rc-plan --help` are reports, not "unknown
+# `vibe rc-classify --help` / `vibe rc-plan --help` / `vibe rc-validate --help` are reports, not "unknown
 # command". Pure launcher: a dummy runner is enough to pass the startup check.
 set -euo pipefail
 
@@ -67,5 +67,10 @@ run_help rc-plan --help
 need rc-plan 'FN BINDING ACTION COUNT'
 run_help rc-plan -h
 need rc-plan 'alias_dup'
+
+run_help rc-validate --help
+need rc-validate 'FN BINDING PATH'
+run_help rc-validate -h
+need rc-validate 'not caught in general'
 
 echo "[vibe-rc-help] ok"

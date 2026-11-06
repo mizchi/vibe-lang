@@ -76,6 +76,11 @@
 #   vibe rc-plan [--fn NAME] <file.vibe>  print the Perceus plan, one
 #                                         `FN BINDING ACTION COUNT` line
 #                                         (empty = no actions)
+#   vibe rc-validate [--fn NAME] <file.vibe>
+#                                         check each Perceus plan against the
+#                                         linear ownership discipline, one
+#                                         `FN BINDING PATH: MESSAGE` line per
+#                                         violation (empty = balanced)
 #   vibe allocs <file.vibe>               print possible heap-allocation sites
 #                                         (FN KIND OFFSET per line; empty = none)
 #   vibe deps [--direct] <file.vibe>      print the resolved import closure, one
@@ -531,7 +536,7 @@ case "${1:-help}" in
       --legend|--help|-h) need_runner=0 ;;
     esac
     ;;
-  rc-classify|rc-plan|refactor)
+  rc-classify|rc-plan|rc-validate|refactor)
     case "${2:-}" in
       --help|-h) need_runner=0 ;;
     esac
@@ -1093,7 +1098,7 @@ ADAPTER_MODE_CLEARS="-u VIBE_FS_COMPILE -u VIBE_CHECK_ONLY -u VIBE_LSP -u VIBE_H
   -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_INSPECT_UPDATE -u VIBE_INSPECT_UPDATE_STDOUT -u VIBE_TYPE_AT -u VIBE_DOC_AT
   -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS
   -u VIBE_DEPS -u VIBE_DEPS_DIRECT -u VIBE_GREP -u VIBE_GREP_JSON -u VIBE_RC_CLASSIFY -u VIBE_RC_PLAN -u VIBE_RC_PLAN_FN
-  -u VIBE_DIAGNOSTICS -u VIBE_DIAGNOSTICS_JSON -u VIBE_EMIT_COVERAGE_DRIVER_SOURCE -u VIBE_EMIT_MERGED_SOURCE
+  -u VIBE_RC_VALIDATE -u VIBE_RC_VALIDATE_FN -u VIBE_DIAGNOSTICS -u VIBE_DIAGNOSTICS_JSON -u VIBE_EMIT_COVERAGE_DRIVER_SOURCE -u VIBE_EMIT_MERGED_SOURCE
   -u VIBE_EMIT_WIT -u VIBE_SERVE_COMPONENT -u VIBE_EMIT_MODULE_SOURCE -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK
   -u VIBE_TESTMETA_OUT -u VIBE_ENTRY_TESTMETA_OUT -u VIBE_ARTIFACT_INPUT_TRACE_OUT -u VIBE_ARTIFACT_INPUT_TRACE_NONCE"
 invoke_cli() {
@@ -1787,7 +1792,7 @@ REPL_HELP
       esac
     done
     ;;
-  rc-classify|rc-plan)
+  rc-classify|rc-plan|rc-validate)
     # `--help` / `-h` is answered HERE, like `grep --help` below:
     # scripts/test_vibe_rc_help.sh runs it with a dummy runner and FAILS if the
     # runner is invoked. The dispatcher prints the same three lines for a
@@ -1798,10 +1803,16 @@ REPL_HELP
           printf '%s\n' 'usage: vibe rc-classify <file.vibe>' \
             'NAME SET[,SET...] per user function. Empty output = no special sets.' \
             'Sets: borrow_ret, borrow_param, view_ret, scalar_ret.'
-        else
+        elif [ "$cmd" = rc-plan ]; then
           printf '%s\n' 'usage: vibe rc-plan [--fn NAME] <file.vibe>' \
             'FN BINDING ACTION COUNT per collapsed Perceus action.' \
             'Empty output = no actions. ACTION is dup, drop, or alias_dup.'
+        else
+          printf '%s\n' 'usage: vibe rc-validate [--fn NAME] <file.vibe>' \
+            "Checks each function's Perceus plan against the linear ownership discipline." \
+            'Empty output = every checked binding balances on every path.' \
+            'Lines: FN BINDING PATH: owned value not consumed | owned value released N more than held | borrowed parameter consumed without a dup | consume mark at offset N is not a consuming occurrence | heap value planned as scalar | not checked: REASON.' \
+            'Gaps: the file is checked alone; elaborate_heap_params and return_control_annotate_calls do not run; a heap value planned as scalar is not caught in general.'
         fi
         exit 0 ;;
     esac

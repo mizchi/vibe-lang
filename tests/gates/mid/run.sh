@@ -11,4 +11,5 @@ gate_resolve_stage2
 
 source "$ROOT_DIR/tests/gates/mid/retired_v128_intrinsics_stay_retired.sh"
 source "$ROOT_DIR/tests/gates/mid/6b_40_wasm_gc_region_arena_reclamation.sh"
+source "$ROOT_DIR/tests/gates/mid/rc_validate_corpus.sh"
 source "$ROOT_DIR/tests/gates/mid/self_discharging_owner_s_closure_typed_parameter.sh"

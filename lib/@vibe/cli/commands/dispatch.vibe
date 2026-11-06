@@ -55,6 +55,7 @@ import @vibe/compiler/query {
   grep_scan_files_report,
   rc_classify_source,
   rc_plan_source,
+  rc_validate_source,
   symbol_spans_fs_report,
   symbol_spans_locate_failure,
   symbol_spans_with_docs_for_path,
@@ -1320,6 +1321,12 @@ fn rc_plan_help_text() -> String {
   "usage: vibe rc-plan [--fn NAME] <file.vibe>\nFN BINDING ACTION COUNT per collapsed Perceus action.\nEmpty output = no actions. ACTION is dup, drop, or alias_dup.\n"
 }
 
+/// `vibe rc-validate --help`, kept in step with runtime/vibe's static copy by
+/// hand like the two above.
+fn rc_validate_help_text() -> String {
+  "usage: vibe rc-validate [--fn NAME] <file.vibe>\nChecks each function's Perceus plan against the linear ownership discipline.\nEmpty output = every checked binding balances on every path.\nLines: FN BINDING PATH: owned value not consumed | owned value released N more than held | borrowed parameter consumed without a dup | consume mark at offset N is not a consuming occurrence | heap value planned as scalar | not checked: REASON.\nGaps: the file is checked alone; elaborate_heap_params and return_control_annotate_calls do not run; a heap value planned as scalar is not caught in general.\n"
+}
+
 fn selfhost_cli_user_rc_classify_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
   if Array::length(args) >= 2 && (Array::get(args, at = 1) == "--help" || Array::get(args, at = 1) == "-h") {
     print_text(rc_classify_help_text())
@@ -1366,6 +1373,39 @@ fn selfhost_cli_user_rc_plan_args(_ args: Array[String]) -> Int with Exception +
     throw(String::concat("not found: ", src))
   } else {
     print_text(rc_plan_source(source = Fs::read_file(src), fn_filter = fn_filter))
+    0
+  }
+}
+
+fn selfhost_cli_user_rc_validate_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
+  let mut fn_filter = ""
+  let mut src = ""
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, at = i)
+    if arg == "--fn" {
+      i = i + 1
+      fn_filter = need_value(args = args, index = i, command = "rc-validate", flag = arg)
+      ()
+    } else if String::starts_with(arg, prefix = "--fn=") {
+      fn_filter = arg[5: String::length(arg)]
+      ()
+    } else if arg == "--help" || arg == "-h" {
+      print_text(rc_validate_help_text())
+      return 0
+    } else if String::length(arg) > 0 && String::byte_at(arg, at = 0) == 45 {
+      throw(String::concat("rc-validate: unknown flag: ", arg))
+    } else {
+      src = arg
+    }
+    i = i + 1
+  }
+  if src == "" {
+    throw("usage: vibe rc-validate [--fn NAME] <file.vibe>")
+  } else if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    print_text(rc_validate_source(source = Fs::read_file(src), fn_filter = fn_filter))
     0
   }
 }
@@ -1829,6 +1869,7 @@ export fn selfhost_cli_user_dispatch_args(_ args: Array[String]) -> Int with Exc
     "escapes" => selfhost_cli_user_escapes_args(argv),
     "rc-classify" => selfhost_cli_user_rc_classify_args(argv),
     "rc-plan" => selfhost_cli_user_rc_plan_args(argv),
+    "rc-validate" => selfhost_cli_user_rc_validate_args(argv),
     "allocs" => selfhost_cli_user_allocs_args(argv),
     "deps" => selfhost_cli_user_deps_args(argv),
     "diagnostics" => selfhost_cli_user_diagnostics_args(argv),
