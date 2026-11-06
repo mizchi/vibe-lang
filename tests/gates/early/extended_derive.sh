@@ -1813,7 +1813,7 @@ impl [T: Show2] Show2 for Array { show2(self) -> Int {
 } }
 let use_it = [U: Show2](x: U) -> Int { U::show2(x) }'
 { printf '%s\n' "$gj_prelude"
-  printf 'export let _start: () -> Int = () -> { use_it([Box::{ v: 10 }, Box::{ v: 20 }, Box::{ v: 30 }]) + use_it([[Box::{ v: 1 }, Box::{ v: 2 }], [Box::{ v: 3 }]]) }\n'
+  printf 'export let _start: () -> Int = () -> { use_it(x = [Box::{ v: 10 }, Box::{ v: 20 }, Box::{ v: 30 }]) + use_it(x = [[Box::{ v: 1 }, Box::{ v: 2 }], [Box::{ v: 3 }]]) }\n'
 } > "$gjdir/pos.vibe"
 gate_fs_compile "$gjdir/pos.vibe" "$gjdir/pos.wasm" _start
 gate_require_artifact "$gjdir/pos.wasm" "dict-of-dict positive program did not compile"
@@ -1822,7 +1822,7 @@ gate_require_eq "$gj_out" "66" "dict-of-dict mismatch (got '$gj_out', want 66 = 
 # Soundness: an element type with no Show2 impl must not silently dispatch.
 { printf '%s\n' "$gj_prelude"
   printf 'struct Qux[T] { w: T }\n'
-  printf 'export let _start: () -> Int = () -> { use_it([Qux::{ w: 5 }]) }\n'
+  printf 'export let _start: () -> Int = () -> { use_it(x = [Qux::{ w: 5 }]) }\n'
 } > "$gjdir/neg.vibe"
 gate_fs_compile "$gjdir/neg.vibe" "$gjdir/neg.wasm" _start
 neg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
