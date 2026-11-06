@@ -46,6 +46,72 @@ resolve_stage2() { # <label> <override>
   return 1
 }
 
+# The fallback a script runs when its caller named no compiler, for a script
+# that keeps its own override handling and its own message for "none found"
+# (#3866). It replaces `ls -t _build/selfhost/generations/*/stage2.wasm |
+# head -1`, which answered with whichever generation was built last, silently.
+#
+# Order:
+#   1. the directory `generations.sh out-dir` names: the PINNED seed's
+#      generation for <root>'s HEAD, the one a plain `generations.sh build`
+#      writes;
+#   2. another seed's generation for HEAD (a workspace mid seed bump holds
+#      both), announced on stderr -- unless <root> has no generations.sh to
+#      name the pinned one, in which case any HEAD match is step 1;
+#   3. the newest generation on disk, announced on stderr;
+#   4. nothing (status 1, no message).
+# It does not fall back to the seed; `resolve_stage2_generation_or_seed`
+# does, for the scripts that always did. Paths are absolute under <root>, so
+# a script that changes directory afterwards still holds a path that resolves.
+#
+#   COMPILER="$(resolve_stage2_generation async-gate "$PROJECT_ROOT")" || COMPILER=""
+resolve_stage2_generation() { # <label> <root>
+  local label="$1" root="$2" gen sha pinned=""
+  if [ -f "$root/scripts/generations.sh" ]; then
+    pinned="$(cd "$root" && bash scripts/generations.sh out-dir 2>/dev/null)" || pinned=""
+  fi
+  if [ -n "$pinned" ] && [ -s "$root/$pinned/stage2.wasm" ]; then
+    printf '%s\n' "$root/$pinned/stage2.wasm"
+    return 0
+  fi
+  sha="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
+  if [ -n "$sha" ]; then
+    for gen in "$root"/_build/selfhost/generations/*_"$sha"/; do
+      [ -s "${gen}stage2.wasm" ] || continue
+      if [ -n "$pinned" ]; then
+        echo "$label: NOTE no generation for the pinned seed at HEAD ($pinned); using another seed's, ${gen}" >&2
+      fi
+      printf '%s\n' "${gen}stage2.wasm"
+      return 0
+    done
+  fi
+  # The one place besides `resolve_stage2` that still asks "which is newest?",
+  # and it says so.
+  for gen in $(ls -td "$root"/_build/selfhost/generations/*/ 2>/dev/null); do
+    [ -s "${gen}stage2.wasm" ] || continue
+    echo "$label: NOTE no generation for HEAD (${sha:-unknown}); using the newest one, ${gen}" >&2
+    printf '%s\n' "${gen}stage2.wasm"
+    return 0
+  done
+  return 1
+}
+
+# `resolve_stage2_generation`, then the committed seed under <root>, announced.
+#
+#   COMPILER="$(resolve_stage2_generation_or_seed async-gate "$PROJECT_ROOT")" || COMPILER=""
+resolve_stage2_generation_or_seed() { # <label> <root>
+  local label="$1" root="$2"
+  resolve_stage2_generation "$label" "$root" && return 0
+  if [ -s "$root/bootstrap/seed/compiler.wasm" ]; then
+    echo "$label: NOTE no generation at all; falling back to the committed SEED." >&2
+    echo "$label:   A change under lib/@vibe is NOT in that compiler -- build one with" >&2
+    echo "$label:   'pkf run generation' if this run is meant to see it." >&2
+    printf '%s\n' "$root/bootstrap/seed/compiler.wasm"
+    return 0
+  fi
+  return 1
+}
+
 # The same question with no fallback, for a MEASUREMENT.
 #
 # A gate that answers from the wrong compiler is wrong; a measurement that does

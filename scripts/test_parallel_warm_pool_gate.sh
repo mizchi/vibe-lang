@@ -44,12 +44,10 @@ if [ ! -x "$RUNNER" ]; then
     || require_or_skip "failed to build runtime/viberun"
 fi
 
+. "$PROJECT_ROOT/scripts/resolve_stage2.sh"
 COMPILER="${VIBE_WARM_POOL_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  # `|| true`: no generations dir => ls exits nonzero => pipefail would abort
-  # before the seed fallback below could run.
-  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
-  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  COMPILER="$(resolve_stage2_generation_or_seed test-parallel-warm-pool-gate "$PROJECT_ROOT")" || COMPILER=""
 fi
 [ -f "$COMPILER" ] || require_or_skip "no compiler wasm found"
 COMPILER="$(cd "$(dirname "$COMPILER")" && pwd)/$(basename "$COMPILER")"

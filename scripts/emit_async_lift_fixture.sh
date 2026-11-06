@@ -12,9 +12,10 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-# `|| true`: no generations dir => ls exits nonzero => pipefail would abort
-# here, skipping the explanatory message below.
-STAGE2="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
+# The checkout's compiler: the fixture is committed, so it must come from the
+# codegen in this tree, not from whichever generation was built last (#3866).
+. scripts/resolve_stage2.sh
+STAGE2="$(resolve_stage2_generation emit-async-lift-fixture "$PWD")" || STAGE2=""
 [ -s "$STAGE2" ] || { echo "no stage2 — run: bash scripts/generations.sh build" >&2; exit 1; }
 WORK="_build/_emit_async_fixture"; mkdir -p "$WORK"
 cat > "$WORK/emit.vibe" <<'EOF'

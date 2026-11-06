@@ -14,7 +14,7 @@ bash scripts/measure_backend_code_size.sh
 bash scripts/test_gc_selfbuild.sh          # produces bundle_gc.wasm on the gc side
 node scripts/wasm_section_sizes.mjs \
   _build/gc_selfbuild/bundle_gc.wasm \
-  "$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
+  "$(bash scripts/generations.sh out-dir)/stage2.wasm"
 ```
 
 Related: [gc-value-abi.md](../compiler/gc-value-abi.md) (#1331), [feature-levels.md](../../user/reference/feature-levels.md),

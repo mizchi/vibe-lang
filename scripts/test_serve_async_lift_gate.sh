@@ -59,7 +59,8 @@ fi
 
 CLI_WASM="${VIBE_SERVE_CLI_WASM:-${VIBE_ASYNC_GATE_COMPILER:-}}"
 if [ -z "$CLI_WASM" ]; then
-  CLI_WASM="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . "$PROJECT_ROOT/scripts/resolve_stage2.sh"
+  CLI_WASM="$(resolve_stage2_generation test-serve-async-lift-gate "$PROJECT_ROOT")" || CLI_WASM=""
 fi
 if [ -z "$CLI_WASM" ] || [ ! -s "$CLI_WASM" ]; then
   # A missing compiler is treated like a missing tool rather than a silent

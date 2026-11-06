@@ -75,14 +75,8 @@ fi
 # --- resolve compiler once (pin: do NOT re-resolve later in the run) --------
 stage2="${DOCTEST_STAGE2:-}"
 if [ -z "$stage2" ]; then
-  # newest generation that actually HAS a stage2.wasm — a concurrent bootstrap
-  # run may have created a newer, still-incomplete generation dir
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    if [ -s "${gen}stage2.wasm" ]; then
-      stage2="${gen}stage2.wasm"
-      break
-    fi
-  done
+  . scripts/resolve_stage2.sh
+  stage2="$(resolve_stage2_generation doctest-extract-run "$PWD")" || stage2=""
   if [ -z "$stage2" ]; then
     # NOTE: docs document the CURRENT language; the committed seed (previous
     # bootstrap tag) may be too old to compile them -- and, worse, too OLD in

@@ -71,10 +71,13 @@ echo "[build-cli-wasm] building selfhost compiler (seed -> stage1 -> stage2)…"
 # this invocation, not the persisted seed manifest, so every other
 # `generations.sh build` caller (gate, `pkf run generation`, ...) keeps
 # building with entry_name=cli_main exactly as before.
-bash scripts/generations.sh build --entry-name main >/dev/null
+# Name the directory before the build and read that one: the newest directory
+# on disk is whichever generation was built last, not necessarily this one
+# (#3810, #3866).
+gen="$(bash scripts/generations.sh out-dir)/"
+bash scripts/generations.sh build --entry-name main --out-dir "$gen" >/dev/null
 
-gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
-[ -n "$gen" ] && [ -s "${gen}stage2.wasm" ] || {
+[ -s "${gen}stage2.wasm" ] || {
   echo "[build-cli-wasm] error: stage2 wasm not produced" >&2
   exit 1
 }

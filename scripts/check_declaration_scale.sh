@@ -33,8 +33,8 @@ if [ -n "$STAGE2" ]; then
     exit 1
   fi
 else
-  STAGE2="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
-  [ -n "$STAGE2" ] || STAGE2="bootstrap/seed/compiler.wasm"
+  . scripts/resolve_stage2.sh
+  STAGE2="$(resolve_stage2_generation_or_seed check-declaration-scale "$PWD")" || STAGE2=""
   if [ ! -f "$STAGE2" ]; then
     echo "declaration-scale: no compiler found; set DECL_SCALE_STAGE2" >&2
     exit 1

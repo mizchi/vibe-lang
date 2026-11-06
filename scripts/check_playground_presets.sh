@@ -29,9 +29,8 @@ SRC="playground/src/main.ts"
 
 stage2="${PLAYGROUND_STAGE2:-}"
 if [ -z "$stage2" ]; then
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    if [ -s "${gen}stage2.wasm" ]; then stage2="${gen}stage2.wasm"; break; fi
-  done
+  . scripts/resolve_stage2.sh
+  stage2="$(resolve_stage2_generation check-playground-presets "$PWD")" || stage2=""
 fi
 if [ -z "$stage2" ] || [ ! -s "$stage2" ]; then
   echo "[playground-presets] no stage2 found." >&2

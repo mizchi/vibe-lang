@@ -115,8 +115,12 @@ mkdir -p "$(dirname "$STAGE1_CORE_WASM")"
 # debug/release selfhost compiler build to pick between -- both modes build
 # the same way.
 if [ -z "$BASE_COMPILER" ]; then
-  short_sha="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo local)"
-  cached="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*_"$short_sha"/stage2.wasm 2>/dev/null | head -1 || true)"
+  # The directory a default `generations.sh build` writes for this seed and
+  # this commit. A `*_<sha>` glob also matches another seed's generation for
+  # the same commit (#3810, #3866).
+  cached=""
+  gen_dir="$(cd "$PROJECT_ROOT" && bash scripts/generations.sh out-dir 2>/dev/null || true)"
+  [ -n "$gen_dir" ] && cached="$PROJECT_ROOT/$gen_dir/stage2.wasm"
   # #895 review: the commit-sha directory name alone doesn't prove the cached
   # stage2.wasm reflects the CURRENT tree -- a dirty working copy (uncommitted
   # edits under lib/, or to the build scripts/seed.json) keeps the same

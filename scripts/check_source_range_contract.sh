@@ -65,10 +65,8 @@ fi
 if [ -n "$STAGE2" ]; then
   [ -s "$STAGE2" ] || { echo "source-range-contract: $STAGE2_OVERRIDE does not exist: $STAGE2" >&2; exit 1; }
 else
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    [ -s "${gen}stage2.wasm" ] && { STAGE2="${gen}stage2.wasm"; break; }
-  done
-  [ -n "$STAGE2" ] || STAGE2="bootstrap/seed/compiler.wasm"
+  . scripts/resolve_stage2.sh
+  STAGE2="$(resolve_stage2_generation_or_seed check-source-range-contract "$PWD")" || STAGE2=""
   [ -s "$STAGE2" ] || { echo "source-range-contract: no compiler available" >&2; exit 1; }
 fi
 

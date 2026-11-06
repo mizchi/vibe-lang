@@ -16,7 +16,8 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CLI="${1:-$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1)}"
+. scripts/resolve_stage2.sh
+CLI="${1:-$(resolve_stage2_generation rc-selfhost "$PWD")}"
 [ -s "$CLI" ] || { echo "[rc-selfhost] no stage2 CLI (build one first)" >&2; exit 2; }
 BUNDLE=lib/@vibe/compiler/_cli_adapter_module_source.vibe
 OUT=_build/rc_selfhost

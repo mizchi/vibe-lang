@@ -22,7 +22,8 @@ cd "$ROOT_DIR"
 
 CLI_WASM="${1:-${VIBE_VALIDATE_PARITY_CLI_WASM:-}}"
 if [ -z "$CLI_WASM" ]; then
-  CLI_WASM="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  CLI_WASM="$(resolve_stage2_generation test-wasm-validate-parity "$ROOT_DIR")" || CLI_WASM=""
 fi
 [ -n "$CLI_WASM" ] && [ -s "$CLI_WASM" ] || {
   echo "[validate-parity] FAIL: pass a stage2.wasm or build a selfhost generation" >&2

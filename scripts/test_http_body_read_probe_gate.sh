@@ -314,7 +314,8 @@ run_guest_suite "handwritten" "$HANDWRITTEN"
 # contains every byte a structural check looks for.
 EMITTER_COMPILER="${VIBE_BODY_READ_GATE_COMPILER:-${VIBE_SERVE_CLI_WASM:-${VIBE_ASYNC_GATE_COMPILER:-}}}"
 if [ -z "$EMITTER_COMPILER" ]; then
-  EMITTER_COMPILER="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . "$PROJECT_ROOT/scripts/resolve_stage2.sh"
+  EMITTER_COMPILER="$(resolve_stage2_generation test-http-body-read-probe-gate "$PROJECT_ROOT")" || EMITTER_COMPILER=""
 fi
 if [ -z "$EMITTER_COMPILER" ] || [ ! -s "$EMITTER_COMPILER" ]; then
   # Same rule as a missing tool: a local run may skip, a required run may not.

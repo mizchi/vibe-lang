@@ -45,9 +45,12 @@ fi
 # the same precedence `runtime/vibe`'s pick_cli uses.
 compiler="${VIBE_COVERAGE_ACC_TOOL_COMPILER:-}"
 if [ -z "$compiler" ]; then
-  for cand in dist/cli/vibe-cli.wasm $(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null) bootstrap/seed/compiler.wasm; do
-    [ -s "$cand" ] && { compiler="$cand"; break; }
-  done
+  if [ -s dist/cli/vibe-cli.wasm ]; then
+    compiler="dist/cli/vibe-cli.wasm"
+  else
+    . scripts/resolve_stage2.sh
+    compiler="$(resolve_stage2_generation_or_seed coverage-acc-tool "$PWD")" || compiler=""
+  fi
 fi
 if [ ! -s "$compiler" ]; then
   echo "coverage_acc_tool_run.sh: compiler wasm not found: ${compiler:-<none>}" >&2

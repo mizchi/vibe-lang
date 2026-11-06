@@ -86,7 +86,8 @@ elif [ -x "$GREP_BIN" ] && grep -qE '^  grep\)' "$GREP_BIN"; then
   #
   # It needs a compiler wasm, and a stage2 built for this checkout is the
   # right one; the pinned seed predates `vibe grep` (#1572).
-  stage2_for_grep="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . "$TOOL_ROOT/scripts/resolve_stage2.sh"
+  stage2_for_grep="$(resolve_stage2_generation lint-review-regressions "$PROJECT_ROOT")" || stage2_for_grep=""
   if [ -n "$stage2_for_grep" ] && [ -x "$TOOL_ROOT/scripts/viberun_node.sh" ]; then
     export VIBE_RUNNER="$TOOL_ROOT/scripts/viberun_node.sh"
     export VIBE_CLI_WASM="$stage2_for_grep"

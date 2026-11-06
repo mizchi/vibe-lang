@@ -31,8 +31,8 @@ cd "$PROJECT_ROOT"
 
 STAGE2="${1:-${VIBE_OFFBUILD_STAGE2:-}}"
 if [ -z "$STAGE2" ]; then
-  gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
-  [ -n "$gen" ] && STAGE2="${gen}stage2.wasm"
+  . scripts/resolve_stage2.sh
+  STAGE2="$(resolve_stage2_generation check-offbuild-typecheck "$PWD")" || STAGE2=""
 fi
 if [ -z "$STAGE2" ] || [ ! -s "$STAGE2" ]; then
   echo "[offbuild-typecheck] no stage2 found; build one first" >&2

@@ -9,7 +9,8 @@ cd "$ROOT_DIR"
 
 CLI_WASM="${1:-${VIBE_GC_HEAP_ACCOUNTING_CLI_WASM:-}}"
 if [ -z "$CLI_WASM" ]; then
-  CLI_WASM="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  CLI_WASM="$(resolve_stage2_generation test-gc-heap-accounting "$ROOT_DIR")" || CLI_WASM=""
 fi
 [ -n "$CLI_WASM" ] && [ -s "$CLI_WASM" ] || {
   echo "[gc-heap-accounting] FAIL: pass a stage2.wasm or build a selfhost generation" >&2
