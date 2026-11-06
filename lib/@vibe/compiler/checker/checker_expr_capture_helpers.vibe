@@ -6,7 +6,7 @@ import @vibe/compiler/core {
 }
 
 import ./checker_call_header.vibe {
-  checker_record_alias_is_local
+  checker_record_alias_is_local, checker_record_alias_target
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -61,31 +61,63 @@ export fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: 
 }
 
 /// #3837: the declaration a struct literal `Name::{ .. }` builds. An alias is
-/// followed only when this program declares it (`type M = E`, or
-/// `import ./a.vibe { B as Q }`): lowering renames the literal through those
-/// to the struct it names. Through an alias another module declares, the
-/// literal would reach lowering under the alias's name and be laid out by its
-/// field set alone -- `N::{ v: 3 }` printed as another same-shaped struct --
-/// so it is refused instead (`struct_literal_refusal`).
+/// followed only when lowering can follow it too: lowering renames the literal
+/// through this file's own aliases -- a `type` alias it declares, a name it
+/// imports with `as` -- one hop at a time, as the file spells each hop, and
+/// through nothing else. So every hop of the chain must be such an alias,
+/// ending at a struct. Through any other alias (one another module declares,
+/// imported under its own name, or a local alias of one), the literal would
+/// reach lowering under that alias's name and be laid out by its field set
+/// alone -- `N::{ v: 3 }` printed as another same-shaped struct -- so it is
+/// refused instead (`struct_literal_refusal`).
 export fn struct_literal_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
-  if checker_record_alias_is_local(name) {
-    find_struct_typedef(defs = defs, name = name)
-  } else {
-    find_typedef(defs = defs, name = name)
+  match struct_literal_foreign_hop(defs = defs, name = name) {
+    None => find_struct_typedef(defs = defs, name = name),
+    Some(_) => find_typedef(defs = defs, name = name)
   }
+}
+
+/// The first alias on `name`'s chain that lowering cannot rename through,
+/// with how many of this file's own aliases were followed to reach it (0 when
+/// `name` itself is that alias), or `None` when the chain reaches a struct (or
+/// a non-alias) through this file's own aliases only.
+fn struct_literal_foreign_hop(defs: Array[TypeDef], name: String) -> Option[(String, Int)] {
+  let mut cur = name
+  let mut depth = 0
+  let mut fuel = 16
+  let mut foreign = None
+  while fuel > 0 {
+    fuel = fuel - 1
+    match find_typedef(defs = defs, name = cur) {
+      Some(TDAlias(_, _, _)) => if checker_record_alias_is_local(cur) {
+        match checker_record_alias_target(cur) {
+          Some(next) => {
+            cur = next
+            depth = depth + 1
+          },
+          None => fuel = 0
+        }
+      } else {
+        foreign = Some((cur, depth))
+        fuel = 0
+      },
+      _ => fuel = 0
+    }
+  }
+  foreign
 }
 
 /// #3837: the refusal for `Name::{ .. }` when `Name` names no struct. An alias
 /// that fixes or reorders a struct's arguments (`type IB = Box[Int]`,
-/// `type Rev[A, B] = Pair[B, A]`), or one declared by another module, is
-/// named with the edit.
+/// `type Rev[A, B] = Pair[B, A]`), or one that reaches the struct through an
+/// alias another module declares, is named with the edit.
 export fn struct_literal_refusal(defs: Array[TypeDef], name: String) -> String {
   match find_typedef(defs = defs, name = name) {
     Some(TDAlias(_, _, target)) => match find_struct_typedef(defs = defs, name = name) {
-      Some(TDStruct(head, _, _, _)) => if checker_record_alias_is_local(name) {
-        "`" + name + "` is an alias of `" + type_to_string(target) + "`; a struct literal follows an alias only when the alias passes its own parameters through in order -- write `" + head + "::{ .. }` and annotate the binding as `" + name + "`"
-      } else {
-        "`" + name + "` is an alias of `" + head + "` declared in another module, and a struct literal follows only an alias this file declares or imports with `as` -- write `" + head + "::{ .. }`"
+      Some(TDStruct(head, _, _, _)) => match struct_literal_foreign_hop(defs = defs, name = name) {
+        Some((_, 0)) => "`" + name + "` is an alias of `" + head + "` declared in another module, and a struct literal follows only an alias this file declares or imports with `as` -- write `" + head + "::{ .. }`",
+        Some((hop, _)) => "`" + name + "` reaches `" + head + "` through `" + hop + "`, an alias another module declares, and a struct literal follows only aliases this file declares or imports with `as` -- write `" + head + "::{ .. }`",
+        None => "`" + name + "` is an alias of `" + type_to_string(target) + "`; a struct literal follows an alias only when the alias passes its own parameters through in order -- write `" + head + "::{ .. }` and annotate the binding as `" + name + "`"
       },
       _ => pinned_struct_literal_refusal(defs = defs, name = name, target = target)
     },
