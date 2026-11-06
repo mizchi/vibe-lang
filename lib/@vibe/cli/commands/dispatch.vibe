@@ -105,7 +105,7 @@ import ./prove.vibe {
 }
 
 import ./refactor.vibe {
-  selfhost_cli_user_refactor_args, user_check_missing_label_rows
+  selfhost_cli_user_refactor_args
 }
 
 import ./mutate.vibe {
@@ -157,7 +157,6 @@ import ./plans.vibe {
   user_artifact_backend_kind,
   user_check_scan,
   user_check_single,
-  user_check_warn_missing_labels,
   user_dispatch_parse_int_or,
   write_host_action,
   write_user_executable,
@@ -234,7 +233,7 @@ fn write_warning_rows(_ rows: Array[String]) -> Unit with Stderr {
 /// ADR-0068 applies as on every artifact path: the closure gate is asked after
 /// the walk, so a program the build refuses for an unstable import is reported
 /// by `vibe check` too rather than answered clean.
-fn user_check_linked(src: String, warn_labels: Bool) -> Int with Exception + Fs + Env + Stderr {
+fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
@@ -299,11 +298,6 @@ fn user_check_linked(src: String, warn_labels: Bool) -> Int with Exception + Fs 
     write_warning_rows(check_unreachable_arm_warnings_from_source_groups(input_path = src, source_groups = groups))
     write_warning_rows(check_builtin_shadowing_warnings_from_source_groups(input_path = src, source_groups = groups))
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_shadow")
-    if warn_labels {
-      write_warning_rows(user_check_missing_label_rows(src))
-    } else {
-      ()
-    }
     // Published strictly after the check has been answered: a failure above
     // leaves no pipeline sidecar looking like a successful observation.
     if pipeline_out != "" {
@@ -320,13 +314,13 @@ fn user_check_linked(src: String, warn_labels: Bool) -> Int with Exception + Fs 
 /// check runs under a handler here and the raised text becomes the array's
 /// one entry; a clean file yields `[]` and exit 0. `not found` stays an
 /// exception -- a usage error is not a diagnostic about the file's contents.
-fn user_check_linked_json(src: String, warn_labels: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
+fn user_check_linked_json(src: String) -> Int with Exception + Fs + Env + Console + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
     let text = Fs::read_file(src)
     let errors = handle {
-      let _ = user_check_linked(src = src, warn_labels = false)
+      let _ = user_check_linked(src = src)
       let empty: Array[String] = []
       empty
     } with { Exception::Throw(message) => {
@@ -358,21 +352,7 @@ fn user_check_linked_json(src: String, warn_labels: Bool) -> Int with Exception 
     // `<dep>: line L:C: body`, located against the dep. Rendered without the
     // path, that column was converted against the entry's text and the origin
     // was dropped from the message (Codex P2 on #2868).
-    // The label warnings join the array as warnings (`--single-file --json`
-    // reports them the same way) and leave the exit status to the errors. A
-    // file with errors has none: the codemod leaves such a file alone.
-    let diags: Array[String] = []
-    for e in errors {
-      Array::push(diags, value = e)
-    }
-    if warn_labels && Array::length(errors) == 0 {
-      for row in user_check_missing_label_rows(src) {
-        Array::push(diags, value = row)
-      }
-    } else {
-      ()
-    }
-    print(line_terminated(lsp_diagnostics_json_of_messages_for(path = src, source = text, msgs = diags)))
+    print(line_terminated(lsp_diagnostics_json_of_messages_for(path = src, source = text, msgs = errors)))
     if Array::length(errors) == 0 {
       0
     } else {
@@ -470,7 +450,6 @@ fn selfhost_cli_user_check_args(_ args: Array[String]) -> Int with Exception + F
     user_check_scan(root = root, missing_vpkg = missing_vpkg)
   } else {
     let (_, single, json) = parse_user_check_args(args)
-    let warn_labels = user_check_warn_missing_labels(args)
     let paths = user_check_paths(args)
     let (profile_tsv, profile_callstack) = user_check_profile_paths(args)
     // Every file must exist before any is checked: a report for the files
@@ -499,11 +478,11 @@ fn selfhost_cli_user_check_args(_ args: Array[String]) -> Int with Exception + F
       let src = Array::get(paths, at = ci)
       let file_code = handle {
         if single {
-          user_check_single(src = src, json = json, warn_labels = warn_labels)
+          user_check_single(src = src, json = json)
         } else if json {
-          user_check_linked_json(src = src, warn_labels = warn_labels)
+          user_check_linked_json(src = src)
         } else {
-          user_check_linked(src = src, warn_labels = warn_labels)
+          user_check_linked(src = src)
         }
       } with { Exception::Throw(e) => {
         print(line_terminated(format_check_report(e)))

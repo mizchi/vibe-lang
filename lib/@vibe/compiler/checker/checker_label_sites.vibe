@@ -51,6 +51,14 @@ export let label_site_imported: Int = 2
 // definition site.
 
 let label_sites_active: Array[Bool] = [false]
+let required_labels_suspended: Array[Bool] = [false]
+
+/// The label codemod types a program in order to label it, so the labels it
+/// is about to write are not errors while it does (ADR-0120 Phase 4). On for
+/// the codemod's query only, the import walk included.
+export fn checker_required_labels_suspend(_ on: Bool) -> Unit {
+  Array::set(required_labels_suspended, at = 0, value = on)
+}
 let label_sites: Array[LabelSite] = []
 let label_site_offsets: Array[MutMap[Int, Bool]] = [MutMap::new_int()]
 
@@ -177,7 +185,7 @@ fn required_label_names(env: TypeEnv, name: String, ident_offset: Int, method_ca
 /// ADR-0120 Phase 4: an argument to a parameter that is not declared `_` names
 /// it. The message lists every label the call is missing, in written order.
 export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
-  if checker_call_header_is_probe() || offset < 0 || ident_offset < 0 {
+  if Array::get(required_labels_suspended, at = 0) || checker_call_header_is_probe() || offset < 0 || ident_offset < 0 {
     ()
   } else {
     match required_label_names(env = env, name = name, ident_offset = ident_offset, method_call = method_call) {
@@ -187,29 +195,41 @@ export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset
       Some(names) => if Array::length(args) > Array::length(names) || (!(lookup_builtin(checker_builtin_call_name(env = env, name = name)) is Some(_)) && checker_args_mix_labels(args)) {
         ()
       } else {
-        let missing: Array[String] = []
-        let mut i = 0
-        while i < Array::length(args) && i < Array::length(names) {
-          let positional = match Array::get(args, at = i) {
-            ELabeledArg(_, _, _) => false,
-            _ => true
-          }
-          let raw = Array::get(names, at = i)
-          if positional && raw != "_" && !checker_header_name_is_positional(raw) {
-            Array::push(missing, value = "`" + missing_label_name(raw) + " = ` before argument " + __to_string(i + 1))
-          } else {
-            ()
-          }
-          i = i + 1
-        }
-        if Array::length(missing) > 0 {
-          Array::push(errors, value = "label the arguments of " + name + ": write " + String::join(missing, sep = ", ") + off_marker_len(off = ident_offset, len = String::length(name)))
+        let message = checker_required_labels_message(name = name, args = args, names = names)
+        if message != "" {
+          Array::push(errors, value = message + off_marker_len(off = ident_offset, len = String::length(name)))
         } else {
           ()
         }
       },
       None => ()
     }
+  }
+}
+
+/// The edit for the unlabeled arguments of a call to `name` whose parameters
+/// are `names`: "label the arguments of NAME: write `a = ` before argument
+/// 1, ...", or "" when every argument that needs a label has one.
+export fn checker_required_labels_message(name: String, args: Array[Expr], names: Array[String]) -> String {
+  let missing: Array[String] = []
+  let mut i = 0
+  while i < Array::length(args) && i < Array::length(names) {
+    let positional = match Array::get(args, at = i) {
+      ELabeledArg(_, _, _) => false,
+      _ => true
+    }
+    let raw = Array::get(names, at = i)
+    if positional && raw != "_" && !checker_header_name_is_positional(raw) {
+      Array::push(missing, value = "`" + missing_label_name(raw) + " = ` before argument " + __to_string(i + 1))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(missing) > 0 {
+    "label the arguments of " + name + ": write " + String::join(missing, sep = ", ")
+  } else {
+    ""
   }
 }
 

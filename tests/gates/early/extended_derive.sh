@@ -984,19 +984,19 @@ cat > "$eqansdir/a.vibe" <<'EOF'
 export fn _start() -> Int {
   let left = []
   let right = []
-  Array::push(left, 1)
-  Array::push(right, 2)
+  Array::push(left, value = 1)
+  Array::push(right, value = 2)
   // Same length, different elements: only a CONTENT comparison says false.
   // A length-only answer would say true and a trap would not get here.
   assert(left != right)
-  Array::push(right, 3)
+  Array::push(right, value = 3)
   assert(left != right)
   let mut ml = []
   let mut mr = []
-  Array::push(ml, "a")
-  Array::push(mr, "a")
+  Array::push(ml, value = "a")
+  Array::push(mr, value = "a")
   assert(ml == mr)
-  Array::push(mr, "b")
+  Array::push(mr, value = "b")
   assert(ml != mr)
   0
 }
@@ -1441,8 +1441,8 @@ let res = (n: Int) -> Result[Int, String] { if n > 0 { Ok(n) } else { Err("x") }
 // (and an `Err` ctor as the None/short-circuit value) is a type clash.
 export let _start: () -> Int = () -> {
   let r = (a: Int) -> Option[Int] {
-    let* x = opt(a)
-    res(x)
+    let* x = opt(n = a)
+    res(n = x)
   }
   match r(1) { Some(v) => v, None => 0 }
 }
@@ -1498,7 +1498,7 @@ export let _start: () -> Int = () -> {
   let mut acc = 0
   for x in Range::{ lo: 1, hi: 5 } { acc = acc + x }
   for y in Span::{ from: 1, to: 5 } { acc = acc + y }
-  acc + iter_sum(Range::{ lo: 1, hi: 5 })
+  acc + iter_sum(it = Range::{ lo: 1, hi: 5 })
 }
 EOF
 # Expected: (1+2+3+4) + (1+2+3+4) + (1+2+3+4) = 30
@@ -1553,13 +1553,13 @@ let sfold = (s: Stream, init: Int, f: (Int, Int) -> Int) -> Int {
   for x in s { acc = f(acc, x) }
   acc
 }
-let ssum = (s: Stream) -> Int { sfold(s, 0, (a, b) -> { a + b }) }
-let scount = (s: Stream) -> Int { sfold(s, 0, (a, _) -> { a + 1 }) }
+let ssum = (s: Stream) -> Int { sfold(s = s, init = 0, f = (a, b) -> { a + b }) }
+let scount = (s: Stream) -> Int { sfold(s = s, init = 0, f = (a, _) -> { a + 1 }) }
 let is_even = (x: Int) -> Bool { x - (x / 2) * 2 == 0 }
 export let _start: () -> Int = () -> {
-  ssum(smap(range(1, 5), (x) -> { x * 2 }))   // 2+4+6+8 = 20
-  + ssum(sfilter(range(1, 10), is_even))       // 2+4+6+8 = 20
-  + scount(range(0, 7))                        // 7
+  ssum(s = smap(s = range(lo = 1, hi = 5), f = (x) -> { x * 2 }))   // 2+4+6+8 = 20
+  + ssum(s = sfilter(s = range(lo = 1, hi = 10), pred = is_even))       // 2+4+6+8 = 20
+  + scount(s = range(lo = 0, hi = 7))                        // 7
 }
 EOF
 # Expected: 20 + 20 + 7 = 47
@@ -1595,7 +1595,7 @@ impl Iterator for LazyIter {
 }
 export let lazy_iter_arr = [T](xs: Array[T]) -> LazyIter[T] {
   LazyIter::{ pull: (i) -> Option[(T, Int)] {
-    if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None }
+    if i < Array::length(xs) { Some((Array::get(xs, at = i), i + 1)) } else { None }
   }, state: 0 }
 }
 export let lazy_iter_count = [T](src: LazyIter[T]) -> Int {
@@ -1606,7 +1606,7 @@ export let lazy_iter_count = [T](src: LazyIter[T]) -> Int {
 EOF
 cat > "$xidir/main.vibe" <<'EOF'
 import ./li.vibe { lazy_iter_arr, lazy_iter_count }
-export let _start: () -> Int = () -> { lazy_iter_count(lazy_iter_arr([10, 20, 30, 40, 50])) }
+export let _start: () -> Int = () -> { lazy_iter_count(src = lazy_iter_arr(xs = [10, 20, 30, 40, 50])) }
 EOF
 gate_fs_compile "$xidir/main.vibe" "$xidir/main.wasm" _start
 gate_require_artifact "$xidir/main.wasm" "cross-import trait-iterator program did not compile"
@@ -1640,7 +1640,7 @@ impl AsyncIterator for AStream {
   }
 }
 let mkstream = (xs: Array[Int]) -> AStream {
-  AStream::{ pull: (i) -> Option[(Int, Int)] { if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None } }, state: 0 }
+  AStream::{ pull: (i) -> Option[(Int, Int)] { if i < Array::length(xs) { Some((Array::get(xs, at = i), i + 1)) } else { None } }, state: 0 }
 }
 let counter_stream = () -> (() -> Option[Int]) {
   let mut n = 0
@@ -1648,7 +1648,7 @@ let counter_stream = () -> (() -> Option[Int]) {
 }
 export let _start: () -> Int with Async = () -> {
   let mut t = 0
-  for x in mkstream([10, 20, 30]) { t = t + x }
+  for x in mkstream(xs = [10, 20, 30]) { t = t + x }
   for y in counter_stream() { t = t + y }
   t
 }
@@ -1687,7 +1687,7 @@ impl Iterator for LazyIter {
 }
 export let lazy_iter_arr = [T](xs: Array[T]) -> LazyIter[T] {
   LazyIter::{ pull: (i) -> Option[(T, Int)] {
-    if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None }
+    if i < Array::length(xs) { Some((Array::get(xs, at = i), i + 1)) } else { None }
   }, state: 0 }
 }
 EOF
@@ -1699,7 +1699,7 @@ let sum_direct = (src: LazyIter[Int]) -> Int {
   for x in src { total = total + x }
   total
 }
-export let _start: () -> Int = () -> { sum_direct(lazy_iter_arr([10, 20, 30, 40])) }
+export let _start: () -> Int = () -> { sum_direct(src = lazy_iter_arr(xs = [10, 20, 30, 40])) }
 EOF
 gate_fs_compile "$eidir/pos.vibe" "$eidir/pos.wasm" _start
 gate_require_artifact "$eidir/pos.wasm" "element-type positive program did not compile"
@@ -1713,7 +1713,7 @@ let bad = (src: LazyIter[String]) -> Int {
   for x in src { total = total + x }
   total
 }
-export let _start: () -> Int = () -> { bad(lazy_iter_arr(["a", "b"])) }
+export let _start: () -> Int = () -> { bad(src = lazy_iter_arr(xs = ["a", "b"])) }
 EOF
 gate_fs_compile "$eidir/neg.vibe" "$eidir/neg.wasm" _start
 gate_require_refused "$eidir/neg.wasm" "element-type negative program compiled (element typed CtUnknown, not String -> element-type safety regressed)"
@@ -1764,7 +1764,7 @@ struct Box[T] { v: T }
 impl Len2 for Box { len2(self) -> Int { 1 } }
 impl [T] Len2 for Array { len2(self) -> Int { Array::length(self) } }
 let total = [U: Len2](x: U) -> Int { U::len2(x) }
-export let _start: () -> Int = () -> { total([10, 20, 30, 40]) + total(Box::{ v: 99 }) }
+export let _start: () -> Int = () -> { total(x = [10, 20, 30, 40]) + total(x = Box::{ v: 99 }) }
 EOF
 gate_fs_compile "$gidir/pos.vibe" "$gidir/pos.wasm" _start
 gate_require_artifact "$gidir/pos.wasm" "generic-impl positive program did not compile"
@@ -1775,7 +1775,7 @@ cat > "$gidir/neg.vibe" <<'EOF'
 trait Marky[T]
 impl [T] Marky for Array
 let needs = [U: Marky](x: U) -> Int { 1 }
-export let _start: () -> Int = () -> { needs([1, 2, 3]) }
+export let _start: () -> Int = () -> { needs(x = [1, 2, 3]) }
 EOF
 gate_fs_compile "$gidir/neg.vibe" "$gidir/neg.wasm" _start
 gate_require_refused "$gidir/neg.wasm" "marker-trait generic impl was accepted (unsound — should be rejected)"
@@ -1905,8 +1905,8 @@ export let _start: () -> Int = () -> {
   // test was skipped and any value matched. `W(9)` / `(9, _)` must miss here.
   let nor = match I(9) { I(1 | 2) => 100, I(_) => 13 }
   let ntor = match (9, 0) { (1 | 2, _) => 100, (_, _) => 17 }
-  cn(N(W(true), 7)) + cn(N(W(false), 3)) + ct(T((true, 5))) + ct(T((false, 1)))
-    + cb(true, 9) + cb(false, 2) + sor + tor + nor + ntor
+  cn(e = N(W(true), 7)) + cn(e = N(W(false), 3)) + ct(e = T((true, 5))) + ct(e = T((false, 1)))
+    + cb(flag = true, v = 9) + cb(flag = false, v = 2) + sor + tor + nor + ntor
 }
 EOF
 # Expected: 1007+3+1005+1+1009+2 + 7+11 + 13+17 = 3075. A regressed compiler
@@ -1939,7 +1939,7 @@ let pure_use: (Array[Int]) -> Int = (xs) -> {
 }
 export let _start: () -> Int with Stdout = () -> {
   emit()
-  pure_use([1, 2, 3]) + 39
+  pure_use(xs = [1, 2, 3]) + 39
 }
 EOF
 cat > "$pfdir/bad_perform.vibe" <<'EOF'
@@ -1966,10 +1966,10 @@ let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
 let mid: (String) -> String = (p) -> {
-  leaf(p)
+  leaf(p = p)
 }
 export let _start: () -> Int with Fs = () -> {
-  let _ = mid("x")
+  let _ = mid(p = "x")
   42
 }
 EOF
@@ -1979,10 +1979,10 @@ let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
 let mid: (String) -> String with Fs = (p) -> {
-  leaf(p)
+  leaf(p = p)
 }
 export let _start: () -> Int with Fs = () -> {
-  let _ = mid("x")
+  let _ = mid(p = "x")
   42
 }
 EOF
@@ -2014,7 +2014,7 @@ let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
 let mid: (String) -> String with Exception = (p) -> {
-  leaf(p)
+  leaf(p = p)
 }
 export let _start: () -> Int = () -> { 42 }
 EOF
@@ -2042,7 +2042,7 @@ let leaf: (String) -> String with Fs + Env = (p) -> {
   Fs::read_file(p)
 }
 let mid: (String) -> String = (p) -> {
-  leaf(p)
+  leaf(p = p)
 }
 export let _start: () -> Int = () -> { 42 }
 EOF
@@ -2072,16 +2072,16 @@ cat > "$pfdir/bad_import_transitive.vibe" <<'EOF'
 import ./sub/helper.vibe { read_it }
 
 let f: (Int) -> Int = (n) -> {
-  let _ = read_it("x")
+  let _ = read_it(p = "x")
   n
 }
-export let _start: () -> Int = () -> { f(1) }
+export let _start: () -> Int = () -> { f(n = 1) }
 EOF
 cat > "$pfdir/good_import_transitive.vibe" <<'EOF'
 import ./sub/helper.vibe { read_it }
 
 let g: (String) -> String with Exception + Fs = (p) -> {
-  read_it(p)
+  read_it(p = p)
 }
 export let _start: () -> Int = () -> { 42 }
 EOF
@@ -2261,23 +2261,23 @@ export let _start: () -> Int = () -> {
   // Bytes::new(n) is a length-n zero-filled buffer (MoonBit semantics);
   // exercise in-len set/get plus push growth past the initial length.
   let b = Bytes::new(3)
-  Bytes::set(b, 0, 2)
-  Bytes::push(b, 9)
+  Bytes::set(b, at = 0, value = 2)
+  Bytes::push(b, value = 9)
   let s = "abc"
-  Array::get(a, 0) + Bytes::get(b, 0) + Bytes::get(b, 3) - 9 + s[1] - String::char_code_at(s, 1)
+  Array::get(a, at = 0) + Bytes::get(b, at = 0) + Bytes::get(b, at = 3) - 9 + s[1] - String::char_code_at(s, at = 1)
 }
 EOF
 cat > "$bdir/oob_get.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::get([1, 2, 3], 5) }
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], at = 5) }
 EOF
 cat > "$bdir/oob_neg.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::get([1, 2, 3], -1) }
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], at = -1) }
 EOF
 cat > "$bdir/oob_bytes.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let b = Bytes::new(2); Bytes::get(b, 9) }
+export let _start: () -> Int = () -> { let b = Bytes::new(2); Bytes::get(b, at = 9) }
 EOF
 cat > "$bdir/oob_str.vibe" <<'EOF'
-export let _start: () -> Int = () -> { String::char_code_at("abc", 7) }
+export let _start: () -> Int = () -> { String::char_code_at("abc", at = 7) }
 EOF
 cat > "$bdir/oob_str_neg.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let s = "abc"; s[-1] }

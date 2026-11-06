@@ -103,14 +103,14 @@ import @vibe/compiler/codegen/component {
 }
 
 fn main() -> Int allows Env + Exception + Fs {
-  let core = compile_file_wasi_only("$HANDLER_SRC", "__no_entry__")
-  let comp = comp_emit_component_wasm_string_handler_async(core, "handler", "handler", [
+  let core = compile_file_wasi_only(entry_path = "$HANDLER_SRC", entry_name = "__no_entry__")
+  let comp = comp_emit_component_wasm_string_handler_async(core_wasm = core, target_func_name = "handler", export_name = "handler", param_names = [
     "method",
     "url",
     "headers",
     "body"
   ])
-  Fs::write_bytes("$REL_OUT/handler.component.wasm", comp)
+  Fs::write_bytes("$REL_OUT/handler.component.wasm", bytes = comp)
   Bytes::length(comp)
 }
 EMITEOF

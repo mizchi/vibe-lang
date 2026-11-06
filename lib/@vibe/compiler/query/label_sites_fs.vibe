@@ -15,7 +15,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  LabelSite, check_program_with_projected_import_env_result, label_sites_begin, label_sites_end
+  LabelSite, check_program_with_projected_import_env_result, checker_required_labels_suspend, label_sites_begin, label_sites_end
 }
 
 import @vibe/parser {
@@ -56,6 +56,18 @@ fn label_sites_failed(path: String, source: String, message: String) -> LabelSit
 /// flows through the sweep, including the complete per-module rows retained
 /// when a dependency walk throws. The replacement is never written to disk.
 fn label_sites_file(path: String, source: String, replacement: Option[String], state: QueryProjectState) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
+  // ADR-0120 Phase 4: the labels the codemod writes are not errors while it
+  // types the program, its import walk included. A dependency the walk
+  // publishes to the persistent cache meanwhile is stored without its
+  // missing-label errors; they cost no wrong answer (a positional argument is
+  // placed by position), and checking that dependency itself reports them.
+  checker_required_labels_suspend(true)
+  let answer = label_sites_file_typed(path = path, source = source, replacement = replacement, state = state)
+  checker_required_labels_suspend(false)
+  answer
+}
+
+fn label_sites_file_typed(path: String, source: String, replacement: Option[String], state: QueryProjectState) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
   handle {
     let edit = match replacement {
       None => None,

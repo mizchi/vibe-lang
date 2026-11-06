@@ -336,12 +336,12 @@ import @vibe/compiler/codegen/component {
 }
 
 fn main() -> Int allows Fs {
-  let m = comp_emit_body_read_component("handler", [
+  let m = comp_emit_body_read_component(export_name = "handler", string_param_names = [
     "method",
     "url",
     "headers"
-  ], "body")
-  Fs::write_bytes("$REL_OUT/emitted-guest.wasm", m)
+  ], stream_param_name = "body")
+  Fs::write_bytes("$REL_OUT/emitted-guest.wasm", bytes = m)
   Bytes::length(m)
 }
 EMITEOF

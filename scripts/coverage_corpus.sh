@@ -148,11 +148,11 @@ acc_run env VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_IMPORT_ABI=raw bash "$RUNNER" --
 mkdir -p "$OUT_DIR/rcprog"
 cat > "$OUT_DIR/rcprog/tree.vibe" <<'EOF'
 enum Tree { Leaf(Int); Node(Tree, Tree) }
-let sum: (Tree) -> Int = (t) -> { match t { Leaf(n) => n, Node(l, r) => sum(l) + sum(r) } }
+let sum: (Tree) -> Int = (t) -> { match t { Leaf(n) => n, Node(l, r) => sum(t = l) + sum(t = r) } }
 let dup: (Tree) -> Tree = (t) -> { Node(t, t) }
 export let main: () -> Int = () -> {
   let t = Node(Leaf(1), Node(Leaf(2), Leaf(3)))
-  sum(dup(t)) + sum(t)
+  sum(t = dup(t = t)) + sum(t = t)
 }
 EOF
 cat > "$OUT_DIR/rcprog/closure.vibe" <<'EOF'
@@ -171,9 +171,9 @@ let unwrap: (Opt, Int) -> Int = (o, d) -> { match o { N => d, S(x) => x } }
 export let main: () -> Int = () -> {
   let xs = [S(1), N, S(3)]
   let mut t = 0
-  for o in xs { t = t + unwrap(o, 0) }
+  for o in xs { t = t + unwrap(o = o, d = 0) }
   let ys = xs
-  t + unwrap(Array::get(ys, 0), 9)
+  t + unwrap(o = Array::get(ys, at = 0), d = 9)
 }
 EOF
 for rp in tree closure alias; do

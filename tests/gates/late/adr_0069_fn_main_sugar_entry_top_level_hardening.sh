@@ -58,8 +58,8 @@ gate_require_diag_matches "$a69dir/typo.wasm.diag" "not found" \
   "entry typo diag missing 'not found' message"
 cat > "$a69dir/toplevel_expr.vibe" <<'EOF'
 let f = (n: Int) -> Int { n + 1 }
-f(41)
-export let _start: () -> Int = () -> { f(41) }
+f(n = 41)
+export let _start: () -> Int = () -> { f(n = 41) }
 EOF
 rm -f "$a69dir/toplevel_expr.wasm"
 gate_fs_compile "$a69dir/toplevel_expr.vibe" "$a69dir/toplevel_expr.wasm" _start
@@ -106,7 +106,7 @@ fn describe(r: Rec) -> Int {
   let record { name: n, ver: v } = r
   String::length(n) * 100 + v
 }
-export let _start: () -> Int = () -> { describe(Rec::{ name: "vibe", ver: 7 }) }
+export let _start: () -> Int = () -> { describe(r = Rec::{ name: "vibe", ver: 7 }) }
 EOF
 rm -f "$g830dir/fnbody_record_destr.wasm"
 gate_fs_compile "$g830dir/fnbody_record_destr.vibe" "$g830dir/fnbody_record_destr.wasm" _start
@@ -279,7 +279,7 @@ cat > "$g859dir/toplevel_destr_once.vibe" <<'EOF'
 let log = []
 
 fn mk() -> (Int, Int) {
-  Array::push(log, 1)
+  Array::push(log, value = 1)
   (10, 32)
 }
 
@@ -350,11 +350,11 @@ fn boom(x: Int) -> Int with Exception {
 }
 
 fn pure_caller(x: Int) -> Int {
-  boom(x)
+  boom(x = x)
 }
 
 export let main = () -> Int {
-  pure_caller(1)
+  pure_caller(x = 1)
 }
 EOF
 cat > "$g944dir/discharged.vibe" <<'EOF'
@@ -367,7 +367,7 @@ fn boom(x: Int) -> Int with Exception {
 
 export let main = () -> Int {
   handle {
-    boom(1)
+    boom(x = 1)
   } with {
     Exception::Throw(_) => 0
   }
@@ -872,7 +872,7 @@ cat > "$senddir/send_use.vibe" <<'SENDUSE'
 import ./send_dep.vibe { want_send }
 
 fn main {
-  let _ = want_send([1, 2, 3])
+  let _ = want_send(x = [1, 2, 3])
   ()
 }
 SENDUSE
@@ -1545,9 +1545,9 @@ import ./pkgb/index.vibe { Net, fetch }
 // BOTH declarations reachable from the exported entry: the enum ctor via
 // make_req/req_id, the effect op via the handled fetch call.
 export let main = () -> Int {
-  let n = req_id(make_req("hello", 40))
+  let n = req_id(r = make_req(m = "hello", id = 40))
   let f = handle {
-    fetch("http://127.0.0.1:1/x")
+    fetch(url = "http://127.0.0.1:1/x")
   } with {
     Net::Request(_m, _u, _h, _b) => resume(2)
   }

@@ -89,7 +89,7 @@ import @vibe/concurrent { TaskGroup::run, TaskGroup::spawn, TaskHandle::join }
 
 fn main() -> Int allows Exception {
   TaskGroup::run((g) -> {
-    let t = TaskGroup::spawn(g, () -> { 7 })
+    let t = TaskGroup::spawn(g, f = () -> { 7 })
     TaskHandle::join(t)
   })
 }
@@ -528,7 +528,7 @@ fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
   ()
 }
 fn caller(shadow: Array[String], out: Array[String]) -> Unit {
-  collect_by((head) -> {
+  collect_by(is_formal = (head) -> {
       let mut found = false
       if Array::length(shadow) > 0 {
     found = true
@@ -536,7 +536,7 @@ fn caller(shadow: Array[String], out: Array[String]) -> Unit {
         ()
       }
       found
-  }, out)
+  }, out = out)
 }
 NFIN
 cat > "$nfdir/expected.vibe" <<'NFEXP'
@@ -544,7 +544,7 @@ fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
   ()
 }
 fn caller(shadow: Array[String], out: Array[String]) -> Unit {
-  collect_by((head) -> {
+  collect_by(is_formal = (head) -> {
     let mut found = false
     if Array::length(shadow) > 0 {
       found = true
@@ -552,7 +552,7 @@ fn caller(shadow: Array[String], out: Array[String]) -> Unit {
       ()
     }
     found
-  }, out)
+  }, out = out)
 }
 NFEXP
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
@@ -599,7 +599,7 @@ fn assert_eq(a: Int, b: Int) -> String {
 }
 
 fn main() -> Unit allows Console {
-  println(assert_eq(1, 2))
+  println(assert_eq(a = 1, b = 2))
 }
 ASEOF
 gate_flat_compile "$asdir/shadow.vibe" "$asdir/shadow.wasm" main
@@ -619,7 +619,7 @@ fn assert_eq(a: Int, b: Int) -> Int {
 }
 
 test "own assert_eq" {
-  assert_true(assert_eq(1, 2) == 3)
+  assert_true(assert_eq(a = 1, b = 2) == 3)
 }
 ASEOF
 VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
@@ -674,7 +674,7 @@ fn main() -> Unit allows Console {
   }
   let assert_eq = (a: Int, b: Int) -> Int { a + b }
   println(Int::to_string(assert_eq(1, 2)))
-  println(Int::to_string(use_param(make_cmp())))
+  println(Int::to_string(use_param(assert_eq = make_cmp())))
   let assert_true = (a: Int) -> Int { a + 41 }
   println(Int::to_string(assert_true(1)))
 }
@@ -749,7 +749,7 @@ fn assert_eq(a: Int, b: Int) -> Int {
 }
 
 test "own assert_eq" {
-  assert_true(assert_eq(1, 2) == 3)
+  assert_true(assert_eq(a = 1, b = 2) == 3)
 }
 ASEOF
 VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1   bash scripts/vibe_test.sh "$asdir/gc_shadow_test.vibe" >"$asdir/gc_shadow.log" 2>&1 || true
@@ -926,7 +926,7 @@ fn eq(a: Int, b: Int) -> Int {
 }
 
 fn main() -> Unit allows Console {
-  println(Int::to_string(eq(1, 2)))
+  println(Int::to_string(eq(a = 1, b = 2)))
 }
 EQEOF
 gate_flat_compile "$eqdir/toplevel.vibe" "$eqdir/toplevel.wasm" main
@@ -977,7 +977,7 @@ fn eq(a: Int, b: Int) -> Int {
 }
 
 test "top-level eq shadow" {
-  assert(eq(1, 2) == 3)
+  assert(eq(a = 1, b = 2) == 3)
 }
 EQEOF
 cat > "$eqdir/gc_not_test.vibe" <<'EQEOF'
@@ -2077,7 +2077,7 @@ done || exit 1
 # would pass every assertion above.
 cat > "$fwddir/ok.vibe" <<'FWDEOF'
 fn caller() -> Int {
-  takes(1, 2)
+  takes(a = 1, b = 2)
 }
 
 fn takes(a: Int, b: Int) -> Int {
@@ -2102,7 +2102,7 @@ gate_require_eq "$ok_out" "3" "the correct forward call ran to '$ok_out', expect
 # signature must stand down for it rather than report a false arity error.
 cat > "$fwddir/opt.vibe" <<'FWDEOF'
 fn caller() -> Int {
-  takes(1)
+  takes(a = 1)
 }
 
 fn takes(a: Int, b?: Int) -> Int {

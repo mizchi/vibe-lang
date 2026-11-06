@@ -934,7 +934,7 @@ fn private_fn(x: Int) -> Int {
 }
 
 export fn public_fn(x: Int) -> Int {
-  private_fn(x)
+  private_fn(x = x)
 }
 UIPRIV
 ui_case private_import_reported err 'import ./privates.vibe { private_fn }
@@ -1227,7 +1227,7 @@ fn inspect(v: Int, c: String) -> Int {
 }
 
 fn main() -> Int {
-  inspect(2, "ignored")
+  inspect(v = 2, c = "ignored")
 }
 INSPF
 gate_flat_compile "$inspdir/shadow_fn.vibe" "$inspdir/shadow_fn.wasm" main
@@ -1427,7 +1427,7 @@ fn pure_sum(a: Array[Int], n: Int) -> Int {
   let mut i = 0
   let mut acc = 0
   while i < n {
-    acc = acc + Array::get(a, i)
+    acc = acc + Array::get(a, at = i)
     i = i + 1
   }
   acc
@@ -1576,8 +1576,8 @@ gate_workdir sbdir "_build/_gate_sb_build"
 cat > "$sbdir/build.vibe" <<'SBB'
 fn joined() -> String {
   let b = StringBuilder::new()
-  StringBuilder::push(b, "hello ")
-  StringBuilder::push(b, "world")
+  StringBuilder::push(b, value = "hello ")
+  StringBuilder::push(b, value = "world")
   StringBuilder::build(b)
 }
 
@@ -1874,7 +1874,7 @@ gate_workdir cdbg "_build/_gate_crash_debug"
 cat > "$cdbg/oob.vibe" <<'CDBGEOF'
 fn main() -> Int allows Console {
   let xs = [1, 2, 3]
-  println("get = \{Array::get(xs, 10)}")
+  println("get = \{Array::get(xs, at = 10)}")
   0
 }
 CDBGEOF

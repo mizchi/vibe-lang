@@ -148,15 +148,15 @@ let rec walk = (path: String, depth: Int) -> String with FileIo {
   if depth <= 0 {
     source
   } else {
-    let s1 = walk("_build/_gate_deepresume/d/b.txt", depth - 1)
-    let s2 = walk("_build/_gate_deepresume/d/c.txt", depth - 1)
+    let s1 = walk(path = "_build/_gate_deepresume/d/b.txt", depth = depth - 1)
+    let s2 = walk(path = "_build/_gate_deepresume/d/c.txt", depth = depth - 1)
     "\{source}|\{s1}|\{s2}"
   }
 }
 
 export let _start: () -> Int with Fs = () -> {
   let out = handle {
-    walk("_build/_gate_deepresume/a.txt", 1)
+    walk(path = "_build/_gate_deepresume/a.txt", depth = 1)
   } with {
     FileIo::ReadFile(p) => resume(Fs::read_file(p))
   }
@@ -284,35 +284,35 @@ cat > "$oobdir/arr_get.vibe" <<'VEOF'
 fn main allows Console {
   let xs = [1, 2, 3]
   println("before")
-  println("\{Array::get(xs, 10)}")
+  println("\{Array::get(xs, at = 10)}")
 }
 VEOF
 cat > "$oobdir/arr_set.vibe" <<'VEOF'
 fn main allows Console {
   let xs = [1, 2, 3]
   println("before")
-  Array::set(xs, 10, 0)
+  Array::set(xs, at = 10, value = 0)
 }
 VEOF
 cat > "$oobdir/bytes_get.vibe" <<'VEOF'
 fn main allows Console {
   let b = Bytes::from_array([1, 2, 3])
   println("before")
-  println("\{Bytes::get(b, 9)}")
+  println("\{Bytes::get(b, at = 9)}")
 }
 VEOF
 cat > "$oobdir/bytes_set.vibe" <<'VEOF'
 fn main allows Console {
   let b = Bytes::from_array([1, 2, 3])
   println("before")
-  Bytes::set(b, 9, 0)
+  Bytes::set(b, at = 9, value = 0)
 }
 VEOF
 cat > "$oobdir/str_byte_at.vibe" <<'VEOF'
 fn main allows Console {
   let s = "abc"
   println("before")
-  println("\{String::byte_at(s, 5)}")
+  println("\{String::byte_at(s, at = 5)}")
 }
 VEOF
 # #3547: `m[k]` on a missing key trapped with only a backtrace.
@@ -525,8 +525,8 @@ fn main allows Console {
   let mut i = 0
   while i < 40 {
     let k = "k\{i}"
-    MutMap::set(m, k, i)
-    let _ = MutMap::delete(m, k)
+    MutMap::set(m, k = k, v = i)
+    let _ = MutMap::delete(m, k = k)
     m.tombs = m.tombs - 1
     i = i + 1
   }
@@ -1727,12 +1727,12 @@ import @vibe/core {
 export let _start: () -> Int = () -> {
   assert(sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d")
   let buf = encode_uleb128(624485)
-  let (v, _) = read_uleb128(buf, 0)
+  let (v, _) = read_uleb128(buf = buf, offset = 0)
   assert(eq(v, 624485))
-  assert(eq(List::sum(List::of3(1, 2, 3)), 6))
+  assert(eq(List::sum(List::of3(a = 1, b = 2, c = 3)), 6))
   let s = from_array(["a", "b"])
-  assert(contains(s, "a"))
-  assert(not(contains(s, "z")))
+  assert(contains(s = s, value = "a"))
+  assert(not(contains(s = s, value = "z")))
   0
 }
 EOF
@@ -1761,7 +1761,7 @@ let classify: (E) -> Int = (e) -> {
   }
 }
 export let _start: () -> Int = () -> {
-  classify(I(5)) + classify(S("foo")) + classify(I(7)) + classify(S("perform"))
+  classify(e = I(5)) + classify(e = S("foo")) + classify(e = I(7)) + classify(e = S("perform"))
 }
 EOF
 # Expected: 11 + 21 + 10 + 20 = 62
@@ -1849,7 +1849,7 @@ let classify: (Stmt) -> Int = (stmt) -> {
   }
 }
 export let _start: () -> Int = () -> {
-  classify(SL(4, None, 6)) + classify(SL(4, Some(7), 6))
+  classify(stmt = SL(4, None, 6)) + classify(stmt = SL(4, Some(7), 6))
 }
 EOF
 # Expected: (4+6) + (4+7+6) = 10 + 17 = 27.
@@ -1899,7 +1899,7 @@ export let _start: () -> Int = () -> {
   let name = "ab"
   let t = "\{name}!"
   // s = "v42" (length 3, s[1]='4'=52), t = "ab!" (length 3, t[0]='a'=97).
-  String::length(s) * 1000 + String::char_code_at(s, 1) * 100 + String::length(t) * 10 + (String::char_code_at(t, 0) - 97)
+  String::length(s) * 1000 + String::char_code_at(s, at = 1) * 100 + String::length(t) * 10 + (String::char_code_at(t, at = 0) - 97)
 }
 EOF
 # 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
@@ -1926,7 +1926,7 @@ let pick: (Int) -> Int = (n) -> {
   }
 }
 test "pos" {
-  assert(pick(5) == 1)
+  assert(pick(n = 5) == 1)
 }
 EOF
 VIBE_COVERAGE=1 gate_fs_compile "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__
@@ -1982,7 +1982,7 @@ cat > "$tldir/bool_render.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let l = () -> Bool { 1 < 2 }
   let s = __to_string(l())
-  String::length(s) * 1000 + String::char_code_at(s, 0)
+  String::length(s) * 1000 + String::char_code_at(s, at = 0)
 }
 EOF
 VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -2023,12 +2023,12 @@ impl Sized for Int { bump(self) -> Int { self + 1 } }
 impl Sized for Point { bump(self) -> Int { self.x + self.y + 1 } }
 let measure_one = [T: Measurable](x: T) -> Int { T::measure(x) }
 let twice = [T: Measurable](x: T) -> Int { T::measure(T::scale(x, 2)) }
-let forward = [T: Measurable](x: T) -> Int { measure_one(x) + twice(x) }
+let forward = [T: Measurable](x: T) -> Int { measure_one(x = x) + twice(x = x) }
 let sized_sum = [T: Sized](x: T) -> Int { T::measure(x) + T::bump(x) }
 export let _start: () -> Int = () -> {
   let p = Point::{ x: 40, y: 2 }
-  measure_one(42) + twice(21) + measure_one(p) + twice(p)
-  + forward(10) + sized_sum(7) + sized_sum(p)
+  measure_one(x = 42) + twice(x = 21) + measure_one(x = p) + twice(x = p)
+  + forward(x = 10) + sized_sum(x = 7) + sized_sum(x = p)
 }
 EOF
 # Expected: 42 + 42 + 42 + 84 + (10+20) + (7+8) + (42+43) = 340
@@ -2058,9 +2058,9 @@ impl Logger for SB {
 }
 export let _start: () -> Int = () -> {
   let sb = SB::{ prefix: "n=" }
-  let a = SB::write_object(sb, 42)
+  let a = SB::write_object(self = sb, x = 42)
   let sb2 = SB::{ prefix: "s=" }
-  let b = SB::write_object(sb2, "hi")
+  let b = SB::write_object(self = sb2, x = "hi")
   if a == "n=42" && b == "s=hi" { 84 } else { 0 }
 }
 EOF
@@ -2116,9 +2116,9 @@ fn digit(o: Ordering) -> Int {
   }
 }
 export let _start: () -> Int = () -> {
-  digit(P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })) * 100000
-  + digit(P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })) * 10000
-  + digit(P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })) * 1000
+  digit(o = P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })) * 100000
+  + digit(o = P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })) * 10000
+  + digit(o = P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })) * 1000
   + String::length(P::to_string(P::{ x: 7, y: 9 }))
 }
 EOF

@@ -54,9 +54,9 @@ fn mid(p: Pt) -> Int {
 
 fn main() -> Int {
   let xs = build()
-  let p = Pt::{ x: Array::get(xs, 0), y: Array::get(xs, 3) }
-  let ys = [mid(p), mid(p)]
-  Array::get(ys, 0) + Array::get(ys, 1) + Array::length(xs)
+  let p = Pt::{ x: Array::get(xs, at = 0), y: Array::get(xs, at = 3) }
+  let ys = [mid(p = p), mid(p = p)]
+  Array::get(ys, at = 0) + Array::get(ys, at = 1) + Array::length(xs)
 }
 PROBE
   for backend in linear gc; do

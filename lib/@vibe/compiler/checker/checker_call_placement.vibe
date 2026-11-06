@@ -7,7 +7,7 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import ./checker_label_sites.vibe {
-  checker_check_required_labels, checker_note_label_site
+  checker_check_required_labels, checker_note_label_site, checker_required_labels_message
 }
 
 import ./checker_call_header_flow.vibe {
@@ -46,6 +46,7 @@ import ./checker_call_header.vibe {
   checker_builtin_call_name,
   checker_call_header_defaults,
   checker_call_header_has_optional,
+  checker_call_header_is_declaration,
   checker_call_header_names,
   checker_header_name_is_positional
 }
@@ -240,7 +241,7 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 all_names
               }
               let slots = placement_for_header(args = args, names = names)
-              placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), errors = errors)
+              placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), declaration = checker_call_header_is_declaration(env = env, name = name), errors = errors)
               if Array::length(errors) == before {
                 match slots {
                   Some(found) => call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors),
@@ -490,9 +491,18 @@ fn placement_check_builtin(name: String, written_len: Int, offset: Int, args: Ar
   }
 }
 
-fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names: Array[String], slots: Option[Array[Int]], defaults: Option[Array[Bool]], errors: Array[String]) -> Unit {
+fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names: Array[String], slots: Option[Array[Int]], defaults: Option[Array[Bool]], declaration: Bool, errors: Array[String]) -> Unit {
   if placement_plain_at_positional_slots(args = args, names = names) {
     ()
+  } else if declaration {
+    // ADR-0120 Phase 4: a declaration's arguments are labeled, so the edit
+    // for a mixed call is the labels it is missing, not "all positional".
+    let message = checker_required_labels_message(name = name, args = args, names = names)
+    if message != "" {
+      Array::push(errors, value = message + off_marker_len(off = offset, len = String::length(name)))
+    } else {
+      placement_check_mixed(name = name, offset = offset, args = args, errors = errors)
+    }
   } else {
     placement_check_mixed(name = name, offset = offset, args = args, errors = errors)
   }

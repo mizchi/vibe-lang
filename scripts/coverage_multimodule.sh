@@ -22,7 +22,7 @@ cat > "$P/m_a.vibe" <<'EOF'
 let helper: () -> Int = () -> { 1 }
 enum AStatus { AOk; AErr(Int) }
 let a_status_code: (AStatus) -> Int = (s) -> { match s { AOk => 0, AErr(n) => n } }
-export let answer: () -> Int = () -> { helper() + a_status_code(AOk) }
+export let answer: () -> Int = () -> { helper() + a_status_code(s = AOk) }
 export let a_extra: () -> Int = () -> { helper() * 2 }
 EOF
 cat > "$P/m_b.vibe" <<'EOF'
@@ -30,7 +30,7 @@ let helper: () -> Int = () -> { 2 }
 struct BPair { lo: Int; hi: Int }
 type BNum = Int
 let b_sum: (BPair) -> BNum = (p) -> { p.lo + p.hi }
-export let answer: () -> Int = () -> { helper() + b_sum(BPair::{ lo: 1, hi: 2 }) }
+export let answer: () -> Int = () -> { helper() + b_sum(p = BPair::{ lo: 1, hi: 2 }) }
 EOF
 cat > "$P/m_common.vibe" <<'EOF'
 let secret: () -> Int = () -> { 100 }
