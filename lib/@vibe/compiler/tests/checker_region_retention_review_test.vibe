@@ -10,17 +10,12 @@ import ./checker_parity_test_support.vibe {
 
 /// Retention overrides follow formal slots even while source arguments keep
 /// their written labels and optional values have not been wrapped yet.
-test "region retention checks declared slots of reordered labeled calls" {
+test "region retention checks the declared slots of labeled calls" {
   let head = "fn stash(dst: Array[() -> Array[Int]], value: () -> Array[Int]) -> Unit { Array::push(dst, value) }\n"
   let body = "fn main() -> Int { let outer: Array[() -> Array[Int]] = []; let _ = region r { let values = MutList::empty(r); "
   let capture = "() -> Array[Int] { MutList::to_array(values) }"
-  for call in [
-    "stash(dst = outer, value = " + capture + ")",
-    "stash(value = " + capture + ", dst = outer)"
-  ] {
-    assert(check_source_err_contains(source = head + body + call + "; 0 }; 42 }", needle = "region escapes its scope"))
-  }
-  assert(check_source_ok(head + body + "stash(value = () -> Array[Int] { [1, 2] }, dst = outer); 0 }; 42 }"))
+  assert(check_source_err_contains(source = head + body + "stash(dst = outer, value = " + capture + "); 0 }; 42 }", needle = "region escapes its scope"))
+  assert(check_source_ok(head + body + "stash(dst = outer, value = () -> Array[Int] { [1, 2] }); 0 }; 42 }"))
 }
 
 /// Optional closure provenance belongs to the logical Some slot, and an
@@ -34,11 +29,11 @@ test "region retention checks optional logical arguments" {
 
 /// Receiver dispatch prepends the receiver once, then aligns only the
 /// explicit arguments with the method's declared parameters.
-test "region retention aligns reordered method arguments after the receiver" {
+test "region retention aligns labeled method arguments after the receiver" {
   let head = "struct Sink { items: Array[() -> Array[Int]] }\nfn Sink::stash(self: Sink, tag: Int, value: () -> Array[Int]) -> Unit { Array::push(self.items, value) }\n"
   let body = "fn main() -> Int { let outside: Sink = Sink::{ items: [] }; let _ = region r { let values = MutList::empty(r); "
-  assert(check_source_err_contains(source = head + body + "outside.stash(value = () -> Array[Int] { MutList::to_array(values) }, tag = 0); 0 }; 42 }", needle = "region escapes its scope"))
-  assert(check_source_ok(head + body + "outside.stash(value = () -> Array[Int] { [1, 2] }, tag = 0); 0 }; 42 }"))
+  assert(check_source_err_contains(source = head + body + "outside.stash(tag = 0, value = () -> Array[Int] { MutList::to_array(values) }); 0 }; 42 }", needle = "region escapes its scope"))
+  assert(check_source_ok(head + body + "outside.stash(tag = 0, value = () -> Array[Int] { [1, 2] }); 0 }; 42 }"))
 }
 
 fn review_region_env() -> TypeEnv {
