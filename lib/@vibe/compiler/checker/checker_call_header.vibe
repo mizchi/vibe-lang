@@ -47,7 +47,10 @@ export fn checker_positional_rows_of(_ stmts: Array[Stmt]) -> Array[(String, Arr
       STypeAlias(_, name, params, target) => {
         Array::push(out, value = (record_alias_row_key(name), array_empty()))
         match record_alias_target(params = params, target = target) {
-          Some(t) => Array::push(out, value = (record_alias_target_row_key(name = name, target = t), array_empty())),
+          Some(t) => {
+            Array::push(out, value = (record_alias_target_row_key(name = name, target = t), array_empty()))
+            Array::push(out, value = (local_type_alias_row_key(name), array_empty()))
+          },
           None => ()
         }
       },
@@ -64,6 +67,76 @@ export fn checker_positional_rows_of(_ stmts: Array[Stmt]) -> Array[(String, Arr
     }
   }
   out
+}
+
+let local_type_alias_row_prefix = "#local-type-alias "
+
+fn local_type_alias_row_key(_ name: String) -> String {
+  String::concat(local_type_alias_row_prefix, name)
+}
+
+/// The transparent `type` aliases the program being checked declares, read
+/// from its rows when they are published, so `checker_local_alias_member`
+/// costs one length read for the many programs that declare none and
+/// allocates nothing for a name whose head is not one of them.
+let local_type_alias_names: Array[String] = []
+
+/// #3889: the name an unbound qualified `M::m` stands for when `M` is a
+/// `type` alias this file declares that passes its own parameters through
+/// (`type M = L`, `type B[T] = Box[T]`), following such aliases to the name
+/// they end at: `L::m`. `None` for anything else. Lowering renames the call
+/// the same way (`rewrite_alias_qualified_head`). A companion the alias
+/// declares itself (`fn M::tag`) is bound, so the caller never asks.
+export fn checker_local_alias_member(_ name: String) -> Option[String] {
+  let sep = if Array::length(local_type_alias_names) > 0 {
+    String::index_of(name, needle = "::")
+  } else {
+    0
+  }
+  if sep <= 0 || !local_type_alias_head_at(name = name, sep = sep) {
+    None
+  } else {
+    let head = String::substring(name, start = 0, end = sep)
+    let mut cur = head
+    let mut fuel = Array::length(local_type_alias_names) + 1
+    while fuel > 0 {
+      fuel = fuel - 1
+      let next = if local_type_alias_declared(cur) {
+        checker_record_alias_target(cur)
+      } else {
+        None
+      }
+      match next {
+        Some(n) => cur = n,
+        None => fuel = 0
+      }
+    }
+    if cur == head {
+      None
+    } else {
+      Some(String::concat(cur, String::substring(name, start = sep, end = String::length(name))))
+    }
+  }
+}
+
+fn local_type_alias_head_at(name: String, sep: Int) -> Bool {
+  let mut found = false
+  for alias in local_type_alias_names {
+    if !found && String::length(alias) == sep && String::starts_with(name, prefix = alias) {
+      found = true
+    }
+  }
+  found
+}
+
+fn local_type_alias_declared(_ name: String) -> Bool {
+  let mut found = false
+  for alias in local_type_alias_names {
+    if alias == name {
+      found = true
+    }
+  }
+  found
 }
 
 fn record_alias_row_key(_ name: String) -> String {
@@ -115,8 +188,13 @@ export fn checker_record_alias_is_local(_ name: String) -> Bool {
 export fn checker_swap_positional_rows(_ rows: Array[(String, Array[Int])]) -> Array[(String, Array[Int])] {
   let saved = Array::slice(positional_rows, start = 0, end = Array::length(positional_rows))
   Array::truncate(positional_rows, length = 0)
+  Array::truncate(local_type_alias_names, length = 0)
   for row in rows {
     Array::push(positional_rows, value = row)
+    let (n, _) = row
+    if String::starts_with(n, prefix = local_type_alias_row_prefix) {
+      Array::push(local_type_alias_names, value = String::substring(n, start = String::length(local_type_alias_row_prefix), end = String::length(n)))
+    }
   }
   saved
 }

@@ -1,0 +1,82 @@
+//# #3889: a companion of a type is reached through a transparent alias this
+//# file declares (`type M = L`, then `M::get(m)`), the way `L::get(m)`,
+//# `m.get()` and `M::{ .. }` already were. It used to be an unknown name on
+//# both lanes. A companion the alias declares itself (`fn M::tag`) stays the
+//# alias's own; a chain (`type A = M`), a generic alias and an enum target
+//# follow the same rule; a value binder spelled `M` still resolves `M::get`
+//# through the alias, because a qualified name is never a field of a value.
+//# A builtin target (`type D = Float64`) is not followed: `D::floor` remains
+//# an unknown name.
+
+struct Other {
+  v: Int
+}
+
+struct L {
+  v: Int
+}
+
+fn Other::get(_ o: Other) -> String {
+  "Other"
+}
+
+fn L::get(_ l: L) -> String {
+  "L \{l.v}"
+}
+
+fn L::tag(_ l: L) -> String {
+  "L-tag"
+}
+
+type M = L
+
+fn M::tag(_ m: M) -> String {
+  "M-tag"
+}
+
+type A = M
+
+struct Box[T] {
+  v: T
+}
+
+fn Box::show[T](_ b: Box[T]) -> String {
+  "box"
+}
+
+type B[T] = Box[T]
+
+fn shadowed(M: Int) -> String {
+  M::get(L::{ v: M })
+}
+
+test "struct alias companions" {
+  let o = Other::{ v: 0 }
+  let m: M = M::{ v: 3 }
+  inspect(M::get(m), content = "L 3")
+  inspect(A::get(m), content = "L 3")
+  inspect(M::tag(m), content = "M-tag")
+  inspect(L::tag(m), content = "L-tag")
+  inspect(B::show(Box::{ v: 1 }), content = "box")
+  inspect(shadowed(M = 4), content = "L 4")
+  inspect(Other::get(o), content = "Other")
+}
+
+enum Color {
+  Red
+  Blue
+}
+
+fn Color::name(_ c: Color) -> String {
+  match c {
+    Red => "red",
+    Blue => "blue"
+  }
+}
+
+type C = Color
+
+test "enum alias companions" {
+  inspect(C::name(Color::Blue), content = "blue")
+  inspect(C::name(C::Red), content = "red")
+}
