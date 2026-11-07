@@ -16,6 +16,10 @@ import @vibe/compiler/checker/diagnostics {
   off_marker, off_marker_len
 }
 
+import ./checker_call_header.vibe {
+  builtin_type_alias_member
+}
+
 import @vibe/compiler/core {
   Expr,
   Pat,
@@ -1437,7 +1441,14 @@ export fn lookup_builtin_in_env(env: TypeEnv, name: String) -> Option[Type] {
   if env_has_reexport_surface_binding(env = env, name = name) {
     None
   } else {
-    lookup_builtin(name)
+    match lookup_builtin(name) {
+      Some(t) => Some(t),
+      // #3888: `F::ceil` after `{ Float64 as F }` from a facade.
+      None => match builtin_type_alias_member(env = env, name = name) {
+        Some(canonical) => lookup_builtin(canonical),
+        None => None
+      }
+    }
   }
 }
 
