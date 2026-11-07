@@ -1,0 +1,92 @@
+// #3900: the derive pass and the helper emitters answer "does the program
+// already define this helper" from one set of names instead of a walk of
+// every statement per question. The answers must be the walk's: the set keeps
+// only generated helpers (`__..`) and `Type::method` names, the shapes those
+// callers ask, and every other name is answered by the walk.
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/normalize/desugar {
+  top_level_fn_defined, top_level_fn_exists, top_level_fn_names, top_level_fn_names_add, top_level_fn_names_cached
+}
+
+fn top_fn(_ name: String) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [], None, None, EInt(1)))
+}
+
+let asked = [
+  "f",
+  "__arr_equals__Int",
+  "Pt::to_string",
+  "m",
+  "__m",
+  "Pt::equals",
+  "g"
+]
+
+/// Each asked name the walk finds, or `-`, checking that the set agrees.
+fn both(stmts: Array[Stmt], names: MutSet[String]) -> String {
+  let out: Array[String] = []
+  for name in asked {
+    let walked = top_level_fn_exists(stmts = stmts, fname = name)
+    assert(walked == top_level_fn_defined(names = names, stmts = stmts, fname = name))
+    Array::push(out, value = if walked {
+      name
+    } else {
+      "-"
+    })
+  }
+  String::join(out, sep = " ")
+}
+
+test "the names answer as the walk does" {
+  let stmts = [
+    top_fn("f"),
+    top_fn("__arr_equals__Int"),
+    top_fn("Pt::to_string"),
+    SLetMut("m", None, EInt(0)),
+    SLetMut("__m", None, EInt(0)),
+    SExpr(EInt(1))
+  ]
+  inspect(both(stmts = stmts, names = top_level_fn_names(stmts)), content = "f __arr_equals__Int Pt::to_string - - - -")
+}
+
+test "only helper and method names are kept" {
+  let names = top_level_fn_names([
+    top_fn("f"),
+    top_fn("__h"),
+    top_fn("Pt::equals")
+  ])
+  inspect(MutSet::size(names), content = "2")
+  inspect(MutSet::has(names, x = "f"), content = "false")
+}
+
+test "an appended helper is added, and only a top-level let is counted" {
+  let stmts = [top_fn("f")]
+  let names = top_level_fn_names(stmts)
+  for added in [
+    top_fn("Pt::equals"),
+    top_fn("g"),
+    SLetMut("__m", None, EInt(0))
+  ] {
+    Array::push(stmts, value = added)
+    top_level_fn_names_add(names = names, stmt = added)
+  }
+  inspect(both(stmts = stmts, names = names), content = "f - - - - Pt::equals g")
+}
+
+test "the cached names are taken on the first question and kept" {
+  let stmts = [top_fn("__h")]
+  let cell: Array[MutSet[String]] = []
+  inspect(Array::length(cell), content = "0")
+  inspect(MutSet::has(top_level_fn_names_cached(cell = cell, stmts = stmts), x = "__h"), content = "true")
+  inspect(Array::length(cell), content = "1")
+  // The kept set describes `stmts` as it was taken; the derive pass, which
+  // keeps one, writes `stmts` only after its last question.
+  Array::push(stmts, value = top_fn("__k"))
+  inspect(MutSet::has(top_level_fn_names_cached(cell = cell, stmts = stmts), x = "__k"), content = "false")
+  inspect(Array::length(cell), content = "1")
+}

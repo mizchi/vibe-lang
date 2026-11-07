@@ -1,5 +1,11 @@
 import ./checker_expr_capture_helpers.vibe {
-  assign_target_marker, erased_throw_binder_settle, match_temp_anchor_key, struct_literal_refusal, struct_literal_typedef
+  assign_target_marker,
+  erased_throw_binder_settle,
+  local_alias_call_expr,
+  local_alias_member_redirect,
+  match_temp_anchor_key,
+  struct_literal_refusal,
+  struct_literal_typedef
 }
 
 import ./checker_scalar_locals.vibe {
@@ -766,7 +772,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         (ti, s1, c1)
       },
-      None => match lookup_builtin_in_env(env = env, name = railway_ident_lookup_name(name)) {
+      None => if local_alias_member_redirect(env = env, name = name) is Some(target) {
+        // #3889: `M::m` through a local `type M = L` is checked as `L::m`.
+        check_expr_capture_impl(expr = EIdent(target, ident_off), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root)
+      } else match lookup_builtin_in_env(env = env, name = railway_ident_lookup_name(name)) {
         Some(t) => if builtin_ident_is_value(name = railway_ident_lookup_name(name), t = t) {
           // A non-function builtin is a value: a nullary constructor (`None`)
           // lowers through the `ctor_table` arm. This is what #2274's
@@ -947,7 +956,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       (if_ty, s3b, c3)
     },
-    ECall(_, _, _, _) => check_call_expr(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root, check_child = check_expr_capture, check_plain = check_expr_nested, check_args = check_unmatched_call_args),
+    ECall(_, _, _, _) => check_call_expr(expr = local_alias_call_expr(expr = expr, env = env), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root, check_child = check_expr_capture, check_plain = check_expr_nested, check_args = check_unmatched_call_args),
     EBinOp(op, left, right, boff) => {
       let (left_ty, s1, c1) = check_expr_capture(expr = left, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       let (right_ty, s2, c2) = check_expr_capture(expr = right, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)

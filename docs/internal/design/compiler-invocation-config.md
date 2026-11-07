@@ -242,17 +242,21 @@ offsets and structural equality keys.
 `compile_checked_source_groups_wasi_configured` adds only `Config`, captures
 it once, and delegates to that data entry. It grants no unstable import,
 generated-source or launcher authority. A mismatched target requires a recheck.
-`mvp` and `no-dce` share a decoded mode and emission kernel with the existing
-checked closure-source driver. Unsupported modes are refused with the allowed
+`mvp`, `no-dce`, `rc` and `rc-shadow` share a decoded mode and emission kernel
+with the existing checked closure-source driver. RC modes use the existing
+heap-parameter elaboration and retain every typed offset channel; `rc-shadow`
+also enables ownership instrumentation. The cached compatibility driver uses
+distinct typed artifact kinds for all four modes. These entries carry no
+launcher grants. Unsupported modes are refused with the allowed
 choices before merging. Namespace/location state and codegen scratch remain
-serial phase-owned. RC, CLI/full filesystem orchestration, workers and final
-artifact caching remain later slices; this is not general compiler reentrancy.
+serial phase-owned. CLI/full filesystem orchestration, body caches, workers
+and final-artifact configuration remain later slices; this is not general compiler reentrancy.
 
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
 | --- | --- | --- |
-| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; source merge entries accept it; typed merge and checked source-group codegen accept owned lowering inputs; RC, CLI orchestration, final artifacts, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
+| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; source merge entries accept it; typed merge and checked source-group codegen accept owned lowering inputs on bump, RC and RC-shadow; CLI orchestration, final artifacts, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
 | Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Collection, AST, typing and checked-module storage use captured identities in the scoped lane. Final-artifact and content-only fingerprint/stamp adapters remain; the latter values are independent of target flags. Cache-only compatibility APIs retain the legacy cell. |
 | In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection and checking use scoped identities for parse, semantic use, import-name, re-export and generated-type reuse. Other merge/tooling entries retain compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
@@ -327,9 +331,10 @@ fingerprint witnesses, target mismatches, Alpha→Beta typed String/equality
 merges, configured builtin shadows, labeled parameter reordering, shared call-cell reset, refusal before location-state changes, and resident/disk-warm FS
 publication. The bootstrap gate runs it with AST caching enabled.
 
-`invocation_config_codegen_test.vibe` compares both supported modes with the
+`invocation_config_codegen_test.vibe` compares all four supported modes with the
 compatibility typed driver, executes the generated Wasm, and checks retained
-products after another target check and memo reset. Runtime answers cover
+products after another target check and memo reset. An independent RC/RC-shadow kernel comparison also pins backend selection and
+escaping owned captures, including repeated cached-mode calls. Runtime answers cover
 String/equality and numeric/render channels, including a same-source Float64/Int
 record-field switch, argument placements and builtin identity; nested successful and refused emits run inside an outer flag request.
 Wrong source/target products and unsupported modes leave merge metadata intact.
