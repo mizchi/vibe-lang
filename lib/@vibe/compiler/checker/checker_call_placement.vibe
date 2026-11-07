@@ -270,7 +270,16 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
               }
               if Array::length(errors) == before {
                 match slots {
-                  Some(found) => call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors),
+                  Some(found) => {
+                    call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors)
+                    // ADR-0120 D2, after publishing: the call is still typed
+                    // by its placement, so the move is the only diagnostic.
+                    if checker_call_header_is_declaration(env = env, name = name) {
+                      placement_check_order(name = name, offset = ident_offset, args = args, names = names, errors = errors)
+                    } else {
+                      ()
+                    }
+                  },
                   None => ()
                 }
               } else {
@@ -549,6 +558,70 @@ fn placement_refuse_value_labels(name: String, offset: Int, args: Array[Expr], e
       Array::push(errors, value = "a call through " + callee + " passes its arguments by position: remove " + String::join(items, sep = ", ") + " (only a call to a declaration names its arguments)" + off_marker_len(off = offset, len = len))
     },
     None => ()
+  }
+}
+
+/// The written callee token's length: the method name of `m.sub(..)` or
+/// `helper.greet(..)`, whose resolved `name` is `Meter::sub` /
+/// `helper.greet`, so the diagnostic covers what the source spells.
+fn written_callee_len(_ name: String) -> Int {
+  let n = String::length(name)
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    if name[i: i + 1] == "." {
+      start = i + 1
+    } else if name[i: i + 1] == ":" {
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n - start
+}
+
+/// ADR-0120 D2: written order is declared order, so a call to a declaration
+/// that names a slot before one it has already passed is refused with the
+/// move. Only the first such argument is reported; the declared order is
+/// listed so every move can be made at once.
+fn placement_check_order(name: String, offset: Int, args: Array[Expr], names: Array[String], errors: Array[String]) -> Unit {
+  let mut prev_slot = -1
+  let mut prev_written = ""
+  let mut reported = false
+  let mut ai = 0
+  while ai < Array::length(args) && !reported {
+    match Array::get(args, at = ai) {
+      ELabeledArg(label, _, _) => {
+        let mut found = -1
+        let mut pi = 0
+        while pi < Array::length(names) && found < 0 {
+          if placement_param_name(Array::get(names, at = pi)) == label {
+            found = pi
+          } else {
+            ()
+          }
+          pi = pi + 1
+        }
+        if found >= 0 && found < prev_slot {
+          let declared = String::join(for raw in names {
+            placement_param_name(raw)
+          }, sep = ", ")
+          Array::push(errors, value = "labeled argument `" + label + "` for " + name + " is out of declared parameter order: move `" + label + " = ..` before " + prev_written + " (" + name + " declares " + declared + ")" + off_marker_len(off = offset, len = written_callee_len(name)))
+          reported = true
+        } else if found >= 0 {
+          prev_slot = found
+          prev_written = "`" + label + " = ..`"
+        } else {
+          ()
+        }
+      },
+      _ => {
+        prev_slot = ai
+        prev_written = "argument " + __to_string(ai + 1)
+      }
+    }
+    ai = ai + 1
   }
 }
 

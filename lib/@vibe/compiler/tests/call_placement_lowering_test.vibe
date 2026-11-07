@@ -90,7 +90,7 @@ fn poison_placement(_ rows: Array[Int]) -> Unit {
 
 /// This is the real build lowering entry, not a standalone row comparator.
 test "lowering consumes valid argument placement instead of recomputing it" {
-  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
+  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(x = 10, y = 3) }"
   let rows = checked_placement_rows(source)
   assert(lowering_message(source = source, rows = rows, expand_inspect = false) == "")
   poison_placement(rows)
@@ -100,7 +100,7 @@ test "lowering consumes valid argument placement instead of recomputing it" {
 
 /// A complete checked channel cannot silently treat a lost call row as rowless.
 test "lowering refuses labeled calls with missing and rowless placement channels" {
-  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
+  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(x = 10, y = 3) }"
   assert(String::contains(lowering_message(source = source, rows = [13], expand_inspect = false), needle = "missing or invalid checker argument placement for `f`"))
   assert(String::contains(lowering_message(source = source, rows = [14], expand_inspect = false), needle = "missing or invalid checker argument placement for `f`"))
 }
@@ -136,11 +136,11 @@ test "checker placement agrees on optional omission wrapping and option values" 
   let head = "fn pick(x: Int, y?: Int) -> Int { x }\nfn main() -> Int { "
   for call in [
     "pick(x = 10)",
-    "pick(y = 3, x = 10)",
+    "pick(x = 10, y = 3)",
     "pick(x = 10, y? = None)",
     "pick(x = 10, y = 3)",
-    "pick(y = None, x = 10)",
-    "pick(y = Some(3), x = 10)"
+    "pick(x = 10, y = None)",
+    "pick(x = 10, y = Some(3))"
   ] {
     let source = head + call + " }"
     assert(lowering_message(source = source, rows = checked_placement_rows(source), expand_inspect = false) == "")
@@ -151,8 +151,8 @@ test "checker placement agrees on optional omission wrapping and option values" 
 /// headers that typing used inside the group's provisional environment.
 test "recursive group generalization retains call placement headers" {
   for source in [
-    "let rec f = (x: Int, y: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }",
-    "let rec f = (x: Int, y: Int) -> { if x == 0 { y } else { g(x = 0, y = y) } }\nlet rec g = (x: Int, y: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }"
+    "let rec f = (x: Int, y: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(x = 0, y = 3) }",
+    "let rec f = (x: Int, y: Int) -> { if x == 0 { y } else { g(x = 0, y = y) } }\nlet rec g = (x: Int, y: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(x = 0, y = 3) }"
   ] {
     assert(lowering_message(source = source, rows = checked_placement_rows(source), expand_inspect = false) == "")
   }
@@ -228,7 +228,7 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
 /// Raw cached statements share cells with the checked tree (and serialize
 /// those cells). That alone cannot certify that their arguments were rewritten.
 test "raw cached source is rechecked before consuming its placements" {
-  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
+  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(x = 10, y = 3) }"
   for roundtrip in [false, true] {
     assert(cached_lowering_message(source = source, mutation = 0, roundtrip = roundtrip) == "")
     assert(cached_lowering_message(source = source, mutation = 1, roundtrip = roundtrip) == "")
@@ -250,7 +250,7 @@ test "qualified optional placement does not infer a receiver from arity" {
     "helper.pick(x = 10)",
     "helper.pick(x = 10, y = 3)",
     "helper.pick(x = 10, y = None)",
-    "helper.pick(y = 3, x = 10)"
+    "helper.pick(x = 10, y = 3)"
   ] {
     let source = "fn main() -> Int { " + call + " }"
     let (tokens, starts, _) = lex_with_offsets(source)
@@ -273,7 +273,7 @@ test "lowering consumes an imported placement without a syntactic header" {
     ("y", CtUnknown),
     ("x", CtUnknown)
   ]))
-  let source = "fn main() -> Int { f(x = 10, y = 3) }"
+  let source = "fn main() -> Int { f(y = 3, x = 10) }"
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = env)

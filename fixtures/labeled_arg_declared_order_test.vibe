@@ -1,0 +1,156 @@
+// ADR-0120 D2: labeled arguments are written in the declared order, so the
+// written order is the evaluation order. A label out of declared order is a
+// build error (fixtures/typecheck/err_label_out_of_declared_order.vibe). Before
+// D2 such a call was placed by name and its arguments bound to temporaries in
+// written order (#3549); before #3549 they were evaluated in parameter order.
+// What this file pins is the left-to-right evaluation itself, across
+// callbacks, literals, omitted slots, nesting, an exception and a receiver.
+
+fn note(log: Array[String], s: String, v: Int) -> Int {
+  Array::push(log, value = s)
+  v
+}
+
+fn sub(x: Int, y: Int) -> Int {
+  x - y
+}
+
+fn three(a: Int, b: Int, c: Int) -> Int {
+  a * 100 + b * 10 + c
+}
+
+fn opt(a: Int, b?: Int, c?: Int) -> Int {
+  let bv = match b {
+    Some(v) => v,
+    None => 0
+  }
+  let cv = match c {
+    Some(v) => v,
+    None => 0
+  }
+  a * 100 + bv * 10 + cv
+}
+
+fn dflt(a: Int, b: Int = 5, c: Int = 7) -> Int {
+  a * 100 + b * 10 + c
+}
+
+fn fail_now(_ log: Array[String]) -> Int with Exception {
+  Array::push(log, value = "throw")
+  throw("boom")
+}
+
+fn joined(_ log: Array[String]) -> String {
+  String::join(log, sep = ",")
+}
+
+fn callback_value(log: Array[String], label: String, value: String) -> String {
+  Array::push(log, value = label)
+  value
+}
+
+fn callback_pair[T](left: T, right: T, body: (T, T) -> T) -> T {
+  body(left, right)
+}
+
+test "a callback written last still infers from the earlier values" {
+  let log: Array[String] = []
+  let answer = callback_pair(left = callback_value(log = log, label = "left", value = "a"), right = callback_value(log = log, label = "right", value = "b"), body = (a, b) -> a + b)
+  inspect(joined(log), content = "left,right")
+  inspect(answer, content = "ab")
+}
+
+test "two calls run left to right" {
+  let log: Array[String] = []
+  let r = sub(x = note(log = log, s = "x", v = 10), y = note(log = log, s = "y", v = 1))
+  inspect(joined(log), content = "x,y")
+  inspect(r, content = "9")
+}
+
+test "three calls run left to right" {
+  let log: Array[String] = []
+  let r = three(a = note(log = log, s = "a", v = 1), b = note(log = log, s = "b", v = 2), c = note(log = log, s = "c", v = 3))
+  inspect(joined(log), content = "a,b,c")
+  inspect(r, content = "123")
+}
+
+test "a literal between calls stays in place" {
+  let log: Array[String] = []
+  let r = three(a = note(log = log, s = "a", v = 1), b = 2, c = note(log = log, s = "c", v = 3))
+  inspect(joined(log), content = "a,c")
+  inspect(r, content = "123")
+}
+
+test "a name is read where it is written" {
+  let mut n = 1
+  let bump = () -> {
+    n = n + 10
+    n
+  }
+  let r = sub(x = n, y = bump())
+  inspect(r, content = "-10")
+  inspect(n, content = "11")
+}
+
+test "an optional parameter omitted between two written ones" {
+  let log: Array[String] = []
+  let r = opt(a = note(log = log, s = "a", v = 1), c = note(log = log, s = "c", v = 3))
+  inspect(joined(log), content = "a,c")
+  inspect(r, content = "103")
+}
+
+test "a defaulted parameter omitted between two written ones" {
+  let log: Array[String] = []
+  let r = dflt(a = note(log = log, s = "a", v = 1), c = note(log = log, s = "c", v = 9))
+  inspect(joined(log), content = "a,c")
+  inspect(r, content = "159")
+}
+
+test "nested labeled calls run left to right at both levels" {
+  let log: Array[String] = []
+  let r = sub(x = note(log = log, s = "a", v = 10), y = sub(x = note(log = log, s = "b", v = 5), y = note(log = log, s = "c", v = 1)))
+  inspect(joined(log), content = "a,b,c")
+  inspect(r, content = "6")
+}
+
+test "an exception in a later argument comes after the earlier ones" {
+  let log: Array[String] = []
+  let r = handle {
+    sub(x = note(log = log, s = "x", v = 1), y = fail_now(log))
+  } with { Exception::Throw(_) => 0 - 1 }
+  inspect(joined(log), content = "x,throw")
+  inspect(r, content = "-1")
+}
+
+struct LabeledReceiver {
+  base: Int
+}
+
+fn labeled_receiver(_ log: Array[String]) -> LabeledReceiver {
+  Array::push(log, value = "receiver")
+  LabeledReceiver::{ base: 100 }
+}
+
+fn LabeledReceiver::subtract(_ self: LabeledReceiver, x: Int, y: Int) -> Int {
+  self.base + x - y
+}
+
+fn LabeledReceiver::optional(_ self: LabeledReceiver, x: Int, y?: Int) -> Int {
+  self.base + x - match y {
+    Some(v) => v,
+    None => 0
+  }
+}
+
+test "a receiver runs before the written arguments" {
+  let log: Array[String] = []
+  let answer = labeled_receiver(log).subtract(x = note(log = log, s = "x", v = 10), y = note(log = log, s = "y", v = 3))
+  inspect(joined(log), content = "receiver,x,y")
+  inspect(answer, content = "107")
+}
+
+test "method optional placements exclude the implicit receiver" {
+  let value = LabeledReceiver::{ base: 100 }
+  inspect(value.optional(x = 10), content = "110")
+  inspect(value.optional(x = 10, y = 3), content = "107")
+}

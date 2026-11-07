@@ -573,14 +573,21 @@ fn sub(x: Int, y: Int) -> Int { x - y }
 let d = sub(x = 10, y = 3)   // => 7
 ```
 
-Labeled arguments are evaluated in the order they are **written**, then bound
-by name: `f(y = g(), x = h())` calls `g()` before `h()`, whatever order `f`
-declares `x` and `y` in (#3549, as in Swift, Kotlin and C#). An argument that
-can do or observe something (a call, an operator, an interpolation, a name) is
-bound to a temporary in written order when the call reorders it past another
-one; literals, lambdas and constructors are passed in place. Omitted optional
-arguments and defaults are filled after every written argument, a default in
-the callee.
+Labels are written in the declared order, so the written order is also the
+evaluation order (ADR-0120 D2): `f(x = g(), y = h())` calls `g()` before
+`h()`. A label written ahead of one the declaration lists before it is a build
+error that names the move and lists the declared order:
+
+```vibe skip
+// doctest-skip: shows the refused call and the edit the diagnostic names
+fn sub(x: Int, y: Int) -> Int { x - y }
+sub(y = 3, x = 10)  // error: labeled argument `x` for sub is out of declared parameter order: move `x = ..` before `y = ..` (sub declares x, y)
+```
+
+An optional or defaulted parameter may be left out anywhere in the list, not
+only at the end: the labels that are present say which slots were given, and
+an omitted one is filled after every written argument (a default in the
+callee).
 
 ```vibe
 fn note(log: Array[String], s: String, v: Int) -> Int {
@@ -592,11 +599,16 @@ fn sub(x: Int, y: Int) -> Int {
   x - y
 }
 
-test "labeled arguments run in written order" {
+fn span(start: Int, mid: Int = 0, end: Int = 10) -> Int {
+  end - start + mid
+}
+
+test "labeled arguments run in written order, which is declared order" {
   let log: Array[String] = []
-  let r = sub(y = note(log = log, s = "y", v = 1), x = note(log = log, s = "x", v = 10))
-  assert_eq(String::join(log, sep = ","), "y,x")
+  let r = sub(x = note(log = log, s = "x", v = 10), y = note(log = log, s = "y", v = 1))
+  assert_eq(String::join(log, sep = ","), "x,y")
   assert_eq(r, 9)
+  assert_eq(span(start = 2, end = 5), 3)
 }
 ```
 
@@ -703,9 +715,11 @@ let d = label(name = "v")         // => "v"
 let e = label(name = "v", suffix = "rc")   // => "v-rc"
 ```
 
-- Only **trailing** arguments can be omitted. A required parameter after a
-  defaulted one is refused; leaving out a required argument is still an arity
-  error.
+- Only **trailing** parameters can carry a default or be optional: a required
+  parameter after a defaulted one is refused. A call may leave out any of
+  them, not only the last, by labeling the ones it passes
+  (`span(start = 2, end = 5)`); leaving out a required argument is still an
+  arity error.
 - A default belongs to a `fn` declaration with a body. A lambda, a `.vpkg`
   contract declaration and an `= wasm` body cannot carry one (declare `x?: T`
   there), and a default cannot yet be combined with a `where` contract.
