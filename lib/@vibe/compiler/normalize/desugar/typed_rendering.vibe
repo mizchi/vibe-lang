@@ -1,7 +1,7 @@
 // Typed rendering.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, typed_render_row_head, typed_render_row_offset, typed_render_unknown_name, typed_render_unrenderable_name
+  Expr, Stmt, TypeExpr, typed_render_row_offset, typed_render_unknown_name, typed_render_unrenderable_name
 }
 
 import @vibe/ast {
@@ -45,14 +45,7 @@ import ./generic_equality.vibe {
 }
 
 import ./state.vibe {
-  dtd_eq_deferred_requests,
-  dtd_eq_deferred_types,
-  dtd_eq_known_types,
-  dtd_eq_typed_refusals,
-  dtd_scope_formals,
-  dtd_type_param_names,
-  dtd_typed_render_keys,
-  dtd_typed_render_offs
+  dtd_eq_deferred_requests, dtd_eq_deferred_types, dtd_eq_known_types, dtd_eq_typed_refusals, dtd_scope_formals, dtd_type_param_names
 }
 
 import ./typed_equality.vibe {
@@ -60,7 +53,7 @@ import ./typed_equality.vibe {
 }
 
 import ./typed_row_queries.vibe {
-  dtd_typed_eq_key_for, dtd_typed_item_shape_join
+  dtd_typed_eq_key_for, dtd_typed_item_shape_join, dtd_typed_render_row_ty
 }
 
 import ./utilities.vibe {
@@ -120,33 +113,7 @@ export fn dtd_typed_render_row_is_unrenderable(_ t: TypeExpr) -> Bool {
 /// The type the checker filed for a rendered `arg`, keyed by its offset,
 /// formals included.
 export fn dtd_typed_render_row_arg(_ arg: Expr) -> Option[TypeExpr] {
-  let off = typed_render_row_offset(arg)
-  let mut key = ""
-  if off >= 0 {
-    let mut i = 0
-    while i < Array::length(dtd_typed_render_offs) {
-      if Array::get(dtd_typed_render_offs, at = i) == off {
-        key = Array::get(dtd_typed_render_keys, at = i)
-        i = Array::length(dtd_typed_render_offs)
-      } else {
-        i = i + 1
-      }
-    }
-  } else {
-    ()
-  }
-  if String::length(key) == 0 {
-    None
-  } else {
-    match impl_target_from_key(key) {
-      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 {
-        Some(Array::get(args, at = 0))
-      } else {
-        None
-      },
-      _ => None
-    }
-  }
+  dtd_typed_render_row_ty(typed_render_row_offset(arg))
 }
 
 /// #3081: the shape of the type the checker filed for an ELEMENT of a
@@ -268,31 +235,13 @@ fn dtd_typed_item_shape_through_binder(name: String, value: Expr, body: Expr) ->
 }
 
 fn dtd_typed_item_shape_at(_ off: Int) -> String {
-  let mut key = ""
-  if off >= 0 {
-    let mut i = 0
-    while i < Array::length(dtd_typed_render_offs) {
-      if Array::get(dtd_typed_render_offs, at = i) == off {
-        key = Array::get(dtd_typed_render_keys, at = i)
-        i = Array::length(dtd_typed_render_offs)
-      } else {
-        i = i + 1
-      }
-    }
-  } else {
-    ()
-  }
-  if String::length(key) == 0 {
-    ""
-  } else {
-    match impl_target_from_key(key) {
-      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, at = 0)) && !dtd_typed_render_row_is_unknown(Array::get(args, at = 0)) {
-        ty_to_eq_shape(Array::get(args, at = 0))
-      } else {
-        ""
-      },
-      _ => ""
-    }
+  match dtd_typed_render_row_ty(off) {
+    Some(t) => if !eq_ty_mentions_scope_formal(t) && !dtd_typed_render_row_is_unknown(t) {
+      ty_to_eq_shape(t)
+    } else {
+      ""
+    },
+    None => ""
   }
 }
 
