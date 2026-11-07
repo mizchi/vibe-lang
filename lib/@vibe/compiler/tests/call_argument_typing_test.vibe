@@ -76,7 +76,9 @@ test "raw known labels check the type of their declared slot" {
   assert(String::contains(String::join(errors, sep = "\n"), needle = "@0/2/4/0"))
 }
 
-/// A known outer label must not lend its typing policy to an opaque inner call.
+/// A known outer label must not lend its typing policy to an opaque inner
+/// call: the inner call is through a value, so its label is refused on its
+/// own (ADR-0120 Phase 4b), not checked against the outer declaration.
 test "a known outer label does not change an opaque nested call" {
   let env = env_bind(env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
     CtInt
@@ -87,7 +89,9 @@ test "a known outer label does not change an opaque nested call" {
     ELabeledArg("whatever", "", EString("legacy", 15))
   ], 9, [])
   let outer = ECall(EIdent("f", 7), [ELabeledArg("x", "", inner)], 7, [])
-  assert(Array::length(argument_errors(expr = outer, env = env)) == 0)
+  let errors = argument_errors(expr = outer, env = env)
+  assert(Array::length(errors) == 1)
+  assert(String::contains(String::join(errors, sep = "\n"), needle = "a call through the function value `g` passes its arguments by position: remove `whatever = `"))
 }
 
 /// Optional payloads are checked even when this expression has no prior rows.
@@ -141,15 +145,15 @@ test "call typing rejects a reordered builtin label without a precheck walk" {
   assert(String::contains(String::join(errors, sep = "\n"), needle = "out of parameter order"))
 }
 
-/// Value calls retain their current label policy, including the existing
-/// refusal of a mixture of positional and labeled arguments.
+/// A call through a value is positional (ADR-0120 Phase 4b), so a mixed call
+/// is refused for its label.
 test "call typing rejects mixed argument modes on an opaque value" {
   let env = env_bind(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtInt], CtInt, None))
   let errors = argument_errors(expr = unresolved_source_call(name = "f", args = [
     EInt(1),
     ELabeledArg("whatever", "", EInt(2))
   ]), env = env)
-  assert(String::contains(String::join(errors, sep = "\n"), needle = "mixes positional and labeled arguments"))
+  assert(String::contains(String::join(errors, sep = "\n"), needle = "a call through the function value `f` passes its arguments by position: remove `whatever = `"))
 }
 
 /// A written None must not acquire omission semantics at a declaration that
@@ -174,8 +178,8 @@ test "value typing refuses escaping a resolved defaulted declaration" {
   assert(String::contains(String::join(errors, sep = "\n"), needle = "has parameter defaults"))
 }
 
-/// An uncertain mutable declaration is distinct from a value whose interface
-/// never declared labels; accepting an identity placement would swap values.
+/// An uncertain mutable binding is a value: accepting an identity placement
+/// for its labels would swap values, so they are refused (ADR-0120 Phase 4b).
 test "call typing refuses labels on an uncertain mutable declaration" {
   let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
     CtInt,
@@ -185,7 +189,7 @@ test "call typing refuses labels on an uncertain mutable declaration" {
     ELabeledArg("x", "", EInt(1)),
     ELabeledArg("y", "", EInt(2))
   ]), env = env)
-  assert(String::contains(String::join(errors, sep = "\n"), needle = "cannot resolve labeled arguments for f"))
+  assert(String::contains(String::join(errors, sep = "\n"), needle = "a call through the function value `f` passes its arguments by position: remove `x = `, `y = `"))
 }
 
 /// Reusing source in a new check cannot reuse the old binding's slot mapping.
@@ -202,7 +206,7 @@ test "standalone checks recapture reused source against the current binding" {
   let opaque = env_bind(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtString], CtInt, None))
   assert(Array::length(argument_errors(expr = expr, env = original)) == 0)
   assert(Array::length(argument_errors(expr = expr, env = different)) > 0)
-  assert(Array::length(argument_errors(expr = expr, env = opaque)) == 0)
+  assert(Array::length(argument_errors(expr = expr, env = opaque)) > 0)
   assert(Array::length(argument_errors(expr = expr, env = original)) == 0)
 }
 

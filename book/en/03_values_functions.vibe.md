@@ -118,7 +118,7 @@ let inc: (Int) -> Int = (x) -> {
   x + 1
 }
 
-let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
+let scaled: (Int, Int) -> Int = (x, y) -> {
   x * 10 + y
 }
 
@@ -145,8 +145,9 @@ That block shows four things worth naming:
   [Generics, traits, and derive](15_generics.vibe.md) adds bounds.
 - **The `let` form.** A function is a value; `let inc: (Int) -> Int =
   (x) -> { ... }` is the same function written as a binding.
-- **Labelled parameters.** `x~: Int` means callers write `x=4`, in any
-  order, which is what you want once a function takes three `Int`s.
+- **Labelled arguments.** A parameter is labelled by its name, so callers
+  write `x=4`, in any order, which is what you want once a function takes
+  three `Int`s. `_ x: T` (as in `identity`) makes a slot positional.
 - **The body is an expression.** No `return` needed — the last
   expression is the result.
 

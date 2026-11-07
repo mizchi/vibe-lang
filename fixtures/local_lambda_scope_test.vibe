@@ -1,0 +1,100 @@
+// #1899 (second half) and #1952: a lambda bound by a `let` INSIDE a block is
+// called through a value, so its arguments are positional (ADR-0120 Phase
+// 4b). What a block-local lambda still needs from its binding is its omitted
+// optional arguments filled in, and a name it shadows must not lend it a
+// declaration's requirement to label.
+//
+// Everything here is written with SUBTRACTION on purpose. `x + y` gives the
+// right answer whatever order the arguments were bound in, which is how the
+// first half of #1899 survived a "fix verified" claim.
+
+fn block_local_optional() -> Int {
+  let o = (a: Int, b?: Int) -> Int {
+    match b {
+      Some(v) => a - v,
+      None => a
+    }
+  }
+  o(7)
+}
+
+fn block_local_optional_supplied() -> Int {
+  let o = (a: Int, b?: Int) -> Int {
+    match b {
+      Some(v) => a - v,
+      None => a
+    }
+  }
+  o(10, 3)
+}
+
+// A local binding shadowing a top-level function of the same name is a value:
+// its call is positional, and it calls the LOCAL lambda.
+let dup = (x: Int, y: Int) -> Int {
+  x - y
+}
+
+fn local_wins_over_top_level() -> Int {
+  let dup = (x: Int, y: Int) -> Int {
+    y - x
+  }
+  dup(10, 3)
+}
+
+// A recursive local binding is in scope inside its own body.
+fn rec_local() -> Int {
+  let rec down = (n: Int, acc: Int) -> Int {
+    if n <= 0 {
+      acc
+    } else {
+      down(n - 1, acc + n)
+    }
+  }
+  down(4, 0)
+}
+
+// The over-strip guard from #1925: `n` is genuinely free here and must still
+// ride the closure environment.
+fn real_capture() -> Int {
+  let n = 5
+  let f = (x: Int) -> Int {
+    x + n
+  }
+  f(10)
+}
+
+// #1994: a `let mut` lambda is still a lambda, and a call reaches the one the
+// binding holds.
+fn mutable_reassigned() -> Int {
+  let mut g = (x: Int, y: Int) -> Int {
+    x - y
+  }
+  g = (y: Int, x: Int) -> Int {
+    x - y
+  }
+  g(3, 10)
+}
+
+// The top-level declaration keeps its labels.
+fn top_level_labels() -> Int {
+  dup(y = 3, x = 10)
+}
+
+fn top_level_optional(a: Int, b?: Int) -> Int {
+  match b {
+    Some(v) => a - v,
+    None => a
+  }
+}
+
+test "a block-local lambda is positional and fills its optional slots" {
+  inspect(block_local_optional(), "7")
+  inspect(block_local_optional_supplied(), "7")
+  inspect(local_wins_over_top_level(), "-7")
+  inspect(rec_local(), "10")
+  inspect(real_capture(), "15")
+  inspect(mutable_reassigned(), "7")
+  inspect(top_level_labels(), "7")
+  inspect(top_level_optional(a = 7), "7")
+  inspect(top_level_optional(a = 10, b = 3), "7")
+}

@@ -219,16 +219,18 @@ Function types:
 Labeled arguments:
 
 ```vibe
-let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
+fn f(x: Int, y: Int) -> Int { x + y }
 export let two: () -> Int = () -> { f(x = 1, y = 2) }
 ```
 
-`x~` is a required labeled parameter. A call to a declaration labels every
-argument whose parameter is not `_` (ADR-0120 Phase 4): `f(1, 2)` is refused
-with the labels to write ("label the arguments of f: write `x = ` before
-argument 1, `y = ` before argument 2"). A call through a function value
-stays positional, and mixing positional and labeled arguments there is
-rejected. A labeled parameter cannot carry a default yet.
+A declaration's parameters are labeled by their names (ADR-0120). A call to a
+declaration labels every argument whose parameter is not `_`: `f(1, 2)` is
+refused with the labels to write ("label the arguments of f: write `x = `
+before argument 1, `y = ` before argument 2"). A call through a function
+value -- a parameter, a local lambda, a field -- is positional only, and a
+label there is refused with the labels to remove. A function type carries no
+labels. The retired `~` marker (`x~: Int`, `x~ = v`, `(x~: Int) -> Int`) is
+a parse error naming the replacement.
 
 A typed `fn` parameter may carry a **default** (#3120). The body sees the
 declared type, and an omitted trailing argument evaluates the default in the
@@ -249,8 +251,8 @@ export let g2: () -> String = () -> { greet(name = "hi", times = 3) }
 - A default may read the parameters BEFORE it; naming itself or a later
   parameter is refused, since those are still the call site's `Option` then.
 - Only trailing parameters can default. A lambda, a `.vpkg` contract
-  declaration, an `= wasm` body, a labeled (`x~`) or optional (`x?`)
-  parameter cannot carry one, and a default cannot yet be combined with a
+  declaration, an `= wasm` body, or an optional (`x?`) parameter cannot
+  carry one, and a default cannot yet be combined with a
   `where` contract.
 - A written `None` / `Some(..)` passed to a defaulted parameter is refused: it
   would read as an omitted argument. Bind the value first and pass the name.

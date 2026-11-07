@@ -177,10 +177,21 @@ let declared_headers: Array[MutMap[String, Array[String]]] = [
 /// marker lookup.
 let locally_shadowed: Array[MutMap[String, Bool]] = [MutMap::new_string()]
 
+/// The names this check bound to a local lambda's header (ADR-0120 Phase
+/// 4b). Each such local also binds `local_shadow_marker(name)` beside
+/// itself, so the marker is in scope exactly where the local is. A header
+/// neither registered as a declaration nor under a marker came in through
+/// the supplied environment -- a declaration whose caller did not register
+/// it -- so its call names its arguments. Only a name listed here pays for
+/// the marker lookup; a stale entry (a scope that ended, an earlier
+/// standalone check) costs that lookup and nothing else.
+let local_headers: Array[MutMap[String, Bool]] = [MutMap::new_string()]
+
 /// Forget the declarations of an earlier check.
 export fn checker_declared_headers_reset() -> Unit {
   Array::set(declared_headers, at = 0, value = MutMap::new_string())
   Array::set(locally_shadowed, at = 0, value = MutMap::new_string())
+  Array::set(local_headers, at = 0, value = MutMap::new_string())
 }
 
 fn local_shadow_marker(_ name: String) -> String {
@@ -200,7 +211,14 @@ fn declared_header_is(env: TypeEnv, name: String, names: Array[String]) -> Bool 
         None => true
       }
     },
-    None => false
+    None => if MutMap::has(Array::get(local_headers, at = 0), k = name) {
+      match env_lookup_binding(env = env, name = local_shadow_marker(name)) {
+        Some(_) => false,
+        None => true
+      }
+    } else {
+      true
+    }
   }
 }
 
@@ -251,18 +269,17 @@ fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declarati
       } else {
         raw_names
       }
-      // A local that shadows a declaration carries a marker in its scope.
+      // A local lambda carries a marker in its scope.
       let scoped = if declaration {
         MutMap::set(Array::get(declared_headers, at = 0), k = name, v = names)
         env
       } else {
+        MutMap::set(Array::get(local_headers, at = 0), k = name, v = true)
         match MutMap::get(Array::get(declared_headers, at = 0), k = name) {
-          Some(_) => {
-            MutMap::set(Array::get(locally_shadowed, at = 0), k = name, v = true)
-            env_bind(env = env, name = local_shadow_marker(name), ty = ty)
-          },
-          None => env
+          Some(_) => MutMap::set(Array::get(locally_shadowed, at = 0), k = name, v = true),
+          None => ()
         }
+        env_bind(env = env, name = local_shadow_marker(name), ty = ty)
       }
       let origin = match checker_parameter_defaults(value) {
         Some(flags) => BindingOriginDefaultedFunctionHeader(names, flags),

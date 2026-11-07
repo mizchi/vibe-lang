@@ -1772,22 +1772,23 @@ gate_require_eq "$litpat_out" "62" "literal sub-pattern mismatch (got '$litpat_o
 rm -rf "$pdir"
 echo "[compiler-gate] literal sub-pattern regression ok"
 
-# 8. labeled-param round-trip regression (#604/#606): normalizing a function
-#    with labeled (`x~`) / optional (`x?`) parameters must preserve the parameter
-#    names. `parse_one_param` builds the names with string interpolation
-#    (`"\{name}~"`); before the #606 `__to_string` root fix this leaked a heap
-#    pointer (`(1285664100319233~)`), and the #604 mitigation routed around it
-#    with `String::concat`. With the root fix the interpolation form is correct,
-#    so this guards the root fix directly. The result must still compile + run.
+# 8. marked-param round-trip regression (#604/#606): normalizing a function
+#    with an optional (`x?`) parameter must preserve the parameter names.
+#    `parse_one_param` builds the marked name with string interpolation
+#    (`"\{name}?"`); before the #606 `__to_string` root fix this leaked a heap
+#    pointer (`(1285664100319233~)`, when the retired `x~` marker was still
+#    built the same way), and the #604 mitigation routed around it with
+#    `String::concat`. With the root fix the interpolation form is correct, so
+#    this guards the root fix directly. The result must still compile + run.
 echo "[compiler-gate] 8/8 labeled-param round-trip regression"
 gate_workdir ldir "_build/_gate_labeled"
-printf 'let sum: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nexport let run: () -> Int = () -> { sum(x=1, y=2) }\nexport { run }\n' > "$ldir/in.vibe"
+printf 'let sum: (Int, Option[Int]) -> Int = (x, y?) -> { x + match y { Some(v) => v, None => 0 } }\nexport let run: () -> Int = () -> { sum(x = 1, y = 2) }\nexport { run }\n' > "$ldir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/in.vibe" "$ldir/out.vibe" >/dev/null 2>&1 || true
 gate_require_artifact "$ldir/out.vibe" "labeled-param normalize produced no output"
-# Param names must survive verbatim; a digit before `~` means the gensym bug is back.
-if ! grep -q "(x~, y~)" "$ldir/out.vibe" || grep -Eq "[0-9]+~" "$ldir/out.vibe"; then
+# Param names must survive verbatim; a digit before `?` means the gensym bug is back.
+if ! grep -q "(x, y?)" "$ldir/out.vibe" || grep -Eq "[0-9]+[?]" "$ldir/out.vibe"; then
   echo "[compiler-gate] FAIL: labeled param names mangled (#604 regressed)" >&2
   cat "$ldir/out.vibe" >&2; exit 1
 fi

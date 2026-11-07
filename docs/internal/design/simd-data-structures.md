@@ -238,8 +238,8 @@ without any SIMD at all.
 `~` (bit-not) landed as slice C. It is the complement over the 63-bit two's
 complement `Int`, so `~x == -x - 1` and it is its own inverse. Being an
 **operator** rather than a builtin, it was tracked as its own slice: the token
-already existed (it is the labeled-parameter marker, `x~: Int`), so only the
-expression-start position was free, and the checker types it rather than the
+already existed (it was then the labeled-parameter marker `x~: Int`, retired
+by ADR-0120 Phase 4b), so only the expression-start position was free, and the checker types it rather than the
 parser desugaring it to `x ^ -1` — a desugar would report a type error naming
 `^`, an operator the author never wrote. The lowering IS `x ^ -1`, but the
 constant is lane-dependent: under RC an `Int` is `n<<1`, so complementing the

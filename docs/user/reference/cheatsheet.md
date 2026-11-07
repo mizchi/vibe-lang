@@ -565,9 +565,12 @@ let show: [T: Eq + Ord](T) -> T = (x) -> { x } // trait bounds
 
 ### Labeled arguments
 
+A declaration's parameters are labeled by their names, and a call to it
+writes each label (ADR-0120):
+
 ```vibe
-let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
-let sum = f(x=10, y=20)   // => 30
+fn sub(x: Int, y: Int) -> Int { x - y }
+let d = sub(x = 10, y = 3)   // => 7
 ```
 
 Labeled arguments are evaluated in the order they are **written**, then bound
@@ -634,8 +637,24 @@ sub(5, 3)          // error: label the arguments of sub: write `a = ` before arg
 sub(a = 5, b = 3)  // ok
 ```
 
-A call through a function value -- a parameter, a local lambda, a field --
-is not checked this way: its arguments stay positional.
+A call through a function value -- a parameter, a local lambda, a field, a
+call's result -- passes its arguments by position only. A function type
+carries no labels, so a label there would name nothing; it is a build error
+that lists the labels to remove (ADR-0120 Phase 4b):
+
+```vibe skip
+// doctest-skip: shows the refused call and the edit the diagnostic names
+fn apply(f: (Int, Int) -> Int) -> Int {
+  f(y = 3, x = 10)   // error: a call through the function value `f` passes its arguments by position: remove `y = `, `x = `
+}
+```
+
+Before Phase 4b such a call compiled and bound its arguments in written
+order whatever the labels said, so the call above passed `3` first.
+
+The retired `~` marker is refused by the parser with the replacement: a
+parameter `x~: Int` is written `x: Int`, a call's `x~ = v` is `x = v`, and a
+function type `(x~: Int) -> Int` is `(Int) -> Int`.
 
 Argument sugar works under a label: an arrow lambda
 (`Array::map(xs, f = x -> x + 1)`), an operator section
@@ -2513,7 +2532,7 @@ continuation with a tail `resume(v)` (#627).
 ### Effect polymorphism
 
 ```vibe
-let apply: [T](f~: (T) -> T with e, x~: T) -> T with e = (f~, x~) -> {
+fn apply[T](f: (T) -> T with e, x: T) -> T with e {
   f(x)
 }
 ```
@@ -3146,9 +3165,7 @@ for every non-zero `x`. `~x` (prefix bit-not, #2344) completes the set: it is
 the complement over the 63-bit two's complement `Int`, so `~x == -x - 1`
 (`~0 == -1`, `~5 == -6`, and `~` is its own inverse). It binds like the other
 prefix operators, and `Int` is its only operand type — there is no `Double`
-form, and `~true` is rejected as `operand of \`~\` must be Int`. The same `~`
-still marks a labeled parameter (`x~: Int`); only the expression-start
-position is the operator.
+form, and `~true` is rejected as `operand of \`~\` must be Int`.
 
 **Conversion**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,

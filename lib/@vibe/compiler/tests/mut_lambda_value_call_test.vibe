@@ -1,0 +1,103 @@
+//# Imports
+
+// #1994 and ADR-0120 Phase 4b: a `let mut` lambda is a value, so a call
+// through it is positional. A labeled call used to be reordered by whichever
+// lambda the walk last saw assigned, and was refused only where a branch,
+// loop or closure left that unknown; now every labeled call through the
+// binding is refused with the labels to remove, and every positional call is
+// accepted, whatever was assigned where.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Misc
+
+fn diags(_ src: String) -> Array[String] with Exception {
+  collect_all_diagnostics(src)
+}
+
+fn lbrace() -> String {
+  String::from_char_code(123)
+}
+
+fn rbrace() -> String {
+  String::from_char_code(125)
+}
+
+fn brace(_ s: String) -> String {
+  String::concat(lbrace(), String::concat(s, rbrace()))
+}
+
+fn xy_lambda() -> String {
+  String::concat("(x: Int, y: Int) -> Int ", brace(" x - y "))
+}
+
+fn yx_lambda() -> String {
+  String::concat("(y: Int, x: Int) -> Int ", brace(" x - y "))
+}
+
+fn main_fn(_ body: String) -> String {
+  String::concat("fn main() -> Int ", String::concat(brace(body), "\n"))
+}
+
+/// Assigned a lambda whose parameter names are the same two names in the OTHER
+/// order, then called with labels.
+fn disagreeing_labeled_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat("\n  g = ", String::concat(yx_lambda(), "\n  g(y = 3, x = 10)\n"))))
+  main_fn(body)
+}
+
+/// The same disagreeing binding, called POSITIONALLY.
+fn disagreeing_positional_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat("\n  g = ", String::concat(yx_lambda(), "\n  g(3, 10)\n"))))
+  main_fn(body)
+}
+
+/// Never reassigned at all -- the core #1994 shape.
+fn never_reassigned_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), "\n  g(y = 3, x = 10)\n"))
+  main_fn(body)
+}
+
+/// A BRANCH assigns the other parameter order; the call is after the branch.
+fn changing_branch_src() -> String {
+  let yes = brace(String::concat("\n    g = ", String::concat(yx_lambda(), "\n  ")))
+  let branch = String::concat("\n  if flip ", String::concat(yes, String::concat(" else ", brace(" () "))))
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat(branch, "\n  g(y = 3, x = 10)\n")))
+  String::concat("fn main(flip: Bool) -> Int ", String::concat(brace(body), "\n"))
+}
+
+/// The same branch, called POSITIONALLY.
+fn changing_branch_positional_src() -> String {
+  let yes = brace(String::concat("\n    g = ", String::concat(yx_lambda(), "\n  ")))
+  let branch = String::concat("\n  if flip ", String::concat(yes, String::concat(" else ", brace(" () "))))
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat(branch, "\n  g(3, 10)\n")))
+  String::concat("fn main(flip: Bool) -> Int ", String::concat(brace(body), "\n"))
+}
+
+fn joined(_ src: String) -> String with Exception {
+  String::join(diags(src), sep = "\n")
+}
+
+//# Tests
+
+test "a positional call through a let mut lambda is not reported" {
+  assert(Array::length(diags(disagreeing_positional_src())) == 0)
+  assert(Array::length(diags(changing_branch_positional_src())) == 0)
+}
+
+test "a labeled call through a let mut lambda is refused with the labels to remove" {
+  for src in [
+    never_reassigned_src(),
+    disagreeing_labeled_src(),
+    changing_branch_src()
+  ] {
+    assert(String::contains(joined(src), needle = "a call through the function value `g` passes its arguments by position: remove `y = `, `x = `"))
+  }
+  // ...and where: after the branch, the call is on the source's sixth line.
+  assert(String::contains(joined(changing_branch_src()), needle = "line 6:3"))
+}
