@@ -9,7 +9,7 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty, struct MutSet
+  array_empty, eq_string, hash_string, struct MutSet
 }
 
 import ./equality_aliases.vibe {
@@ -104,10 +104,10 @@ export fn dtd_source_op_defined(stmts: Array[Stmt], fname: String) -> Bool {
   top_level_fn_exists(stmts = stmts, fname = fname) || str_array_contains(arr = dtd_facts_explicit_ops, val = fname)
 }
 
-/// `dtd_source_op_defined`, with the program's names taken by
-/// `top_level_fn_names`.
-export fn dtd_source_op_defined_in(names: MutSet[String], fname: String) -> Bool {
-  MutSet::has(names, x = fname) || str_array_contains(arr = dtd_facts_explicit_ops, val = fname)
+/// `dtd_source_op_defined`, with the names `top_level_fn_names` took of
+/// `stmts`.
+export fn dtd_source_op_defined_in(names: MutSet[String], stmts: Array[Stmt], fname: String) -> Bool {
+  top_level_fn_defined(names = names, stmts = stmts, fname = fname) || str_array_contains(arr = dtd_facts_explicit_ops, val = fname)
 }
 
 /// Every trivial identity wrapper in `stmts`, with no own-region limit -- the
@@ -193,25 +193,67 @@ export fn top_level_fn_exists(stmts: Array[Stmt], fname: String) -> Bool {
   found
 }
 
-/// The names `top_level_fn_exists` finds in `stmts`, for a caller that asks
-/// it once per derived operation or recorded helper. Each question walked the
-/// whole program, about 0.18 s on the compiler's own sources (#3900). The set
-/// answers for `stmts` as it was when taken: a caller that appends afterwards
-/// adds each appended statement with `top_level_fn_names_add`.
+/// The helper and method names `top_level_fn_exists` finds in `stmts`, for a
+/// caller that asks it once per derived operation or recorded helper. Each
+/// question walked the whole program, about 0.18 s on the compiler's own
+/// sources (#3900).
+///
+/// Every name those callers ask is a generated helper (`__arr_equals__..`,
+/// `__map_equals__..`, `__arr_to_string__..`) or a `Type::method`, so only
+/// names of those two shapes are kept (`top_level_helper_name`), which keeps
+/// the set to a fraction of the program: the heap does not reclaim it. A name
+/// of any other shape is answered by the walk (`top_level_fn_defined`). The
+/// set describes `stmts` as it was when taken; a caller that appends
+/// afterwards adds each appended statement with `top_level_fn_names_add`.
 export fn top_level_fn_names(_ stmts: Array[Stmt]) -> MutSet[String] {
-  let names: MutSet[String] = MutSet::new_string()
+  let mut count = 0
+  for st in stmts {
+    match st {
+      SLet(_, _, name, _, _) => if top_level_helper_name(name) {
+        count = count + 1
+      } else (),
+      _ => ()
+    }
+  }
+  let names: MutSet[String] = MutSet::with_capacity(hash_fn = hash_string, eq_fn = eq_string, capacity = count * 10 / 7 + 1)
   for st in stmts {
     top_level_fn_names_add(names = names, stmt = st)
   }
   names
 }
 
-/// Add the name `stmt` binds, when it is one `top_level_fn_exists` counts.
+/// A name `top_level_fn_names` keeps: a generated helper or a `Type::method`.
+fn top_level_helper_name(_ name: String) -> Bool {
+  String::starts_with(name, prefix = "__") || String::contains(name, needle = "::")
+}
+
+/// Add the name `stmt` binds, when it is one `top_level_fn_names` keeps.
 export fn top_level_fn_names_add(names: MutSet[String], stmt: Stmt) -> Unit {
   match stmt {
-    SLet(_, _, name, _, _) => MutSet::add(names, x = name),
+    SLet(_, _, name, _, _) => if top_level_helper_name(name) {
+      MutSet::add(names, x = name)
+    } else (),
     _ => ()
   }
+}
+
+/// `top_level_fn_exists(stmts, fname)`, from `names` (`top_level_fn_names`
+/// of `stmts`) when it can answer, and by the walk otherwise.
+export fn top_level_fn_defined(names: MutSet[String], stmts: Array[Stmt], fname: String) -> Bool {
+  if top_level_helper_name(fname) {
+    MutSet::has(names, x = fname)
+  } else {
+    top_level_fn_exists(stmts = stmts, fname = fname)
+  }
+}
+
+/// `top_level_fn_names(stmts)`, taken on the first call and kept in `cell`
+/// after it, for a caller that may ask no question at all.
+export fn top_level_fn_names_cached(cell: Array[MutSet[String]], stmts: Array[Stmt]) -> MutSet[String] {
+  if Array::length(cell) == 0 {
+    Array::push(cell, value = top_level_fn_names(stmts))
+  } else ()
+  Array::get(cell, at = 0)
 }
 
 /// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic array
