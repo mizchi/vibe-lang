@@ -1,3 +1,7 @@
+import @vibe/compiler/cache/policy {
+  AstCacheConfig, AstCachePolicy, ast_cache_policy_active, ast_cache_policy_capture
+}
+
 //# Imports
 
 import @vibe/compiler/cache {
@@ -930,18 +934,27 @@ fn ast_cache_active() -> Bool with Env {
   ast_cache_enabled() && checked_module_cache_mode() != "on"
 }
 
+// Keep the policy match away from the parser chain (#708). Compatibility
+// callers preserve lazy process-setting reads; scoped callers use their value.
+fn ast_cache_selected_active(_ policy: Option[AstCachePolicy]) -> Bool with Env {
+  match policy {
+    Some(selected) => ast_cache_policy_active(selected),
+    None => ast_cache_active()
+  }
+}
+
 export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env + Exception + Fs {
   let (cfg_flags, _) = cfg_ambient_flags_snapshot()
   let cfg_csv = cfg_flags_identity(cfg_flags)
   if located_parse_flags_cacheable(cfg_flags) {
-    ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = cfg_csv)
+    ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cache_policy = None)
   } else {
     false
   }
 }
 
-fn ast_cache_prefetch_with_cfg(path: String, source: String, cfg_csv: String) -> Bool with Env + Exception + Fs {
-  if !ast_cache_active() {
+fn ast_cache_prefetch_with_cfg(path: String, source: String, cfg_csv: String, cache_policy: Option[AstCachePolicy]) -> Bool with Env + Exception + Fs {
+  if !ast_cache_selected_active(cache_policy) {
     false
   } else {
     let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
@@ -983,7 +996,7 @@ export fn parse_program_located_shared_fs(path: String, source: String) -> Array
   let (cfg_flags, _) = cfg_ambient_flags_snapshot()
   let cfg_csv = cfg_flags_identity(cfg_flags)
   if located_parse_flags_cacheable(cfg_flags) {
-    located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+    located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags, cache_policy = None)
   } else {
     located_parse_without_memo(path = path, source = source, cfg_flags = cfg_flags)
   }
@@ -994,14 +1007,14 @@ export fn parse_program_located_shared_fs(path: String, source: String) -> Array
 export fn parse_program_located_shared_fs_configured(path: String, source: String) -> Array[Stmt] with Config + Env + Exception + Fs {
   let cfg_flags = cfg_flags_from_csv(perform Config::CfgFlags())
   let cfg_csv = String::join(cfg_flags, sep = ",")
-  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags, cache_policy = None)
 }
 
-fn located_parse_shared_fs_with_cfg(path: String, source: String, cfg_csv: String, cfg_flags: Array[String]) -> Array[Stmt] with Env + Exception + Fs {
+fn located_parse_shared_fs_with_cfg(path: String, source: String, cfg_csv: String, cfg_flags: Array[String], cache_policy: Option[AstCachePolicy]) -> Array[Stmt] with Env + Exception + Fs {
   let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
   let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
   let memo_hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_csv) >= 0
-  if memo_hit || !ast_cache_active() {
+  if memo_hit || !ast_cache_selected_active(cache_policy) {
     located_parse_shared_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
   } else {
     let fingerprint = compact_source_fingerprint_memo(path = path, source = source)
@@ -1269,10 +1282,36 @@ export fn parse_program_located_shared_with_config(path: String, source: String,
 
 /// Shared FS parse: parser flags and both memo/disk identities come from cfg.
 export fn parse_program_located_shared_fs_with_config(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Env + Exception + Fs {
-  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg), cfg_flags = target_cfg_flags(cfg))
+  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg), cfg_flags = target_cfg_flags(cfg), cache_policy = None)
 }
 
 /// Prefetch only the AST namespace captured with the parser's target flags.
 export fn ast_cache_prefetch_fs_with_config(path: String, source: String, cfg: TargetCfg) -> Bool with Env + Exception + Fs {
-  ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg))
+  ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg), cache_policy = None)
+}
+
+/// Shared FS parsing with a caller-owned persistent-AST decision. The shared
+/// in-memory memo remains available even when persistent caching is disabled.
+export fn parse_program_located_shared_fs_with_cache_policy(path: String, source: String, cfg: TargetCfg, policy: AstCachePolicy) -> Array[Stmt] with Env + Exception + Fs {
+  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg), cfg_flags = target_cfg_flags(cfg), cache_policy = Some(policy))
+}
+
+/// Capture flags and the effective persistent-AST decision once, before I/O.
+/// AstCacheConfig grants neither checked-artifact reuse nor other cache policy.
+export fn parse_program_located_shared_fs_cache_configured(path: String, source: String) -> Array[Stmt] with Config + AstCacheConfig + Env + Exception + Fs {
+  let cfg = target_cfg_capture()
+  let policy = ast_cache_policy_capture()
+  parse_program_located_shared_fs_with_cache_policy(path = path, source = source, cfg = cfg, policy = policy)
+}
+
+/// Prefetch uses the same retained decision as parse/load/store.
+export fn ast_cache_prefetch_fs_with_cache_policy(path: String, source: String, cfg: TargetCfg, policy: AstCachePolicy) -> Bool with Env + Exception + Fs {
+  ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = target_cfg_identity(cfg), cache_policy = Some(policy))
+}
+
+/// Capture the prefetch invocation's flags and AST decision once.
+export fn ast_cache_prefetch_fs_cache_configured(path: String, source: String) -> Bool with Config + AstCacheConfig + Env + Exception + Fs {
+  let cfg = target_cfg_capture()
+  let policy = ast_cache_policy_capture()
+  ast_cache_prefetch_fs_with_cache_policy(path = path, source = source, cfg = cfg, policy = policy)
 }

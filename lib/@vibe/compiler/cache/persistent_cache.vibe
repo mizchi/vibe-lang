@@ -1,3 +1,7 @@
+import @vibe/compiler/cache/policy {
+  IngestionStampConfig, IngestionStampPolicy, ingestion_stamp_policy, ingestion_stamp_policy_capture, ingestion_stamp_policy_enabled
+}
+
 //# Imports
 
 // #766: the generic disk-cache primitives live in @vibe/cache (no compiler
@@ -377,9 +381,14 @@ export fn persistent_leaf_fingerprint_cache_path_in_namespace(path: String, sour
 /// control characters) cannot collide before stable_cache_path hashes them.
 /// VIBE_BUILD_CACHE_DIR rebasing remains in cache_stable_text_cache_path.
 export fn persistent_ingestion_stamp_cache_path(_ path: String) -> String with Env {
+  persistent_ingestion_stamp_cache_path_in_namespace(path = path, namespace = persistent_cache_version_tag())
+}
+
+/// The unchanged stamp key recipe with a caller-captured compiler/flag identity.
+export fn persistent_ingestion_stamp_cache_path_in_namespace(path: String, namespace: String) -> String with Env {
   let resolution_seed = resolution_env_seed()
   let logical_path_seed = String::concat("res:", String::concat(__to_string(String::length(resolution_seed)), String::concat(":", String::concat(resolution_seed, String::concat("|path:", String::concat(__to_string(String::length(path)), String::concat(":", path)))))))
-  cache_stable_text_cache_path(version_tag = persistent_cache_version_tag(), prefix = "selfhost_ingestion_stamp_v1", seed = logical_path_seed)
+  cache_stable_text_cache_path(version_tag = namespace, prefix = "selfhost_ingestion_stamp_v1", seed = logical_path_seed)
 }
 
 /// #1308 + #1379: stat-token-validated process memo. With the experimental
@@ -388,11 +397,30 @@ export fn persistent_ingestion_stamp_cache_path(_ path: String) -> String with E
 /// read/hash on an exact stat-token text match; source is never persisted or
 /// replayed.
 export fn fingerprint_file_fs(_ path: String) -> String with Env + Fs {
-  if cache_ingestion_stamp_enabled() {
-    cache_fingerprint_file_fs_with_ingestion_stamp(path = path, stamp_path = persistent_ingestion_stamp_cache_path(path))
+  let policy = ingestion_stamp_policy(enabled = cache_ingestion_stamp_enabled())
+  let namespace = if ingestion_stamp_policy_enabled(policy) {
+    persistent_cache_version_tag()
+  } else {
+    ""
+  }
+  fingerprint_file_fs_with_policy(path = path, policy = policy, namespace = namespace)
+}
+
+/// Apply a retained decision and namespace. Source/stat validation and the
+/// process memo are unchanged; disabled policy never probes or writes a stamp.
+export fn fingerprint_file_fs_with_policy(path: String, policy: IngestionStampPolicy, namespace: String) -> String with Env + Fs {
+  if ingestion_stamp_policy_enabled(policy) {
+    cache_fingerprint_file_fs_with_ingestion_stamp(path = path, stamp_path = persistent_ingestion_stamp_cache_path_in_namespace(path = path, namespace = namespace))
   } else {
     cache_fingerprint_file_fs(path)
   }
+}
+
+/// Capture stamp policy once. The caller supplies its target cache namespace;
+/// this boundary acquires no target-flag or generated-source authority.
+export fn fingerprint_file_fs_configured(path: String, namespace: String) -> String with IngestionStampConfig + Env + Fs {
+  let policy = ingestion_stamp_policy_capture()
+  fingerprint_file_fs_with_policy(path = path, policy = policy, namespace = namespace)
 }
 
 export fn set_ingestion_fingerprint_telemetry_enabled(_ enabled: Bool) -> Unit {

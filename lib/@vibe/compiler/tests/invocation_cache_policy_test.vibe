@@ -1,0 +1,189 @@
+import @vibe/compiler/cache/policy {
+  AstCacheConfig, IngestionStampConfig, ast_cache_policy, ingestion_stamp_policy
+}
+import @vibe/compiler/config {
+  Config, target_cfg_from_csv, target_cfg_namespace
+}
+import @vibe/compiler/cache {
+  compact_source_fingerprint_memo,
+  fingerprint_file_fs,
+  fingerprint_file_fs_configured,
+  fingerprint_file_fs_with_policy,
+  parse_ingestion_stamp_v1_text_for_test,
+  persistent_artifact_cache_path_with_cfg,
+  persistent_ingestion_stamp_cache_path,
+  persistent_ingestion_stamp_cache_path_in_namespace
+}
+
+import @vibe/compiler/loader {
+  ast_cache_prefetch_fs_cache_configured,
+  ast_cache_prefetch_fs_with_cache_policy,
+  parse_program_located_shared,
+  parse_program_located_shared_fs_cache_configured,
+  parse_program_located_shared_fs_with_cache_policy,
+  parse_program_located_shared_ran_parser
+}
+import @vibe/compiler/runtime/checked_module_cache {
+  set_checked_module_cache_mode
+}
+
+let policy_source = "#cfg(alpha)\nexport let a = 11\n#cfg(beta)\nexport let b = 22\n#cfg(beta)\nexport let c = 33\n"
+
+fn policy_ast_path(path: String, flags: String) -> String with Env {
+  persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = path, fingerprint = compact_source_fingerprint_memo(path = path, source = policy_source), cfg_csv = flags)
+}
+
+fn policy_evict(_ path: String) -> Unit with Exception {
+  let mut i = 0
+  while i < 1025 {
+    let _ = parse_program_located_shared(path = path + "_evict_\{i}", source = "let evict = 0")
+    i = i + 1
+  }
+}
+
+fn policy_remove_ast(_ path: String) -> Unit with Env + Fs {
+  for flags in ["alpha", "beta"] {
+    let key = policy_ast_path(path = path, flags = flags)
+    if Fs::exists(key) {
+      Fs::remove(key)
+    } else {
+      ()
+    }
+  }
+  ()
+}
+
+test "AST data policy controls cold publication disk hits and prefetch after memo eviction" {
+  let path = "/tmp/cache-policy-ast-\{Profiler::now_us()}.vibe"
+  let cfg = target_cfg_from_csv("alpha")
+  let off = ast_cache_policy(active = false)
+  let on = ast_cache_policy(active = true)
+  let key = policy_ast_path(path = path, flags = "alpha")
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off)), 1)
+  assert(parse_program_located_shared_ran_parser())
+  assert(!Fs::exists(key))
+  policy_evict(path)
+  let enabled = parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on)
+  assert_eq(Array::length(enabled), 1)
+  assert(Fs::exists(key))
+  policy_evict(path)
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off)), 1)
+  assert(parse_program_located_shared_ran_parser())
+  policy_evict(path)
+  assert(!ast_cache_prefetch_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off))
+  assert(ast_cache_prefetch_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on))
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on)), 1)
+  assert(!parse_program_located_shared_ran_parser())
+  policy_evict(path)
+  Fs::write_bytes(key, bytes = Bytes::from_array([255]))
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on)), 1)
+  assert(parse_program_located_shared_ran_parser())
+  policy_remove_ast(path)
+}
+
+test "AST policy remains captured across nested success refusal and legacy mode changes" {
+  let path = "/tmp/cache-policy-nested-\{Profiler::now_us()}.vibe"
+  let counts = [0, 0]
+  handle {
+    let outer = handle {
+      parse_program_located_shared_fs_cache_configured(path = path, source = policy_source)
+    } with { Config::CfgFlags() => {
+      Array::set(counts, at = 0, value = Array::get(counts, at = 0) + 1); resume("alpha")
+    }; AstCacheConfig::Active() => {
+      Array::set(counts, at = 1, value = Array::get(counts, at = 1) + 1)
+      let inner = handle {
+        parse_program_located_shared_fs_cache_configured(path = path, source = policy_source)
+      } with { Config::CfgFlags() => resume("beta"); AstCacheConfig::Active() => resume(false) }
+      assert_eq(Array::length(inner), 2)
+      let refused = handle {
+        let _ = handle {
+          parse_program_located_shared_fs_cache_configured(path = path + "_bad", source = "let broken =")
+        } with { Config::CfgFlags() => resume(""); AstCacheConfig::Active() => resume(false) }
+        false
+      } with { Exception::Throw(_) => true }
+      assert(refused)
+      set_checked_module_cache_mode("on")
+      resume(true)
+    } }
+    assert_eq(Array::length(outer), 1)
+    assert_eq(Array::get(counts, at = 0), 1)
+    assert_eq(Array::get(counts, at = 1), 1)
+    assert(Fs::exists(policy_ast_path(path = path, flags = "alpha")))
+    assert(!Fs::exists(policy_ast_path(path = path, flags = "beta")))
+    policy_evict(path)
+    assert(handle {
+      ast_cache_prefetch_fs_cache_configured(path = path, source = policy_source)
+    } with { Config::CfgFlags() => resume("alpha"); AstCacheConfig::Active() => resume(true) })
+    set_checked_module_cache_mode("off")
+    policy_remove_ast(path)
+  } with { Exception::Throw(message) => {
+    set_checked_module_cache_mode("off"); policy_remove_ast(path); throw(message)
+  } }
+}
+
+test "stamp data policy controls publication without replaying source or changing namespace" {
+  let path = "/tmp/cache-policy-stamp-\{Profiler::now_us()}.vibe"
+  let on_path = path + "_on"
+  let namespace = target_cfg_namespace(target_cfg_from_csv("alpha"))
+  let off_key = persistent_ingestion_stamp_cache_path_in_namespace(path = path, namespace = namespace)
+  let on_key = persistent_ingestion_stamp_cache_path_in_namespace(path = on_path, namespace = namespace)
+  Fs::write_file(path, contents = "let n = 1")
+  Fs::write_file(on_path, contents = "let n = 1")
+  let off_fp = fingerprint_file_fs_with_policy(path = path, policy = ingestion_stamp_policy(enabled = false), namespace = namespace)
+  assert(!Fs::exists(off_key))
+  let on_fp = fingerprint_file_fs_with_policy(path = on_path, policy = ingestion_stamp_policy(enabled = true), namespace = namespace)
+  assert_eq(off_fp, on_fp)
+  assert(Fs::exists(on_key))
+  let old_stamp = Fs::read_file(on_key)
+  match parse_ingestion_stamp_v1_text_for_test(old_stamp) {
+    Some((_, fp)) => assert_eq(fp, on_fp),
+    None => assert(false)
+  }
+  Fs::write_file(on_path, contents = "let n = 1234567")
+  let changed = fingerprint_file_fs_with_policy(path = on_path, policy = ingestion_stamp_policy(enabled = false), namespace = namespace)
+  assert(changed != on_fp)
+  assert_eq(Fs::read_file(on_key), old_stamp)
+  Fs::remove(path); Fs::remove(on_path); Fs::remove(on_key)
+}
+
+test "a nested stamp capture cannot change the outer decision or captured namespace" {
+  let path = "/tmp/cache-policy-stamp-nested-\{Profiler::now_us()}.vibe"
+  let inner_path = path + "_inner"
+  let namespace = target_cfg_namespace(target_cfg_from_csv("alpha"))
+  let key = persistent_ingestion_stamp_cache_path_in_namespace(path = path, namespace = namespace)
+  let inner_key = persistent_ingestion_stamp_cache_path_in_namespace(path = inner_path, namespace = namespace)
+  Fs::write_file(path, contents = "let n = 17")
+  Fs::write_file(inner_path, contents = "let n = 17")
+  let calls = [0]
+  let outer = handle {
+    fingerprint_file_fs_configured(path = path, namespace = namespace)
+  } with { IngestionStampConfig::Enabled() => {
+    Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
+    let _ = handle {
+      fingerprint_file_fs_configured(path = inner_path, namespace = namespace)
+    } with { IngestionStampConfig::Enabled() => resume(false) }
+    resume(true)
+  } }
+  assert_eq(Array::get(calls, at = 0), 1)
+  assert(Fs::exists(key))
+  assert(!Fs::exists(inner_key))
+  match parse_ingestion_stamp_v1_text_for_test(Fs::read_file(key)) {
+    Some((_, fp)) => assert_eq(fp, outer),
+    None => assert(false)
+  }
+  Fs::remove(path); Fs::remove(inner_path); Fs::remove(key)
+}
+
+test "legacy fingerprint policy still selects the stamp environment flag" {
+  let path = "/tmp/cache-policy-legacy-\{Profiler::now_us()}.vibe"
+  let key = persistent_ingestion_stamp_cache_path(path)
+  Fs::write_file(path, contents = "let value = 47")
+  let _ = fingerprint_file_fs(path)
+  assert_eq(Fs::exists(key), Env::get("VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP") == "1")
+  if Fs::exists(key) {
+    Fs::remove(key)
+  } else {
+    ()
+  }
+  Fs::remove(path)
+}

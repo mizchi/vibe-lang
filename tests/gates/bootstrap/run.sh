@@ -161,7 +161,7 @@ VIBE_RC=0 node scripts/ast_cache_prefetch_oracle.mjs "$stage2_wasm"
 # #1953: exercise scoped parser/memo/disk identities with the AST cache ON.
 # The ordinary unit shard uses the default policy and cannot cover disk-warm
 # reuse after memo eviction. Ask this bootstrap's stage2, never the seed.
-echo "[compiler-gate] 3ae/3 invocation flags isolate collection, checks, typed codegen and caches"
+echo "[compiler-gate] 3ae/3 invocation flags and cache policies isolate collection, checks and codegen"
 VIBE_RC=0 VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_EXPERIMENTAL_AST_CACHE=1 \
   bash scripts/vibe_test.sh lib/@vibe/compiler/tests/invocation_config_fs_test.vibe \
     lib/@vibe/compiler/tests/target_cfg_test.vibe lib/@vibe/compiler/tests/invocation_config_loader_test.vibe \
@@ -169,7 +169,14 @@ VIBE_RC=0 VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_EXPERIMENTAL_A
     lib/@vibe/compiler/tests/invocation_config_memory_test.vibe \
     lib/@vibe/compiler/tests/invocation_config_merge_test.vibe \
     lib/@vibe/compiler/tests/invocation_config_lowering_test.vibe \
-    lib/@vibe/compiler/tests/invocation_config_codegen_test.vibe
+    lib/@vibe/compiler/tests/invocation_config_codegen_test.vibe \
+    lib/@vibe/compiler/cache/policy/policy_test.vibe \
+    lib/@vibe/compiler/tests/invocation_cache_policy_test.vibe
+# Exercise independent enable switches too; a swapped legacy flag must fail.
+VIBE_RC=0 VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$stage2_wasm" \
+  VIBE_EXPERIMENTAL_AST_CACHE=0 VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP=1 \
+  bash scripts/vibe_test.sh lib/@vibe/compiler/cache/policy/policy_test.vibe \
+    lib/@vibe/compiler/tests/invocation_cache_policy_test.vibe
 
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a

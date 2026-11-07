@@ -1,0 +1,68 @@
+import @vibe/compiler/cache/policy {
+  AstCacheConfig,
+  IngestionStampConfig,
+  ast_cache_policy,
+  ast_cache_policy_active,
+  ast_cache_policy_capture,
+  ingestion_stamp_policy,
+  ingestion_stamp_policy_capture,
+  ingestion_stamp_policy_enabled
+}
+
+fn capture_ast_only() -> Bool with AstCacheConfig {
+  ast_cache_policy_active(ast_cache_policy_capture())
+}
+
+fn capture_stamp_only() -> Bool with IngestionStampConfig {
+  ingestion_stamp_policy_enabled(ingestion_stamp_policy_capture())
+}
+
+test "retained cache decisions do not change after another capture" {
+  let ast_on = ast_cache_policy(active = true)
+  let stamp_off = ingestion_stamp_policy(enabled = false)
+  assert(!handle {
+    capture_ast_only()
+  } with { AstCacheConfig::Active() => resume(false) })
+  assert(handle {
+    capture_stamp_only()
+  } with { IngestionStampConfig::Enabled() => resume(true) })
+  assert(ast_cache_policy_active(ast_on))
+  assert(!ingestion_stamp_policy_enabled(stamp_off))
+}
+
+test "each capture asks its own effect exactly once" {
+  let counts = [0, 0]
+  assert(handle {
+    capture_ast_only()
+  } with { AstCacheConfig::Active() => {
+    Array::set(counts, at = 0, value = Array::get(counts, at = 0) + 1)
+    resume(true)
+  } })
+  assert(!handle {
+    capture_stamp_only()
+  } with { IngestionStampConfig::Enabled() => {
+    Array::set(counts, at = 1, value = Array::get(counts, at = 1) + 1)
+    resume(false)
+  } })
+  assert_eq(Array::get(counts, at = 0), 1)
+  assert_eq(Array::get(counts, at = 1), 1)
+}
+
+test "an inner cache policy and exception do not replace the outer handler" {
+  let outer = handle {
+    let first = capture_ast_only()
+    let inner = handle {
+      capture_ast_only()
+    } with { AstCacheConfig::Active() => resume(false) }
+    assert(!inner)
+    let refused = handle {
+      handle {
+        assert(!capture_ast_only()); throw("inner")
+      } with { AstCacheConfig::Active() => resume(false) }
+      false
+    } with { Exception::Throw(message) => message == "inner" }
+    assert(refused)
+    first && capture_ast_only()
+  } with { AstCacheConfig::Active() => resume(true) }
+  assert(outer)
+}
