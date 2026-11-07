@@ -1,0 +1,72 @@
+// #3900: the desugar looks up the checker's render row for an argument's
+// offset by a binary search over rows kept sorted by offset, and parses each
+// row's key once. The answers must be the linear scan's: the FIRST row filed
+// for an offset wins, whatever order the rows arrived in.
+import @vibe/compiler/core {
+  TypeExpr, typed_render_row_head
+}
+import @vibe/ast {
+  impl_target_key
+}
+import @vibe/compiler/normalize/desugar {
+  dtd_typed_render_insert, dtd_typed_render_parsed, dtd_typed_render_reset, dtd_typed_render_row_ty
+}
+
+fn row(_ name: String) -> String {
+  impl_target_key(TyApp(typed_render_row_head(), [TyName(name)]))
+}
+
+fn at(_ off: Int) -> String {
+  match dtd_typed_render_row_ty(off) {
+    Some(t) => impl_target_key(t),
+    None => "-"
+  }
+}
+
+fn parsed_count() -> Int {
+  let mut n = 0
+  for p in dtd_typed_render_parsed {
+    if p {
+      n = n + 1
+    } else {
+      ()
+    }
+  }
+  n
+}
+
+test "the first row filed for an offset answers, in any arrival order" {
+  dtd_typed_render_reset()
+  dtd_typed_render_insert(off = 30, key = row("Int"))
+  dtd_typed_render_insert(off = 10, key = row("String"))
+  dtd_typed_render_insert(off = 20, key = row("Bool"))
+  dtd_typed_render_insert(off = 10, key = row("Double"))
+  dtd_typed_render_insert(off = 5, key = row("Char"))
+  let answers = [at(5), at(10), at(20), at(30)]
+  inspect(String::join(answers, sep = " ") == String::join([
+    impl_target_key(TyName("Char")),
+    impl_target_key(TyName("String")),
+    impl_target_key(TyName("Bool")),
+    impl_target_key(TyName("Int"))
+  ], sep = " "), content = "true")
+  inspect(String::join([at(-1), at(0), at(15), at(31)], sep = " "), content = "- - - -")
+}
+
+test "a key that is not a render row answers None" {
+  dtd_typed_render_reset()
+  dtd_typed_render_insert(off = 7, key = impl_target_key(TyName("Int")))
+  inspect(at(7), content = "-")
+}
+
+test "each row is parsed once, on its first lookup" {
+  dtd_typed_render_reset()
+  dtd_typed_render_insert(off = 1, key = row("Int"))
+  dtd_typed_render_insert(off = 2, key = row("String"))
+  inspect(parsed_count(), content = "0")
+  let first = at(2)
+  inspect(parsed_count(), content = "1")
+  inspect(at(2) == first, content = "true")
+  inspect(parsed_count(), content = "1")
+  dtd_typed_render_reset()
+  inspect(at(2), content = "-")
+}
