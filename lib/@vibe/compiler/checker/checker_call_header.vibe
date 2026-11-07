@@ -438,20 +438,41 @@ export fn builtin_type_alias_marker(_ name: String) -> String {
 /// re-exports `Float64` publishes only the type, so `import ./m.vibe { Float64
 /// as F }` reached `F` as a type and `F::ceil` as an unknown name. The import
 /// alias rewrite already spells the call `Float64::ceil` for lowering.
+///
+/// The marker is trusted only while `F` itself still resolves to that import:
+/// a value binder of the same spelling (`fn f(F: Int)`) shadows the alias, the
+/// rewrite then leaves `F::ceil` alone, and accepting it reached code
+/// generation unresolved (Codex on #3902).
 export fn builtin_type_alias_member(env: TypeEnv, name: String) -> Option[String] {
   let sep = String::index_of(name, needle = "::")
   if sep <= 0 {
     None
   } else {
-    match env_lookup(env = env, name = builtin_type_alias_marker(String::substring(name, start = 0, end = sep))) {
+    let head = String::substring(name, start = 0, end = sep)
+    match env_lookup(env = env, name = builtin_type_alias_marker(head)) {
       Some(CtRecord(fields)) => if Array::length(fields) == 1 {
         let (canonical, _) = Array::get(fields, at = 0)
-        Some(String::concat(canonical, String::substring(name, start = sep, end = String::length(name))))
+        if builtin_type_alias_still_bound(env = env, head = head, canonical = canonical) {
+          Some(String::concat(canonical, String::substring(name, start = sep, end = String::length(name))))
+        } else {
+          None
+        }
       } else {
         None
       },
       _ => None
     }
+  }
+}
+
+fn builtin_type_alias_still_bound(env: TypeEnv, head: String, canonical: String) -> Bool {
+  match env_lookup_binding(env = env, name = head) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(_, original) => original == canonical,
+      BindingOriginReExportSurface(_, original) => original == canonical,
+      _ => false
+    },
+    None => false
   }
 }
 
