@@ -275,7 +275,7 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                     // ADR-0120 D2, after publishing: the call is still typed
                     // by its placement, so the move is the only diagnostic.
                     if checker_call_header_is_declaration(env = env, name = name) {
-                      placement_check_order(name = name, offset = ident_offset, args = args, names = names, errors = errors)
+                      placement_check_order(name = name, offset = ident_offset, written_len = placement_written_len(callee = callee, name = name), args = args, names = names, errors = errors)
                     } else {
                       ()
                     }
@@ -561,33 +561,32 @@ fn placement_refuse_value_labels(name: String, offset: Int, args: Array[Expr], e
   }
 }
 
-/// The written callee token's length: the method name of `m.sub(..)` or
-/// `helper.greet(..)`, whose resolved `name` is `Meter::sub` /
-/// `helper.greet`, so the diagnostic covers what the source spells.
-fn written_callee_len(_ name: String) -> Int {
-  let n = String::length(name)
-  let mut start = 0
-  let mut i = 0
-  while i < n {
-    if name[i: i + 1] == "." {
-      start = i + 1
-    } else if name[i: i + 1] == ":" {
-      start = i + 1
-    } else {
-      ()
-    }
-    i = i + 1
+/// The length of the callee as the source spells it: the whole written name
+/// of a direct call (`sub`, `Meter::sub`, an import alias), whose offset is
+/// the name's start, or the member token of a dot call (`m.sub(..)`,
+/// `helper.greet(..)`), whose offset is that token's (Codex on #3903).
+fn placement_written_len(callee: Expr, name: String) -> Int {
+  match callee {
+    EIdent(written, _) => String::length(written),
+    EDot(_, member, _, _) => String::length(member),
+    _ => String::length(name)
   }
-  n - start
 }
 
 /// ADR-0120 D2: written order is declared order, so a call to a declaration
 /// that names a slot before one it has already passed is refused with the
 /// move. Only the first such argument is reported; the declared order is
 /// listed so every move can be made at once.
-fn placement_check_order(name: String, offset: Int, args: Array[Expr], names: Array[String], errors: Array[String]) -> Unit {
+fn placement_check_order(name: String, offset: Int, written_len: Int, args: Array[Expr], names: Array[String], errors: Array[String]) -> Unit {
+  let declared = () -> String {
+    String::join(for raw in names {
+      placement_param_name(raw)
+    }, sep = ", ")
+  }
+  let marker = off_marker_len(off = offset, len = written_len)
   let mut prev_slot = -1
   let mut prev_written = ""
+  let mut prev_label = ""
   let mut reported = false
   let mut ai = 0
   while ai < Array::length(args) && !reported {
@@ -604,21 +603,26 @@ fn placement_check_order(name: String, offset: Int, args: Array[Expr], names: Ar
           pi = pi + 1
         }
         if found >= 0 && found < prev_slot {
-          let declared = String::join(for raw in names {
-            placement_param_name(raw)
-          }, sep = ", ")
-          Array::push(errors, value = "labeled argument `" + label + "` for " + name + " is out of declared parameter order: move `" + label + " = ..` before " + prev_written + " (" + name + " declares " + declared + ")" + off_marker_len(off = offset, len = written_callee_len(name)))
+          Array::push(errors, value = "labeled argument `" + label + "` for " + name + " is out of declared parameter order: move `" + label + " = ..` before " + prev_written + " (" + name + " declares " + declared() + ")" + marker)
           reported = true
         } else if found >= 0 {
           prev_slot = found
           prev_written = "`" + label + " = ..`"
+          prev_label = label
         } else {
           ()
         }
       },
-      _ => {
+      // A positional argument fills its own slot (a `_` one), so an earlier
+      // label that named a later slot is the argument out of place (Codex on
+      // #3903: `f(c = 3, 2)` for `fn f(a?: Int, _ b?: Int, c?: Int)`).
+      _ => if ai < prev_slot {
+        Array::push(errors, value = "labeled argument `" + prev_label + "` for " + name + " is out of declared parameter order: move `" + prev_label + " = ..` after argument " + __to_string(ai + 1) + " (" + name + " declares " + declared() + ")" + marker)
+        reported = true
+      } else {
         prev_slot = ai
         prev_written = "argument " + __to_string(ai + 1)
+        prev_label = ""
       }
     }
     ai = ai + 1
