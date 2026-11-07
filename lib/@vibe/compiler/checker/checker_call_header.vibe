@@ -425,6 +425,69 @@ export fn builtin_alias_marker(_ name: String) -> String {
   String::concat("#builtin-alias:", name)
 }
 
+/// #3888: the marker an import binds beside a builtin TYPE it renames
+/// (`{ Float64 as F }`), naming the type it stands for, so `F::ceil` can be
+/// read as `Float64::ceil` whatever module the type came through.
+export fn builtin_type_alias_marker(_ name: String) -> String {
+  String::concat("#builtin-type-alias:", name)
+}
+
+/// Bound beside any `builtin_type_alias_marker`, so a module that renames no
+/// builtin type answers `builtin_type_alias_member` with one constant lookup
+/// and allocates nothing: the check runs for every call name, and the
+/// self-compile heap gate measures every one of them.
+export fn builtin_type_alias_any_marker() -> String {
+  "#builtin-type-alias-any"
+}
+
+/// #3888: the builtin a qualified name `A::m` stands for when `A` is an import
+/// alias of a builtin type, or `None`. A direct `import @vibe/builtin { Float64
+/// as G }` binds `G::*` from the builtin module's own markers; a facade that
+/// re-exports `Float64` publishes only the type, so `import ./m.vibe { Float64
+/// as F }` reached `F` as a type and `F::ceil` as an unknown name. The import
+/// alias rewrite already spells the call `Float64::ceil` for lowering.
+///
+/// The marker is trusted only while `F` itself still resolves to that import:
+/// a value binder of the same spelling (`fn f(F: Int)`) shadows the alias, the
+/// rewrite then leaves `F::ceil` alone, and accepting it reached code
+/// generation unresolved (Codex on #3902).
+export fn builtin_type_alias_member(env: TypeEnv, name: String) -> Option[String] {
+  let sep = if env_lookup(env = env, name = builtin_type_alias_any_marker()) is Some(_) {
+    String::index_of(name, needle = "::")
+  } else {
+    0
+  }
+  if sep <= 0 {
+    None
+  } else {
+    let head = String::substring(name, start = 0, end = sep)
+    match env_lookup(env = env, name = builtin_type_alias_marker(head)) {
+      Some(CtRecord(fields)) => if Array::length(fields) == 1 {
+        let (canonical, _) = Array::get(fields, at = 0)
+        if builtin_type_alias_still_bound(env = env, head = head, canonical = canonical) {
+          Some(String::concat(canonical, String::substring(name, start = sep, end = String::length(name))))
+        } else {
+          None
+        }
+      } else {
+        None
+      },
+      _ => None
+    }
+  }
+}
+
+fn builtin_type_alias_still_bound(env: TypeEnv, head: String, canonical: String) -> Bool {
+  match env_lookup_binding(env = env, name = head) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(_, original) => original == canonical,
+      BindingOriginReExportSurface(_, original) => original == canonical,
+      _ => false
+    },
+    None => false
+  }
+}
+
 /// The builtin `name` stands for when an import aliased it, else `None`.
 ///
 /// The marker is a binding of its own, so a later binding of `name` -- a
@@ -476,6 +539,13 @@ export fn checker_builtin_alias_of(env: TypeEnv, name: String, origin: BindingOr
 export fn checker_builtin_call_name(env: TypeEnv, name: String) -> String {
   match checker_builtin_alias_target(env = env, name = name) {
     Some(canonical) => canonical,
-    None => name
+    None => match builtin_type_alias_member(env = env, name = name) {
+      Some(canonical) => if env_lookup(env = env, name = name) is Some(_) {
+        name
+      } else {
+        canonical
+      },
+      None => name
+    }
   }
 }

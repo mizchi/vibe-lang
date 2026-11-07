@@ -138,7 +138,7 @@ $dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\
 $dir/unsupported.vibe:147:3: unsupported: \`Array::all\`'s predicate must be a lambda written at the call (in \`named_pred\`)
 $dir/unsupported.vibe:152:3: unsupported: a call inside \`Array::all\`'s predicate: its result would be one value for every element (in \`called_pred\`)
 $dir/unsupported.vibe:158:11: unsupported: \`Array::all\`'s predicate assigns \`n\` (in \`counting_pred\`)"
-run_case unknown 1 "$dir/unknown.vibe:7:12: unknown: ensures result of \`fermat3\` -- $unknown_detail"
+run_case unknown 1 "$dir/unknown.vibe:9:12: unknown: ensures result of \`fermat3\` -- $unknown_detail"
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per
 # line, at that line's position, with that line's message, and `[]` for a
