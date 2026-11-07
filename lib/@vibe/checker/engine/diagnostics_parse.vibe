@@ -15,7 +15,7 @@ import ./type_members.vibe {
   engine_module_typed_lowering_offsets_for_source
 }
 import @vibe/compiler/core {
-  Stmt, restore_call_placements, restore_resolved_callees, str_lt
+  Stmt, call_cells_reset, restore_call_placements, restore_resolved_callees, str_lt
 }
 import @vibe/compiler/loader {
   ast_cache_prefetch_count_reset,
@@ -304,7 +304,18 @@ export fn engine_parse_program_with_path(path: String, source: String) -> Array[
 
 /// Use this invocation's target flags for parsing and cache identity.
 export fn engine_parse_program_with_path_with_config(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Exception {
-  let result = match checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg)) {
+  let result = engine_parse_program_unrestored(path = path, source = source, cfg = cfg)
+  match engine_module_typed_lowering_offsets_for_source(path = path, source = source) {
+    Some(rows) => {
+      restore_resolved_callees(stmts = result, rows = rows)
+      restore_call_placements(stmts = result, rows = rows)
+    },
+    None => ()
+  }
+  result
+}
+fn engine_parse_program_unrestored(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Exception {
+  match checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg)) {
     Some(stmts) => stmts,
     None => {
       let stmts = engine_parse_program_with_path_impl_with_config(path = path, source = source, observe_current_source_parse = false, cfg = cfg)
@@ -320,15 +331,18 @@ export fn engine_parse_program_with_path_with_config(path: String, source: Strin
       stmts
     }
   }
-  match engine_module_typed_lowering_offsets_for_source(path = path, source = source) {
-    Some(rows) => {
-      restore_resolved_callees(stmts = result, rows = rows)
-      restore_call_placements(stmts = result, rows = rows)
-    },
-    None => ()
-  }
+}
+
+/// Restore call identities and placements exclusively from accepted owned rows.
+/// Reset shared raw cells first, including facts absent from this snapshot.
+export fn engine_parse_program_with_lowering(path: String, source: String, cfg: TargetCfg, rows: Array[Int]) -> Array[Stmt] with Exception {
+  let result = engine_parse_program_unrestored(path = path, source = source, cfg = cfg)
+  call_cells_reset(result)
+  restore_resolved_callees(stmts = result, rows = rows)
+  restore_call_placements(stmts = result, rows = rows)
   result
 }
+
 /// Span of an identifier run starting at `start` (returns the end offset).
 export fn engine_typecheck_ident_run(s: String, start: Int) -> Int {
   let len = String::length(s)

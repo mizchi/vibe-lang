@@ -205,8 +205,8 @@ import ./typecheck_fs_interface_decl_lines.vibe {
 
 import ./typecheck_fs_local_type_member_markers.vibe {
   empty_stack,
-  ensure_module_typed_lowering_offsets_for_source,
-  module_typed_lowering_bind_source,
+  ensure_module_typed_lowering_offsets_for_source_with_config,
+  module_typed_lowering_bind_source_with_config,
   module_typed_lowering_memo_get_by_fp,
   module_typed_lowering_memo_put,
   typecheck_fs_empty_dep_fps,
@@ -612,7 +612,7 @@ fn checked_module_artifact_outcome_with_config(job: ModuleJob, artifact: Checked
   let fingerprint = typecheck_fs_build_fingerprint_with_config(path = job.path, source = job.source, dep_fps = job.dep_fps, semantics_seed = typing_semantics_seed(), cfg = cfg)
   let env = checked_module_public_env_for_path(path = job.path, stmts = artifact.parsed_stmts, full_checked_env = artifact.checked_program.final_env, reexport_declarations = reexports)
   module_typed_lowering_memo_put(path = job.path, fingerprint = fingerprint, offsets = artifact.lowering_offsets, eq_offs = artifact.eq_offsets, eq_keys = artifact.eq_keys)
-  module_typed_lowering_bind_source(path = job.path, fingerprint = fingerprint, source = job.source)
+  module_typed_lowering_bind_source_with_config(path = job.path, fingerprint = fingerprint, source = job.source, cfg = cfg)
   let tracing = incremental_interface_trace_enabled()
   Checked(job.path, fingerprint, env, if tracing {
     incremental_interface_identity_with_config(source = job.source, env = env, cfg = cfg)
@@ -689,7 +689,7 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
   // #2391/#2546: reuse requires both outputs in the unified module entry.
   // A missing output forces a real check, which republishes both.
   let reusable_cached_env = match valid_persistent_type_env_in_namespace(path = path, fingerprint = fingerprint, namespace = target_cfg_namespace(cfg)) {
-    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source(path = path, fingerprint = fingerprint, source = source) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg) {
       Some(cached_env)
     } else {
       None
@@ -751,7 +751,7 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
           match load_typing_dependency_env_reuse_target_in_namespace(path = path, input_key = input_key, namespace = target_cfg_namespace(cfg)) {
             // The bound record hydrates this path's lowering memo from the
             // target fingerprint. Absent tables already declined the reuse.
-            Some((target_fingerprint, target_text, target_env)) => if ensure_module_typed_lowering_offsets_for_source(path = path, fingerprint = target_fingerprint, source = source) {
+            Some((target_fingerprint, target_text, target_env)) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = target_fingerprint, source = source, cfg = cfg) {
               Some((input_key, target_fingerprint, target_text, target_env))
             } else {
               None
@@ -772,7 +772,7 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
           match module_typed_lowering_memo_get_by_fp(target_fingerprint) {
             Some((reused_offsets, reused_eq_offs, reused_eq_keys)) => {
               module_typed_lowering_memo_put(path = path, fingerprint = fingerprint, offsets = reused_offsets, eq_offs = reused_eq_offs, eq_keys = reused_eq_keys)
-              module_typed_lowering_bind_source(path = path, fingerprint = fingerprint, source = source)
+              module_typed_lowering_bind_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg)
             },
             None => ()
           }
@@ -1014,7 +1014,7 @@ fn commit_leaf_fingerprint_fs_with_config(rdb: RippleDb, env_cache: Array[(Strin
   // stale/malformed leaf pointer must cold-check rather than become authority.
   // #2391: the checked lowering table is part of that acceptance too.
   match valid_persistent_type_env_in_namespace(path = path, fingerprint = leaf_fingerprint, namespace = target_cfg_namespace(cfg)) {
-    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source(path = path, fingerprint = leaf_fingerprint, source = source) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = leaf_fingerprint, source = source, cfg = cfg) {
       if incremental_interface_trace_enabled() {
         incremental_trace_observe_checked_env_with_config(path = path, source = source, env = cached_env, cfg = cfg)
       } else {
@@ -1066,7 +1066,7 @@ fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, 
     if cached_fp == fingerprint {
       match valid_persistent_type_env_in_namespace(path = path, fingerprint = fingerprint, namespace = target_cfg_namespace(cfg)) {
         // #2391: both cache halves, or re-check (which republishes both).
-        Some(_) => if ensure_module_typed_lowering_offsets_for_source(path = path, fingerprint = fingerprint, source = source) {
+        Some(_) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg) {
           incremental_typecheck_telemetry_add(index = 7, amount = 1)
           (fingerprint, rdb, env_cache, dep_source_cache, parse_count)
         } else {

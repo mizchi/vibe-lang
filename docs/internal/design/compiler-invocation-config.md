@@ -1,7 +1,7 @@
 # Compiler invocation configuration (#1953)
 
 Target `#cfg` flags have scoped entries for the flat-source RC compiler,
-shared FS parsing, source collection, filesystem and in-memory typechecking, and source merging. These are migration slices,
+shared FS parsing, source collection, filesystem and in-memory typechecking, source merging, and owned typed-lowering inputs. These are migration slices,
 not completion of #1953 or a claim that the compiler as a whole is reentrant.
 
 ## Boundary and authority
@@ -199,18 +199,40 @@ whole-program overlap check and staged group reuse.
 The plain shared merge needs only `Exception`; its capturing boundary adds
 `Config`. DB merges retain `Env` and `Exception`, without `Fs`. Neither boundary temporarily
 replaces the compatibility cells. Opaque DBs stay on the data side; the effect
-boundary returns text. The compiler's mutable rename/location and typed-lowering
-metadata remain owned by their existing phases. This slice does not make those
-states reentrant: typed merge wrappers, codegen, module/artifact orchestration,
-CLI and workers still need matching configuration and owned products passed
-through their complete invocation. No configured typed-codegen entry is exposed
-before that transport exists.
+boundary returns text.
+
+### Owned checked-lowering inputs
+
+`db_checked_lowering_inputs(db, cfg)` captures only accepted per-module rows
+whose path, exact source, checked fingerprint and target identity agree with
+the DB. Configured checks and validated cache providers publish that identity;
+unbound compatibility rows cannot authorize a capture. Capture must happen
+before another check overwrites a requested memo row. A stale or absent row
+asks for a recheck instead of becoming an empty complete channel.
+
+`CheckedLoweringInputs` hides its constructor and copies the offset and equality
+arrays. Immutable source/fingerprint strings are shared. Resetting the memo,
+checking another target or mutating a caller's arrays cannot change a retained
+snapshot; its alias-clone query also returns a copy. Empty complete channels and
+declined placement markers retain their distinct representations.
+
+`merged_stmts_and_offsets_with_config` validates the snapshot's target and every
+merged source before changing rename or location state. Parsing clears shared call cells and restores callee identities and argument
+placements exclusively from the owned rows. Both the ordinary
+union and alias-collision provider lookup use owned rows, with the same
+callee/placement rebase and equality-name rewrite as compatibility merging.
+The data entry needs only `Exception`; it acquires neither `Env` nor `Fs`.
+Legacy wrappers retain their current memo-based behavior.
+
+Namespace and location metadata remain owned by the serial merge phase. This
+transport does not make codegen, module/final-artifact orchestration, CLI or
+workers reentrant, and no configured typed-codegen entry is exposed yet.
 
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
 | --- | --- | --- |
-| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; source merge entries accept it; typed lowering/codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
+| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; source merge entries accept it; typed merge accepts owned lowering inputs; codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
 | Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Collection, AST, typing and checked-module storage use captured identities in the scoped lane. Final-artifact and content-only fingerprint/stamp adapters remain; the latter values are independent of target flags. Cache-only compatibility APIs retain the legacy cell. |
 | In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection and checking use scoped identities for parse, semantic use, import-name, re-export and generated-type reuse. Other merge/tooling entries retain compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
@@ -278,3 +300,9 @@ checker/artifact products, collision-provider reparsing and failure recovery.
 Flag identities differ even for identical selected text or empty groups; empty
 flags retain the legacy fingerprint representation. Compatibility entries also
 observe flag changes before consulting their resident caches.
+
+`invocation_config_lowering_test.vibe` checks copied channels, callee and
+placement rebasing, reset isolation, empty versus missing rows, source and
+fingerprint witnesses, target mismatches, Alpha→Beta typed String/equality
+merges, configured builtin shadows, labeled parameter reordering, shared call-cell reset, refusal before location-state changes, and resident/disk-warm FS
+publication. The bootstrap gate runs it with AST caching enabled.
