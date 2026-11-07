@@ -42,6 +42,7 @@ import @vibe/compiler/cache {
 import @vibe/compiler/checker {
   aliased_builtin_import_type,
   builtin_alias_marker,
+  builtin_type_alias_marker,
   import_item_kind_errors,
   import_item_namespace_alias_errors,
   import_keeps_builtin_signature,
@@ -1981,7 +1982,17 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           }
         },
         _ => if engine_starts_with_upper(name) {
-          engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item)
+          let bound = engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item)
+          // #3888: an import that renames a builtin TYPE names it, so `F::ceil`
+          // reads as `Float64::ceil` when the dependency is a facade that
+          // published the type but none of its operations.
+          if bound_name != name && !surface_only_item && (resolve_builtin(name) is Some(_)) {
+            env_bind(env = bound, name = builtin_type_alias_marker(bound_name), ty = CtRecord([
+              (name, CtUnit)
+            ]))
+          } else {
+            bound
+          }
         } else {
           with_name
         }
