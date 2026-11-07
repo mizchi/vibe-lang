@@ -17,9 +17,7 @@ import ./state.vibe {
   dtd_typed_eq_keys,
   dtd_typed_eq_offs,
   dtd_typed_render_keys,
-  dtd_typed_render_offs,
-  dtd_typed_render_parsed,
-  dtd_typed_render_tys
+  dtd_typed_render_offs
 }
 
 /// End (exclusive) of the module's own statements; the whole array when no
@@ -107,8 +105,6 @@ export fn dtd_typed_eq_key_for(_ boff: Int) -> String {
 export fn dtd_typed_render_reset() -> Unit {
   Array::truncate(dtd_typed_render_offs, length = 0)
   Array::truncate(dtd_typed_render_keys, length = 0)
-  Array::truncate(dtd_typed_render_tys, length = 0)
-  Array::truncate(dtd_typed_render_parsed, length = 0)
 }
 
 /// #3900: file a render row, keeping the rows sorted by offset. A row goes
@@ -119,20 +115,14 @@ export fn dtd_typed_render_insert(off: Int, key: String) -> Unit {
   let at = dtd_typed_render_upper(off)
   Array::push(dtd_typed_render_offs, value = off)
   Array::push(dtd_typed_render_keys, value = key)
-  Array::push(dtd_typed_render_tys, value = None)
-  Array::push(dtd_typed_render_parsed, value = false)
   let mut j = Array::length(dtd_typed_render_offs) - 1
   while j > at {
     Array::set(dtd_typed_render_offs, at = j, value = Array::get(dtd_typed_render_offs, at = j - 1))
     Array::set(dtd_typed_render_keys, at = j, value = Array::get(dtd_typed_render_keys, at = j - 1))
-    Array::set(dtd_typed_render_tys, at = j, value = Array::get(dtd_typed_render_tys, at = j - 1))
-    Array::set(dtd_typed_render_parsed, at = j, value = Array::get(dtd_typed_render_parsed, at = j - 1))
     j = j - 1
   }
   Array::set(dtd_typed_render_offs, at = at, value = off)
   Array::set(dtd_typed_render_keys, at = at, value = key)
-  Array::set(dtd_typed_render_tys, at = at, value = None)
-  Array::set(dtd_typed_render_parsed, at = at, value = false)
 }
 
 /// The first row index whose offset is greater than `off`.
@@ -152,7 +142,7 @@ fn dtd_typed_render_upper(_ off: Int) -> Int {
 
 /// #3900: the `T` of the first render row filed for `off` (its key is
 /// `impl_target_key(__render[T])`), or None when no row was filed there or
-/// its key does not read as one. Each row's key is parsed once.
+/// its key does not read as one.
 export fn dtd_typed_render_row_ty(_ off: Int) -> Option[TypeExpr] {
   if off < 0 {
     None
@@ -168,21 +158,18 @@ export fn dtd_typed_render_row_ty(_ off: Int) -> Option[TypeExpr] {
       }
     }
     if lo < Array::length(dtd_typed_render_offs) && Array::get(dtd_typed_render_offs, at = lo) == off {
-      if !Array::get(dtd_typed_render_parsed, at = lo) {
-        let ty = match impl_target_from_key(Array::get(dtd_typed_render_keys, at = lo)) {
-          Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 {
-            Some(Array::get(args, at = 0))
-          } else {
-            None
-          },
-          _ => None
-        }
-        Array::set(dtd_typed_render_tys, at = lo, value = ty)
-        Array::set(dtd_typed_render_parsed, at = lo, value = true)
-      } else {
-        ()
+      // The key is parsed on every lookup. Keeping the parsed `T` beside
+      // each row saved about 10 ms of parsing, and allocated about 45 MB
+      // more in the per-module (split) prelude, where `dtd_run` runs once
+      // per module.
+      match impl_target_from_key(Array::get(dtd_typed_render_keys, at = lo)) {
+        Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 {
+          Some(Array::get(args, at = 0))
+        } else {
+          None
+        },
+        _ => None
       }
-      Array::get(dtd_typed_render_tys, at = lo)
     } else {
       None
     }
