@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import ./derive_operations.vibe {
@@ -14,6 +14,7 @@ import ./derive_operations.vibe {
   collect_decl_type_names,
   collect_show_array_elems,
   dtd_source_op_defined,
+  dtd_source_op_defined_in,
   empty_stmt_list,
   gen_compare_fn,
   gen_default_fn,
@@ -22,7 +23,8 @@ import ./derive_operations.vibe {
   gen_enum_show_fn,
   qualified_name,
   show_inline_merge_arr_elems,
-  top_level_fn_exists
+  top_level_fn_exists,
+  top_level_fn_names
 }
 
 import ./hash_key_generation.vibe {
@@ -259,6 +261,10 @@ fn gen_enum_eq_fn(ename: String, variants: Array[(String, Array[TypeExpr])], kno
 
 export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
   let gen = empty_stmt_list()
+  // Every derived operation and helper below asks whether the program already
+  // defines it. `stmts` is not written until the generated statements are
+  // appended at the end, so one set of its names answers them all (#3900).
+  let defined = top_level_fn_names(stmts)
   let own_end = dtd_own_end(stmts)
   let known_types = collect_decl_type_names(stmts)
   // #3544: the types whose `hash_key` a derived key may call for a field.
@@ -285,7 +291,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
         // generate `to_string` for Show OR Hash. #3567: except where a field
         // it would render has no renderer (`hash_renderless_types`); the key
         // does not need one.
-        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
+        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
           if str_array_contains(arr = derives, val = "Show") {
             for field in fields {
               let (fname, fty) = field
@@ -308,7 +314,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
         // a `to_string` is written -- the key does not call it. Noted before
         // the key is generated, so this refusal is the one reported, not a
         // renderer's for the same field.
-        if str_array_contains(arr = derives, val = "Hash") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "hash_key")) {
+        if str_array_contains(arr = derives, val = "Hash") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = name, method = "hash_key")) {
           for field in fields {
             let (fname, fty) = field
             hash_note_unkeyed_field(tname = name, fname = fname, fty = fty, known_types = known_types, hash_types = hash_types)
@@ -321,7 +327,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
         // #3551 review: a Hash-only derive generates the same renderer, and
         // interpolating the value calls it. Noted after the key, so a field the
         // derived key refuses keeps that refusal.
-        if str_array_contains(arr = derives, val = "Hash") && !str_array_contains(arr = derives, val = "Show") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
+        if str_array_contains(arr = derives, val = "Hash") && !str_array_contains(arr = derives, val = "Show") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
           for field in fields {
             let (fname, fty) = field
             show_note_opaque_field(stmts = stmts, tname = name, fname = fname, fty = fty, known_types = known_types, via_show = false)
@@ -339,13 +345,13 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if str_array_contains(arr = derives, val = "Ord") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "compare")) {
+        if str_array_contains(arr = derives, val = "Ord") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = name, method = "compare")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, value = gen_compare_fn(tname = name, fields = fields, known_types = known_types))
         } else {
           ()
         }
-        if str_array_contains(arr = derives, val = "Default") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "default")) {
+        if str_array_contains(arr = derives, val = "Default") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = name, method = "default")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, value = gen_default_fn(tname = name, fields = fields, known_types = known_types))
         } else {
@@ -355,7 +361,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
         // `==` dispatch below always resolves; structural equality is the
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
-        if !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "equals")) {
+        if !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = name, method = "equals")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, value = gen_eq_fn(tname = name, fields = fields, known_types = known_types))
         } else {
@@ -365,7 +371,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
       SEnum(_, ename, decl_tparams, variants0, derives) => {
         // #2141: same re-spelling as the SStruct arm, for payload types.
         let variants = subst_variant_formals(variants = variants0, formals = decl_tparams)
-        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
+        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
           if str_array_contains(arr = derives, val = "Show") {
             for variant in variants {
               let (vname, ftypes) = variant
@@ -385,7 +391,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
           ()
         }
         // #3551: as in the SStruct arm, noted before the key is generated.
-        if str_array_contains(arr = derives, val = "Hash") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "hash_key")) {
+        if str_array_contains(arr = derives, val = "Hash") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = ename, method = "hash_key")) {
           for variant in variants {
             let (vname, ftypes) = variant
             let mut pi = 0
@@ -400,7 +406,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
           ()
         }
         // #3551 review: as in the SStruct arm, after the key.
-        if str_array_contains(arr = derives, val = "Hash") && !str_array_contains(arr = derives, val = "Show") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
+        if str_array_contains(arr = derives, val = "Hash") && !str_array_contains(arr = derives, val = "Show") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
           for variant in variants {
             let (vname, ftypes) = variant
             let mut pi = 0
@@ -426,13 +432,13 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if str_array_contains(arr = derives, val = "Ord") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "compare")) {
+        if str_array_contains(arr = derives, val = "Ord") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = ename, method = "compare")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, value = gen_enum_compare_fn(ename = ename, variants = variants, known_types = known_types))
         } else {
           ()
         }
-        if str_array_contains(arr = derives, val = "Default") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "default")) {
+        if str_array_contains(arr = derives, val = "Default") && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = ename, method = "default")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, value = gen_enum_default_fn(ename = ename, variants = variants, known_types = known_types))
         } else {
@@ -440,7 +446,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
         }
         // Generate `E::equals` for every enum (same rationale as structs), so
         // the `==` dispatch resolves enum operands too.
-        if !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "equals")) {
+        if !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = ename, method = "equals")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, value = gen_enum_eq_fn(ename = ename, variants = variants, known_types = known_types))
         } else {
@@ -468,12 +474,12 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
       ()
     } else {
       match Array::get(stmts, at = ci) {
-        SStruct(_, name, _, derives, _, _) => if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
+        SStruct(_, name, _, derives, _, _) => if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
           context_renderer_record(name)
         } else {
           ()
         },
-        SEnum(_, ename, _, _, derives) => if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
+        SEnum(_, ename, _, _, derives) => if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined_in(names = defined, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
           context_renderer_record(ename)
         } else {
           ()
@@ -539,7 +545,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
   let mut ei = 0
   while ei < Array::length(elem_types) {
     let et = Array::get(elem_types, at = ei)
-    if !top_level_fn_exists(stmts = stmts, fname = arr_equals_name(et)) {
+    if !MutSet::has(defined, x = arr_equals_name(et)) {
       dtd_fresh_reset_for_decl()
       Array::push(gen, value = gen_arr_equals_fn(elem_ty = et, known_types = known_types))
     } else {
@@ -566,7 +572,7 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
       // Rendered in place (`show_array_inline`): a helper generic over the
       // formal would render it erased, which the checker refuses (#3547).
       ()
-    } else if !top_level_fn_exists(stmts = stmts, fname = arr_to_string_name(et2)) {
+    } else if !MutSet::has(defined, x = arr_to_string_name(et2)) {
       dtd_fresh_reset_for_decl()
       Array::push(gen, value = gen_arr_to_string_fn(elem_ty = et2, known_types = known_types))
     } else {

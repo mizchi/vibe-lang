@@ -1,0 +1,53 @@
+// #3900: the derive pass and the helper emitters answer "does the program
+// already define this helper" from one set of names instead of a walk of
+// every statement per question. The set must count exactly what the walk
+// counts: a top-level `let`, not a `let mut` or a declaration.
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/normalize/desugar {
+  top_level_fn_exists, top_level_fn_names, top_level_fn_names_add
+}
+
+fn top_fn(_ name: String) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [], None, None, EInt(1)))
+}
+
+fn both(stmts: Array[Stmt], names: MutSet[String]) -> String {
+  let out: Array[String] = []
+  for name in ["f", "g", "m", "h"] {
+    let walked = top_level_fn_exists(stmts = stmts, fname = name)
+    assert(walked == MutSet::has(names, x = name))
+    Array::push(out, value = if walked {
+      name
+    } else {
+      "-"
+    })
+  }
+  String::join(out, sep = "")
+}
+
+test "the names answer as the walk does" {
+  let stmts = [
+    top_fn("f"),
+    SLetMut("m", None, EInt(0)),
+    SExpr(EInt(1)),
+    top_fn("g")
+  ]
+  inspect(both(stmts = stmts, names = top_level_fn_names(stmts)), content = "fg--")
+}
+
+test "an appended helper is added, and only a top-level let is counted" {
+  let stmts = [top_fn("f")]
+  let names = top_level_fn_names(stmts)
+  let helper = top_fn("h")
+  Array::push(stmts, value = helper)
+  top_level_fn_names_add(names = names, stmt = helper)
+  let other = SLetMut("m", None, EInt(0))
+  Array::push(stmts, value = other)
+  top_level_fn_names_add(names = names, stmt = other)
+  inspect(both(stmts = stmts, names = names), content = "f--h")
+}

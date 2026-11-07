@@ -9,11 +9,11 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import ./derive_operations.vibe {
-  collect_decl_type_names, qualified_name, top_level_fn_exists
+  collect_decl_type_names, qualified_name, top_level_fn_names_add
 }
 
 import ./equality_aliases.vibe {
@@ -176,7 +176,9 @@ fn gen_specialized_enum_eq_fn(head: String, args: Array[TypeExpr], formals: Arra
   stmt
 }
 
-export fn emit_recorded_generic_eq(_ stmts: Array[Stmt]) -> Unit {
+/// `defined` holds the names of `stmts` (`top_level_fn_names`), and each
+/// helper appended here is added to it.
+export fn emit_recorded_generic_eq(stmts: Array[Stmt], defined: MutSet[String]) -> Unit {
   let known = collect_decl_type_names(stmts)
   let mut i = 0
   // Generation can record nested generic instantiations, so re-read length.
@@ -186,7 +188,7 @@ export fn emit_recorded_generic_eq(_ stmts: Array[Stmt]) -> Unit {
         let mut j = 0
         while j < Array::length(dtd_eq_generic_structs) {
           let decl = Array::get(dtd_eq_generic_structs, at = j)
-          if decl.0 == head && !top_level_fn_exists(stmts = stmts, fname = generic_eq_name(head = head, args = args)) {
+          if decl.0 == head && !MutSet::has(defined, x = generic_eq_name(head = head, args = args)) {
             Array::truncate(dtd_eq_specialization_stack, length = 0)
             if i < Array::length(dtd_eq_specialization_ancestries) {
               for ancestor in Array::get(dtd_eq_specialization_ancestries, at = i) {
@@ -196,7 +198,9 @@ export fn emit_recorded_generic_eq(_ stmts: Array[Stmt]) -> Unit {
               ()
             }
             dtd_fresh_reset_for_decl()
-            Array::push(stmts, value = gen_specialized_eq_fn(head = head, args = args, params0 = decl.1, fields0 = decl.2, known_types = known))
+            let helper = gen_specialized_eq_fn(head = head, args = args, params0 = decl.1, fields0 = decl.2, known_types = known)
+            Array::push(stmts, value = helper)
+            top_level_fn_names_add(names = defined, stmt = helper)
             Array::truncate(dtd_eq_specialization_stack, length = 0)
           } else {
             ()
@@ -208,7 +212,7 @@ export fn emit_recorded_generic_eq(_ stmts: Array[Stmt]) -> Unit {
         let mut k = 0
         while k < Array::length(dtd_eq_enum_decls) {
           let edecl = Array::get(dtd_eq_enum_decls, at = k)
-          if edecl.0 == head && Array::length(edecl.1) > 0 && !top_level_fn_exists(stmts = stmts, fname = generic_eq_name(head = head, args = args)) {
+          if edecl.0 == head && Array::length(edecl.1) > 0 && !MutSet::has(defined, x = generic_eq_name(head = head, args = args)) {
             Array::truncate(dtd_eq_specialization_stack, length = 0)
             if i < Array::length(dtd_eq_specialization_ancestries) {
               for ancestor in Array::get(dtd_eq_specialization_ancestries, at = i) {
@@ -218,7 +222,9 @@ export fn emit_recorded_generic_eq(_ stmts: Array[Stmt]) -> Unit {
               ()
             }
             dtd_fresh_reset_for_decl()
-            Array::push(stmts, value = gen_specialized_enum_eq_fn(head = head, args = args, formals = edecl.1, variants = edecl.2, known_types = known))
+            let helper = gen_specialized_enum_eq_fn(head = head, args = args, formals = edecl.1, variants = edecl.2, known_types = known)
+            Array::push(stmts, value = helper)
+            top_level_fn_names_add(names = defined, stmt = helper)
             Array::truncate(dtd_eq_specialization_stack, length = 0)
           } else {
             ()

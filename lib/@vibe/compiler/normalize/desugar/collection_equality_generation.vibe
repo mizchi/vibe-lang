@@ -13,11 +13,11 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import ./derive_operations.vibe {
-  collect_decl_type_names, top_level_fn_exists
+  collect_decl_type_names, top_level_fn_exists, top_level_fn_names_add
 }
 
 import ./equality_generation.vibe {
@@ -64,16 +64,21 @@ import ./utilities.vibe {
 /// already-lowered code (`Array::get` / `Array::length` / a type-directed
 /// element comparison), which is what the pre-existing helpers reduce to as
 /// well.
-export fn emit_recorded_arr_equals(_ stmts: Array[Stmt]) -> Unit {
+///
+/// `defined` holds the names of `stmts` (`top_level_fn_names`), and each
+/// helper appended here is added to it.
+export fn emit_recorded_arr_equals(stmts: Array[Stmt], defined: MutSet[String]) -> Unit {
   let known_types = collect_decl_type_names(stmts)
   let mut i = 0
   while i < Array::length(dtd_arr_eq_needed) {
     let et = Array::get(dtd_arr_eq_needed, at = i)
-    if top_level_fn_exists(stmts = stmts, fname = arr_equals_name(et)) {
+    if MutSet::has(defined, x = arr_equals_name(et)) {
       ()
     } else {
       dtd_fresh_reset_for_decl()
-      Array::push(stmts, value = gen_arr_equals_fn(elem_ty = et, known_types = known_types))
+      let helper = gen_arr_equals_fn(elem_ty = et, known_types = known_types)
+      Array::push(stmts, value = helper)
+      top_level_fn_names_add(names = defined, stmt = helper)
     }
     i = i + 1
   }
@@ -86,7 +91,10 @@ export fn emit_recorded_arr_equals(_ stmts: Array[Stmt]) -> Unit {
 /// built, so appending while walking is the worklist closure. It terminates
 /// because the record dedups by name and each nested type is strictly
 /// shallower.
-export fn emit_recorded_map_equals(_ stmts: Array[Stmt]) -> Unit {
+///
+/// `defined` holds the names of `stmts` (`top_level_fn_names`), and each
+/// helper appended here is added to it.
+export fn emit_recorded_map_equals(stmts: Array[Stmt], defined: MutSet[String]) -> Unit {
   let known_types = collect_decl_type_names(stmts)
   let mut i = 0
   while i < Array::length(dtd_map_eq_needed) {
@@ -95,11 +103,13 @@ export fn emit_recorded_map_equals(_ stmts: Array[Stmt]) -> Unit {
       TyTuple(kv) => if Array::length(kv) == 2 {
         let k_ty = Array::get(kv, at = 0)
         let v_ty = Array::get(kv, at = 1)
-        if top_level_fn_exists(stmts = stmts, fname = map_equals_name(k_ty = k_ty, v_ty = v_ty)) {
+        if MutSet::has(defined, x = map_equals_name(k_ty = k_ty, v_ty = v_ty)) {
           ()
         } else {
           dtd_fresh_reset_for_decl()
-          Array::push(stmts, value = gen_map_equals_fn(k_ty = k_ty, v_ty = v_ty, known_types = known_types))
+          let helper = gen_map_equals_fn(k_ty = k_ty, v_ty = v_ty, known_types = known_types)
+          Array::push(stmts, value = helper)
+          top_level_fn_names_add(names = defined, stmt = helper)
         }
       } else {
         ()
