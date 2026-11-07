@@ -432,6 +432,14 @@ export fn builtin_type_alias_marker(_ name: String) -> String {
   String::concat("#builtin-type-alias:", name)
 }
 
+/// Bound beside any `builtin_type_alias_marker`, so a module that renames no
+/// builtin type answers `builtin_type_alias_member` with one constant lookup
+/// and allocates nothing: the check runs for every call name, and the
+/// self-compile heap gate measures every one of them.
+export fn builtin_type_alias_any_marker() -> String {
+  "#builtin-type-alias-any"
+}
+
 /// #3888: the builtin a qualified name `A::m` stands for when `A` is an import
 /// alias of a builtin type, or `None`. A direct `import @vibe/builtin { Float64
 /// as G }` binds `G::*` from the builtin module's own markers; a facade that
@@ -444,7 +452,11 @@ export fn builtin_type_alias_marker(_ name: String) -> String {
 /// rewrite then leaves `F::ceil` alone, and accepting it reached code
 /// generation unresolved (Codex on #3902).
 export fn builtin_type_alias_member(env: TypeEnv, name: String) -> Option[String] {
-  let sep = String::index_of(name, needle = "::")
+  let sep = if env_lookup(env = env, name = builtin_type_alias_any_marker()) is Some(_) {
+    String::index_of(name, needle = "::")
+  } else {
+    0
+  }
   if sep <= 0 {
     None
   } else {
@@ -527,12 +539,13 @@ export fn checker_builtin_alias_of(env: TypeEnv, name: String, origin: BindingOr
 export fn checker_builtin_call_name(env: TypeEnv, name: String) -> String {
   match checker_builtin_alias_target(env = env, name = name) {
     Some(canonical) => canonical,
-    None => match env_lookup(env = env, name = name) {
-      Some(_) => name,
-      None => match builtin_type_alias_member(env = env, name = name) {
-        Some(canonical) => canonical,
-        None => name
-      }
+    None => match builtin_type_alias_member(env = env, name = name) {
+      Some(canonical) => if env_lookup(env = env, name = name) is Some(_) {
+        name
+      } else {
+        canonical
+      },
+      None => name
     }
   }
 }
