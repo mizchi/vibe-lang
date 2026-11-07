@@ -1645,7 +1645,8 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             EIdent(name0, coff) => {
               // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
               // `Variant(..)` so codegen's (unqualified) ctor table recognizes it.
-              let name_ctor = match split_qualified(name0) {
+              let name0_parts = split_qualified(name0)
+              let name_ctor = match name0_parts {
                 Some(parts0) => {
                   let (h0, m0) = parts0
                   match qual_ctor_member(head = h0, member = m0, struct_sets = struct_sets, fn_returns = fn_returns) {
@@ -1676,8 +1677,15 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               } else {
                 name_ctor
               }
+              // #3900: `name` is split once here, and reuses the split of
+              // `name0` when the two are the same name.
+              let name_parts = if name == name0 {
+                name0_parts
+              } else {
+                split_qualified(name)
+              }
               // `T::method(args)` inside a transformed body -> `(dict.method)(args)`.
-              let as_method = match split_qualified(name) {
+              let as_method = match name_parts {
                 Some(parts) => {
                   let (head, member) = parts
                   find_dict_for_method(dict_binds = dict_binds, head = head, member = member)
@@ -1687,7 +1695,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // #2737: a promised witness with no dictionary is refused here
               // rather than left to codegen, which lowers the unresolved name to
               // a table call on a bogus index.
-              match split_qualified(name) {
+              match name_parts {
                 Some(promised) => {
                   let (phead, pmember) = promised
                   dtd_check_unthreaded_dispatch(resolved = as_method, head = phead, member = pmember, qualified = name, traits = traits, fn_returns = fn_returns)
