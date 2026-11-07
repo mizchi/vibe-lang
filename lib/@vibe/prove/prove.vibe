@@ -32,7 +32,7 @@ import ./int_terms.vibe {
 }
 
 import ./word.vibe {
-  adapt_word, is_word_sort, smt_sort_text, word_binop, word_int_range, word_of_int, word_to_int, word_unary, word_zero
+  adapt_word, is_word_sort, smt_sort_text, word_binop, word_of_int, word_to_int, word_unary, word_zero
 }
 
 //# Types
@@ -347,13 +347,17 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
         }
         let smt = smt_symbol(pn)
         if is_word_sort(sort) {
-          // #3827: declared as the `Int` it reads as, in range, so a
-          // counterexample shows the number the program sees; the body
-          // uses its word.
-          let (lo, hi) = word_int_range(sort)
+          // #3827: declared as the `Int` it reads as, so a counterexample
+          // shows the number the program sees, and the body uses a word
+          // declared beside it that the `Int` is the reading of. That link
+          // also bounds the `Int` to the word's range. Converting the `Int`
+          // to the word instead (`int2bv`) is what z3 is slow at: a
+          // one-comparison `UInt32` claim took 5 s, the gate's whole limit.
+          let w = word_symbol(pn)
           Array::push(ctx.decls, value = (smt, "Int"))
-          Array::push(ctx.assumes, value = "(and (<= \{lo} \{smt}) (<= \{smt} \{hi}))")
-          Array::push(env, value = (pn, word_of_int(smt), sort))
+          Array::push(ctx.decls, value = (w, sort))
+          Array::push(ctx.assumes, value = "(= \{smt} \{word_to_int(sort = sort, t = w)})")
+          Array::push(env, value = (pn, w, sort))
         } else {
           Array::push(ctx.decls, value = (smt, sort))
           assume_range(ctx = ctx, term = smt, sort = sort, pc = [])
@@ -478,7 +482,7 @@ fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
   let names: Array[String] = []
   for d in ctx.decls {
     let (n, _) = d
-    if !String::starts_with(n, prefix = "|r!") {
+    if !String::starts_with(n, prefix = "|r!") && !String::starts_with(n, prefix = "|w!") {
       Array::push(names, value = n)
     } else {
       ()
@@ -496,6 +500,14 @@ fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
 /// collide with an SMT-LIB keyword.
 fn smt_symbol(_ name: String) -> String {
   "|\{name}|"
+}
+
+/// The word a parameter of `Int32` / `UInt32` named `name` is used as. A
+/// program name holds no `!`, so this cannot collide with one, and
+/// `build_query` leaves it out of the model it asks for: the counterexample
+/// names the parameter's `Int`.
+fn word_symbol(_ name: String) -> String {
+  "|w!\{name}|"
 }
 
 fn smt_int(_ n: Int) -> String {
