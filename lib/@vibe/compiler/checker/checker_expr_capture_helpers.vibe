@@ -3,6 +3,7 @@
 
 import @vibe/compiler/core {
   BindingOrigin,
+  Expr,
   Subst,
   Type,
   TypeDef,
@@ -17,7 +18,7 @@ import @vibe/compiler/core {
 }
 
 import ./checker_call_header.vibe {
-  checker_local_alias_member, checker_record_alias_is_local, checker_record_alias_target
+  checker_declares_local_type_alias, checker_local_alias_member, checker_record_alias_is_local, checker_record_alias_target
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -271,5 +272,29 @@ export fn local_alias_member_redirect(env: TypeEnv, name: String) -> Option[Stri
       None
     },
     None => None
+  }
+}
+
+// #3889: a call through such an alias names `L::m` before its placement is
+// read, so `M::sub(m, by = 2)` places its labels by `L::sub`'s declaration.
+export fn local_alias_call_expr(expr: Expr, env: TypeEnv) -> Expr {
+  if checker_declares_local_type_alias() {
+    local_alias_call_expr_redirect(expr = expr, env = env)
+  } else {
+    expr
+  }
+}
+
+fn local_alias_call_expr_redirect(expr: Expr, env: TypeEnv) -> Expr {
+  match expr {
+    ECall(EIdent(name, off), args, call_off, res) => match local_alias_member_redirect(env = env, name = name) {
+      Some(target) => if env_lookup(env = env, name = name) is Some(_) {
+        expr
+      } else {
+        ECall(EIdent(target, off), args, call_off, res)
+      },
+      None => expr
+    },
+    _ => expr
   }
 }
