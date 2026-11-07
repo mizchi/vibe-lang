@@ -3,6 +3,7 @@
 
 import @vibe/compiler/core {
   BindingOrigin,
+  Expr,
   Subst,
   Type,
   TypeDef,
@@ -17,7 +18,7 @@ import @vibe/compiler/core {
 }
 
 import ./checker_call_header.vibe {
-  checker_record_alias_is_local, checker_record_alias_target
+  checker_declares_local_type_alias, checker_local_alias_member, checker_record_alias_is_local, checker_record_alias_target
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -257,5 +258,43 @@ fn binding_origin_source_is(origin: BindingOrigin, name: String) -> Bool {
     BindingOriginModuleExport(_, source) => source == name,
     BindingOriginReExportSurface(_, source) => source == name,
     _ => false
+  }
+}
+
+// #3889: `L::m` for an unbound `M::m` through a transparent `type M = L` this
+// file declares, when `L::m` is bound. A builtin target (`type D = Float64`)
+// is not followed, so `D::floor` stays an unknown name.
+export fn local_alias_member_redirect(env: TypeEnv, name: String) -> Option[String] {
+  match checker_local_alias_member(name) {
+    Some(candidate) => if env_lookup(env = env, name = candidate) is Some(_) {
+      Some(candidate)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+// #3889: a call through such an alias names `L::m` before its placement is
+// read, so `M::sub(m, by = 2)` places its labels by `L::sub`'s declaration.
+export fn local_alias_call_expr(expr: Expr, env: TypeEnv) -> Expr {
+  if checker_declares_local_type_alias() {
+    local_alias_call_expr_redirect(expr = expr, env = env)
+  } else {
+    expr
+  }
+}
+
+fn local_alias_call_expr_redirect(expr: Expr, env: TypeEnv) -> Expr {
+  match expr {
+    ECall(EIdent(name, off), args, call_off, res) => match local_alias_member_redirect(env = env, name = name) {
+      Some(target) => if env_lookup(env = env, name = name) is Some(_) {
+        expr
+      } else {
+        ECall(EIdent(target, off), args, call_off, res)
+      },
+      None => expr
+    },
+    _ => expr
   }
 }

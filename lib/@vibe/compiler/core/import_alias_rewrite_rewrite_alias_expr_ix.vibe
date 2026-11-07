@@ -67,6 +67,12 @@ import ./import_alias_rewrite_pat_binds_shadowing_name.vibe {
 /// a rename that bypasses `aliasidx_get` would be dropped by its parents.
 let alias_rewrite_marks: Array[Int] = [0]
 
+/// #3889: the transparent aliases the module being rewritten declares, so a
+/// qualified head that is not an import alias asks the record rows only when
+/// it is one of them. Empty for a module that declares none, which then pays
+/// one length read per qualified name.
+let local_record_alias_heads: Array[String] = []
+
 fn alias_marks() -> Int {
   Array::get(alias_rewrite_marks, at = 0)
 }
@@ -402,7 +408,18 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
     } else {
       match aliasidx_get(am = am, name = head) {
         Some(original) => EIdent(String::concat(original, String::substring(name, start = qi, end = String::length(name))), -1),
-        None => expr
+        // #3889: a companion called through a transparent `type M = L` the
+        // file declares names `L::m`, the same rows a struct literal through
+        // the alias follows. A companion the alias declares itself has a
+        // self row (`M::tag` -> `M::tag`), so the exact lookup answers first.
+        None => if Array::length(local_record_alias_heads) > 0 && import_alias_rewrite_string_array_contains(items = local_record_alias_heads, target = head) {
+          match record_alias_name(am = am, name = head) {
+            Some(resolved) => EIdent(String::concat(resolved, String::substring(name, start = qi, end = String::length(name))), -1),
+            None => expr
+          }
+        } else {
+          expr
+        }
       }
     }
   }
@@ -1309,6 +1326,17 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
   // back to `Iterator::map`. Add exact self-mappings before walking bodies so
   // those calls remain local while ordinary `Iter` type occurrences and
   // unbound qualified constructors still canonicalize through the head alias.
+  // #3889: the file's transparent aliases, whose own companions keep their
+  // spelling below while every other `M::m` follows the alias.
+  let local_record_aliases = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(_, aname, aparams, target) => if record_alias_target(params = aparams, target = target) is Some(_) {
+        Array::push(local_record_aliases, value = aname)
+      },
+      _ => ()
+    }
+  }
   let mut bi = 0
   while bi < Array::length(stmts) {
     let bound_name = match Array::get(stmts, at = bi) {
@@ -1321,7 +1349,7 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
     let qi = String::index_of(bound_name, needle = "::")
     if qi > 0 {
       let head = String::substring(bound_name, start = 0, end = qi)
-      if lookup_alias(aliases = aliases, name = head) is Some(_) {
+      if (lookup_alias(aliases = aliases, name = head) is Some(_)) || import_alias_rewrite_string_array_contains(items = local_record_aliases, target = head) {
         Array::push(combined, value = (bound_name, bound_name))
       } else {
         ()
@@ -1359,8 +1387,17 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
     }
   }
   let am = aliasidx_with_pattern_ctors(am = aliasidx_build(namespace_aliases_without_top_level_values(aliases = combined, stmts = stmts)), pattern_ctors = pattern_ctors)
+  let saved_heads = Array::slice(local_record_alias_heads, start = 0, end = Array::length(local_record_alias_heads))
+  Array::truncate(local_record_alias_heads, length = 0)
+  for a in local_record_aliases {
+    Array::push(local_record_alias_heads, value = a)
+  }
   let imported = for stmt in stmts {
     rewrite_alias_stmt_ix(stmt = rewrite_impl_method_binding(stmt = stmt, owner_aliases = owner_aliases), am = am)
+  }
+  Array::truncate(local_record_alias_heads, length = 0)
+  for a in saved_heads {
+    Array::push(local_record_alias_heads, value = a)
   }
   let local_aliases = collect_local_type_aliases(imported)
   let local_owner_aliases = collect_local_impl_method_owner_aliases(stmts = imported, aliases = local_aliases)
