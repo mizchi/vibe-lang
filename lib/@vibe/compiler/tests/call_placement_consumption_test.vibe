@@ -57,28 +57,20 @@ test "optional placements fill omitted slots and wrap written values" {
   }
 }
 
-/// Equal expressions are separate evaluations. Source indices keep their
-/// written-order bindings distinct even when expression equality cannot.
-test "equal calls keep separate written-order bindings" {
+/// ADR-0120 D2: the checker places arguments in written order, so a
+/// placement that would move one argument past another is not a checked
+/// placement. Lowering refuses it rather than evaluate out of written order.
+test "a placement that reorders arguments is refused" {
   let cell: Array[Int] = []
   call_placement_install(cell = cell, written = 2, mode = 0, slots = [4, 2])
-  let first_call: Expr = ECall(EIdent("record", -1), [EString("same", -1)], -1, [
-  ])
-  let second_call: Expr = ECall(EIdent("record", -1), [EString("same", -1)], -1, [
-  ])
-  assert(first_call == second_call)
+  let first_call: Expr = ECall(EIdent("record", -1), [EString("a", -1)], -1, [])
+  let second_call: Expr = ECall(EIdent("record", -1), [EString("b", -1)], -1, [])
   let stmts = [SExpr(ECall(EIdent("f", 7), [first_call, second_call], 7, cell))]
-  lower_checked_call_placements(stmts = stmts, require_checked = true)
-  match Array::get(stmts, at = 0) {
-    SExpr(ELet(first, ECall(EIdent("record", _), _, -1, _), ELet(second, ECall(EIdent("record", _), _, -1, _), ECall(EIdent("f", _), args, _, _), _), _)) => {
-      assert(first != second)
-      match (Array::get(args, at = 0), Array::get(args, at = 1)) {
-        (EIdent(left, _), EIdent(right, _)) => assert(left == second && right == first),
-        _ => assert(false)
-      }
-    },
-    _ => assert(false)
-  }
+  let message = handle {
+    lower_checked_call_placements(stmts = stmts, require_checked = true)
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, needle = "checker argument placement for `f`"))
 }
 
 /// A rowless lane must name the source call and the edit instead of using

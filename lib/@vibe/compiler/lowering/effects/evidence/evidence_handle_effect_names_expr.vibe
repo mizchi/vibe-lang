@@ -42,7 +42,6 @@ import @vibe/compiler/lowering/effects/queries {
   edp_split_qualified,
   edp_statement_binder_log,
   edp_str_array_contains,
-  edp_strip_tilde,
   scps_pat_binds_resume,
   scps_ty_has_fn
 }
@@ -294,8 +293,7 @@ export fn edp_expr_binds_name(expr: Expr, name: String) -> Bool {
 /// pattern binds, over every child) answers a WEAKER one -- could any binder
 /// bind this name? -- and a name it rules out cannot be shadowed, so only
 /// the names it admits pay the exact walk. The answer is the exact walk's,
-/// unchanged. The exact walk strips one trailing `~` from a parameter before
-/// comparing, so the census admits `nm` when it holds `nm` or `nm~`.
+/// unchanged.
 export fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) -> Array[String] {
   edp_drop_shadowed_needing_with_binders(needing = needing, stmts = stmts, binders = edp_collect_program_binders(stmts))
 }
@@ -311,7 +309,7 @@ export fn edp_drop_shadowed_needing_with_binders(needing: Array[String], stmts: 
   while ni < Array::length(needing) {
     let nm = Array::get(needing, at = ni)
     let mut shadowed = false
-    let mut si = if MutSet::has(binders, x = nm) || MutSet::has(binders, x = String::concat(nm, "~")) {
+    let mut si = if MutSet::has(binders, x = nm) {
       0
     } else {
       Array::length(stmts)
@@ -1166,7 +1164,7 @@ fn edp_tally_node_binders(expr: Expr, bcount: EdpBinderCounts) -> Unit {
       let mut i = 0
       while i < Array::length(params) {
         let (pn, _) = Array::get(params, at = i)
-        edp_tally(bcount = bcount, nm = edp_strip_tilde(pn))
+        edp_tally(bcount = bcount, nm = pn)
         i = i + 1
       }
     },
@@ -1379,7 +1377,7 @@ fn edp_collect_binders(expr: Expr, out: Array[String]) -> Unit {
       let mut i = 0
       while i < Array::length(params) {
         let (pn, _) = Array::get(params, at = i)
-        Array::push(out, value = edp_strip_tilde(pn))
+        Array::push(out, value = pn)
         i = i + 1
       }
     },
@@ -1541,12 +1539,7 @@ fn edp_append_renamed_inert_params(stmts: Array[Stmt], pure_fns: Array[String], 
       SLet(exported, _, owner, _, EFn(_, _, params, _, _, _)) => {
         let mut pos = 0
         while pos < Array::length(params) {
-          let (marked, ty) = Array::get(params, at = pos)
-          let name = if String::ends_with(marked, suffix = "~") {
-            String::substring(marked, start = 0, end = String::length(marked) - 1)
-          } else {
-            marked
-          }
+          let (name, ty) = Array::get(params, at = pos)
           if String::starts_with(name, prefix = "__edpsh_") && !MutSet::has(inert, x = name) && edp_binder_count(counts = bcount, name = name) == 1 {
             let safe = match ty {
               Some(TyFn(_, _, None)) => true,

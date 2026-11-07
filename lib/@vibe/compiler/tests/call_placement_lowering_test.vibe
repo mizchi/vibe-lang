@@ -89,13 +89,16 @@ fn poison_placement(_ rows: Array[Int]) -> Unit {
 }
 
 /// This is the real build lowering entry, not a standalone row comparator.
+/// Lowering reads the placement it is given rather than recomputing one, so a
+/// swapped placement is seen -- and, since a checked placement keeps written
+/// order (ADR-0120 D2), refused rather than evaluated out of order.
 test "lowering consumes valid argument placement instead of recomputing it" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(x = 10, y = 3) }"
   let rows = checked_placement_rows(source)
   assert(lowering_message(source = source, rows = rows, expand_inspect = false) == "")
   poison_placement(rows)
   let message = lowering_message(source = source, rows = rows, expand_inspect = false)
-  assert(message == "")
+  assert(String::contains(message, needle = "missing or invalid checker argument placement for `f`"))
 }
 
 /// A complete checked channel cannot silently treat a lost call row as rowless.
@@ -203,11 +206,7 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
   let message = handle {
     desugar_trait_dicts_with_typed_eq(stmts = parsed, typed_eq_offsets = [], typed_eq_keys = [
     ])
-    let expected = if mutation == 1 {
-      [EInt(3), EInt(10)]
-    } else {
-      [EInt(10), EInt(3)]
-    }
+    let expected = [EInt(10), EInt(3)]
     let mut found = false
     for stmt in parsed {
       match stmt {
@@ -231,7 +230,9 @@ test "raw cached source is rechecked before consuming its placements" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(x = 10, y = 3) }"
   for roundtrip in [false, true] {
     assert(cached_lowering_message(source = source, mutation = 0, roundtrip = roundtrip) == "")
-    assert(cached_lowering_message(source = source, mutation = 1, roundtrip = roundtrip) == "")
+    // The cached placement is consumed as it is: a swapped one is refused
+    // (ADR-0120 D2 keeps written order), not recomputed.
+    assert(String::contains(cached_lowering_message(source = source, mutation = 1, roundtrip = roundtrip), needle = "missing or invalid checker argument placement for `f`"))
     assert(String::contains(cached_lowering_message(source = source, mutation = 2, roundtrip = roundtrip), needle = "missing or invalid checker argument placement for `f`"))
   }
 }

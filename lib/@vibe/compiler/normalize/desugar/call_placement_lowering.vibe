@@ -2,17 +2,16 @@ import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
-  __to_string,
   call_placement_error,
   call_placement_get,
   call_placement_is_canonical,
   call_placement_is_pending,
   call_placement_mark_applied,
   call_placement_payload_valid,
+  call_placement_refuse,
   expr_any_node
 }
 
-let cpl_next: Array[Int] = [0]
 let cpl_require_checked: Array[Bool] = [false]
 
 fn cpl_value(_ arg: Expr) -> Expr {
@@ -22,84 +21,27 @@ fn cpl_value(_ arg: Expr) -> Expr {
   }
 }
 
-// 0: stable value; 1: a name that a later argument could assign; 2: a
-// computation that can observe or change another argument's value.
-fn cpl_effect_class(_ expr: Expr) -> Int {
-  match expr {
-    EInt(_) => 0,
-    EFloat(_) => 0,
-    EString(_, _) => 0,
-    EBool(_) => 0,
-    EUnit => 0,
-    EFn(_, _, _, _, _, _) => 0,
-    EIdent(name, _) => if String::length(name) == 0 || String::contains(name, needle = "::") {
-      0
-    } else {
-      let first = String::byte_at(name, at = 0)
-      if first >= 65 && first <= 90 {
-        0
+// ADR-0120 D2: a declaration call's labels are in declared order and a call
+// through a value is positional, so every placed argument keeps its written
+// position relative to the others. A placement that would move one past
+// another would evaluate them out of written order; refuse it rather than
+// reorder silently.
+fn cpl_in_written_order(_ slots: Array[Int]) -> Bool {
+  let mut last = -1
+  let mut ok = true
+  for slot in slots {
+    let source = slot / 2 - 1
+    if source >= 0 {
+      if source <= last {
+        ok = false
       } else {
-        1
-      }
-    },
-    ETuple(items) => cpl_effects(items),
-    EArray(items) => cpl_effects(items),
-    ESpread(value) => cpl_effect_class(value),
-    EUnaryOp(_, value) => cpl_effect_class(value),
-    ELabeledArg(_, _, value) => cpl_effect_class(value),
-    ERecord(_, fields, _) => {
-      let mut result = 0
-      for field in fields {
-        let next = cpl_effect_class(field.1)
-        if next > result {
-          result = next
-        } else {
-          ()
-        }
-      }
-      result
-    },
-    _ => 2
-  }
-}
-
-fn cpl_effects(_ items: Array[Expr]) -> Int {
-  let mut result = 0
-  for item in items {
-    let next = cpl_effect_class(item)
-    if next > result {
-      result = next
-    } else {
-      ()
-    }
-  }
-  result
-}
-
-fn cpl_needs_temporaries(args: Array[Expr], slots: Array[Int]) -> Bool {
-  let mut needed = false
-  let mut i = 0
-  while i < Array::length(slots) && !needed {
-    let left = Array::get(slots, at = i) / 2 - 1
-    if left >= 0 {
-      let lc = cpl_effect_class(Array::get(args, at = left))
-      let mut j = i + 1
-      while j < Array::length(slots) && !needed {
-        let right = Array::get(slots, at = j) / 2 - 1
-        if right >= 0 && left > right {
-          let rc = cpl_effect_class(Array::get(args, at = right))
-          needed = lc > 0 && rc > 0 && (lc == 2 || rc == 2)
-        } else {
-          ()
-        }
-        j = j + 1
+        last = source
       }
     } else {
       ()
     }
-    i = i + 1
   }
-  needed
+  ok
 }
 
 fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> Expr with Exception {
@@ -118,27 +60,11 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
   } else {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => {
-        if written != Array::length(args) || !call_placement_payload_valid(written = written, mode = mode, slots = slots) {
+        if written != Array::length(args) || !call_placement_payload_valid(written = written, mode = mode, slots = slots) || !cpl_in_written_order(slots) {
+          // The cell holds a payload, not a refusal: mark it refused so the
+          // message names this call instead of decoding the slots as one.
+          call_placement_refuse(cell = cell, invalid = true)
           throw(call_placement_error(cell = cell, callee = callee, offset = offset))
-        } else {
-          ()
-        }
-        let bind = mode == 0 && cpl_needs_temporaries(args = args, slots = slots)
-        let names: Array[String] = for _ in args {
-          ""
-        }
-        if bind {
-          let mut i = 0
-          while i < Array::length(args) {
-            if cpl_effect_class(Array::get(args, at = i)) > 0 {
-              let next = Array::get(cpl_next, at = 0)
-              Array::set(cpl_next, at = 0, value = next + 1)
-              Array::set(names, at = i, value = "__labeled_arg$" + __to_string(next))
-            } else {
-              ()
-            }
-            i = i + 1
-          }
         } else {
           ()
         }
@@ -148,10 +74,7 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
             Array::push(placed, value = EIdent("None", -1))
           } else {
             let source = slot / 2 - 1
-            let name = Array::get(names, at = source)
-            let value = if String::length(name) > 0 {
-              EIdent(name, -1)
-            } else if mode == 0 {
+            let value = if mode == 0 {
               cpl_value(Array::get(args, at = source))
             } else {
               Array::get(args, at = source)
@@ -164,44 +87,7 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
           }
         }
         call_placement_mark_applied(cell)
-        let receiver = if bind {
-          match callee {
-            EDot(obj, _, _, _) => if cpl_effect_class(obj) > 0 {
-              Some(obj)
-            } else {
-              None
-            },
-            _ => None
-          }
-        } else {
-          None
-        }
-        let receiver_name = match receiver {
-          Some(_) => "__labeled_recv$" + __to_string(Array::get(cpl_next, at = 0)),
-          None => ""
-        }
-        let placed_callee = match receiver {
-          Some(_) => match callee {
-            EDot(_, method, off, foff) => EDot(EIdent(receiver_name, -1), method, off, foff),
-            _ => callee
-          },
-          None => callee
-        }
-        let mut body = ECall(placed_callee, placed, offset, cell)
-        let mut i = Array::length(args)
-        while i > 0 {
-          i = i - 1
-          let name = Array::get(names, at = i)
-          if String::length(name) > 0 {
-            body = ELet(name, cpl_value(Array::get(args, at = i)), body, -1)
-          } else {
-            ()
-          }
-        }
-        match receiver {
-          Some(obj) => ELet(receiver_name, obj, body, -1),
-          None => body
-        }
+        ECall(callee, placed, offset, cell)
       },
       None => {
         let mut labeled = false
@@ -298,7 +184,6 @@ fn cpl_body(_ expr: Expr) -> Expr with Exception {
 }
 
 fn cpl_stmt(_ stmt: Stmt) -> Stmt with Exception {
-  Array::set(cpl_next, at = 0, value = 0)
   match stmt {
     SLet(ex, is_rec, name, ty, body) => SLet(ex, is_rec, name, ty, cpl_body(body)),
     SLetMut(name, ty, body) => SLetMut(name, ty, cpl_body(body)),
