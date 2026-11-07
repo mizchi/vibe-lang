@@ -1,0 +1,231 @@
+import @vibe/checker/lowering {
+  CheckedLoweringInputs, reset_checked_lowering_memo
+}
+import @vibe/compiler/config {
+  Config, target_cfg_from_csv
+}
+import @vibe/compiler/entry/compiler/fs_compile {
+  compile_checked_source_groups_wasi_configured,
+  compile_checked_source_groups_wasi_with_config,
+  compile_with_closure_sources_wasi_mode_cached
+}
+import @vibe/compiler/runtime {
+  db_checked_lowering_inputs, db_new, db_set_source, db_typecheck_with_config
+}
+import @vibe/compiler/cache {
+  set_persistent_cache_cfg_flags
+}
+import @vibe/compiler/core {
+  merged_offset_owner
+}
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+fn cg_inputs(sources: Array[(String, String)], entry: String, flags: String) -> CheckedLoweringInputs with Env + Exception {
+  let mut db = db_new()
+  for source in sources {
+    db = db_set_source(db = db, path = source.0, source = source.1)
+  }
+  let cfg = target_cfg_from_csv(flags)
+  let checked = db_typecheck_with_config(db = db, path = entry, cfg = cfg)
+  db_checked_lowering_inputs(db = checked, cfg = cfg)
+}
+
+fn cg_sources() -> Array[(String, String)] {
+  [
+    ("cfg_codegen/value.vibe", "#cfg(alpha)\nexport fn value() -> String { \"ab\" }\n#cfg(beta)\nexport fn value() -> Int { 4 }\n"),
+    ("cfg_codegen/main.vibe", "import ./value.vibe { value }\n#cfg(alpha)\nexport fn main() -> Int { let a = value(); let b = value(); if a + b == \"abab\" { 11 } else { 0 } }\n#cfg(beta)\nexport fn main() -> Int { value() + value() }\n#cfg(poison)\nlet invalid = missing_name\nfn unused() -> Int { 99 }\n")
+  ]
+}
+
+fn cg_groups() -> Array[(String, Array[(String, String)])] {
+  let sources = cg_sources()
+  [
+    ("dependency", [Array::get(sources, at = 0)]),
+    ("entry", [Array::get(sources, at = 1)])
+  ]
+}
+
+// This row intentionally admits neither Env nor Fs.
+fn cg_emit(flags: String, mode: String, inputs: CheckedLoweringInputs) -> Bytes with Exception {
+  compile_checked_source_groups_wasi_with_config(source_groups = cg_groups(), entry_name = "main", mode = mode, cfg = target_cfg_from_csv(flags), inputs = inputs)
+}
+
+fn cg_reset() -> Unit {
+  set_cfg_ambient_flags([])
+  set_persistent_cache_cfg_flags("")
+}
+
+fn cg_run(bytes: Bytes, label: String, expected: String) -> Unit with Fs + Process + Exception {
+  let path = "/tmp/vibe_cfg_codegen_" + label + ".wasm"
+  Fs::write_bytes(path, bytes = bytes)
+  let output = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0 2>/dev/null")
+  assert_eq(String::join(output, sep = ""), expected)
+}
+
+test "configured codegen is byte-identical to the compatibility typed modes" {
+  cg_reset()
+  let path = "cfg_codegen/control.vibe"
+  let source = "fn id[T](_ value: T) -> T { value }\nexport fn main() -> Int { let f = () -> { 2.5 }; if __to_string(id(2.5)) == \"2.5\" && __to_string(f()) == \"2.5\" { 7 } else { 0 } }\nfn unused() -> Int { 5 }\n"
+  let inputs = cg_inputs(sources = [(path, source)], entry = path, flags = "")
+  for mode in ["mvp", "no-dce"] {
+    let (legacy, _) = compile_with_closure_sources_wasi_mode_cached(db = db_new(), main_source = source, main_path = path, sources = [
+    ], entry_name = "main", mode = mode)
+    let owned = compile_checked_source_groups_wasi_with_config(source_groups = [
+      ("inline", [(path, source)])
+    ], entry_name = "main", mode = mode, cfg = target_cfg_from_csv(""), inputs = inputs)
+    assert(legacy == owned)
+    cg_run(bytes = owned, label = "control_" + mode, expected = "7")
+  }
+}
+
+test "retained target products emit after another check and a memo reset" {
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let alpha = cg_inputs(sources = cg_sources(), entry = "cfg_codegen/main.vibe", flags = "alpha")
+    let first = cg_emit(flags = "alpha", mode = "mvp", inputs = alpha)
+    let beta = cg_inputs(sources = cg_sources(), entry = "cfg_codegen/main.vibe", flags = "beta")
+    reset_checked_lowering_memo()
+    let a = cg_emit(flags = "alpha", mode = "mvp", inputs = alpha)
+    let b = cg_emit(flags = "beta", mode = "mvp", inputs = beta)
+    let library = cg_emit(flags = "alpha", mode = "no-dce", inputs = alpha)
+    assert(first == a)
+    assert(a != b)
+    assert(Bytes::length(library) > Bytes::length(a))
+    cg_run(bytes = a, label = "alpha", expected = "11")
+    cg_run(bytes = b, label = "beta", expected = "8")
+    cg_run(bytes = library, label = "no_dce", expected = "11")
+    assert(a == cg_emit(flags = "alpha", mode = "mvp", inputs = alpha))
+    cg_reset()
+  } with { Exception::Throw(message) => {
+    cg_reset(); throw(message)
+  } }
+}
+
+test "typed numeric, render and equality channels survive a record field type switch" {
+  let path = "cfg_codegen/typed.vibe"
+  let source = "#cfg(alpha)\nstruct Ratio { ratio: Float64 }\n#cfg(beta)\nstruct Ratio { ratio: Int }\n#cfg(alpha)\nfn ratio_value() -> Float64 { 1.25 }\n#cfg(beta)\nfn ratio_value() -> Int { 2 }\nexport fn main() -> Int { let record = Ratio::{ ratio: ratio_value() }; let d = () -> Float64 { 1.25 }; let b = () -> Bool { true }; let mk = (n: Int) -> [n, n + 1]; let t = (64 << 32, 1); if __to_string(record.ratio) == \"1.25\" && __to_string(t.0) == \"274877906944\" && __to_string(b()) == \"true\" && mk(1) == mk(1) && __to_string(d()) == \"1.25\" && d() + 0.75 == 2.0 { 23 } else { 0 } }\n"
+  let alpha = cg_inputs(sources = [(path, source)], entry = path, flags = "alpha")
+  let beta = cg_inputs(sources = [(path, source)], entry = path, flags = "beta")
+  reset_checked_lowering_memo()
+  let groups = [("typed", [(path, source)])]
+  for mode in ["mvp", "no-dce"] {
+    let bytes = compile_checked_source_groups_wasi_with_config(source_groups = groups, entry_name = "main", mode = mode, cfg = target_cfg_from_csv("alpha"), inputs = alpha)
+    cg_run(bytes = bytes, label = "typed_alpha_" + mode, expected = "23")
+    let other = compile_checked_source_groups_wasi_with_config(source_groups = groups, entry_name = "main", mode = mode, cfg = target_cfg_from_csv("beta"), inputs = beta)
+    cg_run(bytes = other, label = "typed_beta_" + mode, expected = "0")
+    assert(bytes == compile_checked_source_groups_wasi_with_config(source_groups = groups, entry_name = "main", mode = mode, cfg = target_cfg_from_csv("alpha"), inputs = alpha))
+  }
+}
+
+test "retained call placements survive a target changing the parameter order" {
+  let path = "cfg_codegen/labels.vibe"
+  let source = "#cfg(alpha)\nfn diff(left: Int, right: Int) -> Int { left - right }\n#cfg(beta)\nfn diff(right: Int, left: Int) -> Int { left - right }\nexport fn main() -> Int { diff(right = 3, left = 11) }\n"
+  let alpha = cg_inputs(sources = [(path, source)], entry = path, flags = "alpha")
+  let beta = cg_inputs(sources = [(path, source)], entry = path, flags = "beta")
+  for pair in [("alpha", alpha), ("beta", beta), ("alpha", alpha)] {
+    let bytes = compile_checked_source_groups_wasi_with_config(source_groups = [
+      ("labels", [(path, source)])
+    ], entry_name = "main", mode = "mvp", cfg = target_cfg_from_csv(pair.0), inputs = pair.1)
+    cg_run(bytes = bytes, label = "labels_" + pair.0, expected = "8")
+  }
+}
+
+test "retained builtin identity survives a configured program shadow" {
+  let path = "cfg_codegen/builtin.vibe"
+  let source = "#cfg(beta)\nfn Array::push(_ xs: Array[Int], value: Int) -> Unit { () }\nexport fn main() -> Int { let xs: Array[Int] = []; Array::push(xs, value = 7); Array::length(xs) }\n"
+  let alpha = cg_inputs(sources = [(path, source)], entry = path, flags = "alpha")
+  let beta = cg_inputs(sources = [(path, source)], entry = path, flags = "beta")
+  for pair in [("alpha", alpha, "1"), ("beta", beta, "0"), ("alpha", alpha, "1")] {
+    let bytes = compile_checked_source_groups_wasi_with_config(source_groups = [
+      ("builtin", [(path, source)])
+    ], entry_name = "main", mode = "mvp", cfg = target_cfg_from_csv(pair.0), inputs = pair.1)
+    cg_run(bytes = bytes, label = "builtin_" + pair.0, expected = pair.2)
+  }
+}
+
+test "a Config request runs nested successful and refused emits before resuming" {
+  let alpha = cg_inputs(sources = cg_sources(), entry = "cfg_codegen/main.vibe", flags = "alpha")
+  let beta = cg_inputs(sources = cg_sources(), entry = "cfg_codegen/main.vibe", flags = "beta")
+  let expected = cg_emit(flags = "alpha", mode = "mvp", inputs = alpha)
+  let calls = [0]
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let actual = handle {
+      compile_checked_source_groups_wasi_configured(source_groups = cg_groups(), entry_name = "main", mode = "mvp", inputs = alpha)
+    } with { Config::CfgFlags() => {
+      Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
+      let inner = handle {
+        compile_checked_source_groups_wasi_configured(source_groups = cg_groups(), entry_name = "main", mode = "mvp", inputs = beta)
+      } with { Config::CfgFlags() => resume(" beta, ") }
+      assert(inner != expected)
+      let message = handle {
+        let _ = handle {
+          compile_checked_source_groups_wasi_configured(source_groups = cg_groups(), entry_name = "main", mode = "mvp", inputs = alpha)
+        } with { Config::CfgFlags() => resume("beta") }
+        ""
+      } with { Exception::Throw(message) => message }
+      assert(String::contains(message, needle = "target flags"))
+      resume(" alpha, ")
+    } }
+    assert_eq(Array::get(calls, at = 0), 1)
+    assert(actual == expected)
+    cg_run(bytes = actual, label = "nested", expected = "11")
+    cg_reset()
+  } with { Exception::Throw(message) => {
+    cg_reset(); throw(message)
+  } }
+}
+
+fn cg_location() -> String {
+  match merged_offset_owner(0) {
+    Some((path, source, offset)) => path + ":" + source + ":" + Int::to_string(offset),
+    None => "none"
+  }
+}
+
+test "wrong sources or target fail before changing merge metadata" {
+  let alpha = cg_inputs(sources = cg_sources(), entry = "cfg_codegen/main.vibe", flags = "alpha")
+  let expected = cg_emit(flags = "alpha", mode = "mvp", inputs = alpha)
+  let location = cg_location()
+  let target_error = handle {
+    let _ = cg_emit(flags = "beta", mode = "mvp", inputs = alpha); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(target_error, needle = "target flags"))
+  assert_eq(cg_location(), location)
+  for sources in [
+    [("cfg_codegen/main.vibe", "export fn main() -> Int { 99 }")],
+    [("cfg_codegen/missing.vibe", "export fn main() -> Int { 99 }")]
+  ] {
+    let error = handle {
+      let _ = compile_checked_source_groups_wasi_with_config(source_groups = [
+        ("bad", sources)
+      ], entry_name = "main", mode = "mvp", cfg = target_cfg_from_csv("alpha"), inputs = alpha)
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(error, needle = "before merging"))
+    assert(String::contains(error, needle = Array::get(sources, at = 0).0))
+    assert_eq(cg_location(), location)
+  }
+  assert(expected == cg_emit(flags = "alpha", mode = "mvp", inputs = alpha))
+}
+
+test "unsupported modes refuse before merging or compiling" {
+  let alpha = cg_inputs(sources = cg_sources(), entry = "cfg_codegen/main.vibe", flags = "alpha")
+  let expected = cg_emit(flags = "alpha", mode = "mvp", inputs = alpha)
+  let location = cg_location()
+  for mode in ["", "rc", "dce-root", "future"] {
+    let error = handle {
+      let _ = compile_checked_source_groups_wasi_with_config(source_groups = [
+        ("bad", [("missing.vibe", "invalid input")])
+      ], entry_name = "main", mode = mode, cfg = target_cfg_from_csv("alpha"), inputs = alpha)
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(error, needle = "choose mvp or no-dce"))
+    assert_eq(cg_location(), location)
+  }
+  assert(expected == cg_emit(flags = "alpha", mode = "mvp", inputs = alpha))
+}
