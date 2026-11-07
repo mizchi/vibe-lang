@@ -146,8 +146,9 @@ That block shows four things worth naming:
 - **The `let` form.** A function is a value; `let inc: (Int) -> Int =
   (x) -> { ... }` is the same function written as a binding.
 - **Labelled arguments.** A parameter is labelled by its name, so callers
-  write `x=4`, in any order, which is what you want once a function takes
-  three `Int`s. `_ x: T` (as in `identity`) makes a slot positional.
+  write `x=4`, in the order the function declares, which is what you want
+  once a function takes three `Int`s. `_ x: T` (as in `identity`) makes a
+  slot positional.
 - **The body is an expression.** No `return` needed — the last
   expression is the result.
 

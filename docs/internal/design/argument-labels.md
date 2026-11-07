@@ -239,10 +239,9 @@ Phase 1c (#3661) keeps the source argument order through checking. The
 checker publishes a placement on each call that needs labels or optional
 slots; lowering consumes its source indices and inserts `Some` / `None`.
 The syntactic resolver and paired binder-authority normalization are removed.
-A call through a value is positional since Phase 4b. Declaration reordering
-remains: a call to a declaration whose labels are out of declared order is
-still placed by name and evaluated in written order (#3549), not refused as
-D2 states.
+A call through a value is positional since Phase 4b, and a call to a
+declaration whose labels are out of declared order is refused (D2) with the
+move and the declared order.
 Rowless build lanes refuse labeled calls and ask for checked source.
 
 ### Positional slots

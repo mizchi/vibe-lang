@@ -63,7 +63,7 @@ fn placement_param_name(_ raw: String) -> String {
     raw
   }
   let size = String::length(named)
-  if String::ends_with(named, suffix = "~") || String::ends_with(named, suffix = "?") {
+  if String::ends_with(named, suffix = "?") {
     named[0: size - 1]
   } else {
     named
@@ -261,16 +261,26 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 all_names
               }
               let slots = placement_for_header(args = args, names = names)
+              let declaration = checker_call_header_is_declaration(env = env, name = name)
               // A local lambda's header still places omitted optional slots,
               // but its call is through a value: positional only.
-              if checker_call_header_is_declaration(env = env, name = name) {
+              if declaration {
                 placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), declaration = true, errors = errors)
               } else {
                 placement_refuse_value_labels(name = name, offset = ident_offset, args = args, errors = errors)
               }
               if Array::length(errors) == before {
                 match slots {
-                  Some(found) => call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors),
+                  Some(found) => {
+                    call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors)
+                    // ADR-0120 D2, after publishing: the call is still typed
+                    // by its placement, so the move is the only diagnostic.
+                    if declaration {
+                      placement_check_order(name = name, offset = ident_offset, written_len = placement_written_len(callee = callee, name = name), args = args, names = names, slots = found, errors = errors)
+                    } else {
+                      ()
+                    }
+                  },
                   None => ()
                 }
               } else {
@@ -549,6 +559,96 @@ fn placement_refuse_value_labels(name: String, offset: Int, args: Array[Expr], e
       Array::push(errors, value = "a call through " + callee + " passes its arguments by position: remove " + String::join(items, sep = ", ") + " (only a call to a declaration names its arguments)" + off_marker_len(off = offset, len = len))
     },
     None => ()
+  }
+}
+
+/// The length of the callee as the source spells it: the whole written name
+/// of a direct call (`sub`, `Meter::sub`, an import alias), whose offset is
+/// the name's start, or the member token of a dot call (`m.sub(..)`,
+/// `helper.greet(..)`), whose offset is that token's (Codex on #3903).
+fn placement_written_len(callee: Expr, name: String) -> Int {
+  match callee {
+    EIdent(written, _) => String::length(written),
+    EDot(_, member, _, _) => String::length(member),
+    _ => String::length(name)
+  }
+}
+
+/// ADR-0120 D2: written order is declared order, so a call to a declaration
+/// that names a slot before one it has already passed is refused with the
+/// move. Only the first such argument is reported; the declared order is
+/// listed so every move can be made at once.
+fn placement_check_order(name: String, offset: Int, written_len: Int, args: Array[Expr], names: Array[String], slots: Array[Int], errors: Array[String]) -> Unit {
+  // The published placement already says which declared slot each written
+  // argument fills, so the walk compares indices and allocates nothing; the
+  // message is built only when it is reported.
+  let mut prev_slot = -1
+  let mut prev_arg = -1
+  let mut ai = 0
+  let count = if Array::length(args) < 2 {
+    0
+  } else {
+    Array::length(args)
+  }
+  while ai < count {
+    let slot = placement_slot_of_written(slots = slots, written = ai)
+    if slot >= 0 && slot < prev_slot {
+      Array::push(errors, value = placement_order_message(name = name, args = args, names = names, at = ai, prev = prev_arg) + off_marker_len(off = offset, len = written_len))
+      ai = count
+    } else {
+      if slot >= 0 {
+        prev_slot = slot
+        prev_arg = ai
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+  }
+}
+
+/// The declared slot written argument `written` fills, from a placement row
+/// (`(source + 1) * 2`, plus one when the value is wrapped in `Some`).
+fn placement_slot_of_written(slots: Array[Int], written: Int) -> Int {
+  let mut found = -1
+  let mut s = 0
+  while s < Array::length(slots) && found < 0 {
+    let v = Array::get(slots, at = s)
+    if v > 1 && v / 2 - 1 == written {
+      found = s
+    } else {
+      ()
+    }
+    s = s + 1
+  }
+  found
+}
+
+/// Argument `at` fills a slot before the one argument `prev` (written
+/// earlier) fills. A labeled `at` is moved before `prev`; a positional one
+/// stands at its own `_` slot, so the earlier label is the one out of place
+/// (Codex on #3903: `f(c = 3, 2)` for `fn f(a?: Int, _ b?: Int, c?: Int)`).
+fn placement_order_message(name: String, args: Array[Expr], names: Array[String], at: Int, prev: Int) -> String {
+  let declared = " (" + name + " declares " + String::join(for raw in names {
+    placement_param_name(raw)
+  }, sep = ", ") + ")"
+  match Array::get(args, at = at) {
+    ELabeledArg(label, _, _) => "labeled argument `" + label + "` for " + name + " is out of declared parameter order: move `" + label + " = ..` before " + placement_written_arg(args = args, at = prev) + declared,
+    _ => {
+      let moved = match Array::get(args, at = prev) {
+        ELabeledArg(label, _, _) => label,
+        _ => ""
+      }
+      "labeled argument `" + moved + "` for " + name + " is out of declared parameter order: move `" + moved + " = ..` after argument " + __to_string(at + 1) + declared
+    }
+  }
+}
+
+/// How the message names written argument `at`: its label, or its position.
+fn placement_written_arg(args: Array[Expr], at: Int) -> String {
+  match Array::get(args, at = at) {
+    ELabeledArg(label, _, _) => "`" + label + " = ..`",
+    _ => "argument " + __to_string(at + 1)
   }
 }
 

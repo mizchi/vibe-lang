@@ -15,10 +15,10 @@ import ./checker_parity_test_support.vibe {
 
 //# Misc
 
-/// A callback written first still receives constraints from earlier formal
-/// arguments. Its unannotated String parameter must not default to Int.
-test "reordered generic callbacks infer from their declared preceding value" {
-  assert(check_source_ok("fn apply[T](value: T, body: (T) -> T) -> T { body(value) }\nfn main() -> String { apply(body = (s) -> s + s, value = \"a\") }"))
+/// ADR-0120 D2: a callback written ahead of the value it is declared after is
+/// out of declared order, and refused with the move.
+test "a callback written ahead of its declared preceding value is refused" {
+  assert(check_source_err_contains(source = "fn apply[T](value: T, body: (T) -> T) -> T { body(value) }\nfn main() -> String { apply(body = (s) -> s + s, value = \"a\") }", needle = "labeled argument `value` for apply is out of declared parameter order: move `value = ..` before `body = ..`"))
 }
 
 /// A callback written in declared order is still checked after the value
@@ -64,10 +64,10 @@ test "labeled args: unknown label names rejected" {
   assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(nosuch=1, alsono=2)\n}"))
 }
 
-/// Fully-labeled out-of-order call to a LABELED fn is reordered by
-/// desugar_labeled_args (name-based binding) — accepted.
-test "labeled args: reordered labeled call accepted" {
-  assert(check_source_ok("let add: (Int, Int) -> Int = (x, y) -> { x + y }\nfn main() -> Int {\n  add(y=2, x=1)\n}"))
+/// ADR-0120 D2: a fully-labeled call out of declared order is refused with the
+/// move; it used to be placed by name.
+test "labeled args: reordered labeled call refused" {
+  assert(check_source_err_contains(source = "let add: (Int, Int) -> Int = (x, y) -> { x + y }\nfn main() -> Int {\n  add(y=2, x=1)\n}", needle = "labeled argument `x` for add is out of declared parameter order: move `x = ..` before `y = ..` (add declares x, y)"))
 }
 
 /// The reorder is name-based, so a type error must follow the LABEL, not the
@@ -76,17 +76,15 @@ test "labeled args: reordered labeled call type mismatch rejected" {
   assert(check_source_err("let add: (Int, String) -> Int = (x, y) -> { x }\nfn main() -> Int {\n  add(y=1, x=2)\n}"))
 }
 
-/// #986 follow-up: a fully-labeled out-of-order call to a PLAIN fn (no `~` in
-/// the declaration) is also reordered by name — `fn` decls lower to
-/// `SLet` + `EFn` before the pass, so the parameter names are known.
-test "labeled args: reordered labels on plain fn accepted" {
-  assert(check_source_ok("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, x=2)\n}"))
+/// ...on a plain `fn` as well (#986 follow-up).
+test "labeled args: reordered labels on plain fn refused" {
+  assert(check_source_err_contains(source = "fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, x=2)\n}", needle = "out of declared parameter order"))
 }
 
-/// The name-based reorder means types follow the LABEL on plain fns too:
-/// f(y=\"s\", x=1) against (x: Int, y: String) is fine...
-test "labeled args: reordered labels on plain fn follow label types" {
-  assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=\"s\", x=1)\n}"))
+/// Types follow the LABEL: `f(x=1, y=\"s\")` against (x: Int, y: String) is
+/// fine...
+test "labeled args: labels on plain fn follow label types" {
+  assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=1, y=\"s\")\n}"))
 }
 
 /// ...and f(y=5, x=\"hello\") is rejected (both labels name the wrong type).
@@ -138,11 +136,11 @@ test "1001: mixed positional/labeled arguments rejected (label on the second arg
   assert(check_source_err("let f: (Int, String) -> Int = (x, y) -> { x }\nfn main() -> Int { f(1, y=\"ok\") }"))
 }
 
-/// A fully-labeled call in a DIFFERENT declared order is not a mix — it must
-/// keep being accepted (regression guard for the #1001 fix: the mixed-mode
-/// check must not fire on a genuinely all-labeled call).
-test "1001: fully-labeled out-of-order call is not a mix, stays accepted" {
-  assert(check_source_ok("let f: (Int, String) -> Int = (x, y) -> { x }\nfn main() -> Int { f(y=\"ok\", x=1) }"))
+/// A fully-labeled call in a DIFFERENT declared order is not a mix (regression
+/// guard for the #1001 fix): it is refused for its order, not for mixing.
+test "1001: fully-labeled out-of-order call is not a mix" {
+  assert(check_source_err_contains(source = "let f: (Int, String) -> Int = (x, y) -> { x }\nfn main() -> Int { f(y=\"ok\", x=1) }", needle = "out of declared parameter order"))
+  assert(!check_source_err_contains(source = "let f: (Int, String) -> Int = (x, y) -> { x }\nfn main() -> Int { f(y=\"ok\", x=1) }", needle = "mixes"))
 }
 
 /// A fully-positional call is not a mix either — stays accepted.
@@ -160,12 +158,11 @@ test "1001: mixed positional/labeled arguments on a LOCAL closure rejected" {
   assert(check_source_err("fn main() -> Int {\n  let f = (x: Int, y: String) -> Int { x }\n  f(x=1, \"ok\")\n}"))
 }
 
-/// Codex on #3438: a fully labeled call that omits optional parameters is
-/// placed by its labels, with `None` in each omitted slot. It used to be left
-/// unordered, and filling the omitted slot wrapped each label in `Some`, so
-/// `f(b = 4, a = 5)` bound `a = 4, b = 5`.
-test "labeled args: reordered labels with an omitted default accepted" {
-  assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(b = 4, a = 5)\n}"))
+/// An omitted defaulted slot between written ones is filled, and each written
+/// label lands in its own slot: `f(a = 5, c = 6)` binds `a = 5, c = 6`.
+test "labeled args: an omitted default between written labels accepted" {
+  assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(a = 5, c = 6)\n}"))
+  assert(check_source_err_contains(source = "fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(b = 4, a = 5)\n}", needle = "out of declared parameter order"))
 }
 
 /// A label may skip an omitted optional in the middle.
@@ -185,9 +182,9 @@ test "labeled args: in-order labels with an omitted default accepted" {
   assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(a = 5, b = 4)\n}"))
 }
 
-/// Fully labeled and complete, the reorder still applies.
-test "labeled args: reordered labels with every default supplied accepted" {
-  assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(c = 6, b = 4, a = 5)\n}"))
+/// Fully labeled and complete, in declared order.
+test "labeled args: labels with every default supplied accepted" {
+  assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(a = 5, b = 4, c = 6)\n}"))
 }
 
 /// #3651: a builtin has no parameter names, so a labeled builtin call bound

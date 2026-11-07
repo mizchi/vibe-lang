@@ -339,8 +339,9 @@ Rules (ADR-0120):
   the call may omit it, and the body sees `Int`. Defaults are trailing, may
   read only earlier parameters, and apply only to a direct call; see the
   cheatsheet's "Optional arguments" section for the full rules.
-- Labeled call arguments are evaluated in the order they are written and then
-  bound to the parameters by name.
+- Labeled call arguments are written in the declared order, so they are
+  evaluated in that order; a label out of declared order is a build error
+  naming the move. An optional or defaulted parameter may be omitted anywhere.
 - Missing optional args are passed as `None`.
 - A call through a function value (a parameter, a local lambda, a field) is
   positional only, and a function type carries no labels.

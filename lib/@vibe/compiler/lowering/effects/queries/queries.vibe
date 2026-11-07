@@ -182,7 +182,7 @@ fn edp_rq_params(q: EdpReadQuery, params: Array[(String, Option[TypeExpr])]) -> 
   while i < Array::length(params) && !(edp_rq_stops_array_on_hit(q) && hit > 0) {
     let (name, _) = Array::get(params, at = i)
     let local = match q {
-      RQEdpBindsName(x) => if edp_strip_tilde(name) == x {
+      RQEdpBindsName(x) => if name == x {
         1
       } else {
         0
@@ -833,18 +833,6 @@ fn edp_performing_close(out: Array[String], member: MutSet[String], callers: Mut
   }
 }
 
-/// Local copy of dlh_strip_tilde (desugar_trait_dict.vibe) -- see
-/// edp_pat_binds' own doc comment just below for why this file keeps local
-/// copies rather than adding new cross-file callers.
-export fn edp_strip_tilde(_ n: String) -> String {
-  let ln = String::length(n)
-  if ln > 0 && n[ln - 1: ln] == "~" {
-    n[0: ln - 1]
-  } else {
-    n
-  }
-}
-
 /// Local copy of a pattern's bound names (mirrors dlh_pat_binds in
 /// desugar_trait_dict.vibe -- kept as a separate local copy rather than a
 /// cross-file import to avoid the bootstrap flatten gotcha documented
@@ -1262,7 +1250,7 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
       let mut pi = 0
       while pi < Array::length(params) {
         let (pn, ty) = Array::get(params, at = pi)
-        Array::push(ls_names, value = edp_strip_tilde(pn))
+        Array::push(ls_names, value = pn)
         // A checked row-free function parameter cannot perform the effect.
         Array::push(ls_flags, value = match ty {
           Some(TyFn(_, _, None)) => true,
@@ -2055,12 +2043,12 @@ fn scps_fn_params_bind_resume(_ params: Array[(String, Option[TypeExpr])]) -> Bo
   while i < Array::length(params) {
     let (pn, _) = Array::get(params, at = i)
     let ln = String::length(pn)
-    // A labeled (`~`) OR optional (`?`) parameter keeps its marker in the raw
-    // AST name; strip either, the way the checker's param_base_name does, so
+    // An optional (`?`) parameter keeps its marker in the raw AST name;
+    // strip it, the way the checker's param_base_name does, so
     // a `resume?` parameter shadows the continuation for BOTH walks (#2985
     // review: the checker saw the shadow and classified the arm as an implicit
     // resume while this walk saw a captured `resume` and chose suspend).
-    let base = if ln > 0 && (pn[ln - 1: ln] == "~" || pn[ln - 1: ln] == "?") {
+    let base = if ln > 0 && pn[ln - 1: ln] == "?" {
       pn[0: ln - 1]
     } else {
       pn
