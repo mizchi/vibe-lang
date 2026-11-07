@@ -1,0 +1,72 @@
+import @vibe/compiler/config {
+  target_cfg_from_csv
+}
+import @vibe/compiler/runtime {
+  db_checked_lowering_inputs, db_new, db_set_source, db_typecheck_with_config
+}
+import @vibe/compiler/linker/merge {
+  merged_stmts_and_offsets, merged_stmts_and_offsets_with_config
+}
+import @vibe/compiler/syntax {
+  print_program
+}
+import @vibe/compiler/cache {
+  compact_string_fingerprint
+}
+
+fn main allows Env + Exception + Console + Profiler {
+  let cfg = target_cfg_from_csv("")
+  let sources: Array[(String, String)] = []
+  let mut db = db_new()
+  let mut imports = ""
+  let mut i = 0
+  while i < 128 {
+    let path = "owned_perf/node_\{i}.vibe"
+    let source = "export fn step_\{i}(x: String) -> (String, Bool) { (x + x, x == x) }\n"
+    Array::push(sources, value = (path, source))
+    db = db_set_source(db = db, path = path, source = source)
+    imports = String::concat(imports, "import ./node_\{i}.vibe { step_\{i} }\n")
+    i = i + 1
+  }
+  let entry = "owned_perf/main.vibe"
+  let text = String::concat(imports, "fn main() -> Int { 7 }\n")
+  Array::push(sources, value = (entry, text))
+  db = db_typecheck_with_config(db = db_set_source(db = db, path = entry, source = text), path = entry, cfg = cfg)
+  let start_heap = Profiler::heap_bytes()
+  let start = Profiler::now_us()
+  let inputs = db_checked_lowering_inputs(db = db, cfg = cfg)
+  let capture_us = Profiler::now_us() - start
+  let capture_bytes = Profiler::heap_bytes() - start_heap
+  let groups = [("graph", sources)]
+  // Prime parsing and check complete typed output before timed steady merges.
+  let (reference, _, _, _, eo, ek) = merged_stmts_and_offsets(groups)
+  let expected = print_program(reference)
+  assert(Array::length(eo) >= 128)
+  assert_eq(Array::length(ek), Array::length(eo))
+  let reverse = Env::get("OWNED_LOWERING_ORDER") == "reverse"
+  let mut compatibility_us = 0
+  let mut compatibility_bytes = 0
+  let mut owned_us = 0
+  let mut owned_bytes = 0
+  for pass in [0, 1] {
+    let owned = (pass == 1) != reverse
+    let heap = Profiler::heap_bytes()
+    let time = Profiler::now_us()
+    let (stmts, _, _, _, off, keys) = if owned {
+      merged_stmts_and_offsets_with_config(source_groups = groups, cfg = cfg, inputs = inputs)
+    } else {
+      merged_stmts_and_offsets(groups)
+    }
+    let elapsed = Profiler::now_us() - time
+    let allocated = Profiler::heap_bytes() - heap
+    assert_eq(print_program(stmts), expected)
+    assert_eq(off, eo)
+    assert_eq(keys, ek)
+    if owned {
+      owned_us = elapsed; owned_bytes = allocated
+    } else {
+      compatibility_us = elapsed; compatibility_bytes = allocated
+    }
+  }
+  println("lowering-check\t\{capture_us}\t\{capture_bytes}\t\{compatibility_us}\t\{compatibility_bytes}\t\{owned_us}\t\{owned_bytes}\t\{compact_string_fingerprint(expected)}")
+}

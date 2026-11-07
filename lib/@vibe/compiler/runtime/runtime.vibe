@@ -1,3 +1,7 @@
+import @vibe/checker/lowering {
+  CheckedLoweringInputs, capture_checked_lowering_inputs
+}
+
 import @vibe/checker/engine {
   engine_parse_program_with_path_with_config
 }
@@ -385,6 +389,32 @@ export fn check_sources_memory_configured(_ entry_path: String, sources: Array[(
     throw("provide source text for '\{entry_path}' before checking it")
   }
   let _ = db_typecheck_with_config(db = db, path = entry_path, cfg = cfg)
+}
+
+/// Copy this DB's exact checked rows before another invocation can replace
+/// the process memo. A stale/wrong target DB or publication is refused.
+export fn db_checked_lowering_inputs(db: TypeDb, cfg: TargetCfg) -> CheckedLoweringInputs with Exception {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, _, _, _, _, _, _, _, _, identity) => {
+      if identity != target_cfg_identity(cfg) {
+        throw("check the DB with the selected target flags before capturing lowering")
+      }
+      let requests: Array[(String, String, String)] = Array::with_capacity(Array::length(env_cache))
+      for entry in env_cache {
+        let path = entry.0
+        let source = match ripple_get_source(db = rdb, path = path) {
+          Some(text) => text,
+          None => throw("recheck '\{path}': its source is missing from the DB")
+        }
+        let fingerprint = match ripple_get_fingerprint(db = rdb, path = path) {
+          Some(fp) => fp,
+          None => throw("recheck '\{path}': its fingerprint is missing from the DB")
+        }
+        Array::push(requests, value = (path, source, fingerprint))
+      }
+      capture_checked_lowering_inputs(requests = requests, cfg_identity = identity)
+    }
+  }
 }
 
 export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Env + Exception {
