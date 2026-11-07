@@ -201,6 +201,33 @@ export fn dot_call_qualified_name(env: TypeEnv, defs: Array[TypeDef], type_prefi
   }
 }
 
+/// #3896: the refusal for `x.m()` when the receiver's struct has a field `m`
+/// and the companion `T::m` is bound too. Lowering calls the field whenever one
+/// of that name exists, while the checker typed the call as the companion: a
+/// field holding a value then trapped ("null function"), and one holding a
+/// function ran with the companion's type. The declaring module refuses a
+/// function-valued field beside its companion; this covers what that cannot
+/// see -- a value field, and a companion declared for an imported struct.
+export fn dot_call_field_companion_refusal(env: TypeEnv, defs: Array[TypeDef], type_prefix: String, method: String) -> Option[String] {
+  let qualified = String::concat(type_prefix, String::concat("::", method))
+  match find_struct_typedef(defs = defs, name = type_prefix) {
+    Some(TDStruct(_, fields, _, _)) => {
+      let mut found = None
+      for entry in fields {
+        let (fname, fty) = entry
+        if found == None && fname == method && (env_lookup(env = env, name = qualified) is Some(_)) {
+          found = Some(match fty {
+            CtFn(_, _, _) => "`." + method + "()` on `" + type_prefix + "` names both its field `" + method + "` and the companion `" + qualified + "` -- call the companion as `" + qualified + "(..)`, or rename one of them",
+            _ => "`." + method + "()` on `" + type_prefix + "` calls its field `" + method + "`, which holds `" + type_to_string(fty) + "`, not the companion `" + qualified + "` -- call the companion as `" + qualified + "(..)`"
+          })
+        }
+      }
+      found
+    },
+    _ => None
+  }
+}
+
 fn struct_has_field(defs: Array[TypeDef], name: String, field: String) -> Bool {
   match find_struct_typedef(defs = defs, name = name) {
     Some(TDStruct(_, fields, _, _)) => {
