@@ -1,7 +1,7 @@
 # Compiler invocation configuration (#1953)
 
 Target `#cfg` flags have scoped entries for the flat-source RC compiler,
-shared FS parsing, source collection, filesystem and in-memory typechecking, source merging, and owned typed-lowering inputs. These are migration slices,
+shared FS parsing, source collection, filesystem and in-memory typechecking, source merging, owned typed-lowering inputs, and checked source-group codegen. These are migration slices,
 not completion of #1953 or a claim that the compiler as a whole is reentrant.
 
 ## Boundary and authority
@@ -139,7 +139,7 @@ keep their constant-time ambient identity getter. Cache mode and checked-row
 policy are separate remaining configuration; mutable contents still need
 ownership or synchronization before arbitrary concurrent compiler calls.
 
-Typed merge/codegen, final-artifact orchestration, worker/tooling boundaries and CLI
+Full compile and final-artifact orchestration, worker/tooling boundaries and CLI
 integration remain later slices. Existing CLI entries retain compatibility
 behavior rather than granting the whole compiler reentrancy.
 
@@ -226,13 +226,33 @@ Legacy wrappers retain their current memo-based behavior.
 
 Namespace and location metadata remain owned by the serial merge phase. This
 transport does not make codegen, module/final-artifact orchestration, CLI or
-workers reentrant, and no configured typed-codegen entry is exposed yet.
+workers reentrant.
+
+### Checked source-group codegen
+
+`compile_checked_source_groups_wasi_with_config` accepts the caller's checked
+source groups, `TargetCfg` and retained `CheckedLoweringInputs`, and returns
+Wasm bytes. Its row is only `Exception`: it neither discovers files nor reads
+ambient flags, rechecks sources, or loads/stores final artifacts. The caller
+owns the checked closure; source and target witnesses are validated before
+merge metadata changes. All lowering channels reach the ordinary codegen
+entry, including call identities/placements, String operators, numeric/render
+offsets and structural equality keys.
+
+`compile_checked_source_groups_wasi_configured` adds only `Config`, captures
+it once, and delegates to that data entry. It grants no unstable import,
+generated-source or launcher authority. A mismatched target requires a recheck.
+`mvp` and `no-dce` share a decoded mode and emission kernel with the existing
+checked closure-source driver. Unsupported modes are refused with the allowed
+choices before merging. Namespace/location state and codegen scratch remain
+serial phase-owned. RC, CLI/full filesystem orchestration, workers and final
+artifact caching remain later slices; this is not general compiler reentrancy.
 
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
 | --- | --- | --- |
-| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; source merge entries accept it; typed merge accepts owned lowering inputs; codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
+| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; source merge entries accept it; typed merge and checked source-group codegen accept owned lowering inputs; RC, CLI orchestration, final artifacts, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
 | Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Collection, AST, typing and checked-module storage use captured identities in the scoped lane. Final-artifact and content-only fingerprint/stamp adapters remain; the latter values are independent of target flags. Cache-only compatibility APIs retain the legacy cell. |
 | In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection and checking use scoped identities for parse, semantic use, import-name, re-export and generated-type reuse. Other merge/tooling entries retain compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
@@ -306,3 +326,11 @@ placement rebasing, reset isolation, empty versus missing rows, source and
 fingerprint witnesses, target mismatches, Alpha→Beta typed String/equality
 merges, configured builtin shadows, labeled parameter reordering, shared call-cell reset, refusal before location-state changes, and resident/disk-warm FS
 publication. The bootstrap gate runs it with AST caching enabled.
+
+`invocation_config_codegen_test.vibe` compares both supported modes with the
+compatibility typed driver, executes the generated Wasm, and checks retained
+products after another target check and memo reset. Runtime answers cover
+String/equality and numeric/render channels, including a same-source Float64/Int
+record-field switch, argument placements and builtin identity; nested successful and refused emits run inside an outer flag request.
+Wrong source/target products and unsupported modes leave merge metadata intact.
+The bootstrap gate runs it on its fresh stage2 with AST caching enabled.

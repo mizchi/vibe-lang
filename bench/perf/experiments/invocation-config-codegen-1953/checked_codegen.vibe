@@ -1,0 +1,85 @@
+import @vibe/compiler/config {
+  target_cfg_from_csv
+}
+import @vibe/compiler/runtime {
+  db_checked_lowering_inputs, db_new, db_set_source, db_typecheck_with_config
+}
+import @vibe/compiler/entry/compiler/fs_compile {
+  compile_checked_source_groups_wasi_with_config
+}
+import @vibe/compiler/linker/merge {
+  merged_stmts_and_offsets
+}
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_impl_with_typed_offsets
+}
+import @vibe/compiler/core {
+  dce_stmts_before_trait_desugar
+}
+
+fn compatibility_emit(_ groups: Array[(String, Array[(String, String)])]) -> Bytes with Env + Exception {
+  let (stmts, floats, ints, bools, eq_offsets, eq_keys) = merged_stmts_and_offsets(groups)
+  compile_wasi_module_impl_with_typed_offsets(stmts = dce_stmts_before_trait_desugar(stmts = stmts, entry_names = [
+    "main"
+  ]), entry_name = "main", checker_float_call_offsets = floats, checker_int_render_offsets = ints, checker_bool_render_offsets = bools, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys)
+}
+
+fn main allows Env + Exception + Console + Profiler + Fs {
+  let cfg = target_cfg_from_csv("")
+  let sources: Array[(String, String)] = []
+  let mut db = db_new()
+  let mut imports = ""
+  let mut sum = ""
+  let mut i = 0
+  while i < 128 {
+    let path = "checked_codegen_perf/node_\{i}.vibe"
+    let source = "export fn step_\{i}(_ value: Int) -> Int { value + \{i} }\n"
+    Array::push(sources, value = (path, source))
+    db = db_set_source(db = db, path = path, source = source)
+    imports = imports + "import ./node_\{i}.vibe { step_\{i} }\n"
+    sum = sum + (if i == 0 {
+      ""
+    } else {
+      " + "
+    }) + "step_\{i}(1)"
+    i = i + 1
+  }
+  let entry = "checked_codegen_perf/main.vibe"
+  let text = imports + "export fn main() -> Int { " + sum + " }\n"
+  Array::push(sources, value = (entry, text))
+  db = db_typecheck_with_config(db = db_set_source(db = db, path = entry, source = text), path = entry, cfg = cfg)
+  let start_heap = Profiler::heap_bytes()
+  let start = Profiler::now_us()
+  let inputs = db_checked_lowering_inputs(db = db, cfg = cfg)
+  let capture_us = Profiler::now_us() - start
+  let capture_bytes = Profiler::heap_bytes() - start_heap
+  let groups = [("graph", sources)]
+  // Prime the same merge/codegen state outside both measured regions.
+  let expected = compatibility_emit(groups)
+  assert(expected == compile_checked_source_groups_wasi_with_config(source_groups = groups, entry_name = "main", mode = "mvp", cfg = cfg, inputs = inputs))
+  let reverse = Env::get("OWNED_CODEGEN_ORDER") == "reverse"
+  let mut compatibility_us = 0
+  let mut compatibility_bytes = 0
+  let mut owned_us = 0
+  let mut owned_bytes = 0
+  for pass in [0, 1] {
+    let owned = (pass == 1) != reverse
+    let heap = Profiler::heap_bytes()
+    let time = Profiler::now_us()
+    let bytes = if owned {
+      compile_checked_source_groups_wasi_with_config(source_groups = groups, entry_name = "main", mode = "mvp", cfg = cfg, inputs = inputs)
+    } else {
+      compatibility_emit(groups)
+    }
+    let elapsed = Profiler::now_us() - time
+    let allocated = Profiler::heap_bytes() - heap
+    assert(bytes == expected)
+    if owned {
+      owned_us = elapsed; owned_bytes = allocated
+    } else {
+      compatibility_us = elapsed; compatibility_bytes = allocated
+    }
+  }
+  Fs::write_bytes("_build/codegen-region-output.wasm", bytes = expected)
+  println("codegen-check\t\{capture_us}\t\{capture_bytes}\t\{compatibility_us}\t\{compatibility_bytes}\t\{owned_us}\t\{owned_bytes}\t\{Bytes::length(expected)}")
+}
