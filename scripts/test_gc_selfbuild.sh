@@ -325,6 +325,9 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/gc_import_resolution_test.vibe \
     fixtures/gc_import_builtin_shadow_test.vibe \
     fixtures/gc_import_call_offset_collision_test.vibe \
+    fixtures/gc_scalar_intrinsic_builtins_test.vibe \
+    fixtures/qualified_import_test.vibe \
+    fixtures/import_visibility_facade_test.vibe \
     fixtures/constructor_indexed_map_gc_test.vibe \
     fixtures/constructor_indexed_async_iter_gc_test.vibe \
     fixtures/bytes_index_of_bytes_test.vibe \

@@ -1956,6 +1956,23 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
       nl + 2
     }
   }
+  else if (fname == "add" || fname == "sub" || fname == "mul" || fname == "lt") && Array::length(args) == 2 && !gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname) {
+    // #3921: the builtin integer intrinsics, lowered as the operator they
+    // name so the #1877 63-bit wrap applies exactly as for `+` / `-` / `*`.
+    // They used to reach the closure-call fallback and stop as an internal
+    // compiler error. Guarded like `not` below, so a program's own `add`
+    // keeps its call (#832).
+    let op = if fname == "add" {
+      "+"
+    } else if fname == "sub" {
+      "-"
+    } else if fname == "mul" {
+      "*"
+    } else {
+      "<"
+    }
+    ce(buf, EBinOp(op, Array::get(args, at = 0), Array::get(args, at = 1), -1), local_names, next_local, ld)
+  }
   else if fname == "not" && !gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname) {
     // #2309: same as `eq` above. Measured -- `let not = (a: Int) -> Int
     // { a + 41 }` then `not(1)` gives 42 on linear (its arm is guarded by

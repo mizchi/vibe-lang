@@ -1,0 +1,38 @@
+//# #3921: the builtin integer intrinsics `add` / `sub` / `mul` / `lt` lower on
+//# the wasm-gc lane as the operators they name, with the same 63-bit wrap
+//# (#1877), and a program's own binding of the same name keeps its call
+//# (#832). They used to stop gc code generation with an internal compiler
+//# error. Run on both lanes by the gc-gate.
+
+test "the intrinsics answer like their operators" {
+  inspect(add(40, 2), content = "42")
+  inspect(sub(50, 8), content = "42")
+  inspect(mul(6, 7), content = "42")
+  inspect(lt(1, 2), content = "true")
+  inspect(lt(2, 1), content = "false")
+  inspect(sub(0, 5), content = "-5")
+}
+
+test "they wrap at 63 bits like the operators" {
+  let max = 4611686018427387903
+  inspect(add(max, 1) == max + 1, content = "true")
+  inspect(mul(max, 2) == max * 2, content = "true")
+}
+
+test "they lower inside a closure too" {
+  let f = (x: Int) -> Int {
+    mul(add(x, 1), sub(x, 1))
+  }
+  inspect(f(5), content = "24")
+  let g = (x: Int) -> Bool {
+    lt(x, 3)
+  }
+  inspect(g(2), content = "true")
+}
+
+test "a local binding of the same name keeps its own call" {
+  let add = (a: Int, b: Int) -> Int {
+    a - b
+  }
+  inspect(add(50, 8), content = "42")
+}
