@@ -1392,7 +1392,8 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // stays the enclosing one until the body).
       let saved_exit = ctx.exit_floor
       ctx.loop_floor = ctx.next_id
-      pc_operand_emit(ctx = ctx, scope = scope, e_in = iterable)
+      pc_operand_emit(ctx = ctx, scope = scope, e_in = pe_iter_carried_tails(ctx = ctx, scope = scope, e = iterable, shadow = [
+      ]))
       ctx.exit_floor = ctx.loop_floor
       let idv = pe_declare(ctx = ctx, name = value_name)
       let s2 = PsBind(value_name, idv, scope)
@@ -1740,6 +1741,55 @@ fn pc_item_count(ctx: PCtx, scope: PScope, e: Expr) -> Int {
   }
 }
 
+/// #3919: a compound `for` iterable (a block, an `if` / `match`) whose result
+/// leaf names a loop-carried binding. compile_forin_loop retains such a leaf
+/// and releases the iterable after the loop (`cc_iter_tails_owned`), so the
+/// leaf only reads the binding: rewrite it into the projection the planner
+/// already counts as a borrow (`EDot(x, "")`, as `pe_discarded_spine` does).
+/// When codegen declines the release the leaf is still only read in place --
+/// the unreleased iterable is never read after the loop -- so the binding
+/// keeps its scope-end drop either way. The walk follows codegen's result
+/// path (`rs_map`), and a name a binder on that path rebinds is left alone.
+/// Plan-only, like `pe_discarded_spine`.
+fn pe_iter_carried_tails(ctx: PCtx, scope: PScope, e: Expr, shadow: Array[String]) -> Expr {
+  match e {
+    EIdent(n, off) => if !array_contains_str_pctx(arr = shadow, s = n) && pc_loop_call_arg_borrow(ctx = ctx, scope = scope, e = e) {
+      EDot(e, "", off, 0 - 1)
+    } else {
+      e
+    },
+    EIf(c, t, f) => EIf(c, pe_iter_carried_tails(ctx = ctx, scope = scope, e = t, shadow = shadow), pe_iter_carried_tails(ctx = ctx, scope = scope, e = f, shadow = shadow)),
+    EMatch(sc, arms) => EMatch(sc, pe_iter_carried_arms(ctx = ctx, scope = scope, arms = arms, shadow = shadow)),
+    EHandle(hb, arms) => EHandle(pe_iter_carried_tails(ctx = ctx, scope = scope, e = hb, shadow = shadow), pe_iter_carried_arms(ctx = ctx, scope = scope, arms = arms, shadow = shadow)),
+    ELet(n, v, b, off) => ELet(n, v, pe_iter_carried_tails(ctx = ctx, scope = scope, e = b, shadow = Array::concat(shadow, [
+      n
+    ])), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, pe_iter_carried_tails(ctx = ctx, scope = scope, e = b, shadow = Array::concat(shadow, [
+      n
+    ])), off),
+    ELetRec(n, v, b) => ELetRec(n, v, pe_iter_carried_tails(ctx = ctx, scope = scope, e = b, shadow = Array::concat(shadow, [
+      n
+    ]))),
+    ESeq(a, b) => ESeq(a, pe_iter_carried_tails(ctx = ctx, scope = scope, e = b, shadow = shadow)),
+    EAssign(n, v, b, toff) => EAssign(n, v, pe_iter_carried_tails(ctx = ctx, scope = scope, e = b, shadow = shadow), toff),
+    EAssignOp(n, op, v, b, toff) => EAssignOp(n, op, v, pe_iter_carried_tails(ctx = ctx, scope = scope, e = b, shadow = shadow), toff),
+    _ => e
+  }
+}
+
+fn pe_iter_carried_arms(ctx: PCtx, scope: PScope, arms: Array[(Pat, Expr)], shadow: Array[String]) -> Array[(Pat, Expr)] {
+  let out: Array[(Pat, Expr)] = []
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, ab) = Array::get(arms, at = i)
+    let binds: Array[String] = []
+    pat_names(pat = p, out = binds)
+    Array::push(out, value = (p, pe_iter_carried_tails(ctx = ctx, scope = scope, e = ab, shadow = Array::concat(shadow, binds))))
+    i = i + 1
+  }
+  out
+}
+
 /// The emission twin of `pc_item_count`: a loop-carried name there plans no
 /// dup and spends no reference.
 fn pc_item_emit(ctx: PCtx, scope: PScope, e: Expr) -> Int {
@@ -1993,7 +2043,8 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // #3879: the iterable is planned under the loop's floor, as in pc_emit.
       let saved_floor = ctx.loop_floor
       ctx.loop_floor = ctx.next_id
-      pc_operand_count(ctx = ctx, scope = scope, e_in = iterable)
+      pc_operand_count(ctx = ctx, scope = scope, e_in = pe_iter_carried_tails(ctx = ctx, scope = scope, e = iterable, shadow = [
+      ]))
       let idv = pc_declare(ctx = ctx, _name = value_name, scalar = false)
       let s2 = PsBind(value_name, idv, scope)
       let s3 = match index_opt {

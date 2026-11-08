@@ -205,7 +205,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call_cc_ladder_names.vibe {
-  cc_is_borrowed_projection, cc_is_owned_temp, cc_retain_view_tails_unlogged
+  cc_is_borrowed_projection, cc_is_owned_temp, cc_iter_tails_owned, cc_retain_view_tails_unlogged
 }
 
 import ./compile_call.vibe {
@@ -217,7 +217,7 @@ import ./compile_expr_tail3.vibe {
 }
 
 import ./compile_lambda.vibe {
-  compile_lambda
+  compile_lambda, rs_has_tail
 }
 
 import ./compile_match.vibe {
@@ -518,7 +518,22 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
     emit_i64_const(buf = buf, value = 0)
   }
   emit_local_set(buf = buf, idx = result_local)
-  let nl1pre = compile_expr(buf, iter_expr, local_names, next_local + 3, ctx, ld)
+  // #3919: a compound iterable -- a block, an `if` / `match` -- whose every
+  // result leaf is a fresh value or a view is made OWNED by retaining its view
+  // leaves (the collected body's treatment below), and released after the
+  // loop like a fresh one. The enclosing locals are loop-borrowed by now, so
+  // a leaf naming one (`if c { d } else { [1] }`) is a view and is retained:
+  // the release after the loop gives back only that retain, and `d` keeps
+  // its own reference (the plan reads such a leaf as a borrow,
+  // `pe_iter_carried_tails`). Unreleased, every run of the loop leaked the
+  // array the iterable built (88 B for `for x in { let k = n; [k] }`).
+  let iter_tail_owned = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && !cc_is_owned_temp(e = iter_expr, ctx = ctx) && rs_has_tail(iter_expr) && cc_iter_tails_owned(e = iter_expr, local_names = local_names, ctx = ctx)
+  let iter_c = if iter_tail_owned {
+    cc_retain_view_tails_unlogged(e = iter_expr, local_names = local_names, ctx = ctx)
+  } else {
+    iter_expr
+  }
+  let nl1pre = compile_expr(buf, iter_c, local_names, next_local + 3, ctx, ld)
   emit_local_set(buf = buf, idx = arr_local)
   // #807: for-in over a String silently iterated zero times — the loop
   // below reads `Array::length` from the value, but a String is an
@@ -712,7 +727,7 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
     emit_local_get(buf = buf, idx = conv_local)
     emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
-    if cc_is_owned_temp(e = iter_expr, ctx = ctx) {
+    if cc_is_owned_temp(e = iter_expr, ctx = ctx) || iter_tail_owned {
       // A String iterable's slot holds the materialized array by now, and
       // the String itself is no rc block.
       emit_local_get(buf = buf, idx = conv_local)
