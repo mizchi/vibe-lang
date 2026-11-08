@@ -330,6 +330,10 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/import_visibility_facade_test.vibe \
     fixtures/effect_scps_top_level_alias_test.vibe \
     fixtures/gc_test_runner_name_taken_test.vibe \
+    fixtures/ordering_exact_shape_import_test.vibe \
+    fixtures/ordering_exact_shape_ctor_import_test.vibe \
+    fixtures/ordering_exact_shape_extra_derive_import_test.vibe \
+    lib/@vibe/compiler/tests/generic_formal_shadow_import_test.vibe \
     fixtures/constructor_indexed_map_gc_test.vibe \
     fixtures/constructor_indexed_async_iter_gc_test.vibe \
     fixtures/bytes_index_of_bytes_test.vibe \

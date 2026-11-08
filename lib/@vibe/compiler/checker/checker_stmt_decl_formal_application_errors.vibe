@@ -1098,7 +1098,30 @@ fn imported_struct_has_fn_field(defs: Array[TypeDef], owner: String, field: Stri
   found
 }
 
+/// #3923: set while the wasm-gc lane re-checks the program it merged from
+/// modules the per-module check already accepted. The declaration guards
+/// below are module-scoped: merged, a dependency's struct `T` is a local one,
+/// and a formal spelled `T` -- legal against an IMPORTED struct (#2141) -- was
+/// refused. Their answers for each module are already in, so on that run they
+/// stand down.
+let module_checked_cell: Array[Int] = [0]
+
+/// Set whether the program being checked was merged from modules already
+/// checked one by one, and return the previous setting to restore.
+export fn checker_swap_module_checked(_ on: Bool) -> Bool {
+  let prev = Array::get(module_checked_cell, at = 0) > 0
+  Array::set(module_checked_cell, at = 0, value = if on {
+    1
+  } else {
+    0
+  })
+  prev
+}
+
 export fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  if Array::get(module_checked_cell, at = 0) > 0 {
+    return ()
+  }
   collect_field_companion_clash_errors(stmts = stmts, errors = errors)
   collect_formal_exception_kind_errors(stmts = stmts, errors = errors)
   collect_reserved_type_prefix_errors(stmts = stmts, errors = errors)
