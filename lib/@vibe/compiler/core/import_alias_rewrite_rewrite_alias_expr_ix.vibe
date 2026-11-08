@@ -821,10 +821,13 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // the assembler already keeps those apart. So the marker body is
         // rewritten with the UNSHADOWED map: passing it the params-removed one
         // left the callee spelled for a definition the merge had renamed.
+        // A type formal shadows the alias in the body as well, so a lambda
+        // nested in `fn outer[Alias](..)` keeps reading the formal (Codex on
+        // #3942).
         let body_am = if is_inline_wasm_marker_body(body) {
           am
         } else {
-          aliasidx_without_params(am = am, params = params)
+          aliasidx_without_params(am = type_am, params = params)
         }
         let m = alias_marks()
         let bounds2 = rewrite_alias_bounds(bounds = bounds, am = type_am)
@@ -2556,6 +2559,14 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
           Some(next) => SFnDecl(exported, next, body, attrs, off),
           None => renamed
         },
+        // A renamed companion's positional-slot rows go with it.
+        SPositionalParams(rows) => SPositionalParams(for row in rows {
+          let (fname, slots) = row
+          match alias_companion_rename(name = fname, renames = renames) {
+            Some(next) => (next, slots),
+            None => row
+          }
+        }),
         _ => renamed
       }
     }
