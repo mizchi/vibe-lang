@@ -66,3 +66,66 @@ test "an inner cache policy and exception do not replace the outer handler" {
   } with { AstCacheConfig::Active() => resume(true) }
   assert(outer)
 }
+
+import @vibe/compiler/cache/policy {
+  CheckedModuleCacheConfig, checked_module_cache_policy, checked_module_cache_policy_capture, checked_module_cache_policy_mode
+}
+
+fn capture_checked_mode_only() -> String with CheckedModuleCacheConfig + Exception {
+  checked_module_cache_policy_mode(checked_module_cache_policy_capture())
+}
+
+test "checked mode validates exact spellings without process state" {
+  for mode in ["off", "verify", "on"] {
+    assert_eq(checked_module_cache_policy_mode(checked_module_cache_policy(mode)), mode)
+  }
+  for mode in ["", "ON", " on", "true"] {
+    let refused = handle {
+      let _ = checked_module_cache_policy(mode)
+      false
+    } with { Exception::Throw(message) => message == "set VIBE_CHECKED_MODULE_CACHE to off, verify, or on" }
+    assert(refused)
+  }
+}
+
+test "checked mode capture is isolated and asks once even on refusal" {
+  let counts = [0, 0]
+  let retained = handle {
+    checked_module_cache_policy_capture()
+  } with { CheckedModuleCacheConfig::Mode() => {
+    Array::set(counts, at = 0, value = Array::get(counts, at = 0) + 1)
+    resume("verify")
+  } }
+  let refused = handle {
+    handle {
+      let _ = capture_checked_mode_only()
+      false
+    } with { CheckedModuleCacheConfig::Mode() => {
+      Array::set(counts, at = 1, value = Array::get(counts, at = 1) + 1)
+      resume("invalid")
+    } }
+  } with { Exception::Throw(message) => message == "set VIBE_CHECKED_MODULE_CACHE to off, verify, or on" }
+  assert(refused)
+  assert_eq(checked_module_cache_policy_mode(retained), "verify")
+  assert_eq(Array::get(counts, at = 0), 1)
+  assert_eq(Array::get(counts, at = 1), 1)
+}
+
+test "nested checked mode captures restore the outer handler after an exception" {
+  let value = handle {
+    let first = capture_checked_mode_only()
+    assert_eq(handle {
+      capture_checked_mode_only()
+    } with { CheckedModuleCacheConfig::Mode() => resume("off") }, "off")
+    let refused = handle {
+      handle {
+        assert_eq(capture_checked_mode_only(), "on")
+        throw("nested checked mode")
+      } with { CheckedModuleCacheConfig::Mode() => resume("on") }
+      false
+    } with { Exception::Throw(message) => message == "nested checked mode" }
+    assert(refused)
+    first == "verify" && capture_checked_mode_only() == "verify"
+  } with { CheckedModuleCacheConfig::Mode() => resume("verify") }
+  assert(value)
+}

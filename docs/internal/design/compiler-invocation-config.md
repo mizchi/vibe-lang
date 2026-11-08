@@ -291,6 +291,32 @@ through. Checked-module cache mode, typing reuse, cache roots and mutable cache
 ownership remain separate migrations; this slice does not make compiler walks
 concurrent.
 
+### Checked-module policy boundaries
+
+`CheckedModuleCachePolicy` retains the exact `off`, `verify` or `on` mode.
+`CheckedModuleCacheConfig::Mode` provides only that choice; capture validates
+it once, without reading or writing the compatibility mode cell. It grants
+no target-flag, source-trust, cache-content, tracing or filesystem authority.
+
+The checked-module cache's `*_with_policy` entries accept the retained value
+and an explicit namespace. Only `on` permits persistent reuse. `off` loads
+nothing, publishes nothing and hands out no completed-module statements.
+`verify` requires a fresh checker result: it rejects `fresh = false`, refuses
+a valid stored artifact whose bytes differ, repairs missing or malformed
+entries, and avoids rewriting a byte-identical artifact. Statement handoff
+keeps the existing exact source, namespace/context and current-walk checks,
+and copies the outer statement array. Configured request boundaries capture
+mode once before delegating; statement handoff requires no `Env` or `Fs`.
+
+Legacy APIs preserve their lower-level behavior, including direct loads and
+fresh publication even when the process mode is `off`. Their shared kernels
+receive explicit verification/selection decisions. The existing full walk
+still selects modes and resets the cache through compatibility APIs. A retained
+policy isolates configuration, not mutable rows: callers must still reset and
+own each serial walk. Full collection/typecheck/CLI propagation, policy-bound
+walk ownership and concurrent access remain separate work. AST suppression
+under legacy checked-module `on` and cache identity/transport formats are unchanged.
+
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
@@ -301,7 +327,7 @@ concurrent.
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
 | Generated-source authority | positional CLI's `VIBE_INTERNAL_TRUSTED_SOURCE`; source compilers receive `trusted_generated` | Preserve the out-of-band authorization; source bytes must never enable the bypass. It is not granted by the flag-only `Config` effect. |
 | Checked Exception-row mode | `checker/effects/checker_effects_dh_call_to_binding.vibe`: `error_row_mode_cell`, CLI `VIBE_CHECK_ERROR_ROW` | Migrate the checker/effect-pass policy together after the target flags. This remains shared configuration, unlike checked type facts belonging to a compilation. |
-| Checked-module cache mode | `runtime/checked_module_cache/cache.vibe`: `checked_cache_mode`, CLI `VIBE_CHECKED_MODULE_CACHE` | Separate immutable policy from mutable cache contents/reset and transport it through the cache lane. |
+| Checked-module cache mode | `runtime/checked_module_cache/cache.vibe`: `checked_cache_mode`, CLI `VIBE_CHECKED_MODULE_CACHE` | Immutable policies and configured load/commit/statement-handoff entries separate mode from mutable contents. Walk/CLI transport and policy-bound ownership remain to migrate. |
 | Typing reuse policy | `runtime/typecheck_fs_*`, adapter `set_experimental_typing_dependency_env_reuse_enabled` | Preserve the check-only/compile distinction and cache validation; do not treat mutable memo contents as configuration. |
 | AST and ingestion-stamp cache policy | `compiler/cache/cache_underlying.vibe`: `ast_cache_enabled_cell`, `ingestion_stamp_enabled_cell` | Explicit AST parse/prefetch and ingestion fingerprint entries accept immutable policies; separate effects capture them once. Compatibility entries retain process memos. Collection/typecheck/CLI orchestration and mutable cache contents remain to migrate. |
 
