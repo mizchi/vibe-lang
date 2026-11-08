@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/codegen/expr/compile_call.vibe — cc ladder names.
 
 import ./compile_lambda.vibe {
-  cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
+  cl_pat_binds, cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
 }
 
 import @vibe/core {
@@ -600,24 +600,117 @@ fn cc_retain_view_tails_logged(e: Expr, local_names: Array[String], ctx: Compile
 }
 
 /// #3919: is every result-path leaf (`rs_map`) of the compound `for`
-/// iterable `e` either a fresh owned value (`cc_is_owned_temp`) or a view that
-/// `cc_retain_view_tails_unlogged` retains (`cc_tail_is_view`)? Then the
-/// value `e` produces, with those views retained, is the loop's to release
-/// once it is done. A leaf that leaves the iterable instead of producing a
-/// value (`break`, `continue`, `return`) produces nothing to release. Any
-/// other leaf -- a name bound inside `e`, a call that may return a view the
-/// retain does not recognize -- has an owner this lowering cannot see, so
-/// the iterable stays unreleased, as before (a leak, never a double free).
+/// iterable `e` either a fresh owned value (`cc_is_owned_temp`), a view that
+/// `cc_retain_view_tails_unlogged` retains (`cc_tail_is_view`), or a name
+/// whose innermost binder on that path is a `let` of a fresh owned value
+/// (`{ let k = [n]; k }`)? Then the value `e` produces, with those views
+/// retained, is the loop's to release once it is done. Such a name is the
+/// binding's last use, so the plan moves its reference into the block's
+/// value and nothing else releases it. A leaf that leaves the iterable
+/// instead of producing a value (`break`, `continue`, `return`) produces
+/// nothing to release. Any other leaf -- a name bound to a view, a `let mut`,
+/// a pattern binder, a call that may return a view the retain does not
+/// recognize -- has an owner this lowering cannot see, so the iterable stays
+/// unreleased, as before (a leak, never a double free).
 export fn cc_iter_tails_owned(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
-  let ok = [true]
-  let _ = rs_map(e = e, shadow = array_empty(), leaf = (x: Expr, shadow: Array[String]) -> Expr {
-    let leaves = match x {
-      EBreak(_) => true,
-      EContinue(_) => true,
-      EReturn(_) => true,
-      _ => cc_is_owned_temp(e = x, ctx = ctx) || cc_tail_is_view(x = x, shadow = shadow, local_names = local_names, ctx = ctx)
+  cc_iter_tails_owned_in(e = e, env = array_empty(), local_names = local_names, ctx = ctx)
+}
+
+/// `cc_iter_tails_owned` along the result path `rs_map` walks. `env` holds
+/// the names bound between the iterable's root and here, innermost last,
+/// each with whether its binder is a `let` of a fresh owned value.
+fn cc_iter_tails_owned_in(e: Expr, env: Array[(String, Bool)], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EIf(_, t, f) => cc_iter_tails_owned_in(e = t, env = env, local_names = local_names, ctx = ctx) && cc_iter_tails_owned_in(e = f, env = env, local_names = local_names, ctx = ctx),
+    EMatch(_, arms) => cc_iter_arms_owned(arms = arms, env = env, local_names = local_names, ctx = ctx),
+    EHandle(body, arms) => cc_iter_tails_owned_in(e = body, env = env, local_names = local_names, ctx = ctx) && cc_iter_arms_owned(arms = arms, env = env, local_names = local_names, ctx = ctx),
+    ELet(n, v, b, _) => cc_iter_tails_owned_in(e = b, env = cc_iter_env_with(env = env, n = n, fresh = cc_is_owned_temp(e = v, ctx = ctx)), local_names = local_names, ctx = ctx),
+    ELetMut(n, _, b, _) => cc_iter_tails_owned_in(e = b, env = cc_iter_env_with(env = env, n = n, fresh = false), local_names = local_names, ctx = ctx),
+    ELetRec(n, _, b) => cc_iter_tails_owned_in(e = b, env = cc_iter_env_with(env = env, n = n, fresh = false), local_names = local_names, ctx = ctx),
+    ESeq(_, b) => cc_iter_tails_owned_in(e = b, env = env, local_names = local_names, ctx = ctx),
+    EAssign(_, _, b, _) => cc_iter_tails_owned_in(e = b, env = env, local_names = local_names, ctx = ctx),
+    EAssignOp(_, _, _, b, _) => cc_iter_tails_owned_in(e = b, env = env, local_names = local_names, ctx = ctx),
+    ELabeledArg(_, _, v) => cc_iter_tails_owned_in(e = v, env = env, local_names = local_names, ctx = ctx),
+    ELoop(_, _) => cc_iter_leaves_owned(e = e, shadow = cc_iter_env_names(env), local_names = local_names, ctx = ctx),
+    EIdent(n, _) => {
+      let at = cc_iter_env_find(env = env, n = n)
+      if at >= 0 {
+        Array::get(env, at = at).1
+      } else {
+        cc_iter_leaf_owned(x = e, shadow = cc_iter_env_names(env), local_names = local_names, ctx = ctx)
+      }
+    },
+    _ => cc_iter_leaf_owned(x = e, shadow = cc_iter_env_names(env), local_names = local_names, ctx = ctx)
+  }
+}
+
+/// The arms of a `match` / `handle` on the result path: each arm's pattern
+/// binders are not `let`s of a fresh value.
+fn cc_iter_arms_owned(arms: Array[(Pat, Expr)], env: Array[(String, Bool)], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(arms) {
+    let (p, ab) = Array::get(arms, at = i)
+    let binds = array_empty()
+    cl_pat_binds(p = p, out = binds)
+    let mut env2 = env
+    for b in binds {
+      env2 = cc_iter_env_with(env = env2, n = b, fresh = false)
     }
-    if !leaves {
+    ok = cc_iter_tails_owned_in(e = ab, env = env2, local_names = local_names, ctx = ctx)
+    i = i + 1
+  }
+  ok
+}
+
+/// `env` with `n` bound innermost.
+fn cc_iter_env_with(env: Array[(String, Bool)], n: String, fresh: Bool) -> Array[(String, Bool)] {
+  let out = Array::slice(env, start = 0, end = Array::length(env))
+  Array::push(out, value = (n, fresh))
+  out
+}
+
+/// The innermost entry of `env` binding `n`, or -1.
+fn cc_iter_env_find(env: Array[(String, Bool)], n: String) -> Int {
+  let mut i = Array::length(env) - 1
+  let mut at = 0 - 1
+  while at < 0 && i >= 0 {
+    if Array::get(env, at = i).0 == n {
+      at = i
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  at
+}
+
+/// The names `env` binds, as the `shadow` list the leaf tests take.
+fn cc_iter_env_names(_ env: Array[(String, Bool)]) -> Array[String] {
+  let out = array_empty()
+  for b in env {
+    Array::push(out, value = b.0)
+  }
+  out
+}
+
+/// The leaf test of `cc_iter_tails_owned` for a leaf no binder on the path
+/// names: an exit, a fresh owned value, or a view the retain recognizes.
+fn cc_iter_leaf_owned(x: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match x {
+    EBreak(_) => true,
+    EContinue(_) => true,
+    EReturn(_) => true,
+    _ => cc_is_owned_temp(e = x, ctx = ctx) || cc_tail_is_view(x = x, shadow = shadow, local_names = local_names, ctx = ctx)
+  }
+}
+
+/// A `loop` on the result path: its `break` payloads are the leaves
+/// (`rs_map`). A name bound inside them is not followed to its binder.
+fn cc_iter_leaves_owned(e: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let ok = [true]
+  let _ = rs_map(e = e, shadow = shadow, leaf = (x: Expr, sh: Array[String]) -> Expr {
+    if !cc_iter_leaf_owned(x = x, shadow = sh, local_names = local_names, ctx = ctx) {
       Array::set(ok, at = 0, value = false)
     } else {
       ()
