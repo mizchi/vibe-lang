@@ -2503,7 +2503,21 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
     stmts
   } else {
     for stmt in stmts {
-      let renamed = namespace_private_type_ctor_stmt(stmt = stmt, type_renames = renames, ctor_renames = array_empty(), private_enum_heads = empty_strings(), local_type_aliases = array_empty())
+      // A type parameter spelled like the alias is that parameter, not the
+      // alias (Codex on #3942): `struct Box[Alias] { value: Alias }`.
+      let own = alias_map_without_names(aliases = renames, names = stmt_type_binder_names(stmt))
+      let renamed = match stmt {
+        // The private walk has no trait arm; a method signature may spell
+        // the alias too (Codex on #3942).
+        STrait(exported, name, supers, methods, method_tparams, tparams) => STrait(exported, name, supers, for m in methods {
+          let (mname, params, ret) = m
+          let mrenames = alias_map_without_names(aliases = own, names = trait_method_tparam_names(method_tparams = method_tparams, method = mname))
+          (mname, for param in params {
+            rewrite_private_type_expr(ty = param, renames = mrenames)
+          }, rewrite_private_type_expr(ty = ret, renames = mrenames))
+        }, method_tparams, tparams),
+        _ => namespace_private_type_ctor_stmt(stmt = stmt, type_renames = own, ctor_renames = array_empty(), private_enum_heads = empty_strings(), local_type_aliases = array_empty())
+      }
       match renamed {
         STypeAlias(exported, name, params, target) => match lookup_alias(aliases = renames, name = name) {
           Some(next) => STypeAlias(exported, next, params, target),
@@ -2513,6 +2527,40 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
       }
     }
   }
+}
+
+/// The type parameters a top-level declaration binds over its own body.
+fn stmt_type_binder_names(_ stmt: Stmt) -> Array[String] {
+  let names = match stmt {
+    SStruct(_, _, _, _, _, tparams) => tparams,
+    SEnum(_, _, params, _, _) => params,
+    STypeAlias(_, _, params, _) => params,
+    SLet(_, _, _, _, EFn(tparams, _, _, _, _, _)) => tparams,
+    SFnDecl(_, _, EFn(tparams, _, _, _, _, _), _, _) => tparams,
+    STrait(_, _, _, _, _, tparams) => tparams,
+    _ => empty_strings()
+  }
+  for name in names {
+    let bracket = String::index_of(name, needle = "[")
+    if bracket > 0 {
+      String::substring(name, start = 0, end = bracket)
+    } else {
+      name
+    }
+  }
+}
+
+fn trait_method_tparam_names(method_tparams: Array[(String, Array[String], Array[(String, Array[String])])], method: String) -> Array[String] {
+  let out = empty_strings()
+  for row in method_tparams {
+    let (name, tparams, _) = row
+    if name == method {
+      for t in tparams {
+        Array::push(out, value = t)
+      }
+    }
+  }
+  out
 }
 
 fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, String)], ctor_renames: Array[(String, String)], private_enum_heads: Array[String], local_type_aliases: Array[(String, Array[String], TypeExpr)]) -> Stmt {
