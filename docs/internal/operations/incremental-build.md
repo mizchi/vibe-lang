@@ -875,7 +875,7 @@ to main.
 | +300-byte literal (strings cross 8192 / 2^15) | 109 | 109 | 109 | **3** | 3 | 3 |
 | +1 top-level thunk (+2 memo globals; two cross 127 → 128) | 8 | 3 | 3 | 3 | **1** | 1 |
 | +1 effect (every tag 1 higher) | 6 | **1** | 1 | 1 | 1 | 1 |
-| +1 unused enum (6301 ctor tags +1 type; `Deque` crosses 15 → 16) | 25 | 25 | — | — | 25 | **0** |
+| +1 unused enum (6301 ctor tags +1 type; `Deque` crosses 15 → 16) | 25 | — | — | — | 25 | **0** |
 | +1 used enum (the same, plus a function) | 31 | 26 | 26 | 26 | 26 | **1** |
 
 In every row the 1 is the edited body. A dash was not measured. Four rows
