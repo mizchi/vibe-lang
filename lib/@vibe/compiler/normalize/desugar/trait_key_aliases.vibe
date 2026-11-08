@@ -4,7 +4,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
+  impl_method_owner, trait_ref_from_key, trait_ref_is_applied, trait_ref_key, type_param_name
 }
 
 import ./state.vibe {
@@ -34,8 +34,31 @@ import ./state.vibe {
 ///
 /// Reads the alias table `eq_known_types_reset` fills, so it runs after it.
 export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
-  tka_defs_reset(stmts)
+  // The definitions are built on the first applied key the pass meets
+  // (`tka_defs_ensure`): most programs and modules spell none, and those
+  // pay nothing for them.
+  Array::set(tka_defs_ready, at = 0, value = false)
+  Array::truncate(tka_defs_source, length = 0)
+  Array::push(tka_defs_source, value = stmts)
   expand_trait_key_aliases_in(stmts)
+  Array::truncate(tka_defs_source, length = 0)
+}
+
+let tka_defs_ready: Array[Bool] = [false]
+
+let tka_defs_source: Array[Array[Stmt]] = []
+
+fn tka_defs_ensure() -> Unit {
+  if !Array::get(tka_defs_ready, at = 0) {
+    Array::set(tka_defs_ready, at = 0, value = true)
+    if Array::length(tka_defs_source) > 0 {
+      tka_defs_reset(Array::get(tka_defs_source, at = 0))
+    } else {
+      Array::truncate(tka_defs, length = 0)
+    }
+  } else {
+    ()
+  }
 }
 
 /// The program's type declarations as the checker's resolver reads them, so a
@@ -63,7 +86,29 @@ fn tka_defs_reset(_ stmts: Array[Stmt]) -> Unit {
   for d in nominal {
     Array::push(tka_defs, value = d)
   }
-  let rounds = Array::length(dtd_eq_type_aliases)
+  // One round resolves every alias whose body names no other alias; only a
+  // chain needs more, at most one per alias.
+  let alias_names: Array[String] = []
+  for row in dtd_eq_type_aliases {
+    let (name, _, _) = row
+    Array::push(alias_names, value = name)
+  }
+  let mut chained = false
+  for row in dtd_eq_type_aliases {
+    let (_, _, target) = row
+    if !chained && type_expr_names_any(ty = target, names = alias_names) {
+      chained = true
+    } else {
+      ()
+    }
+  }
+  let rounds = if chained {
+    Array::length(dtd_eq_type_aliases)
+  } else if Array::length(dtd_eq_type_aliases) > 0 {
+    1
+  } else {
+    0
+  }
   let mut r = 0
   while r < rounds {
     let next: Array[TypeDef] = []
@@ -449,6 +494,16 @@ fn tka_arms(arms: Array[(Pat, Expr)], names: Array[String]) -> Option[Array[(Pat
 }
 
 fn expand_key_aliases(key: String, names: Array[String]) -> String {
+  // A bare trait name has no argument to resolve; most keys are bare.
+  if !trait_ref_is_applied(key) {
+    key
+  } else {
+    expand_applied_key(key = key, names = names)
+  }
+}
+
+fn expand_applied_key(key: String, names: Array[String]) -> String {
+  tka_defs_ensure()
   match trait_ref_from_key(key) {
     Some(TyApp(head, args)) => {
       let mut changed = false
@@ -479,11 +534,28 @@ fn expand_key_aliases(key: String, names: Array[String]) -> String {
 }
 
 fn expand_bound_aliases(bounds: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
-  if Array::length(bounds) == 0 {
-    bounds
-  } else {
+  if bounds_have_applied_key(bounds) {
     expand_bound_aliases_in(bounds = bounds, names = names)
+  } else {
+    bounds
   }
+}
+
+/// Only an applied key can change, so bounds of bare trait names are kept
+/// without rebuilding them.
+fn bounds_have_applied_key(_ bounds: Array[(String, Array[String])]) -> Bool {
+  let mut found = false
+  for bound in bounds {
+    let (_, traits) = bound
+    for t in traits {
+      if !found && trait_ref_is_applied(t) {
+        found = true
+      } else {
+        ()
+      }
+    }
+  }
+  found
 }
 
 fn expand_bound_aliases_in(bounds: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
