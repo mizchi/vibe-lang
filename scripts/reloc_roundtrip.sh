@@ -74,12 +74,12 @@ PROBE
     # probes and an oracle reporting success without ever scanning the linear
     # lane it promised (#2252: a gate must not assume its environment).
     if [ "$backend" = gc ]; then
-      env -u VIBE_RC VIBE_BACKEND=gc VIBE_WASM_NAMES=1 VIBE_RELOC_SLOT_WIDTH="${RELOC_ROUNDTRIP_FUNC_WIDTH:-0}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+      env -u VIBE_RC VIBE_BACKEND=gc VIBE_WASM_NAMES=1 VIBE_RELOC_SLOT_WIDTH="${RELOC_ROUNDTRIP_SLOT_WIDTH:-0}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
         bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
         "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
     else
-      env -u VIBE_RC -u VIBE_BACKEND VIBE_WASM_NAMES=1 VIBE_RELOC_SLOT_WIDTH="${RELOC_ROUNDTRIP_FUNC_WIDTH:-0}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+      env -u VIBE_RC -u VIBE_BACKEND VIBE_WASM_NAMES=1 VIBE_RELOC_SLOT_WIDTH="${RELOC_ROUNDTRIP_SLOT_WIDTH:-0}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
         bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
         "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
@@ -105,7 +105,7 @@ fi
 rc=0
 for t in "${targets[@]}"; do
   # A padded module (#3941) is rebuilt at the width it was emitted with.
-  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_roundtrip.vibex -- "$t" "${RELOC_ROUNDTRIP_FUNC_WIDTH:-0}" 2>&1 \
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_roundtrip.vibex -- "$t" "${RELOC_ROUNDTRIP_SLOT_WIDTH:-0}" 2>&1 \
     | grep -E 'reloc-roundtrip|unknown opcode|unknown 0x|uncaught'; then
     rc=1
   fi

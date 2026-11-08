@@ -218,21 +218,6 @@ fn lc_map_ctor_tag(m: LcIndexMap, t: Int) -> Int {
   }
 }
 
-fn lc_push_uleb(out: Bytes, value: Int) -> Unit {
-  let mut v = value
-  let mut more = true
-  while more {
-    let b = v&127
-    v = v>>7
-    if v == 0 {
-      Bytes::push(out, value = b)
-      more = false
-    } else {
-      Bytes::push(out, value = b|128)
-    }
-  }
-}
-
 fn lc_sleb_end(body: Bytes, p: Int) -> Int {
   let mut i = p
   let mut done = false
@@ -322,14 +307,10 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
             ok = false
           } else if n != v {
             let b = Bytes::new()
-            // A function index (`call` / `ref.func`) is written at the
-            // compile's slot width, exactly as `emit_call` wrote it, so a moved body stays byte-identical to
-            // a fresh compile (#3941). Tags and globals are emitted minimal.
-            if rk == reloc_kind_func {
-              leb128_encode_u32_slot(buf = b, value = n)
-            } else {
-              lc_push_uleb(out = b, value = n)
-            }
+            // A function index, tag or global is written at the compile's
+            // slot width, exactly as its emitter wrote it, so a moved body
+            // stays byte-identical to a fresh compile (#3941).
+            leb128_encode_u32_slot(buf = b, value = n)
             lc_edit_insert(edits = edits, e = LcEdit::{
               off: Array::get(r.offsets, at = i),
               width: Array::get(r.widths, at = i),

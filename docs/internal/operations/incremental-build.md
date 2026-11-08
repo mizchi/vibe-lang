@@ -809,99 +809,110 @@ holding a stale tag routes a `perform` to the wrong handler with nothing
 failing at build time. Recording them raised stage2's site count from 141,380
 to 142,360 — 980 references that were silently going to be left behind.
 
-##### Fixed-width function-index slots (#3941, opt-in)
+##### Fixed-width relocatable slots (#3941, opt-in)
 
-`VIBE_RELOC_SLOT_WIDTH=<1..5>` makes every function index inside a body (a
-`call` target, a `ref.func` operand) at least that many LEB128 bytes. It does
-the same for every funcref table slot a constant carries: the function value
-`i64.const ((slot << 2) | 2)` (kind 101) and the closure header's
-`i32.const slot` (kind 102). It also pads every pooled string address a body
-embeds. The bare offset of `blind_kind_str_ref` takes W bytes (W=3 keeps
-offsets below 2^20 fixed). The `(offset << 32) | length` of
-`blind_kind_str_fat` takes W+5 bytes (8 at W=3, fixed below offset 2^23). A
-non-minimal LEB128 is valid wasm, and it is the slot shape the
-tool-conventions object format, `wasm-ld` and wild reserve for exactly this
-reason. Unset is minimal, and the output is byte-identical to a compiler
-without the switch. Every writer of such an immediate goes through
-`leb128_encode_u32_slot`: `emit_call`, `emit_ref_func`, the inline-wat `call`,
-the body-cache relocator (`lc_move_body`), and late-DCE renumbering
-(`lc_pf_emit_code` and its linemap delta). A slot constant goes through
-`leb128_encode_s_slot`: `emit_i64_const_slot` and `emit_i32_const_slot` at the
-four sites that record kinds 101 and 102, and the same two in `lc_move_body`. A
-string address goes through `emit_i64_const_str`. That covers
-`emit_str_ref_slot` and `emit_str_fat_slot`, the only emitters of a pooled
-string in a linear-lane body, and the string relocator `lc_relocate_body`. That is what keeps a replayed or
-pruned body equal to a fresh one. The persisted `codegen-body-cache` slot and
-the linked-output memo are keyed on the width, so the two encodings never
-replay into each other.
+`VIBE_RELOC_SLOT_WIDTH=<1..5>` (W) pads every relocatable immediate a body
+embeds to a fixed minimum LEB128 width. Each one then keeps its byte count
+when the layout behind it moves.
 
-Measured with `scripts/wasm_index_stability.mjs` on #2669's four edits, using
-`codegen_lexer_test.vibe` (7221 functions) and `__no_entry__`. "Length
-changed" counts bodies whose byte length differs; at W=0 this is identical to
-main for all five builds.
+| reference | width | fixed while |
+|---|---:|---|
+| function index (`call`, `ref.func`) | W | index < 2^21 at W=3 |
+| exception tag (`throw`, `try_table` catch) | W | tag < 2^21 |
+| global (`global.get`, `global.set`) | W | global < 2^21 |
+| funcref table slot: `i64.const ((slot << 2) \| 2)` (kind 101), `i32.const slot` (kind 102) | W | slot < 2^18 |
+| string address, bare offset (`blind_kind_str_ref`) | W | offset < 2^20 |
+| string address, `(offset << 32) \| length` (`blind_kind_str_fat`) | W+5 | offset < 2^23 |
 
-| edit | W=0 length changed | W=3 length changed |
-|---|---:|---:|
-| body only (`hex_encode`) | 1 (edited) | 1 (edited) |
-| +1 fn above the band (`hex.vibe`, ~250) | 1 (edited) | 1 (edited) |
-| +1 fn below the band (`base64.vibe`, ~120) | 6 (edited + 5 `BigInt::*` callers of index 127→128) | **1** (edited) |
-| module reorder (`base64` imports `hex`) | 15 | **0** |
+A non-minimal LEB128 is valid wasm. It is the slot shape that the
+tool-conventions object format, `wasm-ld` and wild reserve for this reason.
+Unset is minimal, and the output is byte-identical to a compiler without the
+switch. Type indices, constructor tags and the generated runtime helpers'
+message addresses stay minimal.
 
-Every other difference stays same-length. In those four edits no function
-value crossed a band. A slot is the function's user index (the table is
-sparse, 129..8379 here), so a value grows from two to three bytes at slot
-2048, and the closest function value sat at 1667.
+**Every writer of a padded reference goes through one encoder.**
 
-To make one cross, add 400 reachable functions to `base64.vibe`, which moves
-1667 to 2068:
+- `leb128_encode_u32_slot` writes function indices, tags and globals:
+  - `emit_call`, `emit_ref_func`, `emit_global_get` and `emit_global_set`;
+  - the inline-wat `call`;
+  - the hand-encoded `throw` / `try_table` sites (`common_base_return_frame`,
+    `compile_call_call_core`, `compile_call_named_1`, `compile_expr_tail6`);
+  - the body-cache relocator `lc_move_body`;
+  - late-DCE renumbering (`lc_pf_emit_code` and its linemap delta).
+- `emit_i64_const_slot` and `emit_i32_const_slot` write table slots, at the
+  four sites that record kinds 101 / 102 and in `lc_move_body`.
+- `emit_i64_const_str` writes string addresses, in `emit_str_ref_slot` /
+  `emit_str_fat_slot` and the string relocator `lc_relocate_body`.
 
-| +400 fn in `base64.vibe` | length changed |
-|---|---:|
-| W=0 | 16 |
-| W=3, function indices only | 3 (edited + `codegen_body_cache_from_bytes{,_at}`, which hold the moved function value) |
-| W=3, function indices and table slots | **1** (edited) |
+That is what keeps a replayed or pruned body equal to a fresh one. The
+persisted `codegen-body-cache` slot and the linked-output memo are keyed on
+the width, so the two encodings never replay into each other.
 
-A 300-byte literal added in `base64.vibe` moves every later string by 300.
-The pool here spans 64..112,700, so offsets cross the 8192 band of a bare
-offset and the 2^15 band of a fat one:
+**Coverage is checked, not assumed.** `scripts/reloc_roundtrip.sh` with
+`RELOC_ROUNDTRIP_SLOT_WIDTH=W` rebuilds every function, tag and global site at
+width W and requires the bytes back unchanged. An emitter that wrote one of
+them narrower fails it by name. On the corpus below at W=3 it is clean over
+200,348 function, 740 tag and 3266 global sites. The same module rebuilt at
+width 0 is the red control and reports 6979 mismatches.
 
-| +300-byte literal | length changed |
-|---|---:|
-| W=0 | 109 |
-| W=3, function indices and table slots | 109 |
-| W=3, + string addresses | **3** (edited + `__rt_oob_abort`, `__rt_div_zero_abort`) |
+Measured with `scripts/wasm_index_stability.mjs`, corpus
+`codegen_lexer_test.vibe` (7221 functions, 1027 globals, 7 tags, `__no_entry__`).
+Each W=3 column adds one class to the column before it. "Length changed"
+counts bodies whose byte length differs. At W=0 every build is byte-identical
+to main.
 
-The two runtime helpers that remain embed their message's address outside the
-recorded emitters. They are generated builtins, not cached bodies. The other
-five edits answer the same with and without string padding.
+| edit | W=0 | function indices | + table slots | + strings | + tags, globals |
+|---|---:|---:|---:|---:|---:|
+| body only (`hex_encode`) | 1 | 1 | 1 | 1 | 1 |
+| +1 fn above the 127/128 band (`hex.vibe`) | 1 | 1 | 1 | 1 | 1 |
+| +1 fn below the band (`base64.vibe`) | 6 | **1** | 1 | 1 | 1 |
+| module reorder (`base64` imports `hex`) | 15 | **0** | 0 | 0 | 0 |
+| +400 fn (a function value moves 1667 → 2068) | 16 | 3 | **1** | 1 | 1 |
+| +300-byte literal (strings cross 8192 / 2^15) | 109 | 109 | 109 | **3** | 3 |
+| +1 top-level thunk (+2 memo globals; two cross 127 → 128) | 8 | 3 | 3 | 3 | **1** |
+| +1 effect (every tag 1 higher) | 6 | **1** | 1 | 1 | 1 |
 
-- **Cost**: the module grows from 6,636,149 to 6,995,692 bytes (+5.4%), because
-  most of the 200,348 function-index sites were one or two bytes. Padding the
-  table slots as well adds 40 bytes more (6,995,732), because function values
-  are few and already two bytes each. Padding string addresses adds 8,711
-  bytes more (7,004,443; +5.55% over W=0 in total).
-- **Correctness**: `scripts/reloc_roundtrip.sh` with
-  `RELOC_ROUNDTRIP_FUNC_WIDTH=3` round-trips all 7221 bodies. The red control,
-  rebuilding the padded module at width 0, reports 6979 mismatches.
-- **Body-cache replay** (`VIBE_CODEGEN_BODY_CACHE=on`, one cache): after the
-  below-band and reorder edits, 7039 bodies were offered, 347 recompiled, and
-  the output was byte-identical to a fresh compile at W=3 as well as at W=0.
-  An edit that adds a function used as a value ahead of every slot relocates
-  the kind-101 records: 7044 offered, 342 recompiled, and again byte-identical
-  to a fresh compile at both widths. The 300-byte-literal edit relocates the
-  string records: 7046 offered, 340 recompiled, byte-identical at both widths.
+In every row the 1 is the edited body. Three rows need a note:
+
+- **Strings.** The 3 left are the edited body, `__rt_oob_abort` and
+  `__rt_div_zero_abort`. Those runtime helpers embed their message's address
+  outside the recorded emitters; they are generated builtins, not cached
+  bodies.
+- **Thunk.** The two bodies only global padding removes are
+  `rad_to_deg_lo` / `deg_to_rad_hi`, which read the memo globals that crossed
+  127 → 128.
+- **Effect.** It moves every tag, but with 7 tags no value leaves one byte. A
+  tag crossing needs more than 120 declared effects, so tag padding is paid
+  for and, here, unused.
+
+- **Cost.** W=0 is 6,636,149 bytes. Each class adds:
+
+  | class | module size | added |
+  |---|---:|---:|
+  | function indices | 6,995,692 | +5.42% |
+  | table slots | 6,995,732 | +40 B |
+  | strings | 7,004,443 | +8,711 B |
+  | tags and globals | 7,010,864 | +6,421 B |
+  | **total** | | **+5.65%** |
+
+  Function indices are almost all of it: 200,348 sites, most of them one or
+  two bytes.
+- **Body-cache replay** (`VIBE_CODEGEN_BODY_CACHE=on`, one cache, replay
+  compared with a fresh compile). The output was byte-identical at W=3 and at
+  W=0 for every edit that exercises a relocation class:
+
+  | edit | offered | recompiled |
+  |---|---:|---:|
+  | below-band and reorder | 7039 | 347 |
+  | function value ahead of every slot | 7044 | 342 |
+  | +300-byte literal | 7046 | 340 |
+  | thunk, effect | 7045 | 341 |
 
 `verify` does not reach this path. A function-set edit changes the guards, so
 its second compile is skipped (the counted lane reports `-1`).
 
-What this does not do yet:
-
-- pad tags, globals or constructor tags, or the runtime helpers' message
-  addresses;
-- choose a default.
-
-The size cost is the number to weigh against an in-place patcher that this
-makes possible but that does not exist.
+Not done: a default, and an in-place output patcher. The patcher is what the
+fixed widths make possible, and its value is what to weigh against the size.
 
 ##### Does a body actually relocate? (#2669, slice 1b)
 
