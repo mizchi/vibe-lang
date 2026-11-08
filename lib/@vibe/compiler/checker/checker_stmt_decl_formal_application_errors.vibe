@@ -1043,6 +1043,61 @@ fn collect_field_companion_clash_errors(stmts: Array[Stmt], errors: Array[String
   }
 }
 
+/// #3915: the same clash when the struct is imported and the companion is
+/// declared here. The check above reads only this module's statements, so the
+/// FS lane accepted `fn G::get` beside an imported `G { get: () -> .. }` while
+/// the gc lane, which checks the merged program, refused it. `defs` holds the
+/// imported struct definitions seeded for this module.
+export fn collect_imported_field_companion_clash_errors(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  for stmt in stmts {
+    let declared = match stmt {
+      SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => name,
+      SFnDecl(_, name, _, _, _) => name,
+      _ => ""
+    }
+    let sep = String::index_of(declared, needle = "::")
+    if sep > 0 {
+      let owner = String::substring(declared, start = 0, end = sep)
+      let fname = String::substring(declared, start = sep + 2, end = String::length(declared))
+      if !stmts_declare_struct(stmts = stmts, name = owner) && imported_struct_has_fn_field(defs = defs, owner = owner, field = fname) {
+        Array::push(errors, value = "`" + owner + "` has a field `" + fname + "` holding a function and a companion `fn " + declared + "`, so `x." + fname + "()` names both -- rename the field or the companion [@fn=" + declared + "]")
+      }
+    }
+  }
+  ()
+}
+
+fn stmts_declare_struct(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, sname, _, _, _, _) => if sname == name {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+fn imported_struct_has_fn_field(defs: Array[TypeDef], owner: String, field: String) -> Bool {
+  let mut found = false
+  for def in defs {
+    match def {
+      TDStruct(sname, fields, _, _) => if sname == owner {
+        for f in fields {
+          let (fname, fty) = f
+          if fname == field && (fty is CtFn(_, _, _)) {
+            found = true
+          }
+        }
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
 export fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   collect_field_companion_clash_errors(stmts = stmts, errors = errors)
   collect_formal_exception_kind_errors(stmts = stmts, errors = errors)
