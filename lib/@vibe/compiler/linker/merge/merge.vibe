@@ -29,6 +29,7 @@ import @vibe/compiler/core {
   builtin_iterator_serialized_boundary_markers,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
+  colliding_type_alias_names,
   colliding_type_alias_renames_enabled,
   dir_of_path,
   export_plan_renames_for,
@@ -270,6 +271,21 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   } else {
     collision_renamed
   }
+  // #3929: an importer's own declarations name an imported colliding alias
+  // too (`struct Holder { value: Alias }`); the import-alias rewrite has no
+  // arm for struct, enum, trait or effect declarations, so they take the
+  // same binder-aware walk under this file's import renames (Codex on #3942).
+  let collision_renamed = if colliding_type_alias_renames_enabled() && Array::length(import_renames) > 0 {
+    let alias_imports = imported_type_alias_renames(import_renames)
+    if Array::length(alias_imports) == 0 {
+      collision_renamed
+    } else {
+      let alias_renamed = rename_exported_type_alias_stmts(stmts = collision_renamed, renames = alias_imports)
+      apply_export_renames_stmts(stmts = alias_renamed, renames = impl_owner_renames(before = collision_renamed, after = alias_renamed))
+    }
+  } else {
+    collision_renamed
+  }
   let namespaced_stmts = if is_entry_source {
     namespace_entry_import_shadows(path = path, stmts = collision_renamed)
   } else {
@@ -287,6 +303,30 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
   // #3544: this file's share of the linked program, for the impl-overlap check.
   Array::push(units, value = linked_unit_in(sources = sources, path = path, start = unit_start, end = Array::length(merged)))
+}
+
+/// The import renames whose target is a renamed colliding alias
+/// (`<Alias>_exp_<path>`).
+fn imported_type_alias_renames(_ renames: Array[(String, String)]) -> Array[(String, String)] {
+  let names = colliding_type_alias_names()
+  let out: Array[(String, String)] = []
+  for row in renames {
+    let (_, target) = row
+    let mut hit = false
+    for name in names {
+      if !hit && String::starts_with(target, prefix = String::concat(name, "_exp_")) {
+        hit = true
+      } else {
+        ()
+      }
+    }
+    if hit {
+      Array::push(out, value = row)
+    } else {
+      ()
+    }
+  }
+  out
 }
 
 /// #3929: an impl whose trait arguments or target the alias rename changed
