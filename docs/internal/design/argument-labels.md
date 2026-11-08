@@ -1,9 +1,9 @@
 # ADR-0120: Argument labels are required at every call to a declaration
 
-Status: proposed. It becomes accepted when the conditions in
-[Acceptance](#acceptance) hold: the checker owns label resolution, every
-call to a declaration in the tree carries its labels, and an unlabeled
-argument to a labeled parameter is a build error.
+Status: accepted (2026-11-08, main `1eebc3a`). The checker owns label
+resolution, every call to a declaration in the tree carries its labels in
+declared order, and each violation is a build error that names the edit.
+The evidence for each condition is in [Acceptance](#acceptance).
 
 Date: 2026-10-27
 
@@ -287,21 +287,77 @@ and calls inside interpolation).
 
 ## Acceptance
 
-This becomes `accepted` when all of the following hold:
+Accepted on 2026-11-08. Each condition, and the evidence for it, on main
+`1eebc3a`:
 
-- No pass before the checker reads `ELabeledArg`. Labels are validated
-  against the checker's resolved callee, and the fixtures for #986, #1899
-  and #1994 still pass as answers.
-- A builtin label that names no parameter, or names a different one, is a
-  build error.
-- `vibe check` rejects an unlabeled argument to a labeled parameter, a label
-  on a `_` parameter or on a call through a value, and an out-of-order
-  label. Each message names the edit.
-- No call site in the tree needs the codemod, and `pkf run release-check`
-  passes, including the seed→stage3 fixpoint.
-- A self-compile of the migrated compiler is measured cold-vs-cold and
-  warm-vs-warm against the pre-migration tree (#2393 protocol), and the
-  result is recorded here.
+- **No pass before the checker reads `ELabeledArg`.** The syntactic resolver
+  and the binder-authority normalization were deleted in Phase 1c (#3661).
+  The passes that still run before the checker (`split_handler_or_arms`,
+  `desugar_handled_host_calls`, the `inspect` expander) only rebuild the
+  node; they do not read its label. The checker validates labels against
+  the callee it resolved for typing and publishes a placement, and lowering
+  refuses a call with no placement or with one that reorders arguments.
+  The fixtures for #986, #1899 and #1994 still pass as answers.
+- **A mismatched builtin label is a build error** (#3651).
+- **Each misuse is refused with the edit.** Each case has
+  `fixtures/typecheck/err_label_*` rows in `expected.tsv`:
+  - a missing label (Phase 4a, #3881);
+  - a label on `_` (#3681);
+  - a label on a call through a value, and the retired `x~` and labeled
+    function-type spellings (Phase 4b);
+  - an out-of-order label (D2, #3903), including through a local type
+    alias.
+- **No call site needs the codemod.** The #3794 audit (#3914) swept the
+  tree with `vibe check`, and every remaining label diagnostic is an
+  intentional refusal fixture. `pkf run release-check` passes on a clean
+  checkout of `1eebc3a`: 112 tasks, including
+  `fixpoint ok: stage2==stage3`. CI on that commit, including all eight
+  unit-test shards, is green (#3795).
+- **The self-compile is measured** (below).
+
+### Self-compile measurement
+
+This compares two trees, each compiled by its own stage2:
+
+- **A** is the pre-migration tree, `61d9a64`, the parent of #3723.
+- **B** is the migrated tree, `1eebc3a`.
+
+Each run compiles the selfcompile KPI input
+(`lib/@vibe/compiler/tests/codegen_lexer_test.vibe`), whose import closure
+is the compiler itself, through `scripts/selfcompile_kpi.sh`'s command. The
+runs follow the #2393 protocol:
+
+- Each pair uses its own fresh `VIBE_BUILD_CACHE_DIR`.
+- The first run in that directory is cold and the second is warm.
+- There are three pairs per tree, on one machine, run one after another.
+
+Heap and pages are deterministic: every run of a tree gave the same value.
+Wall time is the median.
+
+| | A (pre-migration) | B (migrated) | Change |
+|---|---:|---:|---:|
+| Cold `heap_ptr` bytes | 1,055,563,104 | 1,285,065,760 | +21.7% |
+| Cold memory pages | 18,663 | 27,994 | +50.0% |
+| Cold wall, ms (6 runs) | 11,435 | 13,455 | +17.7% |
+| Warm `heap_ptr` bytes | 616,566,832 | 763,029,336 | +23.8% |
+| Warm memory pages | 12,442 | 12,442 | 0 |
+| Warm wall, ms | 7,300 | 7,390 | +1.2% |
+| Output wasm bytes | 6,270,279 | 6,627,758 | +5.7% |
+
+The "6 runs" cold wall row pools all six cold KPI-script runs. A
+cold-only pass gave medians of 10,660 and 12,930 ms.
+
+**What the numbers cover.** A and B are 137 commits apart, and 17 of them
+belong to this ADR, so the change is not the label cost alone. The
+label-only part was measured on one stage2 over two input trees when the
+KPI baseline was rebased (`bench/perf/heap_baseline.txt`):
+
+- `lib/` outside the compiler, labeled (#3723): +2.1%.
+- The compiler's own sources, labeled (#3748): +19.8% raw, and +11.3%
+  after #3742 removed the checker's per-label allocations.
+
+What remains is one more AST node per argument through every pass. The
+cache hides most of it: the warm wall time is unchanged.
 
 ## Alternatives considered
 
