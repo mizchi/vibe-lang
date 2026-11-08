@@ -79,7 +79,7 @@ import ./checker_impl_method_signature.vibe {
 }
 
 import ./checker_throw_kind_of_type.vibe {
-  bind_trait_bound_self_reference, bind_trait_bound_tparams
+  bind_trait_bound_self_reference, bind_trait_bound_tparams, canonical_impl_trait_key
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -2565,6 +2565,18 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
         } else {
           EnvTraitImpl(trait_name, target, env)
+        }
+        // #3947: a bound is judged under its key with aliases expanded
+        // (`Value[Alias]` -> `Value[Int]`), so the impl is registered under
+        // that key as well. The written key stays: the impl's own methods are
+        // found through it.
+        let canonical_key = canonical_impl_trait_key(key = trait_name, tparams = tparams, defs = defs)
+        let new_env = if canonical_key == trait_name {
+          new_env
+        } else if Array::length(tparams) > 0 {
+          EnvTraitImplGen(canonical_key, tparams, tbounds, target, new_env)
+        } else {
+          EnvTraitImpl(canonical_key, target, new_env)
         }
         (new_env, s, c)
       },

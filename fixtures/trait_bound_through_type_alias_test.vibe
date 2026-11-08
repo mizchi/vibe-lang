@@ -1,0 +1,72 @@
+//# #3947: an applied trait's argument spelled through a type alias names the
+//# same impl as the expanded spelling, in a function bound and in a generic
+//# impl's bound. A bound is judged with the alias expanded, while the impl
+//# kept its written key, so `[V: Value[Alias]]` beside `impl Value[Alias]`
+//# reported ``no impl `Value[Int]` for `Note` ``.
+
+type Alias = Int
+
+trait Value[A] {
+  value(Self) -> A
+}
+
+struct Note {
+  n: Int
+}
+
+impl Value[Alias] for Note {
+  value(self) -> Alias {
+    self.n
+  }
+}
+
+struct Cell {
+  n: Int
+}
+
+impl Value[Int] for Cell {
+  value(self) -> Int {
+    self.n * 2
+  }
+}
+
+fn through_alias[V: Value[Alias]](_ v: V) -> Int {
+  V::value(v)
+}
+
+fn through_int[V: Value[Int]](_ v: V) -> Int {
+  V::value(v)
+}
+
+trait Scaled {
+  scaled(Self) -> Int
+}
+
+struct Wrap[T] {
+  inner: T
+}
+
+impl [T: Value[Int]] Scaled for Wrap[T] {
+  scaled(self) -> Int {
+    T::value(self.inner) * 10
+  }
+}
+
+fn via[U: Scaled](_ u: U) -> Int {
+  U::scaled(u)
+}
+
+test "a function bound through the alias" {
+  inspect(through_alias(Note::{ n: 6 }), content = "6")
+  inspect(through_alias(Cell::{ n: 6 }), content = "12")
+}
+
+test "a function bound through the expanded type" {
+  inspect(through_int(Note::{ n: 7 }), content = "7")
+  inspect(through_int(Cell::{ n: 7 }), content = "14")
+}
+
+test "a generic impl's bound" {
+  inspect(via(Wrap::{ inner: Note::{ n: 3 } }), content = "30")
+  inspect(via(Wrap::{ inner: Cell::{ n: 3 } }), content = "60")
+}

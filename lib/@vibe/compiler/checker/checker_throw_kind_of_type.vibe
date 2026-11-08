@@ -1748,6 +1748,40 @@ fn resolve_trait_bound_arg_expr(arg: TypeExpr, self_ty: Type, s: Subst, defs: Ar
   }
 }
 
+/// #3947: the key an impl is registered under, with each type argument that
+/// names none of the impl's own parameters resolved the way a bound's key is
+/// (`resolve_trait_bound_self_reference`). A bound `[V: Value[Alias]]` is
+/// judged as `Value[Int]` once `type Alias = Int` expands, so an impl written
+/// `impl Value[Alias] for Note` has to be found under that same key; before,
+/// it stayed `Value[Alias]` and the bound reported no impl. An argument that
+/// does not resolve to a type a key can spell keeps its written form.
+export fn canonical_impl_trait_key(key: String, tparams: Array[String], defs: Array[TypeDef]) -> String {
+  match trait_ref_from_key(key) {
+    Some(TyApp(name, args)) => {
+      let mut changed = false
+      let mapped = for arg in args {
+        if type_expr_names_any(te = arg, names = tparams) {
+          arg
+        } else {
+          match trait_bound_type_expr(resolve_type_expr(te = arg, defs = defs)) {
+            Some(next) => {
+              changed = true
+              next
+            },
+            None => arg
+          }
+        }
+      }
+      if changed {
+        trait_ref_key(TyApp(name, mapped))
+      } else {
+        key
+      }
+    },
+    _ => key
+  }
+}
+
 export fn resolve_trait_bound_self_reference(key: String, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> String {
   match trait_ref_from_key(key) {
     Some(TyApp(name, args)) => {

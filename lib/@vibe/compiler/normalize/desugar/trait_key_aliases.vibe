@@ -1,0 +1,184 @@
+// Applied trait keys through type aliases (#3947).
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/ast {
+  impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+//# Functions
+
+/// #3947: spell every applied trait key with its type aliases expanded: an
+/// impl's head (`impl Value[Alias] for Note`) and bounds, and a top-level
+/// function's bounds (`[V: Value[Alias]]`). Witness lookup matches a bound to
+/// an impl by the key's spelling, and so does the name the parser gives an
+/// impl's methods (`impl_method_owner`), so `Value[Alias]` and `Value[Int]`
+/// named two different impls once `type Alias = Int`. The checker judges both
+/// as `Value[Int]` (`canonical_impl_trait_key`), and this makes the lowering
+/// agree. Method bindings whose owner was spelled from a rewritten key are
+/// renamed with it. An argument that names one of the declaration's own type
+/// parameters is left as written.
+///
+/// Reads the alias table `eq_known_types_reset` fills, so it runs after it.
+export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
+  let owner_renames: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, at = i) {
+      SImpl(tparams, bounds, trait_name, target) => {
+        let names = for t in tparams {
+          type_param_name(t)
+        }
+        let next_key = expand_key_aliases(key = trait_name, names = names)
+        let next_bounds = expand_bound_aliases(bounds = bounds, names = names)
+        if next_key != trait_name || next_bounds != bounds {
+          Array::set(stmts, at = i, value = SImpl(tparams, next_bounds, next_key, target))
+        } else {
+          ()
+        }
+        if next_key != trait_name {
+          let before = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target)
+          let after = impl_method_owner(tparams = tparams, trait_name = next_key, target = target)
+          if before != after {
+            Array::push(owner_renames, value = (String::concat(before, "::"), String::concat(after, "::")))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      SLet(exported, is_rec, name, ty, EFn(tparams, bounds, params, ret, effect, body)) => {
+        let next_bounds = expand_bound_aliases(bounds = bounds, names = for t in tparams {
+          type_param_name(t)
+        })
+        if next_bounds != bounds {
+          Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, EFn(tparams, next_bounds, params, ret, effect, body)))
+        } else {
+          ()
+        }
+      },
+      SFnDecl(exported, name, EFn(tparams, bounds, params, ret, effect, body), attrs, off) => {
+        let next_bounds = expand_bound_aliases(bounds = bounds, names = for t in tparams {
+          type_param_name(t)
+        })
+        if next_bounds != bounds {
+          Array::set(stmts, at = i, value = SFnDecl(exported, name, EFn(tparams, next_bounds, params, ret, effect, body), attrs, off))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(owner_renames) > 0 {
+    rename_impl_method_bindings(stmts = stmts, renames = owner_renames)
+  } else {
+    ()
+  }
+}
+
+fn expand_key_aliases(key: String, names: Array[String]) -> String {
+  match trait_ref_from_key(key) {
+    Some(TyApp(head, args)) => {
+      let mut changed = false
+      let mapped = for arg in args {
+        let next = if type_expr_names_any(ty = arg, names = names) {
+          arg
+        } else {
+          eq_expand_alias_ty(arg)
+        }
+        if next != arg {
+          changed = true
+        } else {
+          ()
+        }
+        next
+      }
+      if changed {
+        trait_ref_key(TyApp(head, mapped))
+      } else {
+        key
+      }
+    },
+    _ => key
+  }
+}
+
+fn expand_bound_aliases(bounds: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
+  for bound in bounds {
+    let (param, traits) = bound
+    (param, for trait_ref in traits {
+      expand_key_aliases(key = trait_ref, names = names)
+    })
+  }
+}
+
+fn rename_impl_method_bindings(stmts: Array[Stmt], renames: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, at = i) {
+      SLet(exported, is_rec, name, ty, body) => match renamed_owner(name = name, renames = renames) {
+        Some(next) => Array::set(stmts, at = i, value = SLet(exported, is_rec, next, ty, body)),
+        None => ()
+      },
+      SFnDecl(exported, name, body, attrs, off) => match renamed_owner(name = name, renames = renames) {
+        Some(next) => Array::set(stmts, at = i, value = SFnDecl(exported, next, body, attrs, off)),
+        None => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn renamed_owner(name: String, renames: Array[(String, String)]) -> Option[String] {
+  let mut out = None
+  for row in renames {
+    let (before, after) = row
+    if out == None && String::starts_with(name, prefix = before) {
+      out = Some(String::concat(after, String::substring(name, start = String::length(before), end = String::length(name))))
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+fn type_expr_names_any(ty: TypeExpr, names: Array[String]) -> Bool {
+  match ty {
+    TyName(name) => {
+      let mut found = false
+      for n in names {
+        if n == name {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyApp(name, args) => type_expr_names_any(ty = TyName(name), names = names) || type_exprs_name_any(tys = args, names = names),
+    TyTuple(items) => type_exprs_name_any(tys = items, names = names),
+    TyFn(params, ret, _) => type_expr_names_any(ty = ret, names = names) || type_exprs_name_any(tys = params, names = names),
+    TyUnit => false
+  }
+}
+
+fn type_exprs_name_any(tys: Array[TypeExpr], names: Array[String]) -> Bool {
+  let mut found = false
+  for t in tys {
+    if !found && type_expr_names_any(ty = t, names = names) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
