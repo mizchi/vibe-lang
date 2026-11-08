@@ -815,7 +815,10 @@ to 142,360 — 980 references that were silently going to be left behind.
 `call` target, a `ref.func` operand) at least that many LEB128 bytes. It does
 the same for every funcref table slot a constant carries: the function value
 `i64.const ((slot << 2) | 2)` (kind 101) and the closure header's
-`i32.const slot` (kind 102). A
+`i32.const slot` (kind 102). It also pads every pooled string address a body
+embeds. The bare offset of `blind_kind_str_ref` takes W bytes (W=3 keeps
+offsets below 2^20 fixed). The `(offset << 32) | length` of
+`blind_kind_str_fat` takes W+5 bytes (8 at W=3, fixed below offset 2^23). A
 non-minimal LEB128 is valid wasm, and it is the slot shape the
 tool-conventions object format, `wasm-ld` and wild reserve for exactly this
 reason. Unset is minimal, and the output is byte-identical to a compiler
@@ -824,7 +827,10 @@ without the switch. Every writer of such an immediate goes through
 the body-cache relocator (`lc_move_body`), and late-DCE renumbering
 (`lc_pf_emit_code` and its linemap delta). A slot constant goes through
 `leb128_encode_s_slot`: `emit_i64_const_slot` and `emit_i32_const_slot` at the
-four sites that record kinds 101 and 102, and the same two in `lc_move_body`. That is what keeps a replayed or
+four sites that record kinds 101 and 102, and the same two in `lc_move_body`. A
+string address goes through `emit_i64_const_str`. That covers
+`emit_str_ref_slot` and `emit_str_fat_slot`, the only emitters of a pooled
+string in a linear-lane body, and the string relocator `lc_relocate_body`. That is what keeps a replayed or
 pruned body equal to a fresh one. The persisted `codegen-body-cache` slot and
 the linked-output memo are keyed on the width, so the two encodings never
 replay into each other.
@@ -855,12 +861,25 @@ To make one cross, add 400 reachable functions to `base64.vibe`, which moves
 | W=3, function indices only | 3 (edited + `codegen_body_cache_from_bytes{,_at}`, which hold the moved function value) |
 | W=3, function indices and table slots | **1** (edited) |
 
-String data pointers (`blind_kind_str_ref` / `_str_fat`) are still unpadded.
+A 300-byte literal added in `base64.vibe` moves every later string by 300.
+The pool here spans 64..112,700, so offsets cross the 8192 band of a bare
+offset and the 2^15 band of a fat one:
+
+| +300-byte literal | length changed |
+|---|---:|
+| W=0 | 109 |
+| W=3, function indices and table slots | 109 |
+| W=3, + string addresses | **3** (edited + `__rt_oob_abort`, `__rt_div_zero_abort`) |
+
+The two runtime helpers that remain embed their message's address outside the
+recorded emitters. They are generated builtins, not cached bodies. The other
+five edits answer the same with and without string padding.
 
 - **Cost**: the module grows from 6,636,149 to 6,995,692 bytes (+5.4%), because
   most of the 200,348 function-index sites were one or two bytes. Padding the
   table slots as well adds 40 bytes more (6,995,732), because function values
-  are few and already two bytes each.
+  are few and already two bytes each. Padding string addresses adds 8,711
+  bytes more (7,004,443; +5.55% over W=0 in total).
 - **Correctness**: `scripts/reloc_roundtrip.sh` with
   `RELOC_ROUNDTRIP_FUNC_WIDTH=3` round-trips all 7221 bodies. The red control,
   rebuilding the padded module at width 0, reports 6979 mismatches.
@@ -869,14 +888,16 @@ String data pointers (`blind_kind_str_ref` / `_str_fat`) are still unpadded.
   the output was byte-identical to a fresh compile at W=3 as well as at W=0.
   An edit that adds a function used as a value ahead of every slot relocates
   the kind-101 records: 7044 offered, 342 recompiled, and again byte-identical
-  to a fresh compile at both widths.
+  to a fresh compile at both widths. The 300-byte-literal edit relocates the
+  string records: 7046 offered, 340 recompiled, byte-identical at both widths.
 
 `verify` does not reach this path. A function-set edit changes the guards, so
 its second compile is skipped (the counted lane reports `-1`).
 
 What this does not do yet:
 
-- pad string data pointers, tags, globals or constructor tags;
+- pad tags, globals or constructor tags, or the runtime helpers' message
+  addresses;
 - choose a default.
 
 The size cost is the number to weigh against an in-place patcher that this

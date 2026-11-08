@@ -11,10 +11,12 @@ import @vibe/compiler/core {
   bytebuf_push_opcode_u32_u32,
   bytebuf_push_section,
   bytebuf_push_vec_header,
+  leb128_encode_s_padded,
   leb128_encode_s_slot,
   leb128_encode_u32,
   leb128_encode_u32_slot,
-  reloc_slot_width
+  reloc_slot_width,
+  reloc_str_width
 }
 
 import ./sections.vibe {
@@ -470,6 +472,16 @@ export fn emit_i64_const(buf: Bytes, value: Int) -> Unit {
 export fn emit_i64_const_slot(buf: Bytes, value: Int) -> Unit {
   bytebuf_push(buf = buf, byte = op_i64_const)
   leb128_encode_s_slot(buf = buf, value = value)
+}
+
+/// A pooled string's address as an `i64.const` (#3941): the bare offset of
+/// `blind_kind_str_ref`, or the `(offset << 32) | length` of
+/// `blind_kind_str_fat`, at the compile's string width (`reloc_str_width`),
+/// so a literal added anywhere in the program does not change the length of
+/// a body that embeds a later string. The relocator re-emits with these.
+export fn emit_i64_const_str(buf: Bytes, value: Int, fat: Bool) -> Unit {
+  bytebuf_push(buf = buf, byte = op_i64_const)
+  leb128_encode_s_padded(buf = buf, value = value, width = reloc_str_width(fat = fat))
 }
 
 export fn emit_i32_const_slot(buf: Bytes, value: Int) -> Unit {

@@ -21,6 +21,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_add,
   emit_i64_and,
   emit_i64_const,
+  emit_i64_const_str,
   emit_i64_div_s,
   emit_i64_eq,
   emit_i64_extend_i32_s,
@@ -1422,7 +1423,13 @@ export fn emit_str_ref(buf: Bytes, offset: Int, length: Int) -> Unit {
 /// there, and the module assembly checks every record against its bytes.
 export fn emit_str_ref_slot(buf: Bytes, ctx: CompileCtx, slot: Int) -> Unit {
   blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_str_ref, sym = slot)
-  emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = slot), length = Array::get(ctx.str_table.lengths, at = slot))
+  // The offset is the relocatable part, at the string width (#3941); the
+  // rest is `emit_str_ref`'s tail, byte for byte.
+  emit_i64_const_str(buf = buf, value = Array::get(ctx.str_table.offsets, at = slot), fat = false)
+  emit_i64_const(buf = buf, value = 32)
+  emit_i64_shl(buf)
+  emit_i64_const(buf = buf, value = Array::get(ctx.str_table.lengths, at = slot))
+  emit_i64_or(buf)
 }
 
 /// #2669: the pooled string at `slot` as ONE `i64.const ((offset << 32) |
@@ -1433,7 +1440,7 @@ export fn emit_str_fat_slot(buf: Bytes, ctx: CompileCtx, slot: Int) -> Unit {
     emit_i64_const(buf = buf, value = 0)
   } else {
     blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_str_fat, sym = slot)
-    emit_i64_const(buf = buf, value = (Array::get(ctx.str_table.offsets, at = slot)<<32)|Array::get(ctx.str_table.lengths, at = slot))
+    emit_i64_const_str(buf = buf, value = (Array::get(ctx.str_table.offsets, at = slot)<<32)|Array::get(ctx.str_table.lengths, at = slot), fat = true)
   }
 }
 
