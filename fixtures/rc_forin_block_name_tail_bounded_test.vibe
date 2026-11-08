@@ -1,0 +1,113 @@
+// #3919: a `for` iterable whose block returns a name it bound to a fresh
+// value -- `for x in { let k = [n + i, 1]; k }` -- keeps the RC heap frontier
+// bounded.
+//
+// #3933 released a block or branch iterable whose result leaves are fresh
+// values or views, and left a leaf naming a binding made inside the iterable
+// unreleased. Such a name is that binding's last use, so the plan moves its
+// reference into the block's value and nothing released it: every run of the
+// loop leaked the array. The leaf now counts as owned when its innermost
+// binder on the result path is a `let` of a fresh value
+// (`cc_iter_tails_owned`). A name bound to a view, a `let mut` or a pattern
+// binder still keeps the iterable unreleased.
+//
+// Measured on a stage2 built from main at 73dd6f86, VIBE_RC=1, this fixture
+// grew __heap_ptr by 2,112,036 B over its 2000 rounds. The gate compiles it
+// under VIBE_RC=1 and bounds the growth (tests/gates/mid/run.sh, 40f0o); the
+// same gate checks the answer on the bump, rc, shadow and gc lanes, and the
+// shadow lane traps on the drop of a freed block -- what releasing the array
+// twice would hit.
+//
+// `main` sums, per round i, the Int results below; see `round`.
+
+// The named-tail shape.
+fn name_tail(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in {
+      let k = [n + i, 1]
+      k
+    } {
+      acc = acc + x - n
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// A named tail on one branch, a fresh value on the other; the name is
+// dropped on the branch that does not return it.
+fn branch_name(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in {
+      let k = [n + i]
+      if (n + i) % 2 == 0 {
+        k
+      } else {
+        [n, n]
+      }
+    } {
+      acc = acc + x - n
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// A match arm whose block returns a name it bound.
+fn arm_name(_ n: Int) -> Int {
+  let o = if n % 2 == 0 {
+    Some(n)
+  } else {
+    None
+  }
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in match o {
+      Some(v) => {
+        let k = [v - n + i, 2]
+        k
+      },
+      None => [7]
+    } {
+      acc = acc + x
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// The tail name is read again in the block first.
+fn read_then_tail(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in {
+      let k = [n + i, 3]
+      acc = acc + Array::length(k)
+      k
+    } {
+      acc = acc + x - n
+    }
+    i = i + 1
+  }
+  acc
+}
+
+fn round(_ i: Int) -> Int {
+  name_tail(i) + branch_name(i) + arm_name(i) + read_then_tail(i)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}
