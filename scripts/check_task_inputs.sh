@@ -20,7 +20,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 python3 - "$ROOT_DIR/scripts" "$@" <<'PY'
-import json, re, sys, os, subprocess
+import json, re, sys, os, subprocess, time
 sys.path.insert(0, sys.argv[1])
 from source_files import read_local_pkl
 
@@ -274,13 +274,25 @@ for m in re.finditer(r"new (?:\w+\.)?Task \{", active_src):
 # Ask Pkl for the concrete task values before accepting a modular Taskfile.
 root_source = active_pkl(open(TASKFILE, encoding="utf-8").read())
 if re.search(r'^import "(?![^"\n]*:)[^"\n]+"', root_source, re.M):
-    try:
-        evaluated = json.loads(subprocess.check_output(
-            [os.environ.get("PKL_BIN", "pkl"), "eval", TASKFILE, "-f", "json"],
-            text=True,
-        ))
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
-        print(f"check-task-inputs: FAIL: cannot evaluate modular task inputs: {error}", file=sys.stderr)
+    # `pkl eval` fetches the amended pkfire package on a cold cache. A
+    # transient registry error (a 504 from the release download) is retried
+    # before it fails the gate; a Taskfile that does not evaluate fails on
+    # every attempt, so the gate's answer is unchanged.
+    evaluated = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            evaluated = json.loads(subprocess.check_output(
+                [os.environ.get("PKL_BIN", "pkl"), "eval", TASKFILE, "-f", "json"],
+                text=True,
+            ))
+            break
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+            last_error = error
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
+    if evaluated is None:
+        print(f"check-task-inputs: FAIL: cannot evaluate modular task inputs: {last_error}", file=sys.stderr)
         sys.exit(1)
     factory_names = set(re.findall(r'scriptTask\(\s*"([^"\n]+)"', active_src))
     required = {"lib/**/*.vibe", "lib/**/*.vpkg", "bootstrap/seed.json"}
