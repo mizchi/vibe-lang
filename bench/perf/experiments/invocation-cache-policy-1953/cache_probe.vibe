@@ -1,0 +1,46 @@
+import @vibe/compiler/cache/policy {
+  AstCacheConfig, IngestionStampConfig
+}
+import @vibe/compiler/config {
+  Config, target_cfg_from_csv, target_cfg_namespace
+}
+import @vibe/compiler/cache {
+  compact_source_fingerprint_memo,
+  fingerprint_file_fs_configured,
+  ingestion_fingerprint_telemetry_json,
+  persistent_artifact_cache_path_with_cfg,
+  persistent_ingestion_stamp_cache_path_in_namespace,
+  set_ingestion_fingerprint_telemetry_enabled,
+  set_persistent_cache_cfg_flags
+}
+import @vibe/compiler/loader {
+  parse_program_located_shared_fs_cache_configured, parse_program_located_shared_ran_parser
+}
+
+fn main allows Env + Fs + Exception + Console {
+  let path = Env::get("CACHE_POLICY_SOURCE")
+  let flags = Env::get("CACHE_POLICY_FLAGS")
+  let ast = Env::get("CACHE_POLICY_AST") == "1"
+  let stamp = Env::get("CACHE_POLICY_STAMP") == "1"
+  let cfg = target_cfg_from_csv(flags)
+  let namespace = target_cfg_namespace(cfg)
+  // Deliberately disagree with the caller's retained namespace.
+  set_persistent_cache_cfg_flags("poison")
+  set_ingestion_fingerprint_telemetry_enabled(true)
+  let fingerprint = handle {
+    fingerprint_file_fs_configured(path = path, namespace = namespace)
+  } with { IngestionStampConfig::Enabled() => resume(stamp) }
+  let source = Fs::read_file(path)
+  let parsed = handle {
+    parse_program_located_shared_fs_cache_configured(path = path, source = source)
+  } with { Config::CfgFlags() => resume(flags); AstCacheConfig::Active() => resume(ast) }
+  let ran = if parse_program_located_shared_ran_parser() {
+    1
+  } else {
+    0
+  }
+  let ast_path = persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = path, fingerprint = compact_source_fingerprint_memo(path = path, source = source), cfg_csv = flags)
+  let stamp_path = persistent_ingestion_stamp_cache_path_in_namespace(path = path, namespace = namespace)
+  let telemetry = ingestion_fingerprint_telemetry_json("probe")
+  println("cache-policy\t\{fingerprint}\t\{Array::length(parsed)}\t\{ran}\t\{telemetry}\t\{ast_path}\t\{stamp_path}")
+}

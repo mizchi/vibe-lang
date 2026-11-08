@@ -252,6 +252,45 @@ choices before merging. Namespace/location state and codegen scratch remain
 serial phase-owned. CLI/full filesystem orchestration, body caches, workers
 and final-artifact configuration remain later slices; this is not general compiler reentrancy.
 
+## Persistent-cache policy boundaries
+
+`@vibe/compiler/cache/policy` owns immutable, opaque `AstCachePolicy` and
+`IngestionStampPolicy` values. Separate `AstCacheConfig::Active` and
+`IngestionStampConfig::Enabled` effects capture one decision each. They grant
+no target-flag, checked-artifact, generated-source, tracing or filesystem
+authority. Cache contents, counters, memo eviction and reset are independent.
+
+The AST value is the **effective persistent-AST decision**, after the caller
+accounts for other reuse lanes. Compatibility parsing and prefetch retain the
+existing predicate: the experimental AST flag must be enabled and checked
+module mode must not be `on`. The new explicit policy entries use the supplied
+value, even when a legacy mode disagrees. Shared in-process parse memos remain
+available with persistent caching disabled; policy does not change semantic
+cache identity.
+
+`parse_program_located_shared_fs_with_cache_policy` and
+`ast_cache_prefetch_fs_with_cache_policy` receive both `TargetCfg` and that
+policy. Parse, prefetch, persistent load and publication share the selected
+decision. Their `*_cache_configured` boundaries capture flags and policy once
+before I/O. Scoped requests do not consult the legacy enable/mode cells.
+Compatibility entries keep their lazy process-setting reads and delegate to
+the same implementation. AST decoding, malformed-entry fallback, memo bounds
+and target namespaces are unchanged.
+
+`fingerprint_file_fs_with_policy` receives stamp policy and a captured cache
+namespace. `fingerprint_file_fs_configured` captures only stamp policy; the
+caller still supplies the namespace. The compatibility entry captures its
+existing environment-derived decision and namespace. The key recipe, stat-token
+validation, strict metadata-only codec and process-memo priority are unchanged.
+Disabled policy never probes or publishes a stamp. A warm process memo may
+answer before the enabled stamp lane, as before. Source text is always read
+from its ordinary source provider and is never replayed from a stamp.
+
+Full collection/typecheck/CLI orchestration still needs these policies passed
+through. Checked-module cache mode, typing reuse, cache roots and mutable cache
+ownership remain separate migrations; this slice does not make compiler walks
+concurrent.
+
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
@@ -264,7 +303,7 @@ and final-artifact configuration remain later slices; this is not general compil
 | Checked Exception-row mode | `checker/effects/checker_effects_dh_call_to_binding.vibe`: `error_row_mode_cell`, CLI `VIBE_CHECK_ERROR_ROW` | Migrate the checker/effect-pass policy together after the target flags. This remains shared configuration, unlike checked type facts belonging to a compilation. |
 | Checked-module cache mode | `runtime/checked_module_cache/cache.vibe`: `checked_cache_mode`, CLI `VIBE_CHECKED_MODULE_CACHE` | Separate immutable policy from mutable cache contents/reset and transport it through the cache lane. |
 | Typing reuse policy | `runtime/typecheck_fs_*`, adapter `set_experimental_typing_dependency_env_reuse_enabled` | Preserve the check-only/compile distinction and cache validation; do not treat mutable memo contents as configuration. |
-| AST and ingestion-stamp cache policy | `compiler/cache/cache_underlying.vibe`: `ast_cache_enabled_cell`, `ingestion_stamp_enabled_cell` | These environment-derived enable settings remain process-wide policy. Scoped target flags do not change their ownership; separate their immutable policy from cached contents in a later slice. |
+| AST and ingestion-stamp cache policy | `compiler/cache/cache_underlying.vibe`: `ast_cache_enabled_cell`, `ingestion_stamp_enabled_cell` | Explicit AST parse/prefetch and ingestion fingerprint entries accept immutable policies; separate effects capture them once. Compatibility entries retain process memos. Collection/typecheck/CLI orchestration and mutable cache contents remain to migrate. |
 
 Compiler lane specialization is #2497. Telemetry, trace sinks and their
 enable cells remain #2498; a `Log` effect is deliberately not introduced.
@@ -339,3 +378,11 @@ String/equality and numeric/render channels, including a same-source Float64/Int
 record-field switch, argument placements and builtin identity; nested successful and refused emits run inside an outer flag request.
 Wrong source/target products and unsupported modes leave merge metadata intact.
 The bootstrap gate runs it on its fresh stage2 with AST caching enabled.
+
+`cache/policy/policy_test.vibe` pins independent capture, retained decisions and
+nested exception unwinding without Env. `invocation_cache_policy_test.vibe`
+exercises persistent AST cold/off/disk-warm/malformed/prefetch paths after real
+memo eviction, nested flag/policy captures with a changed legacy mode, and
+stamp publication, disabled policy, source edits and namespace retention. Run
+with both experimental environment flags off and on; the bootstrap gate also
+runs these suites on its fresh stage2.

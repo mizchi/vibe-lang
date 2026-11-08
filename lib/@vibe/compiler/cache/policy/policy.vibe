@@ -1,0 +1,66 @@
+/// Effective persistent AST use. Shared in-process parse memos are independent.
+/// Callers can account for checked-artifact reuse before choosing this value.
+export enum AstCachePolicy {
+  ScopedPersistentAstOff;
+  ScopedPersistentAstOn
+}
+
+/// Metadata-stamp use, without authority to replay source text.
+export enum IngestionStampPolicy {
+  ScopedIngestionStampOff;
+  ScopedIngestionStampOn
+}
+
+/// Persistent AST policy only; target flags and other caches are separate.
+export effect AstCacheConfig {
+  Active -> Bool
+}
+
+/// Ingestion-stamp policy only; this effect grants no filesystem authority.
+export effect IngestionStampConfig {
+  Enabled -> Bool
+}
+
+/// Choose an immutable effective AST-use decision without changing a cell.
+export fn ast_cache_policy(active: Bool) -> AstCachePolicy {
+  if active {
+    ScopedPersistentAstOn
+  } else {
+    ScopedPersistentAstOff
+  }
+}
+
+/// Read the captured AST decision without consulting environment or modes.
+export fn ast_cache_policy_active(_ policy: AstCachePolicy) -> Bool {
+  match policy {
+    ScopedPersistentAstOff => false,
+    ScopedPersistentAstOn => true
+  }
+}
+
+/// Capture this invocation's AST decision once, before cache I/O.
+export fn ast_cache_policy_capture() -> AstCachePolicy with AstCacheConfig {
+  ast_cache_policy(active = perform AstCacheConfig::Active())
+}
+
+/// Choose metadata-stamp use without changing any cache contents.
+export fn ingestion_stamp_policy(enabled: Bool) -> IngestionStampPolicy {
+  if enabled {
+    ScopedIngestionStampOn
+  } else {
+    ScopedIngestionStampOff
+  }
+}
+
+/// Read a retained stamp decision without consulting the environment.
+export fn ingestion_stamp_policy_enabled(_ policy: IngestionStampPolicy) -> Bool {
+  match policy {
+    ScopedIngestionStampOff => false,
+    ScopedIngestionStampOn => true
+  }
+}
+
+/// Capture this invocation's stamp decision once, before filesystem requests.
+export fn ingestion_stamp_policy_capture() -> IngestionStampPolicy with IngestionStampConfig {
+  ingestion_stamp_policy(enabled = perform IngestionStampConfig::Enabled())
+}
