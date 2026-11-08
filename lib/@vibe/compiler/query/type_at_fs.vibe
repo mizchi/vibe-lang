@@ -1,0 +1,63 @@
+//# Imports
+
+// `vibe type-at` on `vibe check`'s import-resolving lane (#3834). The file is
+// typed the way `vibe check` types it -- its imports walked and projected
+// through the shared project query boundary -- and type_at.vibe answers from
+// that typing. Typed as a lone module, `D::cube(1.5)` after
+// `import @vibe/builtin { Float64 as D }` had no type at all, and neither had
+// `Float64::cube`, a library function the builtin package declares, while
+// `vibe check` typed both `Float64`.
+//
+// The single-module answer remains the fallback: a file that does not check
+// on this lane (a type error, a failed import walk) keeps the partial answers
+// its own hover table gives, and so does a file whose ingested source carries
+// a prepended directory-shared import, whose offsets the typed rows would not
+// share with the file as written.
+
+import @vibe/compiler/checker {
+  check_program_with_projected_import_env_result, local_let_types_begin, local_let_types_end
+}
+
+import @vibe/parser {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/query/project_context {
+  query_project_context_fs, query_project_state_new
+}
+
+import ./type_at.vibe {
+  type_at_source, type_at_source_typed, type_at_typed
+}
+
+//# Functions
+
+/// The type of the identifier at 1-based (`line`, `col`) of `source`, the
+/// contents of `path`, typed with its imports resolved. "" as in
+/// `type_at_source`.
+export fn type_at_fs(path: String, source: String, line: Int, col: Int) -> String with Env + Fs {
+  let typed = handle {
+    let context = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new())
+    if context.entry_source != source {
+      None
+    } else {
+      // A fresh parse: the checker mutates the statements it is handed.
+      let (tokens, starts, _) = lex_with_offsets(source)
+      let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+      // The rows a local `let` binder answers with are recorded only while
+      // this is on (#3050).
+      local_let_types_begin()
+      let checked = handle {
+        check_program_with_projected_import_env_result(stmts = stmts, initial_env = context.import_env)
+      } with { Exception::Throw(message) => {
+        local_let_types_end(); throw(message)
+      } }
+      local_let_types_end()
+      Some(type_at_typed(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env))
+    }
+  } with { Exception::Throw(_) => None }
+  match typed {
+    Some(_) => type_at_source_typed(source = source, line = line, col = col, typed = typed),
+    None => type_at_source(source = source, line = line, col = col)
+  }
+}

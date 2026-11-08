@@ -311,5 +311,47 @@ binder 8 5 "(Int) -> Int" "call of the inner let rec"
 binder 10 11 "() -> Int" "call of a let rec that shadows a top-level fn"
 binder 1 4 "(String) -> String" "top-level fn shadowed by a let rec"
 
+# #3834: type-at types the file with its imports, as `vibe check` does.
+# Typed as a lone module, a name brought in by an import had no type at all.
+expect_type() { # expect_type <file> <line> <col> <want> <label>
+  local got
+  got="$("$VIBE" type-at "$1" "$2" "$3" 2>/dev/null || true)"
+  if [ "$got" = "$4" ]; then
+    echo "ok: type-at on $5 ($2:$3) is $4"; pass=$((pass + 1))
+  else
+    echo "FAIL: type-at on $5 ($2:$3) should be '$4', got '$got'" >&2; fail=$((fail + 1))
+  fi
+}
+printf 'export fn twice(x: Int) -> Int {\n  x * 2\n}\n' > "$WORK/dep.vibe"
+cat > "$WORK/use_dep.vibe" <<'VIBE'
+import ./dep.vibe { twice as tw }
+
+fn main() -> Unit {
+  let a = tw(x = 2)
+  ()
+}
+VIBE
+expect_type "$WORK/use_dep.vibe" 4 7 "Int" "a let bound to a call through an import alias"
+# `@vibe/builtin` resolves through the project's require pin, so this file
+# sits inside the repository.
+mkdir -p "$ROOT_DIR/_build"
+in_repo="$(mktemp -d "$ROOT_DIR/_build/type_at_import.XXXXXX")"
+trap 'rm -rf "$WORK" "$in_repo"' EXIT
+cat > "$in_repo/alias.vibe" <<'VIBE'
+import @vibe/builtin {
+  Float64 as D, Float64
+}
+
+fn main() -> Unit {
+  let a = D::cube(1.5)
+  let b = D::floor(1.5)
+  let c = Float64::cube(1.5)
+  ()
+}
+VIBE
+expect_type "$in_repo/alias.vibe" 6 7 "Float64" "a library function through a builtin type alias"
+expect_type "$in_repo/alias.vibe" 7 7 "Float64" "a builtin through a builtin type alias"
+expect_type "$in_repo/alias.vibe" 8 7 "Float64" "a library function of a builtin type"
+
 echo "[vibe-type-at] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

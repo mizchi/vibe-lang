@@ -106,13 +106,20 @@ vibe check --single-file --json <file.vibe>  # same JSON contract without resolv
   `let record { x, y } = r`, at top level too) and a `for` header
   (`for i, x in xs`) (#3000). A local `let`, `let mut` or `let rec` closure
   answers even when every use of it is a call (#3050, #3106).
+  The file is typed the way `vibe check` types it, with its imports
+  resolved, so a name an import brings in has its type (`D::floor(1.5)`
+  after `import @vibe/builtin { Float64 as D }` is `Float64`, #3834). A file
+  that does not check on that lane is typed on its own, which still answers
+  the names checked before the error.
   **A position with no identifier under it** — whitespace, a keyword, a
   literal, punctuation, past the end of the line or file — is an error:
   `type-at: no identifier at FILE:LINE:COL` on stderr and exit 1, and so is a
   file that does not parse (it used to answer nothing, exit 0). **Empty
   stdout with exit 0** therefore means one thing: there is an identifier, and
   no type is known for it (an unused pattern binder, say); stderr names it.
-  LSP hover calls the same query and answers `null` for both. Field accesses resolve at BOTH positions of
+  LSP hover asks the same question of the unsaved buffer, typed on its own
+  (imports unresolved, like `vibe check --single-file`), and answers `null`
+  for both. Field accesses resolve at BOTH positions of
   `obj.field` (#645): the base identifier and the field name each yield the
   projection type (EDot carries the field token's own offset).
 - `binding-at` powers rename/references. Each line is a `START END` pair of
