@@ -102,3 +102,54 @@ fn both_of[V: Both[(Int, Int)]](_ v: V) -> (Int, Int) {
 test "a parameterized alias expands with its arguments" {
   inspect(both_of(Twin::{ n: 2 }), content = "(2, 3)")
 }
+
+// Codex on #3952: an alias body is expanded in its own scope. `B` names the
+// alias `A`, not the caller's type parameter `A`, so the bound is `Mark[Int]`.
+type Inner = Int
+
+type Outer = Inner
+
+trait Mark[X] {
+  mark(Self) -> Int
+}
+
+struct Tag {
+  n: Int
+}
+
+impl Mark[Int] for Tag {
+  mark(self) -> Int {
+    self.n
+  }
+}
+
+fn marked[Inner, T: Mark[Outer]](_ a: Inner, _ t: T) -> Int {
+  T::mark(t)
+}
+
+test "an alias body does not see the caller's type parameters" {
+  inspect(marked("x", Tag::{ n: 5 }), content = "5")
+}
+
+// Codex on #3952: a constructor parameter in an alias body is replaced as the
+// head. The alias formal is `G` and the caller's `F`, so `Lift[F, Int]` must
+// become `F[Int]`, not `G[Int]`.
+trait Takes[A] {
+  take(A) -> Int
+}
+
+impl Takes[Array[Int]] for Array {
+  take(xs: Array[Int]) -> Int {
+    Array::length(xs)
+  }
+}
+
+type Lift[G[_], X] = G[X]
+
+fn take_lift[F[_]: Takes[Lift[F, Int]]](_ xs: Lift[F, Int]) -> Int {
+  F::take(xs)
+}
+
+test "a constructor parameter of an alias substitutes as the head" {
+  inspect(take_lift([1, 2, 3]), content = "3")
+}

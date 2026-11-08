@@ -184,27 +184,87 @@ fn trait_ref_alias_bounds(bounds: Array[(String, Array[String])], aliases: Array
   }
 }
 
+/// The most type nodes one key's arguments may expand to. Past it the key is
+/// left as written, and the checker's own alias preflight
+/// (`alias_expansion_node_limit`) reports the expansion: a branching alias
+/// (`type A1 = (A0, A0)` .. `A30`) is a few lines that expand to a billion
+/// nodes, and this pass runs before that preflight (Codex on #3952).
+let trait_ref_alias_node_budget = 4096
+
 /// `key` with its trait's arguments expanded; a bare trait name, or a key
 /// whose arguments name no alias, comes back unchanged.
 fn trait_ref_alias_key(key: String, aliases: Array[(String, Array[String], TypeExpr)], shadow: Array[String]) -> String {
   match trait_ref_from_key(key) {
     Some(TyApp(name, args)) => {
+      let budget = [trait_ref_alias_node_budget]
       let next = for arg in args {
-        trait_ref_alias_expand(te = arg, aliases = aliases, shadow = shadow, fuel = 64)
+        trait_ref_alias_expand(te = arg, aliases = aliases, shadow = shadow, fuel = 64, budget = budget)
       }
-      // Compared as keys: the key string is the identity every consumer
-      // matches by, and it is all that can tell an expansion happened.
-      trait_ref_key(TyApp(name, next))
+      // The expansion shares subtrees, so its size is counted before the key
+      // spells every one of them out.
+      for arg in next {
+        trait_ref_count_nodes(te = arg, budget = budget)
+      }
+      if Array::get(budget, at = 0) <= 0 {
+        key
+      } else {
+        // Compared as keys: the key string is the identity every consumer
+        // matches by, and it is all that can tell an expansion happened.
+        trait_ref_key(TyApp(name, next))
+      }
     },
     _ => key
   }
 }
 
-/// Expand every alias `te` names, recursively. `fuel` bounds an alias that
-/// (illegally) refers to itself; whatever is left when it runs out is kept as
-/// written.
-fn trait_ref_alias_expand(te: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], shadow: Array[String], fuel: Int) -> TypeExpr {
-  if fuel <= 0 {
+/// Spend one node of `budget`; false once it is gone.
+fn trait_ref_spend(_ budget: Array[Int]) -> Bool {
+  let left = Array::get(budget, at = 0)
+  if left <= 0 {
+    false
+  } else {
+    Array::set(budget, at = 0, value = left - 1)
+    true
+  }
+}
+
+fn trait_ref_count_nodes(te: TypeExpr, budget: Array[Int]) -> Unit {
+  if trait_ref_spend(budget) {
+    match te {
+      TyApp(_, args) => for arg in args {
+        trait_ref_count_nodes(te = arg, budget = budget)
+      },
+      TyTuple(items) => for item in items {
+        trait_ref_count_nodes(te = item, budget = budget)
+      },
+      TyFn(params, ret, _) => {
+        for param in params {
+          trait_ref_count_nodes(te = param, budget = budget)
+        }
+        trait_ref_count_nodes(te = ret, budget = budget)
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// Expand every alias `te` names, recursively. `shadow` holds the type
+/// parameters in scope where `te` is written, which are never expanded.
+///
+/// An alias's body is expanded in its OWN scope -- only its parameters are
+/// bound there -- and the arguments, already expanded where they were
+/// written, are substituted afterwards. Expanding the substituted body in the
+/// caller's scope instead let a caller's parameter capture a name the body
+/// meant as another alias: with `type A = Int` and `type B = A`, the bound
+/// `Mark[B]` in `fn f[A, T: Mark[B]]` became `Mark[A]` (Codex on #3952).
+///
+/// `fuel` bounds an alias that (illegally) refers to itself, and `budget` the
+/// total work (see `trait_ref_alias_node_budget`); whatever is left when
+/// either runs out is kept as written.
+fn trait_ref_alias_expand(te: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], shadow: Array[String], fuel: Int, budget: Array[Int]) -> TypeExpr {
+  if fuel <= 0 || !trait_ref_spend(budget) {
     te
   } else {
     match te {
@@ -212,29 +272,32 @@ fn trait_ref_alias_expand(te: TypeExpr, aliases: Array[(String, Array[String], T
         te
       } else {
         match trait_ref_alias_lookup(aliases = aliases, name = name, arity = 0) {
-          Some((_, target)) => trait_ref_alias_expand(te = target, aliases = aliases, shadow = shadow, fuel = fuel - 1),
+          Some((_, target)) => trait_ref_alias_expand(te = target, aliases = aliases, shadow = array_empty(), fuel = fuel - 1, budget = budget),
           None => te
         }
       },
       TyApp(name, args) => {
         let next = for arg in args {
-          trait_ref_alias_expand(te = arg, aliases = aliases, shadow = shadow, fuel = fuel - 1)
+          trait_ref_alias_expand(te = arg, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget)
         }
         if trait_ref_names_contain(names = shadow, name = name) {
           TyApp(name, next)
         } else {
           match trait_ref_alias_lookup(aliases = aliases, name = name, arity = Array::length(next)) {
-            Some((params, target)) => trait_ref_alias_expand(te = trait_ref_substitute(te = target, params = params, args = next), aliases = aliases, shadow = shadow, fuel = fuel - 1),
+            Some((params, target)) => {
+              let body = trait_ref_alias_expand(te = target, aliases = aliases, shadow = trait_ref_param_names(params), fuel = fuel - 1, budget = budget)
+              trait_ref_substitute(te = body, params = params, args = next)
+            },
             None => TyApp(name, next)
           }
         }
       },
       TyTuple(items) => TyTuple(for item in items {
-        trait_ref_alias_expand(te = item, aliases = aliases, shadow = shadow, fuel = fuel - 1)
+        trait_ref_alias_expand(te = item, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget)
       }),
       TyFn(params, ret, effect) => TyFn(for param in params {
-        trait_ref_alias_expand(te = param, aliases = aliases, shadow = shadow, fuel = fuel - 1)
-      }, trait_ref_alias_expand(te = ret, aliases = aliases, shadow = shadow, fuel = fuel - 1), effect),
+        trait_ref_alias_expand(te = param, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget)
+      }, trait_ref_alias_expand(te = ret, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget), effect),
       TyUnit => TyUnit
     }
   }
@@ -253,25 +316,41 @@ fn trait_ref_alias_lookup(aliases: Array[(String, Array[String], TypeExpr)], nam
   found
 }
 
+/// The argument an alias parameter named `name` stands for, if any.
+fn trait_ref_param_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  let mut i = 0
+  while i < Array::length(params) && i < Array::length(args) {
+    if (out is None) && type_param_name(Array::get(params, at = i)) == name {
+      out = Some(Array::get(args, at = i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// `te` with each of the alias's `params` replaced by the matching argument.
+/// A parameter in a constructor position (`G` of `type Apply[G[_], A] =
+/// G[A]`) is replaced as the head: `Apply[F, Int]` is `F[Int]`, not
+/// `G[Int]` (Codex on #3952).
 fn trait_ref_substitute(te: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
   match te {
-    TyName(name) => {
-      let mut out = te
-      let mut i = 0
-      while i < Array::length(params) && i < Array::length(args) {
-        if type_param_name(Array::get(params, at = i)) == name {
-          out = Array::get(args, at = i)
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      out
+    TyName(name) => match trait_ref_param_arg(params = params, args = args, name = name) {
+      Some(arg) => arg,
+      None => te
     },
-    TyApp(name, items) => TyApp(name, for item in items {
-      trait_ref_substitute(te = item, params = params, args = args)
-    }),
+    TyApp(name, items) => {
+      let next = for item in items {
+        trait_ref_substitute(te = item, params = params, args = args)
+      }
+      match trait_ref_param_arg(params = params, args = args, name = name) {
+        Some(TyName(head)) => TyApp(head, next),
+        Some(TyApp(head, applied)) => TyApp(head, Array::concat(applied, next)),
+        _ => TyApp(name, next)
+      }
+    },
     TyTuple(items) => TyTuple(for item in items {
       trait_ref_substitute(te = item, params = params, args = args)
     }),
