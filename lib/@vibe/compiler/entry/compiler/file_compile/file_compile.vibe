@@ -415,27 +415,35 @@ export fn compile_file_fs_mode_grants(entry_path: String, entry_name: String, mo
 
 /// #3923: a dependency's `enum Ordering { Less; Equal; Greater }` IS the
 /// prelude for its importers (#3042), but merged into one program it reads as
-/// the program's own declaration, which shadows the prelude and has none of
-/// its operations: `Ordering::to_string` was an unknown name on this lane
+/// the program's own declaration, which shadows the prelude and lacks the
+/// prelude's derives: `Ordering::to_string` was an unknown name on this lane
 /// only. Every module was already checked, so a declaration of exactly that
-/// shape can mean nothing but the prelude's; dropping it lets the merged
-/// check seed the prelude and the lowering append it, with the same
-/// constructors in the same order.
-fn drop_prelude_shaped_ordering(_ stmts: Array[Stmt]) -> Unit {
-  let kept: Array[Stmt] = []
-  let mut dropped = false
-  for stmt in stmts {
-    if stmt_is_prelude_shaped_ordering(stmt) {
-      dropped = true
-    } else {
-      Array::push(kept, value = stmt)
+/// shape can mean nothing but the prelude's. It keeps its own derives (a
+/// `derive (Default)` the dependency calls itself, Codex on #3930) and gains
+/// the prelude's `Eq` / `Ord` / `Show` where it lacks them, the way the
+/// lowering completes it on the other lanes (`dtd_complete_prelude_ordering_derives`).
+fn complete_prelude_shaped_ordering(_ stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, at = i) {
+      SEnum(exported, name, params, variants, derives) => if stmt_is_prelude_shaped_ordering(Array::get(stmts, at = i)) {
+        let completed = Array::slice(derives, start = 0, end = Array::length(derives))
+        for d in ["Eq", "Ord", "Show"] {
+          let mut has = false
+          for e in completed {
+            if e == d {
+              has = true
+            }
+          }
+          if !has {
+            Array::push(completed, value = d)
+          }
+        }
+        Array::set(stmts, at = i, value = SEnum(exported, name, params, variants, completed))
+      },
+      _ => ()
     }
-  }
-  if dropped {
-    Array::truncate(stmts, length = 0)
-    for stmt in kept {
-      Array::push(stmts, value = stmt)
-    }
+    i = i + 1
   }
 }
 
@@ -466,7 +474,7 @@ export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Byt
   // whole-program check, while retaining source names for method checking.
   // The normal post-check rename still owns definitions and ABI tables.
   mark_private_builtin_references(merged_stmts)
-  drop_prelude_shaped_ordering(merged_stmts)
+  complete_prelude_shaped_ordering(merged_stmts)
   // #3923: every module was checked above, so the merged re-check keeps only
   // what needs the whole program, not the module-scoped declaration guards.
   let prev = checker_swap_module_checked(true)
