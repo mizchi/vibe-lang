@@ -125,15 +125,50 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool
       ]), body)
       ti = ti - 1
     }
-    Array::push(stmts, value = SLet(true, false, "_start", None, EFn(empty_tp, empty_bounds, empty_params, None, None, body)))
+    // #3922: a program may declare its own `_start` (linear runs it as an
+    // ordinary function), so the runner takes the first spelling the
+    // program leaves free. The module still exports it as `_start`: the
+    // export names the entry by index, not by this binding's name.
+    let runner = gc_test_runner_name(stmts)
+    Array::push(stmts, value = SLet(true, false, runner, None, EFn(empty_tp, empty_bounds, empty_params, None, None, body)))
     // #2762 round 4 (Codex): `_start` is synthesized HERE, so it belongs in the
     // reported set too. Returning only `test_fn_names` left it out, and
     // `export { _start }` in a file with a test and no `main` was accepted by
     // this lane while the FS lane refused it -- measured, the same disagreement
     // the round-3 finding was about, one binding later.
-    Array::push(test_fn_names, value = "_start")
-    ("_start", true, test_fn_names)
+    Array::push(test_fn_names, value = runner)
+    (runner, true, test_fn_names)
   }
+}
+
+fn gc_test_runner_name(_ stmts: Array[Stmt]) -> String {
+  let mut name = "_start"
+  while gc_top_level_declares(stmts = stmts, name = name) {
+    name = String::concat(name, "_")
+  }
+  name
+}
+
+fn gc_top_level_declares(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, _, _) => if n == name {
+        found = true
+      },
+      SFnDecl(_, n, _, _, _) => if n == name {
+        found = true
+      },
+      SLetMut(n, _, _) => if n == name {
+        found = true
+      },
+      SExternLet(n, _) => if n == name {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
 }
 
 /// #538 P4.5: the SAME source pipeline as compile_source_wasi_only — interp
