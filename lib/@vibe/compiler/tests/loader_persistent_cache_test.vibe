@@ -3,10 +3,15 @@
 import @vibe/compiler/cache {
   build_source_groups_fingerprint,
   compact_string_fingerprint,
+  persistent_dep_list_cache_path,
   persistent_manifest_header_cache_path,
   persistent_module_header_cache_path,
   persistent_source_group_cache_path,
   persistent_source_list_cache_path
+}
+
+import @vibe/compiler/runtime {
+  load_persistent_dep_list, persistent_dep_list_text
 }
 
 import @vibe/core {
@@ -276,6 +281,62 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   assert(Array::get(deps2, at = 0) == helper_path)
   assert(eq(Array::length(exports2), 1))
   assert(Array::get(exports2, at = 0) == "_start")
+}
+
+test "cached import and re-export headers preserve cold diagnostics after deletion" {
+  let base_dir = "/tmp/vibe_compiler_header_deleted_dependency_1960"
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  for keyword in ["import", "export"] {
+    let source = String::concat("// Import site.\n", String::concat(keyword, " ./helper.vibe { add }\n"))
+    let cache_path = persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(source))
+    Fs::write_file(helper_path, contents = "export fn add() -> Int { 1 }\n")
+    remove_file_if_exists(cache_path)
+    let (deps, _, cold_parses) = load_or_parse_module_header_fs(path = main_path, source = source, parse_count = 0)
+    inspect(cold_parses, "1")
+    assert(Array::get(deps, at = 0) == helper_path)
+    let (_, _, warm_parses) = load_or_parse_module_header_fs(path = main_path, source = source, parse_count = 0)
+    inspect(warm_parses, "0")
+    let published = Fs::read_file(cache_path)
+    Fs::remove(helper_path)
+    let warm_error = handle {
+      let _ = load_or_parse_module_header_fs(path = main_path, source = source, parse_count = 0)
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(warm_error != "")
+    assert(Fs::read_file(cache_path) == published)
+    Fs::remove(cache_path)
+    let cold_error = handle {
+      let _ = load_or_parse_module_header_fs(path = main_path, source = source, parse_count = 0)
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(warm_error == cold_error)
+    assert(String::starts_with(cold_error, prefix = "line 2:8: cannot resolve import './helper.vibe'"))
+    assert(!Fs::exists(cache_path))
+    Fs::write_file(helper_path, contents = "export fn add() -> Int { 2 }\n")
+    let (restored, _, restored_parses) = load_or_parse_module_header_fs(path = main_path, source = source, parse_count = 0)
+    inspect(restored_parses, "1")
+    assert(Array::get(restored, at = 0) == helper_path)
+  }
+}
+
+test "persistent dependency lists refuse deleted ordinary targets" {
+  let base_dir = "/tmp/vibe_compiler_dep_list_deleted_dependency_1960"
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let source = "import ./helper.vibe { add }\n"
+  Fs::mkdir_p(base_dir)
+  Fs::write_file(helper_path, contents = "export fn add() -> Int { 1 }\n")
+  let cache_path = persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(source))
+  let published = persistent_dep_list_text([helper_path])
+  Fs::write_file(cache_path, contents = published)
+  assert(load_persistent_dep_list(path = main_path, source = source) is Some(_))
+  Fs::remove(helper_path)
+  assert(load_persistent_dep_list(path = main_path, source = source) is None)
+  assert(Fs::read_file(cache_path) == published)
+  Fs::write_file(helper_path, contents = "export fn add() -> Int { 2 }\n")
+  assert(load_persistent_dep_list(path = main_path, source = source) is Some(_))
 }
 
 test "load_or_parse_module_header_fs: Iterator provenance carrier is not a dependency" {
