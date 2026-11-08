@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import @vibe/core {
-  struct MutMap, struct MutSet
+  eq_string, hash_string, struct MutMap, struct MutSet
 }
 
 import @vibe/ast {
@@ -142,6 +142,9 @@ export fn collect_export_def_value_names(_ stmts: Array[Stmt]) -> Array[String] 
 
 export struct ExportRenamePlan {
   plan_paths: Array[String];
+  // #3932: `plan_paths` indexed once, for the per-import resolutions that
+  // read the plan (`collect_import_value_renames`).
+  plan_known: KnownPaths;
   rename_paths: Array[String];
   rename_names: Array[String];
   rename_mangled: Array[String];
@@ -232,6 +235,49 @@ export fn resolve_known_import_path(known_paths: Array[String], base_dir: String
   // through one is already in `known_paths` under its root, so its own path
   // is the root. That keeps this resolver pure (#1962).
   let candidates = resolve_import_path_candidates_with_roots(base_dir = base_dir, raw_path = raw_path, roots = known_package_roots(known_paths = known_paths, raw_path = raw_path))
+  resolve_known_candidate(candidates = candidates, self_path = self_path, known_list = known_paths, known_set = None)
+}
+
+/// #3932: the merge's known paths, indexed once. Membership is a set, and
+/// each raw `@` path's package roots are computed on its first resolution
+/// instead of by a scan of every path on every resolution.
+export struct KnownPaths {
+  known_list: Array[String];
+  known_set: MutSet[String];
+  roots_memo: MutMap[String, Array[String]];
+}
+
+export fn known_paths_index(_ known_paths: Array[String]) -> KnownPaths {
+  let set = MutSet::with_capacity(hash_fn = hash_string, eq_fn = eq_string, capacity = Array::length(known_paths) * 10 / 7 + 1)
+  for p in known_paths {
+    MutSet::add(set, x = p)
+  }
+  KnownPaths::{
+    known_list: known_paths,
+    known_set: set,
+    roots_memo: MutMap::new_string()
+  }
+}
+
+/// `resolve_known_import_path` against an index of the same paths: the same
+/// answer, with the roots memoized per raw path and membership a set lookup.
+export fn resolve_known_import_path_in(known: KnownPaths, base_dir: String, raw_path: String, self_path: String) -> String {
+  let roots = match MutMap::get(known.roots_memo, k = raw_path) {
+    Some(r) => r,
+    None => {
+      let r = known_package_roots(known_paths = known.known_list, raw_path = raw_path)
+      MutMap::set(known.roots_memo, k = raw_path, v = r)
+      r
+    }
+  }
+  let candidates = resolve_import_path_candidates_with_roots(base_dir = base_dir, raw_path = raw_path, roots = roots)
+  resolve_known_candidate(candidates = candidates, self_path = self_path, known_list = known.known_list, known_set = Some(known.known_set))
+}
+
+/// The first candidate that is one of the known paths, else the first that is
+/// not the importing file itself, else the first. Membership reads
+/// `known_set` when there is one, `known_list` otherwise.
+fn resolve_known_candidate(candidates: Array[String], self_path: String, known_list: Array[String], known_set: Option[MutSet[String]]) -> String {
   let mut chosen = ""
   let mut i = 0
   let mut found = false
@@ -247,7 +293,11 @@ export fn resolve_known_import_path(known_paths: Array[String], base_dir: String
       } else {
         ()
       }
-      if import_alias_rewrite_string_array_contains(items = known_paths, target = candidate) {
+      let known = match known_set {
+        Some(set) => MutSet::has(set, x = candidate),
+        None => import_alias_rewrite_string_array_contains(items = known_list, target = candidate)
+      }
+      if known {
         chosen = candidate
         found = true
       } else {

@@ -1,0 +1,51 @@
+// #3932: the merge resolves every import against an index of the closure's
+// paths (`resolve_known_import_path_in`) instead of scanning them per import.
+// Its answer must be the scanning resolver's for every kind of import: a
+// relative file, a directory, a package under a root, the importing file
+// itself, and a path the closure does not hold. The package roots are
+// memoized per raw path, so a second import of one package from another
+// directory must still answer for that directory.
+
+import @vibe/compiler/core {
+  known_paths_index, resolve_known_import_path, resolve_known_import_path_in
+}
+
+let known: Array[String] = [
+  "app/main.vibe",
+  "app/util.vibe",
+  "app/codegen.vibe",
+  "app/codegen/index.vibe",
+  "app/sub/leaf.vibe",
+  "store/@acme/kit/index.vpkg",
+  "store/@acme/kit/kit.vibe",
+  "lib/@acme/other/index.vpkg"
+]
+
+let asked: Array[(String, String, String)] = [
+  ("app", "./util.vibe", "app/main.vibe"),
+  ("app", "./codegen", "app/main.vibe"),
+  ("app", "./codegen", "app/codegen.vibe"),
+  ("app/sub", "../util.vibe", "app/sub/leaf.vibe"),
+  ("app", "@acme/kit", "app/main.vibe"),
+  ("app/sub", "@acme/kit", "app/sub/leaf.vibe"),
+  ("app", "@acme/other", "app/main.vibe"),
+  ("app", "./missing.vibe", "app/main.vibe"),
+  ("app", "@acme/missing", "app/main.vibe")
+]
+
+test "the indexed resolver answers as the scanning one does" {
+  let index = known_paths_index(known)
+  let answers: Array[String] = []
+  // Twice over, so the second pass reads the memoized package roots.
+  for _ in [1, 2] {
+    for q in asked {
+      let (base_dir, raw_path, self_path) = q
+      let scanned = resolve_known_import_path(known_paths = known, base_dir = base_dir, raw_path = raw_path, self_path = self_path)
+      let indexed = resolve_known_import_path_in(known = index, base_dir = base_dir, raw_path = raw_path, self_path = self_path)
+      assert(scanned == indexed)
+      Array::push(answers, value = indexed)
+    }
+  }
+  inspect(Array::length(answers), content = "18")
+  inspect(String::join(Array::slice(answers, start = 0, end = 9), sep = " "), content = "app/util.vibe app/codegen.vibe app/codegen/index.vibe app/util.vibe store/@acme/kit/index.vpkg store/@acme/kit/index.vpkg lib/@acme/other/index.vpkg app/missing.vibe .vibe/store/@acme/missing/index.vpkg")
+}
