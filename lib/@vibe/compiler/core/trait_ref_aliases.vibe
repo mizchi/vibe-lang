@@ -14,8 +14,12 @@
 // spelling first: each argument with the module's own `type` aliases
 // expanded. Both the checker and the desugar run this before they read a key,
 // so they compare the same strings, and running it twice changes nothing. A
-// name a declaration binds as a type parameter is never expanded, and an alias
-// imported from another module is left as written.
+// name a declaration binds as a type parameter is never expanded. An alias
+// imported from another module is expanded when the caller passes it in
+// (`canonicalize_trait_ref_aliases_with`, #3953): the checker's import-aware
+// entry reads them from its projected environment, so `impl Value[Alias]`
+// beside `import ./defs.vibe { Alias }` names the instantiation the checker
+// resolves a bound to.
 //
 // An impl's methods are parsed into top-level bindings named after the impl's
 // key (`impl_method_binding_name`), so an impl whose key changes has its
@@ -41,7 +45,17 @@ import @vibe/ast {
 /// type-parameter bounds, a trait's supertraits and method bounds -- with the
 /// module's own type aliases expanded in the trait's arguments.
 export fn canonicalize_trait_ref_aliases(_ stmts: Array[Stmt]) -> Unit {
+  canonicalize_trait_ref_aliases_with(stmts = stmts, imported = array_empty())
+}
+
+/// `canonicalize_trait_ref_aliases` with the aliases the module imports as
+/// well, `(name, params, body)` under the name this module sees. The module's
+/// own aliases come first, so a local declaration wins over an import.
+export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[(String, Array[String], TypeExpr)]) -> Unit {
   let aliases = trait_ref_local_aliases(stmts)
+  for alias in imported {
+    Array::push(aliases, value = alias)
+  }
   if Array::length(aliases) > 0 {
     // (old method-owner prefix, new one) for each impl whose key changed.
     let renames: Array[(String, String)] = array_empty()
