@@ -1,0 +1,155 @@
+//# #3947: an applied trait reference spelled through a local type alias names
+//# the same instantiation as its expansion. A bound and an impl used to match
+//# only when both were spelled the same way: `[V: Value[Alias]]` beside
+//# `impl Value[Alias]` answered ``no impl `Value[Int]` ``, and `impl Value[Int]`
+//# with a method returning `Alias` asked for a body that was there.
+
+type Alias = Int
+
+type Pair[A] = (A, A)
+
+trait Value[A] {
+  value(Self) -> A
+}
+
+struct Note {
+  n: Int
+}
+
+impl Value[Alias] for Note {
+  value(self) -> Alias {
+    self.n
+  }
+}
+
+struct Plain {
+  n: Int
+}
+
+impl Value[Int] for Plain {
+  value(self) -> Alias {
+    self.n + 1
+  }
+}
+
+fn value_of[V: Value[Alias]](_ v: V) -> Int {
+  V::value(v)
+}
+
+fn int_value_of[V: Value[Int]](_ v: V) -> Int {
+  V::value(v)
+}
+
+test "a bound and an impl spelled through the alias" {
+  inspect(value_of(Note::{ n: 6 }), content = "6")
+}
+
+test "an impl spelled with the expansion, a bound through the alias" {
+  inspect(value_of(Plain::{ n: 6 }), content = "7")
+}
+
+test "a bound spelled with the expansion, an impl through the alias" {
+  inspect(int_value_of(Note::{ n: 8 }), content = "8")
+}
+
+trait Read {
+  read(Self) -> Int
+}
+
+struct Cell {
+  n: Int
+}
+
+impl Value[Alias] for Cell {
+  value(self) -> Alias {
+    self.n * 10
+  }
+}
+
+struct Box[T] {
+  item: T
+}
+
+impl [T: Value[Int]] Read for Box[T] {
+  read(self) -> Int {
+    T::value(self.item)
+  }
+}
+
+test "a generic impl's parameter bound against an impl through the alias" {
+  let b: Box[Cell] = Box::{ item: Cell::{ n: 4 } }
+  inspect(Read::read(b), content = "40")
+}
+
+trait Both[A] {
+  both(Self) -> A
+}
+
+struct Twin {
+  n: Int
+}
+
+impl Both[Pair[Int]] for Twin {
+  both(self) -> (Int, Int) {
+    (self.n, self.n + 1)
+  }
+}
+
+fn both_of[V: Both[(Int, Int)]](_ v: V) -> (Int, Int) {
+  V::both(v)
+}
+
+test "a parameterized alias expands with its arguments" {
+  inspect(both_of(Twin::{ n: 2 }), content = "(2, 3)")
+}
+
+// Codex on #3952: an alias body is expanded in its own scope. `B` names the
+// alias `A`, not the caller's type parameter `A`, so the bound is `Mark[Int]`.
+type Inner = Int
+
+type Outer = Inner
+
+trait Mark[X] {
+  mark(Self) -> Int
+}
+
+struct Tag {
+  n: Int
+}
+
+impl Mark[Int] for Tag {
+  mark(self) -> Int {
+    self.n
+  }
+}
+
+fn marked[Inner, T: Mark[Outer]](_ a: Inner, _ t: T) -> Int {
+  T::mark(t)
+}
+
+test "an alias body does not see the caller's type parameters" {
+  inspect(marked("x", Tag::{ n: 5 }), content = "5")
+}
+
+// Codex on #3952: a constructor parameter in an alias body is replaced as the
+// head. The alias formal is `G` and the caller's `F`, so `Lift[F, Int]` must
+// become `F[Int]`, not `G[Int]`.
+trait Takes[A] {
+  take(A) -> Int
+}
+
+impl Takes[Array[Int]] for Array {
+  take(xs: Array[Int]) -> Int {
+    Array::length(xs)
+  }
+}
+
+type Lift[G[_], X] = G[X]
+
+fn take_lift[F[_]: Takes[Lift[F, Int]]](_ xs: Lift[F, Int]) -> Int {
+  F::take(xs)
+}
+
+test "a constructor parameter of an alias substitutes as the head" {
+  inspect(take_lift([1, 2, 3]), content = "3")
+}
