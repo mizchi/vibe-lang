@@ -1,6 +1,6 @@
 // Applied trait keys through type aliases (#3947).
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr
 }
 
 import @vibe/ast {
@@ -9,6 +9,10 @@ import @vibe/ast {
 
 import ./equality_aliases.vibe {
   eq_expand_alias_ty
+}
+
+import ./state.vibe {
+  dtd_eq_type_aliases
 }
 
 //# Functions
@@ -27,6 +31,14 @@ import ./equality_aliases.vibe {
 ///
 /// Reads the alias table `eq_known_types_reset` fills, so it runs after it.
 export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
+  if Array::length(dtd_eq_type_aliases) > 0 {
+    expand_trait_key_aliases_in(stmts)
+  } else {
+    ()
+  }
+}
+
+fn expand_trait_key_aliases_in(_ stmts: Array[Stmt]) -> Unit {
   let owner_renames: Array[(String, String)] = []
   let mut i = 0
   while i < Array::length(stmts) {
@@ -73,25 +85,21 @@ export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
           ()
         }
       },
-      SLet(exported, is_rec, name, ty, EFn(tparams, bounds, params, ret, effect, body)) => {
-        let next_bounds = expand_bound_aliases(bounds = bounds, names = for t in tparams {
-          type_param_name(t)
-        })
-        if next_bounds != bounds {
-          Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, EFn(tparams, next_bounds, params, ret, effect, body)))
-        } else {
-          ()
-        }
+      // A function's bounds, and those of every lambda nested in a body
+      // (`let inner = [V: Value[Alias]](v: V) -> ..`, Codex on #3956).
+      SLet(exported, is_rec, name, ty, body) => match tka_expr(e = body, names = [
+      ]) {
+        Some(next) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, next)),
+        None => ()
       },
-      SFnDecl(exported, name, EFn(tparams, bounds, params, ret, effect, body), attrs, off) => {
-        let next_bounds = expand_bound_aliases(bounds = bounds, names = for t in tparams {
-          type_param_name(t)
-        })
-        if next_bounds != bounds {
-          Array::set(stmts, at = i, value = SFnDecl(exported, name, EFn(tparams, next_bounds, params, ret, effect, body), attrs, off))
-        } else {
-          ()
-        }
+      SFnDecl(exported, name, body, attrs, off) => match tka_expr(e = body, names = [
+      ]) {
+        Some(next) => Array::set(stmts, at = i, value = SFnDecl(exported, name, next, attrs, off)),
+        None => ()
+      },
+      STest(label, body) => match tka_expr(e = body, names = []) {
+        Some(next) => Array::set(stmts, at = i, value = STest(label, next)),
+        None => ()
       },
       _ => ()
     }
@@ -101,6 +109,222 @@ export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
     rename_impl_method_bindings(stmts = stmts, renames = owner_renames)
   } else {
     ()
+  }
+}
+
+/// `e` with every lambda's bounds spelled with aliases expanded, or None when
+/// nothing changed. `names` are the binders in scope, which shadow an alias
+/// of their spelling.
+fn tka_expr(e: Expr, names: Array[String]) -> Option[Expr] {
+  match e {
+    EFn(tp, bs, ps, ret, eff, body) => {
+      let inner: Array[String] = []
+      for n in names {
+        Array::push(inner, value = n)
+      }
+      for t in tp {
+        Array::push(inner, value = type_param_name(t))
+      }
+      let nb = expand_bound_aliases(bounds = bs, names = inner)
+      let nbody = tka_expr(e = body, names = inner)
+      if nb != bs || tka_changed(nbody) {
+        Some(EFn(tp, nb, ps, ret, eff, tka_or(o = nbody, e = body)))
+      } else {
+        None
+      }
+    },
+    ETuple(items) => match tka_list(es = items, names = names) {
+      Some(next) => Some(ETuple(next)),
+      None => None
+    },
+    EArray(items) => match tka_list(es = items, names = names) {
+      Some(next) => Some(EArray(next)),
+      None => None
+    },
+    EContinue(items) => match tka_list(es = items, names = names) {
+      Some(next) => Some(EContinue(next)),
+      None => None
+    },
+    ERecord(n, fields, tas) => match tka_fields(fields = fields, names = names) {
+      Some(next) => Some(ERecord(n, next, tas)),
+      None => None
+    },
+    EMap(fields) => match tka_fields(fields = fields, names = names) {
+      Some(next) => Some(EMap(next)),
+      None => None
+    },
+    ELoop(binds, body) => {
+      let nbinds = tka_fields(fields = binds, names = names)
+      let nbody = tka_expr(e = body, names = names)
+      if tka_changed(nbinds) || tka_changed(nbody) {
+        Some(ELoop(match nbinds {
+          Some(x) => x,
+          None => binds
+        }, tka_or(o = nbody, e = body)))
+      } else {
+        None
+      }
+    },
+    EIf(c, t, el) => {
+      let a = tka_expr(e = c, names = names)
+      let b = tka_expr(e = t, names = names)
+      let d = tka_expr(e = el, names = names)
+      if tka_changed(a) || tka_changed(b) || tka_changed(d) {
+        Some(EIf(tka_or(o = a, e = c), tka_or(o = b, e = t), tka_or(o = d, e = el)))
+      } else {
+        None
+      }
+    },
+    ELet(n, v, b, off) => tka_two(a = v, b = b, names = names, k = (x, y) -> ELet(n, x, y, off)),
+    ELetRec(n, v, b) => tka_two(a = v, b = b, names = names, k = (x, y) -> ELetRec(n, x, y)),
+    ELetMut(n, v, b, off) => tka_two(a = v, b = b, names = names, k = (x, y) -> ELetMut(n, x, y, off)),
+    EAssign(n, v, c, off) => tka_two(a = v, b = c, names = names, k = (x, y) -> EAssign(n, x, y, off)),
+    EAssignOp(n, op, v, c, off) => tka_two(a = v, b = c, names = names, k = (x, y) -> EAssignOp(n, op, x, y, off)),
+    ESeq(a, b) => tka_two(a = a, b = b, names = names, k = (x, y) -> ESeq(x, y)),
+    EWhile(c, b) => tka_two(a = c, b = b, names = names, k = (x, y) -> EWhile(x, y)),
+    EBinOp(op, l, r, off) => tka_two(a = l, b = r, names = names, k = (x, y) -> EBinOp(op, x, y, off)),
+    EForIn(n, idx, it, b) => tka_two(a = it, b = b, names = names, k = (x, y) -> EForIn(n, idx, x, y)),
+    EMatch(sc, arms) => {
+      let a = tka_expr(e = sc, names = names)
+      let narms = tka_arms(arms = arms, names = names)
+      if tka_changed(a) || tka_changed(narms) {
+        Some(EMatch(tka_or(o = a, e = sc), match narms {
+          Some(x) => x,
+          None => arms
+        }))
+      } else {
+        None
+      }
+    },
+    EHandle(body, arms) => {
+      let a = tka_expr(e = body, names = names)
+      let narms = tka_arms(arms = arms, names = names)
+      if tka_changed(a) || tka_changed(narms) {
+        Some(EHandle(tka_or(o = a, e = body), match narms {
+          Some(x) => x,
+          None => arms
+        }))
+      } else {
+        None
+      }
+    },
+    ECall(callee, args, off, cell) => {
+      let a = tka_expr(e = callee, names = names)
+      let nargs = tka_list(es = args, names = names)
+      if tka_changed(a) || tka_changed(nargs) {
+        Some(ECall(tka_or(o = a, e = callee), match nargs {
+          Some(x) => x,
+          None => args
+        }, off, cell))
+      } else {
+        None
+      }
+    },
+    EUnaryOp(op, x) => match tka_expr(e = x, names = names) {
+      Some(next) => Some(EUnaryOp(op, next)),
+      None => None
+    },
+    EDot(o, f, o1, o2) => match tka_expr(e = o, names = names) {
+      Some(next) => Some(EDot(next, f, o1, o2)),
+      None => None
+    },
+    ELabeledArg(l, n, v) => match tka_expr(e = v, names = names) {
+      Some(next) => Some(ELabeledArg(l, n, next)),
+      None => None
+    },
+    EReturn(x) => match tka_expr(e = x, names = names) {
+      Some(next) => Some(EReturn(next)),
+      None => None
+    },
+    ESpread(x) => match tka_expr(e = x, names = names) {
+      Some(next) => Some(ESpread(next)),
+      None => None
+    },
+    EBreak(Some(x)) => match tka_expr(e = x, names = names) {
+      Some(next) => Some(EBreak(Some(next))),
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn tka_changed[X](_ o: Option[X]) -> Bool {
+  match o {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn tka_or(o: Option[Expr], e: Expr) -> Expr {
+  match o {
+    Some(x) => x,
+    None => e
+  }
+}
+
+fn tka_two(a: Expr, b: Expr, names: Array[String], k: (Expr, Expr) -> Expr) -> Option[Expr] {
+  let na = tka_expr(e = a, names = names)
+  let nb = tka_expr(e = b, names = names)
+  if tka_changed(na) || tka_changed(nb) {
+    Some(k(tka_or(o = na, e = a), tka_or(o = nb, e = b)))
+  } else {
+    None
+  }
+}
+
+fn tka_list(es: Array[Expr], names: Array[String]) -> Option[Array[Expr]] {
+  let mut changed = false
+  let out = for x in es {
+    match tka_expr(e = x, names = names) {
+      Some(next) => {
+        changed = true
+        next
+      },
+      None => x
+    }
+  }
+  if changed {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+fn tka_fields(fields: Array[(String, Expr)], names: Array[String]) -> Option[Array[(String, Expr)]] {
+  let mut changed = false
+  let out = for fd in fields {
+    let (n, x) = fd
+    match tka_expr(e = x, names = names) {
+      Some(next) => {
+        changed = true
+        (n, next)
+      },
+      None => fd
+    }
+  }
+  if changed {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+fn tka_arms(arms: Array[(Pat, Expr)], names: Array[String]) -> Option[Array[(Pat, Expr)]] {
+  let mut changed = false
+  let out = for arm in arms {
+    let (p, x) = arm
+    match tka_expr(e = x, names = names) {
+      Some(next) => {
+        changed = true
+        (p, next)
+      },
+      None => arm
+    }
+  }
+  if changed {
+    Some(out)
+  } else {
+    None
   }
 }
 

@@ -2549,7 +2549,11 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         let target = resolve_type_expr_shadowed(te = target_expr, defs = defs, shadow = tparams)
         // #3548: which `impl` this is, so an overlap names its line.
         let head_marker = note_impl_head(trait_head = trait_ref_name(trait_name), owner = type_name)
-        match overlapping_impl_target_for(env = env, trait_name = trait_name, new_params = tparams, new_target = target) {
+        // #3947: every impl is also registered under its canonical key
+        // (below), so checking that key finds an earlier `impl Value[Int]`
+        // when this one is written `impl Value[Alias]` (Codex on #3956).
+        let canonical_key = canonical_impl_trait_key(key = trait_name, tparams = tparams, defs = defs)
+        match overlapping_impl_target_for(env = env, trait_name = canonical_key, new_params = tparams, new_target = target) {
           Some(existing_target) => Array::push(errors, value = String::concat("remove this impl, or give it a target the other does not cover: overlapping impls for `", String::concat(trait_reference_display(trait_name), String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), String::concat("`", head_marker)))))))),
           None => ()
         }
@@ -2570,7 +2574,6 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // (`Value[Alias]` -> `Value[Int]`), so the impl is registered under
         // that key as well. The written key stays: the impl's own methods are
         // found through it.
-        let canonical_key = canonical_impl_trait_key(key = trait_name, tparams = tparams, defs = defs)
         let new_env = if canonical_key == trait_name {
           new_env
         } else if Array::length(tparams) > 0 {
