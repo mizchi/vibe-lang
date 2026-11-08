@@ -1360,6 +1360,114 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
 
 /// Constructor/head name of a type. Returns "" for types with no nominal
 /// constructor (tuples, primitives, vars) so they never match a generic impl.
+/// #3947: a resolved type written back as the `TypeExpr` a trait key spells,
+/// or None for a type no key can spell (an unsolved variable). The checker's
+/// bound keys and impl keys, and the lowering's expansion of both, all use
+/// this one writer, so a key the checker accepts is a key the lowering finds:
+/// `Unit` is `()`, `StringMap[V]` is `Map[String, V]`, the float widths are
+/// `Float64` / `Float32`.
+export fn canonical_trait_arg_type_expr(_ ty: Type) -> Option[TypeExpr] {
+  match ty {
+    CtInt => Some(TyName("Int")),
+    // #3730: a bound is judged by the checker, which keeps the nominal type.
+    CtInt32 => Some(TyName("Int32")),
+    CtUInt32 => Some(TyName("UInt32")),
+    CtDouble => Some(TyName("Float64")),
+    CtFloat => Some(TyName("Float32")),
+    CtBool => Some(TyName("Bool")),
+    CtString => Some(TyName("String")),
+    CtChar => Some(TyName("Char")),
+    CtBytes => Some(TyName("Bytes")),
+    CtUnit => Some(TyUnit),
+    CtArray(elem) => match canonical_trait_arg_type_expr(elem) {
+      Some(arg) => Some(TyApp("Array", [arg])),
+      None => None
+    },
+    CtOption(elem) => match canonical_trait_arg_type_expr(elem) {
+      Some(arg) => Some(TyApp("Option", [arg])),
+      None => None
+    },
+    CtTuple(items) => {
+      let out = array_empty()
+      let mut ok = true
+      for item in items {
+        match canonical_trait_arg_type_expr(item) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        Some(TyTuple(out))
+      } else {
+        None
+      }
+    },
+    CtFn(params, ret, effect) => {
+      let out = array_empty()
+      let mut ok = true
+      for param in params {
+        match canonical_trait_arg_type_expr(param) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      match canonical_trait_arg_type_expr(ret) {
+        Some(mapped_ret) => if ok {
+          Some(TyFn(out, mapped_ret, effect))
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    CtNamed(name, args) => {
+      let out = array_empty()
+      let mut ok = true
+      for arg in args {
+        match canonical_trait_arg_type_expr(arg) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if !ok {
+        None
+      } else if Array::length(out) == 0 {
+        Some(TyName(name))
+      } else {
+        Some(TyApp(name, out))
+      }
+    },
+    CtConstructor(name, _) => Some(TyName(name)),
+    CtApplied(head, args) => {
+      let name = type_constructor_name(head)
+      let out = array_empty()
+      let mut ok = name != ""
+      for arg in args {
+        match canonical_trait_arg_type_expr(arg) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        Some(TyApp(name, out))
+      } else {
+        None
+      }
+    },
+    CtEnum(name) => Some(TyName(name)),
+    CtStruct(name) => Some(TyName(name)),
+    _ => None
+  }
+}
+
 export fn type_constructor_name(_ ty: Type) -> String {
   match ty {
     CtArray(_) => "Array",

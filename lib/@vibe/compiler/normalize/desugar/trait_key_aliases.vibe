@@ -1,14 +1,10 @@
 // Applied trait keys through type aliases (#3947).
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeDef, TypeExpr, canonical_trait_arg_type_expr, resolve_type_expr_core_shadowed
 }
 
 import @vibe/ast {
   impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
-}
-
-import ./equality_aliases.vibe {
-  eq_expand_alias_ty
 }
 
 import ./state.vibe {
@@ -29,12 +25,42 @@ import ./state.vibe {
 /// renamed with it. An argument that names one of the declaration's own type
 /// parameters is left as written.
 ///
+/// Each argument is resolved and written back the way the checker's
+/// `canonical_impl_trait_key` does it (`resolve_type_expr_core_shadowed`,
+/// then `canonical_trait_arg_type_expr`), not expanded syntactically: every
+/// spelling the resolver identifies (`Unit` and `()`, `StringMap[V]` and
+/// `Map[String, V]`) then encodes as one key on both sides. That is also why
+/// it runs whether or not the program declares an alias.
+///
 /// Reads the alias table `eq_known_types_reset` fills, so it runs after it.
 export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
-  if Array::length(dtd_eq_type_aliases) > 0 {
-    expand_trait_key_aliases_in(stmts)
-  } else {
-    ()
+  tka_defs_reset()
+  expand_trait_key_aliases_in(stmts)
+}
+
+/// The program's type aliases as the checker's resolver reads them, so a key
+/// is resolved here exactly as `canonical_impl_trait_key` resolves it. An
+/// alias naming a later one resolves on a later round; one round per alias
+/// closes every chain.
+let tka_defs: Array[TypeDef] = []
+
+fn tka_defs_reset() -> Unit {
+  let rounds = Array::length(dtd_eq_type_aliases)
+  let mut r = 0
+  while r < rounds {
+    let next: Array[TypeDef] = []
+    for row in dtd_eq_type_aliases {
+      let (name, params, target) = row
+      Array::push(next, value = TDAlias(name, params, resolve_type_expr_core_shadowed(te = target, defs = tka_defs, shadow = params)))
+    }
+    Array::truncate(tka_defs, length = 0)
+    for d in next {
+      Array::push(tka_defs, value = d)
+    }
+    r = r + 1
+  }
+  if rounds == 0 {
+    Array::truncate(tka_defs, length = 0)
   }
 }
 
@@ -412,7 +438,10 @@ fn expand_key_aliases(key: String, names: Array[String]) -> String {
         let next = if type_expr_names_any(ty = arg, names = names) {
           arg
         } else {
-          tka_canon_ty(eq_expand_alias_ty(arg))
+          match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = tka_defs, shadow = names)) {
+            Some(written) => written,
+            None => arg
+          }
         }
         if next != arg {
           changed = true
@@ -428,34 +457,6 @@ fn expand_key_aliases(key: String, names: Array[String]) -> String {
       }
     },
     _ => key
-  }
-}
-
-/// The spelling the checker's canonical key gives a type
-/// (`trait_bound_type_expr`): `Unit` is `()` and the float widths use their
-/// canonical names, so `Value[Alias]` with `type Alias = Unit` and
-/// `Value[()]` encode as one key (Codex on #3956).
-fn tka_canon_ty(_ t: TypeExpr) -> TypeExpr {
-  match t {
-    TyName(n) => if n == "Unit" {
-      TyUnit
-    } else if n == "Double" || n == "f64" {
-      TyName("Float64")
-    } else if n == "Float" || n == "f32" {
-      TyName("Float32")
-    } else {
-      t
-    },
-    TyApp(h, args) => TyApp(h, for a in args {
-      tka_canon_ty(a)
-    }),
-    TyTuple(items) => TyTuple(for a in items {
-      tka_canon_ty(a)
-    }),
-    TyFn(params, ret, eff) => TyFn(for a in params {
-      tka_canon_ty(a)
-    }, tka_canon_ty(ret), eff),
-    TyUnit => t
   }
 }
 
