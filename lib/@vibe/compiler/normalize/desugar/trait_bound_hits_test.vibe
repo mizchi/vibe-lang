@@ -1,0 +1,96 @@
+// #3900: the builtin `Eq` and `Add` injections read one walk of the program
+// for both bounds (`dtd_program_trait_bound_hits`) instead of a walk each.
+// The walk must answer for each trait what a walk for that trait alone
+// answers, and it may stop only once BOTH are found: an early `Eq` must not
+// end the walk before a later `Add`.
+
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import @vibe/compiler/lowering/trait_namespaces {
+  collect_method_traits, collect_trait_supers
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import ./trait_bounds.vibe {
+  dtd_trait_supers_set
+}
+
+import ./witness_targets.vibe {
+  dtd_inject_builtin_add, dtd_inject_builtin_eq, dtd_inject_builtin_eq_and_add, dtd_program_trait_bound_hits
+}
+
+fn word(_ b: Bool) -> String {
+  if b {
+    "yes"
+  } else {
+    "no"
+  }
+}
+
+/// The joint answer for `Eq` and `Add`, checked against one walk per trait.
+fn hits(_ source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  dtd_trait_supers_set(collect_trait_supers(stmts))
+  let both = dtd_program_trait_bound_hits(stmts = stmts, wanted = ["Eq", "Add"])
+  let eq_alone = Array::get(dtd_program_trait_bound_hits(stmts = stmts, wanted = [
+    "Eq"
+  ]), at = 0)
+  let add_alone = Array::get(dtd_program_trait_bound_hits(stmts = stmts, wanted = [
+    "Add"
+  ]), at = 0)
+  dtd_trait_supers_set([])
+  assert(Array::get(both, at = 0) == eq_alone)
+  assert(Array::get(both, at = 1) == add_alone)
+  word(Array::get(both, at = 0)) + " " + word(Array::get(both, at = 1))
+}
+
+fn table_names(_ traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> String {
+  let names: Array[String] = []
+  for entry in traits {
+    let (name, _) = entry
+    Array::push(names, value = name)
+  }
+  String::join(names, sep = ",")
+}
+
+/// The trait table after the joint injection, checked against the two
+/// injections run one after the other.
+fn injected(_ source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  dtd_trait_supers_set(collect_trait_supers(stmts))
+  let joint = collect_method_traits(stmts)
+  dtd_inject_builtin_eq_and_add(stmts = stmts, traits_raw = joint)
+  let apart = collect_method_traits(stmts)
+  dtd_inject_builtin_eq(stmts = stmts, traits_raw = apart)
+  dtd_inject_builtin_add(stmts = stmts, traits_raw = apart)
+  dtd_trait_supers_set([])
+  assert(table_names(joint) == table_names(apart))
+  table_names(joint)
+}
+
+let eq_then_add = "fn same[T: Eq](a: T, b: T) -> Bool {\n  a == b\n}\n\nfn sum[T: Add](a: T, b: T) -> T {\n  a + b\n}\n"
+
+test "each bound is found on its own" {
+  inspect(hits("fn same[T: Eq](a: T, b: T) -> Bool {\n  a == b\n}\n"), content = "yes no")
+  inspect(hits("test \"t\" {\n  let sum = [T: Add](a: T, b: T) -> T {\n    a + b\n  }\n  assert(sum(1, 2) == 3)\n}\n"), content = "no yes")
+  inspect(hits("fn id(x: Int) -> Int {\n  x\n}\n"), content = "no no")
+}
+
+test "a later bound is still found after an earlier one" {
+  inspect(hits(eq_then_add), content = "yes yes")
+  inspect(hits("fn both[T: Eq + Add](a: T, b: T) -> Bool {\n  a + b == a\n}\n"), content = "yes yes")
+}
+
+test "a bound is found through a subtrait" {
+  inspect(hits("trait Num: Add {}\n\nfn twice[T: Num](a: T) -> T {\n  a + a\n}\n"), content = "no yes")
+}
+
+test "the joint injection leaves the table the two injections leave" {
+  inspect(injected(eq_then_add), content = "Eq,Add")
+  inspect(injected("fn id(x: Int) -> Int {\n  x\n}\n"), content = "")
+}

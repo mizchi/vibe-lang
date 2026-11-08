@@ -452,94 +452,124 @@ export fn dtd_eq_was_injected() -> Bool {
 /// `dtd_stmt_has_trait_bound` is exhaustive on purpose, so a new `Stmt` variant
 /// fails to compile here instead of being skipped silently.
 fn dtd_program_has_trait_bound(stmts: Array[Stmt], wanted: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(stmts) {
-    found = dtd_stmt_has_trait_bound(stmt = Array::get(stmts, at = i), wanted = wanted)
-    i = i + 1
-  }
-  found
+  Array::get(dtd_program_trait_bound_hits(stmts = stmts, wanted = [wanted]), at = 0)
 }
 
-fn dtd_stmt_has_trait_bound(stmt: Stmt, wanted: String) -> Bool {
+/// #3900: which of the `wanted` traits some binder's bound entails, from ONE
+/// walk of the program. The builtin `Eq` and `Add` injections ask at the same
+/// point, with no write to `stmts` between them, so they share the walk. The
+/// walk stops once every trait is found.
+export fn dtd_program_trait_bound_hits(stmts: Array[Stmt], wanted: Array[String]) -> Array[Bool] {
+  let hits: Array[Bool] = []
+  for _ in wanted {
+    Array::push(hits, value = false)
+  }
+  dtd_stmts_trait_bounds(stmts = stmts, wanted = wanted, hits = hits)
+  hits
+}
+
+fn dtd_all_hit(_ hits: Array[Bool]) -> Bool {
+  let mut all = true
+  for h in hits {
+    if !h {
+      all = false
+    } else {
+      ()
+    }
+  }
+  all
+}
+
+/// Each of these marks in `hits` the `wanted` traits it finds, and answers
+/// whether every one is now found, so a caller can stop early.
+fn dtd_stmts_trait_bounds(stmts: Array[Stmt], wanted: Array[String], hits: Array[Bool]) -> Bool {
+  let mut i = 0
+  let mut done = dtd_all_hit(hits)
+  while !done && i < Array::length(stmts) {
+    done = dtd_stmt_trait_bounds(stmt = Array::get(stmts, at = i), wanted = wanted, hits = hits)
+    i = i + 1
+  }
+  done
+}
+
+fn dtd_stmt_trait_bounds(stmt: Stmt, wanted: Array[String], hits: Array[Bool]) -> Bool {
   match stmt {
-    SLet(_, _, _, _, v) => dtd_expr_has_trait_bound(e = v, wanted = wanted),
-    SLetMut(_, _, v) => dtd_expr_has_trait_bound(e = v, wanted = wanted),
-    SLetPat(_, v) => dtd_expr_has_trait_bound(e = v, wanted = wanted),
-    STest(_, body) => dtd_expr_has_trait_bound(e = body, wanted = wanted),
-    SBench(_, body) => dtd_expr_has_trait_bound(e = body, wanted = wanted),
-    SExample(_, body) => dtd_expr_has_trait_bound(e = body, wanted = wanted),
-    SExpr(e) => dtd_expr_has_trait_bound(e = e, wanted = wanted),
-    SFnDecl(_, _, v, requires, ensures) => dtd_expr_has_trait_bound(e = v, wanted = wanted) || dtd_exprs_have_trait_bound(exprs = requires, wanted = wanted) || dtd_exprs_have_trait_bound(exprs = ensures, wanted = wanted),
-    SModule(_, _, body) => dtd_program_has_trait_bound(stmts = body, wanted = wanted),
-    SImpl(_, tbounds, _, _) => dtd_bounds_have_trait(tbounds = tbounds, wanted = wanted),
+    SLet(_, _, _, _, v) => dtd_expr_trait_bounds(e = v, wanted = wanted, hits = hits),
+    SLetMut(_, _, v) => dtd_expr_trait_bounds(e = v, wanted = wanted, hits = hits),
+    SLetPat(_, v) => dtd_expr_trait_bounds(e = v, wanted = wanted, hits = hits),
+    STest(_, body) => dtd_expr_trait_bounds(e = body, wanted = wanted, hits = hits),
+    SBench(_, body) => dtd_expr_trait_bounds(e = body, wanted = wanted, hits = hits),
+    SExample(_, body) => dtd_expr_trait_bounds(e = body, wanted = wanted, hits = hits),
+    SExpr(e) => dtd_expr_trait_bounds(e = e, wanted = wanted, hits = hits),
+    SFnDecl(_, _, v, requires, ensures) => dtd_expr_trait_bounds(e = v, wanted = wanted, hits = hits) || dtd_exprs_trait_bounds(exprs = requires, wanted = wanted, hits = hits) || dtd_exprs_trait_bounds(exprs = ensures, wanted = wanted, hits = hits),
+    SModule(_, _, body) => dtd_stmts_trait_bounds(stmts = body, wanted = wanted, hits = hits),
+    SImpl(_, tbounds, _, _) => dtd_bounds_trait_hits(tbounds = tbounds, wanted = wanted, hits = hits),
     // A trait method's own binder (`same: [X: Eq](Self, X, X) -> Bool`,
     // #684). The impl's function only receives it from
     // `inject_trait_method_generics_with`, which runs AFTER the injection.
-    STrait(_, _, _, _, method_gens, _) => dtd_method_gens_have_trait(method_gens = method_gens, wanted = wanted),
-    SEnum(_, _, _, _, _) => false,
-    SSuberror(_, _, _) => false,
-    SStruct(_, _, _, _, _, _) => false,
-    STypeAlias(_, _, _, _) => false,
-    SExternLet(_, _) => false,
-    SImport(_, _) => false,
-    SExport(_) => false,
-    SReExport(_, _) => false,
-    SAliasDecl(_, _) => false,
-    SReExportSourceBoundary(_, _) => false,
-    SQualifiedPatternRefs(_) => false,
-    STestEffectRows(_) => false,
-    SPositionalParams(_) => false,
-    SEffectDef(_, _, _, _) => false,
-    SEffectSet(_, _, _) => false,
-    SResource(_, _) => false
+    STrait(_, _, _, _, method_gens, _) => dtd_method_gens_trait_bounds(method_gens = method_gens, wanted = wanted, hits = hits),
+    SEnum(_, _, _, _, _) => dtd_all_hit(hits),
+    SSuberror(_, _, _) => dtd_all_hit(hits),
+    SStruct(_, _, _, _, _, _) => dtd_all_hit(hits),
+    STypeAlias(_, _, _, _) => dtd_all_hit(hits),
+    SExternLet(_, _) => dtd_all_hit(hits),
+    SImport(_, _) => dtd_all_hit(hits),
+    SExport(_) => dtd_all_hit(hits),
+    SReExport(_, _) => dtd_all_hit(hits),
+    SAliasDecl(_, _) => dtd_all_hit(hits),
+    SReExportSourceBoundary(_, _) => dtd_all_hit(hits),
+    SQualifiedPatternRefs(_) => dtd_all_hit(hits),
+    STestEffectRows(_) => dtd_all_hit(hits),
+    SPositionalParams(_) => dtd_all_hit(hits),
+    SEffectDef(_, _, _, _) => dtd_all_hit(hits),
+    SEffectSet(_, _, _) => dtd_all_hit(hits),
+    SResource(_, _) => dtd_all_hit(hits)
   }
 }
 
-fn dtd_exprs_have_trait_bound(exprs: Array[Expr], wanted: String) -> Bool {
+fn dtd_exprs_trait_bounds(exprs: Array[Expr], wanted: Array[String], hits: Array[Bool]) -> Bool {
   let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(exprs) {
-    found = dtd_expr_has_trait_bound(e = Array::get(exprs, at = i), wanted = wanted)
+  let mut done = dtd_all_hit(hits)
+  while !done && i < Array::length(exprs) {
+    done = dtd_expr_trait_bounds(e = Array::get(exprs, at = i), wanted = wanted, hits = hits)
     i = i + 1
   }
-  found
+  done
 }
 
-fn dtd_method_gens_have_trait(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], wanted: String) -> Bool {
+fn dtd_method_gens_trait_bounds(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], wanted: Array[String], hits: Array[Bool]) -> Bool {
   let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(method_gens) {
+  let mut done = dtd_all_hit(hits)
+  while !done && i < Array::length(method_gens) {
     let (_, _, bounds) = Array::get(method_gens, at = i)
-    found = dtd_bounds_have_trait(tbounds = bounds, wanted = wanted)
+    done = dtd_bounds_trait_hits(tbounds = bounds, wanted = wanted, hits = hits)
     i = i + 1
   }
-  found
+  done
 }
 
-fn dtd_bounds_have_trait(tbounds: Array[(String, Array[String])], wanted: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(tbounds) {
-    let (_, bs) = Array::get(tbounds, at = i)
-    let mut j = 0
-    while !found && j < Array::length(bs) {
-      if dtd_trait_entails(sub = Array::get(bs, at = j), super_name = wanted) {
-        found = true
-      } else {
-        ()
+fn dtd_bounds_trait_hits(tbounds: Array[(String, Array[String])], wanted: Array[String], hits: Array[Bool]) -> Bool {
+  for tb in tbounds {
+    let (_, bs) = tb
+    for b in bs {
+      let mut k = 0
+      while k < Array::length(wanted) {
+        if !Array::get(hits, at = k) && dtd_trait_entails(sub = b, super_name = Array::get(wanted, at = k)) {
+          Array::set(hits, at = k, value = true)
+        } else {
+          ()
+        }
+        k = k + 1
       }
-      j = j + 1
     }
-    i = i + 1
   }
-  found
+  dtd_all_hit(hits)
 }
 
-fn dtd_expr_has_trait_bound(e: Expr, wanted: String) -> Bool {
+fn dtd_expr_trait_bounds(e: Expr, wanted: Array[String], hits: Array[Bool]) -> Bool {
   let direct = match e {
-    EFn(_, tbounds, _, _, _, _) => dtd_bounds_have_trait(tbounds = tbounds, wanted = wanted),
-    _ => false
+    EFn(_, tbounds, _, _, _, _) => dtd_bounds_trait_hits(tbounds = tbounds, wanted = wanted, hits = hits),
+    _ => dtd_all_hit(hits)
   }
   if direct {
     true
@@ -549,19 +579,37 @@ fn dtd_expr_has_trait_bound(e: Expr, wanted: String) -> Bool {
     let mark = expr_children_push(e)
     let top = expr_children_top()
     let mut i = mark
-    let mut found = false
-    while !found && i < top {
-      found = dtd_expr_has_trait_bound(e = expr_child_at(i), wanted = wanted)
+    let mut done = false
+    while !done && i < top {
+      done = dtd_expr_trait_bounds(e = expr_child_at(i), wanted = wanted, hits = hits)
       i = i + 1
     }
     expr_children_pop(mark)
-    found
+    done
   }
 }
 
 export fn dtd_inject_builtin_eq(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  dtd_inject_builtin_eq_when(stmts = stmts, traits_raw = traits_raw, bound = dtd_program_has_trait_bound(stmts = stmts, wanted = dtd_eq_witness_trait()))
+}
+
+/// #3900: the builtin `Eq` and `Add` injections, from one walk of the program
+/// for both bounds. Neither injection writes `stmts`, and the supertrait graph
+/// the walk reads is set before either, so the walk's answers are the ones
+/// two walks gave.
+export fn dtd_inject_builtin_eq_and_add(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  let hits = dtd_program_trait_bound_hits(stmts = stmts, wanted = [
+    dtd_eq_witness_trait(),
+    "Add"
+  ])
+  dtd_inject_builtin_eq_when(stmts = stmts, traits_raw = traits_raw, bound = Array::get(hits, at = 0))
+  dtd_inject_builtin_add_when(stmts = stmts, traits_raw = traits_raw, bound = Array::get(hits, at = 1))
+}
+
+/// `bound`: whether some binder's bound entails `Eq`.
+fn dtd_inject_builtin_eq_when(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], bound: Bool) -> Unit {
   Array::set(dtd_eq_injected, at = 0, value = false)
-  if dtd_trait_declared_anywhere(stmts = stmts, trait_name = dtd_eq_witness_trait()) || !dtd_program_has_trait_bound(stmts = stmts, wanted = dtd_eq_witness_trait()) {
+  if dtd_trait_declared_anywhere(stmts = stmts, trait_name = dtd_eq_witness_trait()) || !bound {
     ()
   } else {
     match lookup_trait_sigs(traits = traits_raw, name = dtd_eq_witness_trait()) {
@@ -636,7 +684,12 @@ export fn dtd_scalar_eq_witness(cname: String, m: String) -> Option[Expr] {
 
 /// The builtin Add signature is needed only when a binder asks for it.
 export fn dtd_inject_builtin_add(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
-  if !dtd_trait_declared_anywhere(stmts = stmts, trait_name = "Add") && dtd_program_has_trait_bound(stmts = stmts, wanted = "Add") {
+  dtd_inject_builtin_add_when(stmts = stmts, traits_raw = traits_raw, bound = dtd_program_has_trait_bound(stmts = stmts, wanted = "Add"))
+}
+
+/// `bound`: whether some binder's bound entails `Add`.
+fn dtd_inject_builtin_add_when(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], bound: Bool) -> Unit {
+  if !dtd_trait_declared_anywhere(stmts = stmts, trait_name = "Add") && bound {
     if lookup_trait_sigs(traits = traits_raw, name = "Add") is None {
       Array::push(traits_raw, value = ("Add", [
         ("add", [TyName("Self"), TyName("Self")], TyName("Self"))

@@ -58,8 +58,19 @@ import @vibe/ast {
 /// the walk rebuilds every node it visits, and nearly every program has a
 /// float operation somewhere, so rebuilding them all grew the self-compile's
 /// heap by 11 MB.
+///
+/// The offset arrays are sorted in place.
 export fn rewrite_float_arith_stmts(stmts: Array[Stmt], binop_offs: Array[Int], assign_offs: Array[Int], operand_offs: Array[Int], operand_assign_offs: Array[Int], negation_offs: Array[Int], f32_negation_offs: Array[Int]) -> Unit {
   if Array::length(binop_offs) > 0 || Array::length(assign_offs) > 0 || Array::length(operand_offs) > 0 || Array::length(operand_assign_offs) > 0 || Array::length(negation_offs) > 0 || Array::length(f32_negation_offs) > 0 {
+    // #3900: `fr_has` answers by binary search, for every operator node of
+    // the program, so the offsets are sorted first -- in place: the arrays
+    // are the caller's rows, read only here.
+    fr_sort(binop_offs)
+    fr_sort(assign_offs)
+    fr_sort(operand_offs)
+    fr_sort(operand_assign_offs)
+    fr_sort(negation_offs)
+    fr_sort(f32_negation_offs)
     let mut i = 0
     while i < Array::length(stmts) {
       let stmt = Array::get(stmts, at = i)
@@ -269,20 +280,38 @@ fn fr_expr_mentions(_ e: Expr) -> Bool {
   }
 }
 
+/// Sort `offs` ascending, in place. The checker files rows in source order,
+/// so this is one pass in the common case.
+fn fr_sort(_ offs: Array[Int]) -> Unit {
+  let mut i = 1
+  while i < Array::length(offs) {
+    let v = Array::get(offs, at = i)
+    let mut j = i
+    while j > 0 && Array::get(offs, at = j - 1) > v {
+      Array::set(offs, at = j, value = Array::get(offs, at = j - 1))
+      j = j - 1
+    }
+    Array::set(offs, at = j, value = v)
+    i = i + 1
+  }
+}
+
+/// Whether `off` is one of `offs`, which `fr_sort` has sorted.
 fn fr_has(offs: Array[Int], off: Int) -> Bool {
   if off < 0 {
     false
   } else {
-    let mut found = false
-    let mut i = 0
-    while i < Array::length(offs) && !found {
-      if Array::get(offs, at = i) == off {
-        found = true
+    let mut lo = 0
+    let mut hi = Array::length(offs)
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if Array::get(offs, at = mid) < off {
+        lo = mid + 1
       } else {
-        i = i + 1
+        hi = mid
       }
     }
-    found
+    lo < Array::length(offs) && Array::get(offs, at = lo) == off
   }
 }
 
