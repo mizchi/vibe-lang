@@ -159,13 +159,13 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
   let mut u = 0
   while u < Array::length(units) && found is None {
     let unit = Array::get(units, at = u)
-    let impl_lines = line_starts_with_keyword(source = unit_located_text(unit), word = "impl")
+    let impl_lines: Array[Array[(Int, Int)]] = []
     let mut impl_ordinal = 0
     let mut k = unit.start
     while k < unit.end && found is None {
       match Array::get(merged, at = k) {
         SImpl(tparams, _, trait_key, target) => {
-          let (line, col) = nth_position(positions = impl_lines, k = impl_ordinal)
+          let (line, col) = nth_position(positions = unit_impl_lines(cell = impl_lines, unit = unit), k = impl_ordinal)
           impl_ordinal = impl_ordinal + 1
           let what = impl_what(tparams = tparams, trait_key = trait_key, target = target)
           let prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_key, target = target), "::")
@@ -534,13 +534,13 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
   while v < Array::length(units) {
     let unit = Array::get(units, at = v)
     let text = unit_located_text(unit)
-    let impl_lines = line_starts_with_keyword(source = text, word = "impl")
+    let impl_lines: Array[Array[(Int, Int)]] = []
     let mut ordinal = 0
     let mut k = unit.start
     while k < unit.end {
       match Array::get(merged, at = k) {
         SImpl(tparams, _, trait_key, target) => {
-          let (line, col) = nth_position(positions = impl_lines, k = ordinal)
+          let (line, col) = nth_position(positions = unit_impl_lines(cell = impl_lines, unit = unit), k = ordinal)
           ordinal = ordinal + 1
           let name = trait_ref_name(trait_key)
           let resolved = head_type(te = target, params = tparams, decls = decls, depth = 0)
@@ -1318,6 +1318,18 @@ fn target_display(_ t: TypeExpr) -> String {
   }
 }
 
+/// The `impl` lines of `unit`'s text, scanned on the first `impl` the unit
+/// holds and kept in `cell` (#3932). They only place a refusal message, and
+/// most units hold no `impl`, so a unit without one is never scanned.
+fn unit_impl_lines(cell: Array[Array[(Int, Int)]], unit: LinkedUnit) -> Array[(Int, Int)] {
+  if Array::length(cell) == 0 {
+    Array::push(cell, value = line_starts_with_keyword(source = unit_located_text(unit), word = "impl"))
+  } else {
+    ()
+  }
+  Array::get(cell, at = 0)
+}
+
 /// `(line, col)` of each source line whose first non-blank word is `word`,
 /// in order. 1-based line, 1-based byte column.
 fn line_starts_with_keyword(source: String, word: String) -> Array[(Int, Int)] {
@@ -1332,7 +1344,7 @@ fn line_starts_with_keyword(source: String, word: String) -> Array[(Int, Int)] {
     while j < n && (String::byte_at(source, at = j) == 32 || String::byte_at(source, at = j) == 9) {
       j = j + 1
     }
-    if j + wn < n && String::substring(source, start = j, end = j + wn) == word {
+    if j + wn < n && bytes_match_at(source = source, at = j, word = word) {
       let next = String::byte_at(source, at = j + wn)
       if next == 32 || next == 91 || next == 9 {
         Array::push(out, value = (line, j - i + 1))
@@ -1349,6 +1361,18 @@ fn line_starts_with_keyword(source: String, word: String) -> Array[(Int, Int)] {
     line = line + 1
   }
   out
+}
+
+/// Whether `source` holds `word` at byte `at`, compared in place rather than
+/// through a substring per line (#3932). The caller keeps `at + |word|` in
+/// bounds.
+fn bytes_match_at(source: String, at: Int, word: String) -> Bool {
+  let wn = String::length(word)
+  let mut k = 0
+  while k < wn && String::byte_at(source, at = at + k) == String::byte_at(word, at = k) {
+    k = k + 1
+  }
+  k == wn
 }
 
 fn nth_position(positions: Array[(Int, Int)], k: Int) -> (Int, Int) {
