@@ -1,0 +1,96 @@
+//# #3941: fixed-width relocatable `call` slots.
+//#
+//# The slot width is a compile-wide cell; every test that sets it restores 0
+//# before it returns, so the cell's default (minimal LEB128, the production
+//# encoding) is what any other test in the same instance sees.
+
+//# Imports
+
+import @vibe/compiler/core {
+  leb128_encode_u32, leb128_encode_u32_padded, leb128_encode_u32_slot, leb128_u32_min_width, reloc_slot_width, set_reloc_slot_width
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call
+}
+
+//# Functions
+
+fn ints_of(_ b: Bytes) -> Array[Int] {
+  let out = []
+  let mut i = 0
+  while i < Bytes::length(b) {
+    Array::push(out, value = Bytes::get(b, at = i))
+    i = i + 1
+  }
+  out
+}
+
+fn call_bytes(_ idx: Int) -> Array[Int] {
+  let b = Bytes::new()
+  emit_call(buf = b, func_idx = idx)
+  ints_of(b)
+}
+
+//# Tests
+
+test "minimal width matches the minimal encoder" {
+  let mut v = 0
+  while v < 20000 {
+    let b = Bytes::new()
+    leb128_encode_u32(buf = b, value = v)
+    assert_eq(leb128_u32_min_width(v), Bytes::length(b))
+    v = v + 37
+  }
+  assert_eq(leb128_u32_min_width(2097151), 3)
+  assert_eq(leb128_u32_min_width(2097152), 4)
+}
+
+test "padded encoding is a floor and decodes to the same value" {
+  let b = Bytes::new()
+  leb128_encode_u32_padded(buf = b, value = 5, width = 3)
+  assert_eq(ints_of(b), [0x85, 0x80, 0x00])
+  let c = Bytes::new()
+  leb128_encode_u32_padded(buf = c, value = 128, width = 3)
+  assert_eq(ints_of(c), [0x80, 0x81, 0x00])
+  let d = Bytes::new()
+  leb128_encode_u32_padded(buf = d, value = 2097152, width = 3)
+  assert_eq(ints_of(d), [0x80, 0x80, 0x80, 0x01])
+  let e = Bytes::new()
+  leb128_encode_u32_padded(buf = e, value = 300, width = 0)
+  let f = Bytes::new()
+  leb128_encode_u32(buf = f, value = 300)
+  assert_eq(ints_of(e), ints_of(f))
+}
+
+test "width 0 leaves emit_call byte-identical to the minimal encoding" {
+  set_reloc_slot_width(0)
+  assert_eq(reloc_slot_width(), 0)
+  assert_eq(call_bytes(5), [0x10, 0x05])
+  assert_eq(call_bytes(127), [0x10, 0x7F])
+  assert_eq(call_bytes(128), [0x10, 0x80, 0x01])
+  let b = Bytes::new()
+  leb128_encode_u32_slot(buf = b, value = 200)
+  assert_eq(ints_of(b), [0xC8, 0x01])
+}
+
+test "width 3 keeps a call's length independent of the callee's index" {
+  set_reloc_slot_width(3)
+  let a = call_bytes(127)
+  let b = call_bytes(128)
+  let c = call_bytes(16384)
+  set_reloc_slot_width(0)
+  assert_eq(a, [0x10, 0xFF, 0x80, 0x00])
+  assert_eq(b, [0x10, 0x80, 0x81, 0x00])
+  assert_eq(c, [0x10, 0x80, 0x80, 0x01])
+}
+
+test "the setter clamps to what a u32 LEB128 can hold" {
+  set_reloc_slot_width(9)
+  let hi = reloc_slot_width()
+  set_reloc_slot_width(0 - 1)
+  let lo = reloc_slot_width()
+  set_reloc_slot_width(0)
+  assert_eq(hi, 5)
+  assert_eq(lo, 0)
+}

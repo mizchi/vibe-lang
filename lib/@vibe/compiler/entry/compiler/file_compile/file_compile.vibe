@@ -54,6 +54,7 @@ import @vibe/compiler/core {
   mark_private_builtin_references,
   merged_offset_space_reset,
   namespace_private_value_stmts,
+  reloc_slot_width,
   resolution_env_seed,
   sorted_names_of
 }
@@ -1334,7 +1335,14 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
   // concurrent stores race on the same temp file and one aborts.
-  let artifact_key = String::concat("self-describing-", compact_string_fingerprint(entry_path))
+  // #3941: a body emitted at a call slot width is not interchangeable with a
+  // minimal one, so the width scopes the slot. Width 0 keeps the old key.
+  let slot_width = reloc_slot_width()
+  let artifact_key = if slot_width == 0 {
+    String::concat("self-describing-", compact_string_fingerprint(entry_path))
+  } else {
+    String::concat("self-describing-rsw", String::concat(__to_string(slot_width), String::concat("-", compact_string_fingerprint(entry_path))))
+  }
   // `"off"` IS OFF (#2647 Codex round 5). It used to load the artifact, compile
   // against it and store the result -- only `"verify"` was special-cased, so
   // every other value behaved like `"on"` while reading as a bypass. The

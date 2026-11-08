@@ -11,7 +11,9 @@ import @vibe/compiler/core {
   bytebuf_push_opcode_u32_u32,
   bytebuf_push_section,
   bytebuf_push_vec_header,
-  leb128_encode_u32
+  leb128_encode_u32,
+  leb128_encode_u32_slot,
+  reloc_slot_width
 }
 
 import ./sections.vibe {
@@ -44,8 +46,15 @@ let op_block = 2
 
 let op_br_if = 13
 
+/// The target is a relocatable slot (#3941): at the compile's slot width, so
+/// a callee's index magnitude does not decide the caller's length.
 export fn emit_call(buf: Bytes, func_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32(buf = buf, opcode = op_call, value = func_idx)
+  if reloc_slot_width() == 0 {
+    bytebuf_push_opcode_u32(buf = buf, opcode = op_call, value = func_idx)
+  } else {
+    bytebuf_push(buf = buf, byte = op_call)
+    leb128_encode_u32_slot(buf = buf, value = func_idx)
+  }
 }
 
 export fn emit_drop(_ buf: Bytes) -> Unit {
@@ -419,8 +428,15 @@ export fn emit_index_to_u32_saturating(buf: Bytes, scratch: Int) -> Unit {
   bytebuf_push(buf = buf, byte = 27)
 }
 
+/// A function index in a body, like a `call` target: at the compile's slot
+/// width (#3941). The relocator treats both as one reference kind.
 export fn emit_ref_func(buf: Bytes, func_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32(buf = buf, opcode = 210, value = func_idx)
+  if reloc_slot_width() == 0 {
+    bytebuf_push_opcode_u32(buf = buf, opcode = 210, value = func_idx)
+  } else {
+    bytebuf_push(buf = buf, byte = 210)
+    leb128_encode_u32_slot(buf = buf, value = func_idx)
+  }
 }
 
 export fn emit_ref_null(buf: Bytes, heap_type_byte: Int) -> Unit {

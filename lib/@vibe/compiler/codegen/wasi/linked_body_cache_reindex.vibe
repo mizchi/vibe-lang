@@ -23,6 +23,10 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_const, emit_i64_const
 }
 
+import @vibe/compiler/core {
+  leb128_encode_u32_slot
+}
+
 import ./linked_body_cache_edit.vibe {
   LcCtorTagMap, LcSrcEdit, lc_first_user_tag
 }
@@ -318,7 +322,14 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
             ok = false
           } else if n != v {
             let b = Bytes::new()
-            lc_push_uleb(out = b, value = n)
+            // A function index (`call` / `ref.func`) is written at the
+            // compile's slot width, exactly as `emit_call` wrote it, so a moved body stays byte-identical to
+            // a fresh compile (#3941). Tags and globals are emitted minimal.
+            if rk == reloc_kind_func {
+              leb128_encode_u32_slot(buf = b, value = n)
+            } else {
+              lc_push_uleb(out = b, value = n)
+            }
             lc_edit_insert(edits = edits, e = LcEdit::{
               off: Array::get(r.offsets, at = i),
               width: Array::get(r.widths, at = i),

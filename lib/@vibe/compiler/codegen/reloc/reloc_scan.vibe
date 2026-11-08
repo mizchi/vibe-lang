@@ -280,6 +280,28 @@ fn write_uleb(out: Bytes, value: Int) -> Unit with Exception {
   }
 }
 
+/// Unsigned LEB128 of exactly `max(width, minimal)` bytes (#3941).
+fn write_uleb_padded(out: Bytes, value: Int, width: Int) -> Unit with Exception {
+  let w0 = reloc_uleb_width(value)
+  let w = if width > w0 {
+    width
+  } else {
+    w0
+  }
+  let mut v = value
+  let mut i = 0
+  while i < w {
+    let byte = v&127
+    v = v>>7
+    if i + 1 < w {
+      Bytes::push(out, value = byte|128)
+    } else {
+      Bytes::push(out, value = byte)
+    }
+    i = i + 1
+  }
+}
+
 /// Minimal-width sleb128, for the one kind whose immediate is signed.
 fn write_sleb(out: Bytes, value: Int) -> Unit {
   let mut v = value
@@ -696,6 +718,15 @@ export fn scan_body_relocs(body: Bytes, start: Int, end_pos: Int) -> BodyRelocs 
 /// to 128 and grew two unrelated bodies by a byte each. A patcher would have
 /// had to refuse those; a rebuilder does not notice them.
 export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelocs, new_values: Array[Int]) -> Bytes with Exception {
+  rebuild_body_relocs_with_func_width(body = body, start = start, end_pos = end_pos, r = r, new_values = new_values, func_width = 0)
+}
+
+/// `rebuild_body_relocs`, writing each function index (`reloc_kind_func`: a
+/// `call` target or a `ref.func` operand) at least `func_width` bytes wide -- the slot width the module was emitted
+/// with (#3941). The width cannot be read back off the body: under width 3 a
+/// 3-byte minimal `call 20000` and a padded `call 5` look the same, and only
+/// the second must stay 3 bytes when its value shrinks. 0 is minimal.
+export fn rebuild_body_relocs_with_func_width(body: Bytes, start: Int, end_pos: Int, r: BodyRelocs, new_values: Array[Int], func_width: Int) -> Bytes with Exception {
   let n = Array::length(r.offsets)
   if Array::length(new_values) != n {
     throw("reloc_scan: rebuild needs exactly one new value per relocation site")
@@ -720,6 +751,8 @@ export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelo
     let kind_i = Array::get(r.kinds, at = i)
     if kind_i == reloc_kind_blocktype || kind_i == reloc_kind_heaptype {
       write_sleb(out = out, value = Array::get(new_values, at = i))
+    } else if kind_i == reloc_kind_func && func_width > 0 {
+      write_uleb_padded(out = out, value = Array::get(new_values, at = i), width = func_width)
     } else {
       write_uleb(out = out, value = Array::get(new_values, at = i))
     }

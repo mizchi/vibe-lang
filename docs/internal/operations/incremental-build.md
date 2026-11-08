@@ -809,6 +809,57 @@ holding a stale tag routes a `perform` to the wrong handler with nothing
 failing at build time. Recording them raised stage2's site count from 141,380
 to 142,360 — 980 references that were silently going to be left behind.
 
+##### Fixed-width function-index slots (#3941, opt-in)
+
+`VIBE_RELOC_SLOT_WIDTH=<1..5>` makes every function index inside a body (a
+`call` target, a `ref.func` operand) at least that many LEB128 bytes. A
+non-minimal LEB128 is valid wasm, and it is the slot shape the
+tool-conventions object format, `wasm-ld` and wild reserve for exactly this
+reason. Unset is minimal, and the output is byte-identical to a compiler
+without the switch. Every writer of such an immediate goes through
+`leb128_encode_u32_slot`: `emit_call`, `emit_ref_func`, the inline-wat `call`,
+the body-cache relocator (`lc_move_body`), and late-DCE renumbering
+(`lc_pf_emit_code` and its linemap delta). That is what keeps a replayed or
+pruned body equal to a fresh one. The persisted `codegen-body-cache` slot and
+the linked-output memo are keyed on the width, so the two encodings never
+replay into each other.
+
+Measured with `scripts/wasm_index_stability.mjs` on #2669's four edits, using
+`codegen_lexer_test.vibe` (7221 functions) and `__no_entry__`. "Length
+changed" counts bodies whose byte length differs; at W=0 this is identical to
+main for all five builds.
+
+| edit | W=0 length changed | W=3 length changed |
+|---|---:|---:|
+| body only (`hex_encode`) | 1 (edited) | 1 (edited) |
+| +1 fn above the band (`hex.vibe`, ~250) | 1 (edited) | 1 (edited) |
+| +1 fn below the band (`base64.vibe`, ~120) | 6 (edited + 5 `BigInt::*` callers of index 127→128) | **1** (edited) |
+| module reorder (`base64` imports `hex`) | 15 | **0** |
+
+Every other difference stays same-length. Only fn values (`i64.const`) and
+string data pointers are unpadded, and they crossed no band in these runs.
+
+- **Cost**: the module grows from 6,636,149 to 6,995,692 bytes (+5.4%), because
+  most of the 200,348 function-index sites were one or two bytes.
+- **Correctness**: `scripts/reloc_roundtrip.sh` with
+  `RELOC_ROUNDTRIP_FUNC_WIDTH=3` round-trips all 7221 bodies. The red control,
+  rebuilding the padded module at width 0, reports 6979 mismatches.
+- **Body-cache replay** (`VIBE_CODEGEN_BODY_CACHE=on`, one cache): after the
+  below-band and reorder edits, 7039 bodies were offered, 347 recompiled, and
+  the output was byte-identical to a fresh compile at W=3 as well as at W=0.
+
+`verify` does not reach this path. A function-set edit changes the guards, so
+its second compile is skipped (the counted lane reports `-1`).
+
+What this does not do yet:
+
+- pad function values (`i64.const`, kind 101), table slots, tags, globals or
+  constructor tags;
+- choose a default.
+
+The size cost is the number to weigh against an in-place patcher that this
+makes possible but that does not exist.
+
 ##### Does a body actually relocate? (#2669, slice 1b)
 
 The round-trip above proves the walk does not desynchronise. The cross-build

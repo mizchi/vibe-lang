@@ -18,7 +18,7 @@
 // it at the compiler's own output and every refusal names the opcode still
 // missing.
 import @vibe/compiler/codegen/reloc {
-  BodyRelocs, rebuild_body_relocs, reloc_kind_blocktype, reloc_kind_data, reloc_kind_elem,
+  BodyRelocs, rebuild_body_relocs_with_func_width, reloc_kind_blocktype, reloc_kind_data, reloc_kind_elem,
   reloc_kind_func, reloc_kind_global, reloc_kind_heaptype, reloc_kind_table, reloc_kind_tag,
   reloc_kind_type, scan_body_relocs
 }
@@ -113,6 +113,17 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
   } else {
     ()
   }
+  // #3941: the `call` slot width the module was built with
+  // (VIBE_RELOC_SLOT_WIDTH), so the identity rebuild writes a padded target
+  // back at the width it came in. It cannot be inferred from the bytes.
+  let func_width = if Env::args_len() > 1 {
+    match Int::parse(Env::args_get(1)) {
+      Some(w) => w,
+      None => throw("reloc-roundtrip: the second argument is the call slot width, an integer")
+    }
+  } else {
+    0
+  }
   let b = Fs::read_bytes(path)
   let len = Bytes::length(b)
   // Walk the section list to the code section (id 10).
@@ -176,7 +187,7 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
       ki = ki + 1
     }
     // 1. identity: rebuild with the values that are already there.
-    let same = rebuild_body_relocs(body = b, start = instr_start, end_pos = instr_end, r = r, new_values = r.values)
+    let same = rebuild_body_relocs_with_func_width(body = b, start = instr_start, end_pos = instr_end, r = r, new_values = r.values, func_width = func_width)
     if !bytes_equal_span(a = b, a_start = instr_start, a_end = instr_end, other = same) {
       identity_mismatch = identity_mismatch + 1
     } else {
@@ -191,7 +202,7 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
         Array::push(bumped, value = if i == 0 { v + 1 } else { v })
         i = i + 1
       }
-      let other = rebuild_body_relocs(body = b, start = instr_start, end_pos = instr_end, r = r, new_values = bumped)
+      let other = rebuild_body_relocs_with_func_width(body = b, start = instr_start, end_pos = instr_end, r = r, new_values = bumped, func_width = func_width)
       if bytes_equal_span(a = b, a_start = instr_start, a_end = instr_end, other = other) {
         perturb_unchanged = perturb_unchanged + 1
       } else {
