@@ -375,6 +375,8 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
   } else if Array::length(edits) == 0 {
     LcMovedBody::{ ok: true, body: body, edits: edits }
   } else {
+    // The unchanged spans between the edits are copied whole.
+    let len = Bytes::length(body)
     let out = Bytes::new()
     let mut cursor = 0
     for e in edits {
@@ -383,16 +385,23 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
       } else {
         ()
       }
-      while cursor < e.off && cursor < Bytes::length(body) {
-        Bytes::push(out, value = Bytes::get(body, at = cursor))
-        cursor = cursor + 1
+      let stop = if e.off < len {
+        e.off
+      } else {
+        len
+      }
+      if cursor < stop {
+        Bytes::blit(out, src = body, start = cursor, end = stop)
+      } else {
+        ()
       }
       Bytes::append(out, bytes = e.bytes)
       cursor = e.off + e.width
     }
-    while cursor < Bytes::length(body) {
-      Bytes::push(out, value = Bytes::get(body, at = cursor))
-      cursor = cursor + 1
+    if cursor < len {
+      Bytes::blit(out, src = body, start = cursor, end = len)
+    } else {
+      ()
     }
     if ok {
       LcMovedBody::{ ok: true, body: out, edits: edits }

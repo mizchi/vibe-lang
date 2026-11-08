@@ -3,7 +3,7 @@
 // renamed or reordered (#2669).
 
 import @vibe/compiler/core {
-  Expr, Pat, bsearch_leftmost, expr_children, sort_perm_by_names, sorted_names_of
+  Expr, Pat, bsearch_leftmost, expr_any_node, sort_perm_by_names, sorted_names_of
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -710,22 +710,68 @@ export fn lc_lambda_counts(bases: Array[Int], count: Int, lo: Int, hi: Int) -> A
 }
 
 /// The part of a name after its last `::` -- `T::A` is `A` -- or the name.
+/// The last part `String::split(name, sep = "::")` answers, found without
+/// splitting: separators are matched left to right without overlapping.
 fn lc_name_tail(_ name: String) -> String {
-  let parts = String::split(name, sep = "::")
-  Array::get(parts, at = Array::length(parts) - 1)
+  let n = String::length(name)
+  let mut start = 0
+  let mut i = 0
+  while i + 1 < n {
+    if String::char_code_at(name, at = i) == ':' && String::char_code_at(name, at = i + 1) == ':' {
+      start = i + 2
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  if start == 0 {
+    name
+  } else {
+    name[start: n]
+  }
 }
 
 /// The names a mention check matches: exact spellings, and for the
 /// constructor-like ones (`extra`) their tails too, because a pattern or a
 /// construction may spell `A` where the table holds `T::A`, or the reverse.
 /// Over-matching only recompiles a body.
+///
+/// A field is spelled `.field`. `fields` holds, sorted, the names after the
+/// dot of every such entry of `exact` and of `tails`, so a field is matched
+/// without building `.field` (`lc_field_mentioned`).
 struct LcMentionSet {
   exact: Array[String];
-  tails: Array[String]
+  tails: Array[String];
+  fields: Array[String]
+}
+
+fn lc_mention_set(exact: Array[String], tails: Array[String]) -> LcMentionSet {
+  let fields: Array[String] = []
+  for list in [exact, tails] {
+    for name in list {
+      if String::starts_with(name, prefix = ".") {
+        Array::push(fields, value = name[1: String::length(name)])
+      } else {
+        ()
+      }
+    }
+  }
+  LcMentionSet::{ exact: exact, tails: tails, fields: sorted_names_of(fields) }
 }
 
 fn lc_mentioned(m: LcMentionSet, name: String) -> Bool {
-  bsearch_leftmost(sorted = m.exact, name = name) >= 0 || bsearch_leftmost(sorted = m.tails, name = lc_name_tail(name)) >= 0
+  bsearch_leftmost(sorted = m.exact, name = name) >= 0 || Array::length(m.tails) > 0 && bsearch_leftmost(sorted = m.tails, name = lc_name_tail(name)) >= 0
+}
+
+/// `lc_mentioned(m, "." + field)`. A field name holds no `::`, so the tail of
+/// `.field` is itself, and it is in `exact` or `tails` exactly when `field`
+/// is in `fields`. A field that does hold one takes the spelled-out path.
+fn lc_field_mentioned(m: LcMentionSet, field: String) -> Bool {
+  if String::contains(field, needle = "::") {
+    lc_mentioned(m = m, name = String::concat(".", field))
+  } else {
+    bsearch_leftmost(sorted = m.fields, name = field) >= 0
+  }
 }
 
 fn lc_pat_mentions(p: Pat, m: LcMentionSet) -> Bool {
@@ -744,7 +790,7 @@ fn lc_pat_mentions(p: Pat, m: LcMentionSet) -> Bool {
       let mut i = 0
       while !hit && i < Array::length(fields) {
         let (field, sub) = Array::get(fields, at = i)
-        hit = lc_mentioned(m = m, name = String::concat(".", field)) || lc_pat_mentions(p = sub, m = m)
+        hit = lc_field_mentioned(m = m, field = field) || lc_pat_mentions(p = sub, m = m)
         i = i + 1
       }
       hit
@@ -779,7 +825,12 @@ fn lc_arms_mention(arms: Array[(Pat, Expr)], m: LcMentionSet) -> Bool {
 /// an access, a record literal's or a struct pattern's)? A pattern is where
 /// a match spells the constructors it lowers.
 fn lc_mentions_any(e: Expr, m: LcMentionSet) -> Bool {
-  let here = match e {
+  expr_any_node(expr = e, pred = (node: Expr) -> lc_node_mentions(e = node, m = m))
+}
+
+/// Whether `e` itself, not a descendant, spells a name in `m`.
+fn lc_node_mentions(e: Expr, m: LcMentionSet) -> Bool {
+  match e {
     EIdent(n, _) => lc_mentioned(m = m, name = n),
     EMatch(_, arms) => lc_arms_mention(arms = arms, m = m),
     EHandle(_, arms) => lc_arms_mention(arms = arms, m = m),
@@ -788,30 +839,13 @@ fn lc_mentions_any(e: Expr, m: LcMentionSet) -> Bool {
       let mut i = 0
       while !hit && i < Array::length(fields) {
         let (field, _) = Array::get(fields, at = i)
-        hit = lc_mentioned(m = m, name = String::concat(".", field))
+        hit = lc_field_mentioned(m = m, field = field)
         i = i + 1
       }
       hit
     },
-    EDot(_, field, _, _) => lc_mentioned(m = m, name = String::concat(".", field)),
+    EDot(_, field, _, _) => lc_field_mentioned(m = m, field = field),
     _ => false
-  }
-  if here {
-    true
-  } else {
-    match e {
-      EIdent(_, _) => false,
-      _ => {
-        let kids = expr_children(e)
-        let mut hit = false
-        let mut i = 0
-        while !hit && i < Array::length(kids) {
-          hit = lc_mentions_any(e = Array::get(kids, at = i), m = m)
-          i = i + 1
-        }
-        hit
-      }
-    }
   }
 }
 
@@ -837,7 +871,7 @@ export fn lc_src_edit_replayable(e: LcSrcEdit, extra_touched: Array[String], bod
   for name in extra_touched {
     Array::push(tails, value = lc_name_tail(name))
   }
-  let m = LcMentionSet::{ exact: touched, tails: sorted_names_of(tails) }
+  let m = lc_mention_set(exact = touched, tails = sorted_names_of(tails))
   if Array::length(touched) > 0 {
     let mut bi = 0
     while bi < num_user_funcs {
