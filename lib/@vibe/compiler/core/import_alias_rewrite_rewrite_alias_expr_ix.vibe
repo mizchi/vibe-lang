@@ -36,6 +36,10 @@ import ./inline_wasm_marker.vibe {
   inline_wasm_marker_name, wat_callee_names, wat_rewrite_callees
 }
 
+import ./import_alias_rewrite_type_equivalence.vibe {
+  row_type_args_parse, row_type_text
+}
+
 import ./import_alias_rewrite_pat_binds_shadowing_name.vibe {
   AliasIdx,
   alias_map_without_name,
@@ -2053,12 +2057,73 @@ fn rewrite_private_type_expr(ty: TypeExpr, renames: Array[(String, String)]) -> 
     },
     TyFn(params, ret, effect_name) => TyFn(for param in params {
       rewrite_private_type_expr(ty = param, renames = renames)
-    }, rewrite_private_type_expr(ty = ret, renames = renames), effect_name),
+    }, rewrite_private_type_expr(ty = ret, renames = renames), rewrite_private_row(row = effect_name, renames = renames)),
     TyTuple(items) => TyTuple(for item in items {
       rewrite_private_type_expr(ty = item, renames = renames)
     }),
     TyUnit => ty
   }
+}
+
+/// The type arguments an effect row spells (`with Box[Alias] + Console`)
+/// renamed too (Codex on #3942). A label whose arguments do not change, or
+/// that `row_type_args_parse` does not read, keeps its text as written.
+fn rewrite_private_row(row: Option[String], renames: Array[(String, String)]) -> Option[String] {
+  match row {
+    Some(text) => if Array::length(renames) == 0 || String::index_of(text, needle = "[") < 0 {
+      row
+    } else {
+      Some(rewrite_private_row_text(text = text, renames = renames))
+    },
+    None => row
+  }
+}
+
+fn rewrite_private_row_text(text: String, renames: Array[(String, String)]) -> String {
+  let pieces: Array[String] = []
+  let n = String::length(text)
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    if String::byte_at(text, at = i) == '[' {
+      let mut depth = 1
+      let mut j = i + 1
+      while j < n && depth > 0 {
+        let c = String::byte_at(text, at = j)
+        if c == '[' {
+          depth = depth + 1
+        } else if c == ']' {
+          depth = depth - 1
+        }
+        j = j + 1
+      }
+      if depth == 0 {
+        match row_type_args_parse(String::substring(text, start = i + 1, end = j - 1)) {
+          Some(args) => {
+            let next = for a in args {
+              rewrite_private_type_expr(ty = a, renames = renames)
+            }
+            if next != args {
+              Array::push(pieces, value = String::substring(text, start = start, end = i + 1))
+              Array::push(pieces, value = String::join(for a in next {
+                row_type_text(a)
+              }, sep = ", "))
+              Array::push(pieces, value = "]")
+              start = j
+            }
+          },
+          None => ()
+        }
+        i = j
+      } else {
+        i = n
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  Array::push(pieces, value = String::substring(text, start = start, end = n))
+  String::join(pieces, sep = "")
 }
 
 fn rewrite_private_type_opt(ty: Option[TypeExpr], renames: Array[(String, String)]) -> Option[TypeExpr] {
@@ -2187,7 +2252,7 @@ fn rewrite_private_type_ctor_expr(expr: Expr, type_renames: Array[(String, Strin
       let own = alias_map_without_names(aliases = type_renames, names = for t in type_params {
         type_param_name(t)
       })
-      EFn(type_params, rewrite_private_bound_keys(bounds = bounds, renames = own), rewrite_private_params(params = params, type_renames = own), rewrite_private_type_opt(ty = ret_ty, renames = own), effect, rewrite_private_type_ctor_expr(expr = body, type_renames = own, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params)))
+      EFn(type_params, rewrite_private_bound_keys(bounds = bounds, renames = own), rewrite_private_params(params = params, type_renames = own), rewrite_private_type_opt(ty = ret_ty, renames = own), rewrite_private_row(row = effect, renames = own), rewrite_private_type_ctor_expr(expr = body, type_renames = own, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params)))
     },
     EDot(obj, field, off, fdoff) => EDot(rewrite_private_type_ctor_expr(expr = obj, type_renames = type_renames, ctor_renames = ctor_renames), field, off, fdoff),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
