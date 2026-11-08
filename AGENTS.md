@@ -746,7 +746,8 @@ vibe symbols --with-path file.vibe
 # A binder answers at its DECLARATION too, with the type of its uses: a
 # parameter, a local `let`, a match / handler arm pattern, `guard` / `is`, a
 # `let` destructuring (tuple / ctor / `P::{..}` / `record {..}`, top level too)
-# and a `for` header (#3000).
+# and a `for` header (#3000). The file is typed as `vibe check` types it,
+# imports resolved (#3834); a file that does not check there is typed alone.
 # No identifier under the position (whitespace, keyword, literal, past EOL/EOF)
 # is an ERROR: `type-at: no identifier at FILE:L:C` on stderr, exit 1; so is a
 # file that does not parse. Empty stdout + exit 0 means exactly one thing: an
