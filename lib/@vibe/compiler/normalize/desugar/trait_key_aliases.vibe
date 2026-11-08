@@ -117,7 +117,14 @@ fn expand_trait_key_aliases_in(_ stmts: Array[Stmt]) -> Unit {
 /// of their spelling.
 fn tka_expr(e: Expr, names: Array[String]) -> Option[Expr] {
   match e {
-    EFn(tp, bs, ps, ret, eff, body) => {
+    EFn(tp, bs, ps, ret, eff, body) => if Array::length(tp) == 0 && Array::length(bs) == 0 {
+      // An ordinary lambda binds no type and asks for no witness: only its
+      // body can change, under the same binders.
+      match tka_expr(e = body, names = names) {
+        Some(next) => Some(EFn(tp, bs, ps, ret, eff, next)),
+        None => None
+      }
+    } else {
       let inner: Array[String] = []
       for n in names {
         Array::push(inner, value = n)
@@ -175,15 +182,42 @@ fn tka_expr(e: Expr, names: Array[String]) -> Option[Expr] {
         None
       }
     },
-    ELet(n, v, b, off) => tka_two(a = v, b = b, names = names, k = (x, y) -> ELet(n, x, y, off)),
-    ELetRec(n, v, b) => tka_two(a = v, b = b, names = names, k = (x, y) -> ELetRec(n, x, y)),
-    ELetMut(n, v, b, off) => tka_two(a = v, b = b, names = names, k = (x, y) -> ELetMut(n, x, y, off)),
-    EAssign(n, v, c, off) => tka_two(a = v, b = c, names = names, k = (x, y) -> EAssign(n, x, y, off)),
-    EAssignOp(n, op, v, c, off) => tka_two(a = v, b = c, names = names, k = (x, y) -> EAssignOp(n, op, x, y, off)),
-    ESeq(a, b) => tka_two(a = a, b = b, names = names, k = (x, y) -> ESeq(x, y)),
-    EWhile(c, b) => tka_two(a = c, b = b, names = names, k = (x, y) -> EWhile(x, y)),
-    EBinOp(op, l, r, off) => tka_two(a = l, b = r, names = names, k = (x, y) -> EBinOp(op, x, y, off)),
-    EForIn(n, idx, it, b) => tka_two(a = it, b = b, names = names, k = (x, y) -> EForIn(n, idx, x, y)),
+    ELet(n, v, b, off) => match tka_pair(a = v, b = b, names = names) {
+      Some((x, y)) => Some(ELet(n, x, y, off)),
+      None => None
+    },
+    ELetRec(n, v, b) => match tka_pair(a = v, b = b, names = names) {
+      Some((x, y)) => Some(ELetRec(n, x, y)),
+      None => None
+    },
+    ELetMut(n, v, b, off) => match tka_pair(a = v, b = b, names = names) {
+      Some((x, y)) => Some(ELetMut(n, x, y, off)),
+      None => None
+    },
+    EAssign(n, v, c, off) => match tka_pair(a = v, b = c, names = names) {
+      Some((x, y)) => Some(EAssign(n, x, y, off)),
+      None => None
+    },
+    EAssignOp(n, op, v, c, off) => match tka_pair(a = v, b = c, names = names) {
+      Some((x, y)) => Some(EAssignOp(n, op, x, y, off)),
+      None => None
+    },
+    ESeq(a, b) => match tka_pair(a = a, b = b, names = names) {
+      Some((x, y)) => Some(ESeq(x, y)),
+      None => None
+    },
+    EWhile(c, b) => match tka_pair(a = c, b = b, names = names) {
+      Some((x, y)) => Some(EWhile(x, y)),
+      None => None
+    },
+    EBinOp(op, l, r, off) => match tka_pair(a = l, b = r, names = names) {
+      Some((x, y)) => Some(EBinOp(op, x, y, off)),
+      None => None
+    },
+    EForIn(n, idx, it, b) => match tka_pair(a = it, b = b, names = names) {
+      Some((x, y)) => Some(EForIn(n, idx, x, y)),
+      None => None
+    },
     EMatch(sc, arms) => {
       let a = tka_expr(e = sc, names = names)
       let narms = tka_arms(arms = arms, names = names)
@@ -262,69 +296,111 @@ fn tka_or(o: Option[Expr], e: Expr) -> Expr {
   }
 }
 
-fn tka_two(a: Expr, b: Expr, names: Array[String], k: (Expr, Expr) -> Expr) -> Option[Expr] {
+fn tka_pair(a: Expr, b: Expr, names: Array[String]) -> Option[(Expr, Expr)] {
   let na = tka_expr(e = a, names = names)
   let nb = tka_expr(e = b, names = names)
   if tka_changed(na) || tka_changed(nb) {
-    Some(k(tka_or(o = na, e = a), tka_or(o = nb, e = b)))
+    Some((tka_or(o = na, e = a), tka_or(o = nb, e = b)))
   } else {
     None
   }
 }
 
 fn tka_list(es: Array[Expr], names: Array[String]) -> Option[Array[Expr]] {
-  let mut changed = false
-  let out = for x in es {
-    match tka_expr(e = x, names = names) {
-      Some(next) => {
-        changed = true
-        next
-      },
-      None => x
+  // Allocates only from the first element that changes.
+  let n = Array::length(es)
+  let mut i = 0
+  let mut first: Option[Expr] = None
+  while i < n && !tka_changed(first) {
+    first = tka_expr(e = Array::get(es, at = i), names = names)
+    if !tka_changed(first) {
+      i = i + 1
     }
   }
-  if changed {
-    Some(out)
-  } else {
-    None
+  match first {
+    None => None,
+    Some(changed) => {
+      let out: Array[Expr] = []
+      let mut j = 0
+      while j < i {
+        Array::push(out, value = Array::get(es, at = j))
+        j = j + 1
+      }
+      Array::push(out, value = changed)
+      j = i + 1
+      while j < n {
+        let x = Array::get(es, at = j)
+        Array::push(out, value = tka_or(o = tka_expr(e = x, names = names), e = x))
+        j = j + 1
+      }
+      Some(out)
+    }
   }
 }
 
 fn tka_fields(fields: Array[(String, Expr)], names: Array[String]) -> Option[Array[(String, Expr)]] {
-  let mut changed = false
-  let out = for fd in fields {
-    let (n, x) = fd
-    match tka_expr(e = x, names = names) {
-      Some(next) => {
-        changed = true
-        (n, next)
-      },
-      None => fd
+  let n = Array::length(fields)
+  let mut i = 0
+  let mut first: Option[Expr] = None
+  while i < n && !tka_changed(first) {
+    let (_, x) = Array::get(fields, at = i)
+    first = tka_expr(e = x, names = names)
+    if !tka_changed(first) {
+      i = i + 1
     }
   }
-  if changed {
-    Some(out)
-  } else {
-    None
+  match first {
+    None => None,
+    Some(changed) => {
+      let out: Array[(String, Expr)] = []
+      let mut j = 0
+      while j < i {
+        Array::push(out, value = Array::get(fields, at = j))
+        j = j + 1
+      }
+      let (name_i, _) = Array::get(fields, at = i)
+      Array::push(out, value = (name_i, changed))
+      j = i + 1
+      while j < n {
+        let (fname, x) = Array::get(fields, at = j)
+        Array::push(out, value = (fname, tka_or(o = tka_expr(e = x, names = names), e = x)))
+        j = j + 1
+      }
+      Some(out)
+    }
   }
 }
 
 fn tka_arms(arms: Array[(Pat, Expr)], names: Array[String]) -> Option[Array[(Pat, Expr)]] {
-  let mut changed = false
-  let out = for arm in arms {
-    let (p, x) = arm
-    match tka_expr(e = x, names = names) {
-      Some(next) => {
-        changed = true
-        (p, next)
-      },
-      None => arm
+  let n = Array::length(arms)
+  let mut i = 0
+  let mut first: Option[Expr] = None
+  while i < n && !tka_changed(first) {
+    let (_, x) = Array::get(arms, at = i)
+    first = tka_expr(e = x, names = names)
+    if !tka_changed(first) {
+      i = i + 1
     }
   }
-  if changed {
-    Some(out)
-  } else {
-    None
+  match first {
+    None => None,
+    Some(changed) => {
+      let out: Array[(Pat, Expr)] = []
+      let mut j = 0
+      while j < i {
+        Array::push(out, value = Array::get(arms, at = j))
+        j = j + 1
+      }
+      let (pat_i, _) = Array::get(arms, at = i)
+      Array::push(out, value = (pat_i, changed))
+      j = i + 1
+      while j < n {
+        let (p, x) = Array::get(arms, at = j)
+        Array::push(out, value = (p, tka_or(o = tka_expr(e = x, names = names), e = x)))
+        j = j + 1
+      }
+      Some(out)
+    }
   }
 }
 
@@ -336,7 +412,7 @@ fn expand_key_aliases(key: String, names: Array[String]) -> String {
         let next = if type_expr_names_any(ty = arg, names = names) {
           arg
         } else {
-          eq_expand_alias_ty(arg)
+          tka_canon_ty(eq_expand_alias_ty(arg))
         }
         if next != arg {
           changed = true
@@ -355,7 +431,43 @@ fn expand_key_aliases(key: String, names: Array[String]) -> String {
   }
 }
 
+/// The spelling the checker's canonical key gives a type
+/// (`trait_bound_type_expr`): `Unit` is `()` and the float widths use their
+/// canonical names, so `Value[Alias]` with `type Alias = Unit` and
+/// `Value[()]` encode as one key (Codex on #3956).
+fn tka_canon_ty(_ t: TypeExpr) -> TypeExpr {
+  match t {
+    TyName(n) => if n == "Unit" {
+      TyUnit
+    } else if n == "Double" || n == "f64" {
+      TyName("Float64")
+    } else if n == "Float" || n == "f32" {
+      TyName("Float32")
+    } else {
+      t
+    },
+    TyApp(h, args) => TyApp(h, for a in args {
+      tka_canon_ty(a)
+    }),
+    TyTuple(items) => TyTuple(for a in items {
+      tka_canon_ty(a)
+    }),
+    TyFn(params, ret, eff) => TyFn(for a in params {
+      tka_canon_ty(a)
+    }, tka_canon_ty(ret), eff),
+    TyUnit => t
+  }
+}
+
 fn expand_bound_aliases(bounds: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
+  if Array::length(bounds) == 0 {
+    bounds
+  } else {
+    expand_bound_aliases_in(bounds = bounds, names = names)
+  }
+}
+
+fn expand_bound_aliases_in(bounds: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
   for bound in bounds {
     let (param, traits) = bound
     (param, for trait_ref in traits {
