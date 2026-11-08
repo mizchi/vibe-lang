@@ -499,31 +499,32 @@ fn package_ref_of_index_dep(_ dep: String) -> Option[String] {
   }
 }
 
+/// A resolved dependency must still exist, and a package index must still win
+/// resolution. Refuse a deleted ordinary file too: otherwise warm headers and
+/// dependency lists bypass the import site's located missing-import error.
 export fn package_index_dep_is_current(_ dep: String) -> Bool with Env + Fs {
-  match package_ref_of_index_dep(dep) {
-    None => true,
-    Some(pkg_ref) => {
-      let candidates = resolve_import_path_candidates(base_dir = "", raw_path = pkg_ref)
-      let mut i = 0
-      let mut winner = ""
-      while i < Array::length(candidates) {
-        if winner == "" {
-          let candidate = Array::get(candidates, at = i)
-          if Fs::exists(candidate) {
-            winner = candidate
+  if !Fs::exists(dep) {
+    false
+  } else {
+    match package_ref_of_index_dep(dep) {
+      None => true,
+      Some(pkg_ref) => {
+        let candidates = resolve_import_path_candidates(base_dir = "", raw_path = pkg_ref)
+        let mut i = 0
+        let mut winner = ""
+        while i < Array::length(candidates) {
+          if winner == "" {
+            let candidate = Array::get(candidates, at = i)
+            if Fs::exists(candidate) {
+              winner = candidate
+            } else {
+              ()
+            }
           } else {
             ()
           }
-        } else {
-          ()
+          i = i + 1
         }
-        i = i + 1
-      }
-      // Mirror resolve_path_fs: no existing candidate falls back to the
-      // first (store) spelling.
-      if winner == "" {
-        Array::get(candidates, at = 0) == dep
-      } else {
         winner == dep
       }
     }

@@ -179,6 +179,13 @@ VIBE_RC=0 VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$stage2_wasm" \
   bash scripts/vibe_test.sh lib/@vibe/compiler/cache/policy/policy_test.vibe \
     lib/@vibe/compiler/tests/invocation_cache_policy_test.vibe
 
+# #1960: cached ordinary dependency paths must not bypass the import site's
+# diagnostic after deletion. This suite also pins warm reuse and recovery,
+# for imports, re-exports and persistent dependency lists, on this stage2.
+echo "[compiler-gate] 3af/3 deleted dependency cache refusal and diagnostic parity"
+VIBE_RC=0 VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$stage2_wasm" \
+  bash scripts/vibe_test.sh lib/@vibe/compiler/tests/loader_persistent_cache_test.vibe
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that
