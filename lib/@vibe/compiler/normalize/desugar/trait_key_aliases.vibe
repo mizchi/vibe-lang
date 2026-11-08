@@ -14,8 +14,9 @@ import ./equality_aliases.vibe {
 //# Functions
 
 /// #3947: spell every applied trait key with its type aliases expanded: an
-/// impl's head (`impl Value[Alias] for Note`) and bounds, and a top-level
-/// function's bounds (`[V: Value[Alias]]`). Witness lookup matches a bound to
+/// impl's head (`impl Value[Alias] for Note`) and bounds, a top-level
+/// function's bounds (`[V: Value[Alias]]`), and a trait method binder's
+/// bounds. Witness lookup matches a bound to
 /// an impl by the key's spelling, and so does the name the parser gives an
 /// impl's methods (`impl_method_owner`), so `Value[Alias]` and `Value[Int]`
 /// named two different impls once `type Alias = Int`. The checker judges both
@@ -49,6 +50,25 @@ export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
           } else {
             ()
           }
+        } else {
+          ()
+        }
+      },
+      // A trait method's own binder bounds (`run[T: Value[Alias]](Self, T)`)
+      // are matched against the same impls, so they are spelled the same way.
+      STrait(exported, name, supers, methods, method_tparams, tparams) => {
+        let next_rows = for row in method_tparams {
+          let (mname, mtparams, mbounds) = row
+          let names = for t in tparams {
+            type_param_name(t)
+          }
+          for t in mtparams {
+            Array::push(names, value = type_param_name(t))
+          }
+          (mname, mtparams, expand_bound_aliases(bounds = mbounds, names = names))
+        }
+        if next_rows != method_tparams {
+          Array::set(stmts, at = i, value = STrait(exported, name, supers, methods, next_rows, tparams))
         } else {
           ()
         }

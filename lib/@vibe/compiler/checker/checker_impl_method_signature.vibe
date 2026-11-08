@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   compiler_owned_type_arity,
+  env_type_defs,
   find_typedef,
   impl_trait_and_target_patterns_overlap,
   is_builtin_type_name,
@@ -43,7 +44,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_throw_kind_of_type.vibe {
-  trait_reference_display
+  canonical_impl_trait_key, trait_reference_display
 }
 
 //# Provenance
@@ -1072,7 +1073,7 @@ fn bound_implied(env: TypeEnv, wanted: String, have: Array[String], seen: Array[
   for h in have {
     if hit || string_list_has(names = seen, wanted = h) {
       ()
-    } else if h == wanted {
+    } else if h == wanted || same_canonical_key(env = env, a = h, b = wanted) {
       hit = true
     } else {
       Array::push(seen, value = h)
@@ -1080,6 +1081,21 @@ fn bound_implied(env: TypeEnv, wanted: String, have: Array[String], seen: Array[
     }
   }
   hit
+}
+
+/// #3947: `Value[Alias]` and `Value[Int]` are one bound once
+/// `type Alias = Int` expands.
+fn same_canonical_key(env: TypeEnv, a: String, b: String) -> Bool {
+  let defs = env_type_defs(env)
+  let none: Array[String] = []
+  let ca = canonical_impl_trait_key(key = a, tparams = none, defs = defs)
+  ca == canonical_impl_trait_key(key = b, tparams = none, defs = defs)
+}
+
+fn displayed_keys(_ keys: Array[String]) -> Array[String] {
+  for k in keys {
+    trait_reference_display(k)
+  }
 }
 
 /// `X: A + B`, or the bare `X` when there are no bounds.
@@ -1166,13 +1182,13 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                     "may choose any type for `",
                     tname,
                     "` that satisfies `",
-                    String::join(have, sep = " + "),
+                    String::join(displayed_keys(have), sep = " + "),
                     "`"
                   ], sep = "")
                 }
                 Array::push(errors, value = String::join([
                   "drop the `",
-                  w,
+                  trait_reference_display(w),
                   "` bound from `",
                   name,
                   "` in ",
@@ -1182,11 +1198,11 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                   "`'s `",
                   method,
                   "[",
-                  binder_text(name = tname, traits = grown),
+                  binder_text(name = tname, traits = displayed_keys(grown)),
                   "]`: a caller through the trait ",
                   chosen,
                   ", so nothing provides `",
-                  w,
+                  trait_reference_display(w),
                   "` for `",
                   name,
                   "`",
@@ -1210,7 +1226,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                 } else {
                   String::join([
                     "promises only `",
-                    String::join(have, sep = " + "),
+                    String::join(displayed_keys(have), sep = " + "),
                     "` for `",
                     met,
                     "`"
@@ -1218,7 +1234,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                 }
                 Array::push(errors, value = String::join([
                   "drop the `",
-                  w,
+                  trait_reference_display(w),
                   "` bound from `",
                   name,
                   "` in ",
@@ -1226,7 +1242,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                   ", or add it to the impl's `",
                   met,
                   "` (`[",
-                  binder_text(name = met, traits = grown),
+                  binder_text(name = met, traits = displayed_keys(grown)),
                   "]` on `impl ",
                   trait_disp,
                   " for ",
@@ -1234,7 +1250,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                   "`): the trait calls this function at every instantiation of the impl, and the impl ",
                   promised,
                   ", so nothing provides `",
-                  w,
+                  trait_reference_display(w),
                   "` for `",
                   name,
                   "`",
