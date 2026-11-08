@@ -19,7 +19,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
-  emit_call, emit_i32_const, emit_i32_const_slot, emit_i64_const, emit_i64_const_slot, emit_i64_const_str
+  emit_call, emit_i32_const, emit_i32_const_ctor_tag, emit_i32_const_slot, emit_i64_const, emit_i64_const_slot, emit_i64_const_str
 }
 
 //# Functions
@@ -191,4 +191,48 @@ test "width 3 keeps string address lengths across their bands" {
   assert_eq(ref_hi, 4)
   assert_eq(fat_lo, 9)
   assert_eq(fat_hi, 9)
+}
+
+fn ctor_tag_len(_ tag: Int) -> Int {
+  let b = Bytes::new()
+  emit_i32_const_ctor_tag(buf = b, value = tag)
+  Bytes::length(b)
+}
+
+test "width 0 leaves a constructor tag byte-identical to a plain i32.const" {
+  set_reloc_slot_width(0)
+  let tag = (37<<16)|2
+  let plain = Bytes::new()
+  emit_i32_const(buf = plain, value = tag)
+  let padded = Bytes::new()
+  emit_i32_const_ctor_tag(buf = padded, value = tag)
+  assert_eq(ints_of(padded), ints_of(plain))
+}
+
+test "width 3 keeps a constructor tag's length across type index 15 -> 16" {
+  // (15 << 16) is three signed-LEB bytes, (16 << 16) four. The tag width is
+  // the slot width plus one, so both are four.
+  set_reloc_slot_width(0)
+  let lo0 = ctor_tag_len(15<<16)
+  let hi0 = ctor_tag_len(16<<16)
+  set_reloc_slot_width(3)
+  let lo3 = ctor_tag_len(15<<16)
+  let hi3 = ctor_tag_len(16<<16)
+  set_reloc_slot_width(0)
+  assert_eq(lo0, 4)
+  assert_eq(hi0, 5)
+  assert_eq(lo3, 5)
+  assert_eq(hi3, 5)
+}
+
+test "a built-in constructor tag is never padded" {
+  // Below 2 << 16 a tag never moves, so it keeps its minimal encoding.
+  set_reloc_slot_width(3)
+  let builtin = ctor_tag_len(1)
+  let builtin_hi = ctor_tag_len((1<<16)|3)
+  let user = ctor_tag_len(2<<16)
+  set_reloc_slot_width(0)
+  assert_eq(builtin, 2)
+  assert_eq(builtin_hi, 4)
+  assert_eq(user, 5)
 }

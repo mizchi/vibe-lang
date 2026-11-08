@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   leb128_encode_s_slot,
   leb128_encode_u32,
   leb128_encode_u32_slot,
+  reloc_ctor_tag_width,
   reloc_slot_width,
   reloc_str_width
 }
@@ -482,6 +483,24 @@ export fn emit_i64_const_slot(buf: Bytes, value: Int) -> Unit {
 export fn emit_i64_const_str(buf: Bytes, value: Int, fat: Bool) -> Unit {
   bytebuf_push(buf = buf, byte = op_i64_const)
   leb128_encode_s_padded(buf = buf, value = value, width = reloc_str_width(fat = fat))
+}
+
+/// A constructor tag as `i32.const`, at the compile's constructor-tag width
+/// (#3941), so a type declared ahead does not change the length of a body
+/// that constructs or matches a later type. Kind 105; the relocator re-emits
+/// with this.
+///
+/// A BUILT-IN tag (below `2 << 16`, the first user type) never moves -- the
+/// relocator leaves it alone (`lc_map_ctor_tag`) -- so it stays minimal: a
+/// variant of type 0 is one byte, and padding it would cost three for nothing.
+export fn emit_i32_const_ctor_tag(buf: Bytes, value: Int) -> Unit {
+  bytebuf_push(buf = buf, byte = 65)
+  let w = if value < 2<<16 {
+    0
+  } else {
+    reloc_ctor_tag_width()
+  }
+  leb128_encode_s_padded(buf = buf, value = value, width = w)
 }
 
 export fn emit_i32_const_slot(buf: Bytes, value: Int) -> Unit {

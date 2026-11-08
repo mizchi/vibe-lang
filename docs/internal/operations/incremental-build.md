@@ -823,12 +823,14 @@ when the layout behind it moves.
 | funcref table slot: `i64.const ((slot << 2) \| 2)` (kind 101), `i32.const slot` (kind 102) | W | slot < 2^18 |
 | string address, bare offset (`blind_kind_str_ref`) | W | offset < 2^20 |
 | string address, `(offset << 32) \| length` (`blind_kind_str_fat`) | W+5 | offset < 2^23 |
+| constructor tag `(type_index << 16) \| variant` (kind 105), user types only | W+1 | type index < 2048 |
 
 A non-minimal LEB128 is valid wasm. It is the slot shape that the
 tool-conventions object format, `wasm-ld` and wild reserve for this reason.
 Unset is minimal, and the output is byte-identical to a compiler without the
-switch. Type indices, constructor tags and the generated runtime helpers'
-message addresses stay minimal.
+switch. A built-in constructor tag (below `2 << 16`) never moves and stays
+minimal; so do type indices and the generated runtime helpers' message
+addresses.
 
 **Every writer of a padded reference goes through one encoder.**
 
@@ -843,6 +845,8 @@ message addresses stay minimal.
   four sites that record kinds 101 / 102 and in `lc_move_body`.
 - `emit_i64_const_str` writes string addresses, in `emit_str_ref_slot` /
   `emit_str_fat_slot` and the string relocator `lc_relocate_body`.
+- `emit_i32_const_ctor_tag` writes constructor tags, in `emit_ctor_tag` (the
+  only emitter of kind 105) and `lc_move_body`.
 
 That is what keeps a replayed or pruned body equal to a fresh one. The
 persisted `codegen-body-cache` slot and the linked-output memo are keyed on
@@ -861,18 +865,21 @@ Each W=3 column adds one class to the column before it. "Length changed"
 counts bodies whose byte length differs. At W=0 every build is byte-identical
 to main.
 
-| edit | W=0 | function indices | + table slots | + strings | + tags, globals |
-|---|---:|---:|---:|---:|---:|
-| body only (`hex_encode`) | 1 | 1 | 1 | 1 | 1 |
-| +1 fn above the 127/128 band (`hex.vibe`) | 1 | 1 | 1 | 1 | 1 |
-| +1 fn below the band (`base64.vibe`) | 6 | **1** | 1 | 1 | 1 |
-| module reorder (`base64` imports `hex`) | 15 | **0** | 0 | 0 | 0 |
-| +400 fn (a function value moves 1667 → 2068) | 16 | 3 | **1** | 1 | 1 |
-| +300-byte literal (strings cross 8192 / 2^15) | 109 | 109 | 109 | **3** | 3 |
-| +1 top-level thunk (+2 memo globals; two cross 127 → 128) | 8 | 3 | 3 | 3 | **1** |
-| +1 effect (every tag 1 higher) | 6 | **1** | 1 | 1 | 1 |
+| edit | W=0 | function indices | + table slots | + strings | + tags, globals | + ctor tags |
+|---|---:|---:|---:|---:|---:|---:|
+| body only (`hex_encode`) | 1 | 1 | 1 | 1 | 1 | 1 |
+| +1 fn above the 127/128 band (`hex.vibe`) | 1 | 1 | 1 | 1 | 1 | 1 |
+| +1 fn below the band (`base64.vibe`) | 6 | **1** | 1 | 1 | 1 | 1 |
+| module reorder (`base64` imports `hex`) | 15 | **0** | 0 | 0 | 0 | 0 |
+| +400 fn (a function value moves 1667 → 2068) | 16 | 3 | **1** | 1 | 1 | 1 |
+| +300-byte literal (strings cross 8192 / 2^15) | 109 | 109 | 109 | **3** | 3 | 3 |
+| +1 top-level thunk (+2 memo globals; two cross 127 → 128) | 8 | 3 | 3 | 3 | **1** | 1 |
+| +1 effect (every tag 1 higher) | 6 | **1** | 1 | 1 | 1 | 1 |
+| +1 unused enum (6301 ctor tags +1 type; `Deque` crosses 15 → 16) | 25 | 25 | — | — | 25 | **0** |
+| +1 used enum (the same, plus a function) | 31 | 26 | 26 | 26 | 26 | **1** |
 
-In every row the 1 is the edited body. Three rows need a note:
+In every row the 1 is the edited body. A dash was not measured. Four rows
+need a note:
 
 - **Strings.** The 3 left are the edited body, `__rt_oob_abort` and
   `__rt_div_zero_abort`. Those runtime helpers embed their message's address
@@ -884,6 +891,11 @@ In every row the 1 is the edited body. Three rows need a note:
 - **Effect.** It moves every tag, but with 7 tags no value leaves one byte. A
   tag crossing needs more than 120 declared effects, so tag padding is paid
   for and, here, unused.
+- **Enum.** A constructor tag is `(type_index << 16) | variant`, so a user
+  tag is three LEB bytes until type 16 and four until type 2048. The slot
+  width alone does not change it; it takes W+1. Built-in tags are left minimal
+  because they never move. Padding them too (an earlier variant) cost 35,679
+  bytes instead of 16,579, for the same table.
 
 - **Cost.** W=0 is 6,636,149 bytes. Each class adds:
 
@@ -893,7 +905,8 @@ In every row the 1 is the edited body. Three rows need a note:
   | table slots | 6,995,732 | +40 B |
   | strings | 7,004,443 | +8,711 B |
   | tags and globals | 7,010,864 | +6,421 B |
-  | **total** | | **+5.65%** |
+  | constructor tags (user types) | 7,027,443 | +16,579 B |
+  | **total** | | **+5.90%** |
 
   Function indices are almost all of it: 200,348 sites, most of them one or
   two bytes.
@@ -907,6 +920,15 @@ In every row the 1 is the edited body. Three rows need a note:
   | function value ahead of every slot | 7044 | 342 |
   | +300-byte literal | 7046 | 340 |
   | thunk, effect | 7045 | 341 |
+
+  Inserting a type is different. The cache declines the whole build (7387
+  recompiled, at W=0 as well), so the constructor-tag relocator is not reached
+  end to end on this corpus. It is reached by
+  `tests/body_cache_insert_function_test.vibe`. Its 14 rows include "a type
+  added in a middle file relocates the tags it moves" and "moved indices that
+  cross a LEB width band are rebuilt". Run with the width set to 3 (and the
+  artifact key it implies), every row gave the same `saved=` and
+  `equal=true` as at width 0.
 
 `verify` does not reach this path. A function-set edit changes the guards, so
 its second compile is skipped (the counted lane reports `-1`).
