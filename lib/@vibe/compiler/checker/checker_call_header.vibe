@@ -18,7 +18,8 @@ import @vibe/compiler/core {
   env_lookup,
   env_lookup_binding,
   param_names_prefix,
-  record_alias_target
+  record_alias_target,
+  resolve_builtin
 }
 
 import @vibe/core {
@@ -81,6 +82,12 @@ fn local_type_alias_row_key(_ name: String) -> String {
 /// allocates nothing for a name whose head is not one of them.
 let local_type_alias_names: Array[String] = []
 
+// #3909: those of them whose chain ends at a builtin type (`type D =
+// Float64`), so a name through any other alias (`HashMap::get` through
+// `@vibe/core`'s `type HashMap[K, V] = MutMap[K, V]`) reaches the builtin
+// lookup without allocating.
+let local_builtin_type_alias_names: Array[String] = []
+
 /// #3889: the name an unbound qualified `M::m` stands for when `M` is a
 /// `type` alias this file declares that passes its own parameters through
 /// (`type M = L`, `type B[T] = Box[T]`), following such aliases to the name
@@ -93,7 +100,7 @@ export fn checker_local_alias_member(_ name: String) -> Option[String] {
   } else {
     0
   }
-  if sep <= 0 || !local_type_alias_head_at(name = name, sep = sep) {
+  if sep <= 0 || !alias_head_at(aliases = local_type_alias_names, name = name, sep = sep) {
     None
   } else {
     let head = String::substring(name, start = 0, end = sep)
@@ -123,9 +130,9 @@ export fn checker_declares_local_type_alias() -> Bool {
   Array::length(local_type_alias_names) > 0
 }
 
-fn local_type_alias_head_at(name: String, sep: Int) -> Bool {
+fn alias_head_at(aliases: Array[String], name: String, sep: Int) -> Bool {
   let mut found = false
-  for alias in local_type_alias_names {
+  for alias in aliases {
     if !found && String::length(alias) == sep && String::starts_with(name, prefix = alias) {
       found = true
     }
@@ -198,6 +205,15 @@ export fn checker_swap_positional_rows(_ rows: Array[(String, Array[Int])]) -> A
     let (n, _) = row
     if String::starts_with(n, prefix = local_type_alias_row_prefix) {
       Array::push(local_type_alias_names, value = String::substring(n, start = String::length(local_type_alias_row_prefix), end = String::length(n)))
+    }
+  }
+  Array::truncate(local_builtin_type_alias_names, length = 0)
+  for alias in local_type_alias_names {
+    match checker_local_alias_member(String::concat(alias, "::")) {
+      Some(t) => if resolve_builtin(String::substring(t, start = 0, end = String::length(t) - 2)) is Some(_) {
+        Array::push(local_builtin_type_alias_names, value = alias)
+      },
+      None => ()
     }
   }
   saved
@@ -523,7 +539,7 @@ export fn builtin_type_alias_any_marker() -> String {
 }
 
 /// #3888: the builtin a qualified name `A::m` stands for when `A` is an import
-/// alias of a builtin type, or `None`. A direct `import @vibe/builtin { Float64
+/// alias of a builtin type, or (#3909) a local `type` alias of one, or `None`. A direct `import @vibe/builtin { Float64
 /// as G }` binds `G::*` from the builtin module's own markers; a facade that
 /// re-exports `Float64` publishes only the type, so `import ./m.vibe { Float64
 /// as F }` reached `F` as a type and `F::ceil` as an unknown name. The import
@@ -533,7 +549,31 @@ export fn builtin_type_alias_any_marker() -> String {
 /// a value binder of the same spelling (`fn f(F: Int)`) shadows the alias, the
 /// rewrite then leaves `F::ceil` alone, and accepting it reached code
 /// generation unresolved (Codex on #3902).
+// #3909: `Float64::floor` for `D::floor` through a local `type D = Float64`.
+// Like a struct alias's companions (#3889), a value binder spelled `D` does
+// not shadow it: a qualified name is never a field of a value, and lowering
+// renames it through the same rows.
+fn local_builtin_type_alias_member(_ name: String) -> Option[String] {
+  let sep = String::index_of(name, needle = "::")
+  if sep > 0 && alias_head_at(aliases = local_builtin_type_alias_names, name = name, sep = sep) {
+    checker_local_alias_member(name)
+  } else {
+    None
+  }
+}
+
 export fn builtin_type_alias_member(env: TypeEnv, name: String) -> Option[String] {
+  match builtin_type_import_alias_member(env = env, name = name) {
+    Some(canonical) => Some(canonical),
+    None => if Array::length(local_builtin_type_alias_names) > 0 {
+      local_builtin_type_alias_member(name)
+    } else {
+      None
+    }
+  }
+}
+
+fn builtin_type_import_alias_member(env: TypeEnv, name: String) -> Option[String] {
   let sep = if env_lookup(env = env, name = builtin_type_alias_any_marker()) is Some(_) {
     String::index_of(name, needle = "::")
   } else {
