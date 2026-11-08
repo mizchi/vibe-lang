@@ -28,6 +28,19 @@ import ./equality_shape_queries.vibe {
   eq_fn_result_key, eq_formal_shape_key, eq_shape_key
 }
 
+import ./env_keys.vibe {
+  array_elem_key_prefix,
+  constructor_head_key_prefix,
+  env_key_is,
+  eq_fn_result_key_prefix,
+  eq_formal_shape_key_prefix,
+  eq_shape_key_prefix,
+  impl_target_var_key_prefix,
+  lamret_key_prefix,
+  shape_key_prefix,
+  tuple_shape_key_prefix
+}
+
 import ./equality_type_shapes.vibe {
   ty_to_eq_shape
 }
@@ -82,23 +95,25 @@ fn tys_mention_scope_formal(_ ts: Array[TypeExpr]) -> Bool {
   hit
 }
 
-/// #3455: is `key` a constructor-payload key (`__ctorpay$<Ctor>$<name>` or
-/// `__ctorpayi$<Ctor>$<idx>$<name>`) for one of `params`' names?
-fn names_ctor_payload_of(key: String, params: Array[(String, Option[TypeExpr])]) -> Bool {
-  if String::starts_with(key, prefix = "__ctorpay") {
-    let mut found = false
-    for param in params {
-      let (raw_pname, _) = param
-      if String::ends_with(key, suffix = String::concat("$", strip_label_tilde(raw_pname))) {
-        found = true
-      } else {
-        ()
-      }
+/// Whether outer row `key` is shadowed by a parameter named in `pnames`:
+/// the name itself, a key derived from it (`<prefix><name>`), or a
+/// constructor-payload key for it (`__ctorpay$<Ctor>$<name>` or
+/// `__ctorpayi$<Ctor>$<idx>$<name>`, #3455). `dollar_pnames` holds `$<name>`
+/// for each name, built once per binder rather than once per row (#3900).
+fn param_shadows_key(key: String, pnames: Array[String], dollar_pnames: Array[String]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while !hit && i < Array::length(pnames) {
+    let pname = Array::get(pnames, at = i)
+    // Every shadowed spelling ends with the name.
+    if String::ends_with(key, suffix = pname) {
+      hit = key == pname || env_key_is(key = key, prefix = shape_key_prefix(), name = pname) || env_key_is(key = key, prefix = eq_shape_key_prefix(), name = pname) || env_key_is(key = key, prefix = eq_formal_shape_key_prefix(), name = pname) || env_key_is(key = key, prefix = eq_fn_result_key_prefix(), name = pname) || env_key_is(key = key, prefix = constructor_head_key_prefix(), name = pname) || env_key_is(key = key, prefix = lamret_key_prefix(), name = pname) || env_key_is(key = key, prefix = tuple_shape_key_prefix(), name = pname) || env_key_is(key = key, prefix = array_elem_key_prefix(), name = pname) || env_key_is(key = key, prefix = impl_target_var_key_prefix(), name = pname) || (String::starts_with(key, prefix = "__ctorpay") && String::ends_with(key, suffix = Array::get(dollar_pnames, at = i)))
+    } else {
+      ()
     }
-    found
-  } else {
-    false
+    i = i + 1
   }
+  hit
 }
 
 /// Seed a var-type environment from a function's parameters whose annotation is
@@ -112,33 +127,23 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
   // parameter `m` shadowing an outer `m: StringMap[Int]` had its `m[0]`
   // rewritten to `Map::get` by the spelling (#3133 review). Drop the outer
   // entries -- the plain name and the keys derived from it -- first.
-  let shadowed = array_empty()
-  // With no outer bindings there is nothing to mask. Avoid materializing
-  // every derived shadow key on this common top-level-function path.
+  // #3900: the test reads each outer key against the names; the derived keys
+  // are no longer built per parameter, nor `$<name>` per outer row.
+  let pnames = array_empty()
+  let dollar_pnames = array_empty()
   if Array::length(base) > 0 {
     for param in params {
       let (raw_pname, _) = param
       let pname = strip_label_tilde(raw_pname)
-      Array::push(shadowed, value = pname)
-      Array::push(shadowed, value = shape_key(pname))
-      Array::push(shadowed, value = eq_shape_key(pname))
-      Array::push(shadowed, value = eq_formal_shape_key(pname))
-      Array::push(shadowed, value = eq_fn_result_key(pname))
-      Array::push(shadowed, value = constructor_head_key(pname))
-      Array::push(shadowed, value = dtd_interp_lamret_key(pname))
-      // #3455 (Codex on #3460): every other key derived from the name. A
-      // tuple-bound outer `v` left its `__tupshape$v`, and an inner `v` seeded
-      // with a formal `T` (whose row gives no shape) rendered as that tuple.
-      Array::push(shadowed, value = tuple_shape_key(pname))
-      Array::push(shadowed, value = array_elem_key(pname))
-      Array::push(shadowed, value = impl_target_var_key(pname))
+      Array::push(pnames, value = pname)
+      Array::push(dollar_pnames, value = String::concat("$", pname))
     }
   } else ()
   let out = array_empty()
   let mut b = 0
   while b < Array::length(base) {
     let (bn, _) = Array::get(base, at = b)
-    if !str_array_contains(arr = shadowed, val = bn) && !names_ctor_payload_of(key = bn, params = params) {
+    if !param_shadows_key(key = bn, pnames = pnames, dollar_pnames = dollar_pnames) {
       Array::push(out, value = Array::get(base, at = b))
     } else {
       ()

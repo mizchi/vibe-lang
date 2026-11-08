@@ -20,6 +20,15 @@ import ./constructor_annotations.vibe {
   dtd_tuple_parts_of_shape
 }
 
+import ./env_keys.vibe {
+  eq_shape_key_prefix,
+  impl_target_var_key_prefix,
+  local_fn_return_key_prefix,
+  lookup_var_type_keyed,
+  shape_key_prefix,
+  tuple_shape_key_prefix
+}
+
 import ./equality_aliases.vibe {
   eq_expand_alias_ty, eq_subst_ty
 }
@@ -75,17 +84,17 @@ fn dtd_tuple_elem_type_name(obj: Expr, field: String, var_types: Array[(String, 
       None
     } else match dtd_tuple_index_of(field) {
       Some(idx) => {
-        let parts = match lookup_var_type(var_types = var_types, name = tuple_shape_key(n)) {
+        let parts = match lookup_var_type_keyed(var_types = var_types, prefix = tuple_shape_key_prefix(), name = n) {
           Some(sentinel) => tuple_shape_parts(sentinel),
           // The recursive record answers for a name the per-tuple sentinel
           // never covered (one bound from an array element, say); the equality
           // sentinel answers for a tuple PARAMETER, which seeds only that one.
           None => {
-            let from_shape = dtd_tuple_parts_of_shape(lookup_var_type(var_types = var_types, name = shape_key(n)))
+            let from_shape = dtd_tuple_parts_of_shape(lookup_var_type_keyed(var_types = var_types, prefix = shape_key_prefix(), name = n))
             if Array::length(from_shape) > 0 {
               from_shape
             } else {
-              dtd_tuple_parts_of_shape(lookup_var_type(var_types = var_types, name = eq_shape_key(n)))
+              dtd_tuple_parts_of_shape(lookup_var_type_keyed(var_types = var_types, prefix = eq_shape_key_prefix(), name = n))
             }
           }
         }
@@ -234,13 +243,13 @@ fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String]
         // alias head need not equal the annotation's original spelling.
         Some(shape_to_eq_ty(fsh))
       } else {
-        match lookup_var_type(var_types = var_types, name = eq_shape_key(n)) {
+        match lookup_var_type_keyed(var_types = var_types, prefix = eq_shape_key_prefix(), name = n) {
           Some(sh) => if String::length(sh) > 0 {
             recorded_type_of_name(var_types = var_types, n = n, t = shape_to_eq_ty(sh))
           } else {
             None
           },
-          None => match lookup_var_type(var_types = var_types, name = impl_target_var_key(n)) {
+          None => match lookup_var_type_keyed(var_types = var_types, prefix = impl_target_var_key_prefix(), name = n) {
             Some(key) => match impl_target_from_key(key) {
               Some(t) => recorded_type_of_name(var_types = var_types, n = n, t = t),
               None => None
@@ -587,7 +596,7 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
       // the pull-closure loop (#822: the pull desugar called the stream value
       // as a closure — call_indirect on an array pointer = table OOB trap).
       EIdent("String::to_bytes", _) => Some("ByteStream"),
-      EIdent(fname, _) => match lookup_var_type(var_types = var_types, name = local_fn_return_key(fname)) {
+      EIdent(fname, _) => match lookup_var_type_keyed(var_types = var_types, prefix = local_fn_return_key_prefix(), name = fname) {
         Some(head) => Some(head),
         None => if constructor_binding_is_masked(var_types = var_types, name = fname) {
           None

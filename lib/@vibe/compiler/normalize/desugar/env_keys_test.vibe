@@ -1,0 +1,119 @@
+// #3900: a derived var-type key is `<prefix><name>`, and the hot lookups
+// match it without building it (`lookup_var_type_keyed`). A function's
+// parameters drop the outer rows their names shadow without building the
+// shadowed keys (`seed_var_types`). Both must answer as the built key does.
+
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import @vibe/compiler/normalize/desugar {
+  array_elem_key,
+  array_elem_key_prefix,
+  constructor_head_key,
+  constructor_head_key_prefix,
+  constructor_mask_key,
+  constructor_mask_key_prefix,
+  dtd_interp_lamret_key,
+  eq_fn_result_key,
+  eq_fn_result_key_prefix,
+  eq_formal_shape_key,
+  eq_formal_shape_key_prefix,
+  eq_shape_key,
+  eq_shape_key_prefix,
+  impl_target_var_key,
+  impl_target_var_key_prefix,
+  lamret_key_prefix,
+  local_fn_return_key,
+  local_fn_return_key_prefix,
+  lookup_var_type,
+  lookup_var_type_keyed,
+  seed_var_types,
+  shape_key,
+  shape_key_prefix,
+  tuple_shape_key,
+  tuple_shape_key_prefix
+}
+
+fn answer(_ v: Option[String]) -> String {
+  match v {
+    Some(s) => s,
+    None => "-"
+  }
+}
+
+test "each key is its prefix and the name" {
+  let n = "x"
+  assert(shape_key(n) == shape_key_prefix() + n)
+  assert(tuple_shape_key(n) == tuple_shape_key_prefix() + n)
+  assert(eq_shape_key(n) == eq_shape_key_prefix() + n)
+  assert(eq_formal_shape_key(n) == eq_formal_shape_key_prefix() + n)
+  assert(eq_fn_result_key(n) == eq_fn_result_key_prefix() + n)
+  assert(constructor_head_key(n) == constructor_head_key_prefix() + n)
+  assert(constructor_mask_key(n) == constructor_mask_key_prefix() + n)
+  assert(array_elem_key(n) == array_elem_key_prefix() + n)
+  assert(impl_target_var_key(n) == impl_target_var_key_prefix() + n)
+  assert(local_fn_return_key(n) == local_fn_return_key_prefix() + n)
+  assert(dtd_interp_lamret_key(n) == lamret_key_prefix() + n)
+}
+
+test "a keyed lookup answers as the built key does" {
+  let env: Array[(String, String)] = [
+    (shape_key("x"), "outer"),
+    (shape_key("ax"), "longer name"),
+    ("x", "plain"),
+    (eq_shape_key("x"), "eq"),
+    (shape_key("x"), "inner")
+  ]
+  let mut out: Array[String] = []
+  for name in ["x", "ax", "a", "", "y"] {
+    let keyed = lookup_var_type_keyed(var_types = env, prefix = shape_key_prefix(), name = name)
+    assert(answer(keyed) == answer(lookup_var_type(var_types = env, name = shape_key(name))))
+    Array::push(out, value = answer(keyed))
+  }
+  inspect(String::join(out, sep = ","), content = "inner,longer name,-,-,-")
+  inspect(answer(lookup_var_type_keyed(var_types = env, prefix = eq_shape_key_prefix(), name = "x")), content = "eq")
+}
+
+test "a parameter drops exactly the outer rows its name shadows" {
+  let base: Array[(String, String)] = [
+    ("x", "1"),
+    (shape_key("x"), "2"),
+    (eq_shape_key("x"), "3"),
+    (eq_formal_shape_key("x"), "4"),
+    (eq_fn_result_key("x"), "5"),
+    (constructor_head_key("x"), "6"),
+    (dtd_interp_lamret_key("x"), "7"),
+    (tuple_shape_key("x"), "8"),
+    (array_elem_key("x"), "9"),
+    (impl_target_var_key("x"), "10"),
+    ("__ctorpay$Some$x", "11"),
+    ("__ctorpayi$Some$0$x", "12"),
+    ("y", "13"),
+    (shape_key("ax"), "14"),
+    ("ax", "15"),
+    ("__ctorpay$Some$ax", "16"),
+    (constructor_mask_key("x"), "17"),
+    (local_fn_return_key("x"), "18")
+  ]
+  let params: Array[(String, Option[TypeExpr])] = [("x", None)]
+  let kept: Array[String] = []
+  for row in seed_var_types(params = params, tparams = [], base = base) {
+    Array::push(kept, value = row.1)
+  }
+  inspect(String::join(kept, sep = ","), content = "13,14,15,16,17,18")
+}
+
+test "an optional parameter shadows under its bare name" {
+  let base: Array[(String, String)] = [
+    ("x", "1"),
+    (shape_key("x"), "2"),
+    ("z", "3")
+  ]
+  let params: Array[(String, Option[TypeExpr])] = [("x?", None)]
+  let kept: Array[String] = []
+  for row in seed_var_types(params = params, tparams = [], base = base) {
+    Array::push(kept, value = row.1)
+  }
+  inspect(String::join(kept, sep = ","), content = "3")
+}
