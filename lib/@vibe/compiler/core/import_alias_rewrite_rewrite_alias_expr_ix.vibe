@@ -36,6 +36,10 @@ import ./inline_wasm_marker.vibe {
   inline_wasm_marker_name, wat_callee_names, wat_rewrite_callees
 }
 
+import ./import_alias_rewrite_type_equivalence.vibe {
+  row_type_args_parse, row_type_text
+}
+
 import ./import_alias_rewrite_pat_binds_shadowing_name.vibe {
   AliasIdx,
   alias_map_without_name,
@@ -821,10 +825,13 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // the assembler already keeps those apart. So the marker body is
         // rewritten with the UNSHADOWED map: passing it the params-removed one
         // left the callee spelled for a definition the merge had renamed.
+        // A type formal shadows the alias in the body as well, so a lambda
+        // nested in `fn outer[Alias](..)` keeps reading the formal (Codex on
+        // #3942).
         let body_am = if is_inline_wasm_marker_body(body) {
           am
         } else {
-          aliasidx_without_params(am = am, params = params)
+          aliasidx_without_params(am = type_am, params = params)
         }
         let m = alias_marks()
         let bounds2 = rewrite_alias_bounds(bounds = bounds, am = type_am)
@@ -2050,12 +2057,73 @@ fn rewrite_private_type_expr(ty: TypeExpr, renames: Array[(String, String)]) -> 
     },
     TyFn(params, ret, effect_name) => TyFn(for param in params {
       rewrite_private_type_expr(ty = param, renames = renames)
-    }, rewrite_private_type_expr(ty = ret, renames = renames), effect_name),
+    }, rewrite_private_type_expr(ty = ret, renames = renames), rewrite_private_row(row = effect_name, renames = renames)),
     TyTuple(items) => TyTuple(for item in items {
       rewrite_private_type_expr(ty = item, renames = renames)
     }),
     TyUnit => ty
   }
+}
+
+/// The type arguments an effect row spells (`with Box[Alias] + Console`)
+/// renamed too (Codex on #3942). A label whose arguments do not change, or
+/// that `row_type_args_parse` does not read, keeps its text as written.
+fn rewrite_private_row(row: Option[String], renames: Array[(String, String)]) -> Option[String] {
+  match row {
+    Some(text) => if Array::length(renames) == 0 || String::index_of(text, needle = "[") < 0 {
+      row
+    } else {
+      Some(rewrite_private_row_text(text = text, renames = renames))
+    },
+    None => row
+  }
+}
+
+fn rewrite_private_row_text(text: String, renames: Array[(String, String)]) -> String {
+  let pieces: Array[String] = []
+  let n = String::length(text)
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    if String::byte_at(text, at = i) == '[' {
+      let mut depth = 1
+      let mut j = i + 1
+      while j < n && depth > 0 {
+        let c = String::byte_at(text, at = j)
+        if c == '[' {
+          depth = depth + 1
+        } else if c == ']' {
+          depth = depth - 1
+        }
+        j = j + 1
+      }
+      if depth == 0 {
+        match row_type_args_parse(String::substring(text, start = i + 1, end = j - 1)) {
+          Some(args) => {
+            let next = for a in args {
+              rewrite_private_type_expr(ty = a, renames = renames)
+            }
+            if next != args {
+              Array::push(pieces, value = String::substring(text, start = start, end = i + 1))
+              Array::push(pieces, value = String::join(for a in next {
+                row_type_text(a)
+              }, sep = ", "))
+              Array::push(pieces, value = "]")
+              start = j
+            }
+          },
+          None => ()
+        }
+        i = j
+      } else {
+        i = n
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  Array::push(pieces, value = String::substring(text, start = start, end = n))
+  String::join(pieces, sep = "")
 }
 
 fn rewrite_private_type_opt(ty: Option[TypeExpr], renames: Array[(String, String)]) -> Option[TypeExpr] {
@@ -2178,7 +2246,14 @@ fn rewrite_private_type_ctor_expr(expr: Expr, type_renames: Array[(String, Strin
     }, off, callee_resolution),
     EBinOp(op, left, right, boff) => EBinOp(op, rewrite_private_type_ctor_expr(expr = left, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = right, type_renames = type_renames, ctor_renames = ctor_renames), boff),
     EUnaryOp(op, value) => EUnaryOp(op, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
-    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, rewrite_private_params(params = params, type_renames = type_renames), rewrite_private_type_opt(ty = ret_ty, renames = type_renames), effect, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params))),
+    // A binder's own type parameters are not the renamed types, anywhere
+    // under it (`[Alias](x: Alias) -> Alias`, Codex on #3942).
+    EFn(type_params, bounds, params, ret_ty, effect, body) => {
+      let own = alias_map_without_names(aliases = type_renames, names = for t in type_params {
+        type_param_name(t)
+      })
+      EFn(type_params, rewrite_private_bound_keys(bounds = bounds, renames = own), rewrite_private_params(params = params, type_renames = own), rewrite_private_type_opt(ty = ret_ty, renames = own), rewrite_private_row(row = effect, renames = own), rewrite_private_type_ctor_expr(expr = body, type_renames = own, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params)))
+    },
     EDot(obj, field, off, fdoff) => EDot(rewrite_private_type_ctor_expr(expr = obj, type_renames = type_renames, ctor_renames = ctor_renames), field, off, fdoff),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
     EReturn(value) => EReturn(rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
@@ -2493,6 +2568,151 @@ export fn namespace_private_type_ctor_stage(path: String, value_renamed: Array[S
       namespace_private_type_ctor_stmt(stmt = stmt, type_renames = type_renames, ctor_renames = ctor_renames, private_enum_heads = private_enum_heads, local_type_aliases = local_type_aliases)
     }
   }
+}
+
+/// #3929: apply the plan's per-provider renames of this file's exported type
+/// aliases (`Alias` -> `Alias_exp_<path>`) to the declaration and to every
+/// type position the file writes, the walk the private type renames use.
+export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(String, String)]) -> Array[Stmt] {
+  if Array::length(renames) == 0 {
+    stmts
+  } else {
+    for stmt in stmts {
+      // A type parameter spelled like the alias is that parameter, not the
+      // alias (Codex on #3942): `struct Box[Alias] { value: Alias }`.
+      let own = alias_map_without_names(aliases = renames, names = stmt_type_binder_names(stmt))
+      let renamed = match stmt {
+        // The private walk has no trait arm; a method signature may spell
+        // the alias too (Codex on #3942).
+        STrait(exported, name, supers, methods, method_tparams, tparams) => STrait(exported, name, supers, for m in methods {
+          let (mname, params, ret) = m
+          let mrenames = alias_map_without_names(aliases = own, names = trait_method_tparam_names(method_tparams = method_tparams, method = mname))
+          (mname, for param in params {
+            rewrite_private_type_expr(ty = param, renames = mrenames)
+          }, rewrite_private_type_expr(ty = ret, renames = mrenames))
+        }, for row in method_tparams {
+          // A method's own bounds are trait keys too
+          // (`run[T: Value[Alias]](Self, T)`).
+          let (mname, mtparams, mbounds) = row
+          (mname, mtparams, rewrite_private_bound_keys(bounds = mbounds, renames = alias_map_without_names(aliases = own, names = trait_method_tparam_names(method_tparams = method_tparams, method = mname))))
+        }, tparams),
+        // An applied trait reference spells its arguments inside the trait
+        // key (`impl Value[Alias] for Box`, Codex on #3942); the private walk
+        // rewrites only the target.
+        // A generic impl's bounds are trait keys as well
+        // (`impl [T: Value[Alias]] Read for Box[T]`).
+        SImpl(tparams, bounds, trait_name, target) => {
+          let inner = alias_map_without_names(aliases = own, names = for t in tparams {
+            type_param_name(t)
+          })
+          SImpl(tparams, rewrite_private_bound_keys(bounds = bounds, renames = inner), rewrite_private_trait_key(trait_name = trait_name, renames = inner), rewrite_private_type_expr(ty = target, renames = inner))
+        },
+        _ => namespace_private_type_ctor_stmt(stmt = stmt, type_renames = own, ctor_renames = array_empty(), private_enum_heads = empty_strings(), local_type_aliases = array_empty())
+      }
+      match renamed {
+        STypeAlias(exported, name, params, target) => match lookup_alias(aliases = renames, name = name) {
+          Some(next) => STypeAlias(exported, next, params, target),
+          None => renamed
+        },
+        // A companion declared on the alias (`fn Alias::tag()`) follows it,
+        // as its calls do (Codex on #3942).
+        SLet(exported, is_rec, name, ty, body) => match alias_companion_rename(name = name, renames = renames) {
+          Some(next) => SLet(exported, is_rec, next, ty, body),
+          None => renamed
+        },
+        SFnDecl(exported, name, body, attrs, off) => match alias_companion_rename(name = name, renames = renames) {
+          Some(next) => SFnDecl(exported, next, body, attrs, off),
+          None => renamed
+        },
+        // A renamed companion's positional-slot rows go with it.
+        SPositionalParams(rows) => SPositionalParams(for row in rows {
+          let (fname, slots) = row
+          match alias_companion_rename(name = fname, renames = renames) {
+            Some(next) => (next, slots),
+            None => row
+          }
+        }),
+        _ => renamed
+      }
+    }
+  }
+}
+
+/// Rewrite the type arguments an applied trait key spells (`Value[Alias]`);
+/// a bare trait name has none.
+fn rewrite_private_trait_key(trait_name: String, renames: Array[(String, String)]) -> String {
+  if Array::length(renames) == 0 {
+    trait_name
+  } else {
+    match trait_ref_from_key(trait_name) {
+      Some(TyApp(head, args)) => trait_ref_key(TyApp(head, for arg in args {
+        rewrite_private_type_expr(ty = arg, renames = renames)
+      })),
+      _ => trait_name
+    }
+  }
+}
+
+fn rewrite_private_bound_keys(bounds: Array[(String, Array[String])], renames: Array[(String, String)]) -> Array[(String, Array[String])] {
+  if Array::length(renames) == 0 || Array::length(bounds) == 0 {
+    bounds
+  } else {
+    for bound in bounds {
+      let (param, traits) = bound
+      (param, for trait_ref in traits {
+        rewrite_private_trait_key(trait_name = trait_ref, renames = renames)
+      })
+    }
+  }
+}
+
+/// `Alias::tag` -> `Alias_exp_<path>::tag` when `Alias` is renamed.
+fn alias_companion_rename(name: String, renames: Array[(String, String)]) -> Option[String] {
+  let sep = String::index_of(name, needle = "::")
+  if sep <= 0 {
+    None
+  } else {
+    match lookup_alias(aliases = renames, name = String::substring(name, start = 0, end = sep)) {
+      Some(next) => Some(String::concat(next, String::substring(name, start = sep, end = String::length(name)))),
+      None => None
+    }
+  }
+}
+
+/// The type parameters a top-level declaration binds over its own body.
+fn stmt_type_binder_names(_ stmt: Stmt) -> Array[String] {
+  let names = match stmt {
+    SStruct(_, _, _, _, _, tparams) => tparams,
+    SEnum(_, _, params, _, _) => params,
+    STypeAlias(_, _, params, _) => params,
+    SLet(_, _, _, _, EFn(tparams, _, _, _, _, _)) => tparams,
+    SFnDecl(_, _, EFn(tparams, _, _, _, _, _), _, _) => tparams,
+    STrait(_, _, _, _, _, tparams) => tparams,
+    // `effect State[Alias] { Get() -> Alias }` (Codex on #3942).
+    SEffectDef(_, _, params, _) => params,
+    _ => empty_strings()
+  }
+  for name in names {
+    let bracket = String::index_of(name, needle = "[")
+    if bracket > 0 {
+      String::substring(name, start = 0, end = bracket)
+    } else {
+      name
+    }
+  }
+}
+
+fn trait_method_tparam_names(method_tparams: Array[(String, Array[String], Array[(String, Array[String])])], method: String) -> Array[String] {
+  let out = empty_strings()
+  for row in method_tparams {
+    let (name, tparams, _) = row
+    if name == method {
+      for t in tparams {
+        Array::push(out, value = t)
+      }
+    }
+  }
+  out
 }
 
 fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, String)], ctor_renames: Array[(String, String)], private_enum_heads: Array[String], local_type_aliases: Array[(String, Array[String], TypeExpr)]) -> Stmt {

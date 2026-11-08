@@ -1,0 +1,164 @@
+// #3929: one of two dependencies of
+// fixtures/type_alias_collision_import_test.vibe that each export a type alias
+// spelled `Alias` (and a generic `Pair`).
+
+export struct S {
+  v: Int
+}
+
+fn S::double(_ s: S) -> Int {
+  s.v * 2
+}
+
+export type Alias = S
+
+export type Pair[T] = (T, T)
+
+export fn mk() -> Alias {
+  Alias::{ v: 5 }
+}
+
+export fn twins(_ s: Alias) -> Pair[Alias] {
+  (s, s)
+}
+
+export fn all(_ xs: Array[Alias]) -> Int {
+  Array::length(xs)
+}
+
+// A type parameter spelled like the colliding alias is that parameter, and a
+// trait method may spell the alias (Codex on #3942).
+export struct Box[Alias] {
+  value: Alias
+}
+
+export trait Read {
+  read(Self) -> Alias
+}
+
+export struct Note {
+  n: Int
+}
+
+impl Read for Note {
+  read(self) -> Alias {
+    S::{ v: self.n }
+  }
+}
+
+export fn note_value(_ n: Note) -> Int {
+  n.read().v
+}
+
+// An applied trait may take the alias as an argument; the impl's method owner
+// is spelled from that argument and follows the rename (Codex on #3942).
+export trait Value[A] {
+  value(Self) -> A
+}
+
+impl Value[Alias] for Note {
+  value(self) -> Alias {
+    S::{ v: self.n + 1 }
+  }
+}
+
+export fn note_applied(_ n: Note) -> Int {
+  let s: Alias = Value::value(n)
+  s.v
+}
+
+// A generic impl's bound is a trait key too.
+export trait Scaled {
+  scaled(Self) -> Int
+}
+
+export struct Wrap[T] {
+  inner: T
+}
+
+impl [T: Value[Alias]] Scaled for Wrap[T] {
+  scaled(self) -> Int {
+    let s: Alias = T::value(self.inner)
+    s.v * 10
+  }
+}
+
+fn via[U: Scaled](_ u: U) -> Int {
+  U::scaled(u)
+}
+
+export fn note_bounded(_ n: Note) -> Int {
+  via(Wrap::{ inner: n })
+}
+
+// A companion declared on the alias follows its rename, and a nested
+// lambda's own type parameter spelled `Alias` is that parameter (Codex on
+// #3942).
+fn Alias::seven() -> Int {
+  7
+}
+
+export fn alias_companion() -> Int {
+  Alias::seven()
+}
+
+export fn lambda_formal() -> String {
+  let id = [Alias](x: Alias) -> Alias {
+    x
+  }
+  id("s")
+}
+
+// A companion with a positional parameter keeps its positional slots, and a
+// lambda nested in a function whose formal is spelled `Alias` reads that
+// formal (Codex on #3942).
+fn Alias::add(_ x: Int, y: Int) -> Int {
+  x + y
+}
+
+export fn alias_positional() -> Int {
+  Alias::add(1, y = 2)
+}
+
+export fn outer_formal[Alias](x: Alias) -> Alias {
+  let id = (v: Alias) -> Alias {
+    v
+  }
+  id(x)
+}
+
+// An effect's own type parameter spelled `Alias` is that parameter (Codex on
+// #3942).
+effect State[Alias] {
+  Get() -> Alias
+}
+
+fn read_state() -> String with State[String] {
+  perform State::Get()
+}
+
+export fn effect_formal() -> String {
+  handle {
+    read_state()
+  } with { State::Get() => resume("ok") }
+}
+
+// An effect row spells the alias as a type argument, directly and inside a
+// function-typed parameter (Codex on #3942).
+effect Slot[T] {
+  Put(v: T) -> Int
+}
+
+fn put_slot(x: Alias) -> Int with Slot[Alias] {
+  perform Slot::Put(x)
+}
+
+fn run_slot(f: (Alias) -> Int with Slot[Alias], x: Alias) -> Int with Slot[Alias] {
+  f(x)
+}
+
+export fn slot_row() -> Int {
+  handle {
+    run_slot(f = (x) -> put_slot(x = x), x = S::{ v: 4 })
+  } with { Slot::Put(v) => resume(v.v + 1) }
+}
