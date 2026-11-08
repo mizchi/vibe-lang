@@ -2126,3 +2126,66 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
 fi
 rm -rf "$fwddir"
 echo "[compiler-gate] a call is checked identically in both declaration orders; correct forward calls still run; optional params stand down ok (#2318)"
+
+# 118a. #3882: `vibe test` and `vibe check` given an ABSOLUTE path inside the
+#       project lost the types a package declares only in its index.vpkg
+#       (`unknown type Pair in struct literal`), while the relative spelling
+#       of the same file compiled. The loader reads an absolute contract as an
+#       external VIBE_LIB root and keeps no generated types module for it, so
+#       the CLI now spells an in-project absolute argument relative to the
+#       project root before the guest reads it. Both spellings are run on a
+#       package whose only type lives in its contract; a path outside the
+#       project is left as given (the loader's external-root case).
+echo "[compiler-gate] 118a/118 vibe test and vibe check read an in-project absolute path like its relative spelling (#3882)"
+gate_workdir apdir "_build/_gate_abs_path"
+mkdir -p "$apdir/pkg"
+cat > "$apdir/pkg/index.vpkg" <<'APEOF'
+name = @gate/abspath
+version = 0.0.1
+description =
+deps = {}
+
+generated_hash =
+
+struct Pair {
+  a: Int
+  b: Int
+}
+
+fn make(_ n: Int) -> Pair
+APEOF
+cat > "$apdir/pkg/impl.vibe" <<'APEOF'
+export fn make(_ n: Int) -> Pair {
+  Pair::{ a: n, b: n + 1 }
+}
+APEOF
+cat > "$apdir/pkg/impl_test.vibe" <<'APEOF'
+import .{
+  make
+}
+
+test "a contract-only type reaches the implementation" {
+  let p = make(4)
+  assert(p.a + p.b == 9)
+}
+APEOF
+ap_vibe() { VIBE_RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  bash "$ROOT_DIR/runtime/vibe" "$@" 2>&1; }
+for ap_path in "$apdir/pkg/impl_test.vibe" "$ROOT_DIR/$apdir/pkg/impl_test.vibe"; do
+  # Captured, not piped: `ap_vibe` exits 1 on the failure it would report,
+  # and this gate runs under `set -o pipefail`.
+  ap_out="$(ap_vibe test "$ap_path" || true)"
+  if ! printf '%s\n' "$ap_out" | grep -qF '1 passed, 0 failed'; then
+    echo "[compiler-gate] FAIL: vibe test $ap_path did not pass (#3882)" >&2
+    printf '%s\n' "$ap_out" >&2
+    exit 1
+  fi
+  ap_chk="$(ap_vibe check "${ap_path%_test.vibe}.vibe" || true)"
+  if [ -n "$ap_chk" ]; then
+    echo "[compiler-gate] FAIL: vibe check ${ap_path%_test.vibe}.vibe reported diagnostics (#3882)" >&2
+    printf '%s\n' "$ap_chk" >&2
+    exit 1
+  fi
+done
+rm -rf "$apdir"
+echo "[compiler-gate] in-project absolute paths compile the same closure as their relative spelling ok (#3882)"

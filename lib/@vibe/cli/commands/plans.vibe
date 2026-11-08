@@ -575,9 +575,97 @@ fn looks_like_user_path(arg: String, invoke_dir: String) -> Bool with Fs {
   }
 }
 
+/// #3882: an absolute path inside the project root, spelled relative to
+/// it (`.` for the root itself); any other path unchanged. The loader reads
+/// an absolute package contract as an external `VIBE_LIB` root, which keeps
+/// no generated types module, so `vibe check /repo/pkg/impl.vibe` lost the
+/// types the package declares only in its `index.vpkg` while `vibe check
+/// pkg/impl.vibe` kept them. One spelling of an in-project path is what makes
+/// both compile the same closure.
+export fn root_rel_of_absolute(project_root: String, path: String) -> String {
+  if project_root == "" || project_root == "/" || !path_is_absolute(path) {
+    path
+  } else if path == project_root {
+    "."
+  } else {
+    let prefix = String::concat(project_root, "/")
+    if String::starts_with(path, prefix = prefix) {
+      root_rel_spelling(path[String::length(prefix): String::length(path)])
+    } else {
+      path
+    }
+  }
+}
+
+/// The spelling of `rest`, what follows `root/` in an in-project absolute
+/// path, as an argument the guest reads relative to the root. Leading and
+/// trailing separators and leading `./` segments go (`/root//x`, `root/./x`,
+/// `root/x/`); nothing left is the root itself, `.` (`vibe test "$PWD/"`); and
+/// a spelling that begins with `-` keeps a `./` prefix, because the rewrite
+/// runs before the verb parses its flags (Codex review of #3948).
+fn root_rel_spelling(_ rest: String) -> String {
+  let mut r = rest
+  let mut changed = true
+  while changed {
+    changed = false
+    if String::starts_with(r, prefix = "/") {
+      r = r[1: String::length(r)]
+      changed = true
+    } else if String::starts_with(r, prefix = "./") {
+      r = r[2: String::length(r)]
+      changed = true
+    } else if String::length(r) > 1 && String::ends_with(r, suffix = "/") {
+      r = r[0: String::length(r) - 1]
+      changed = true
+    } else ()
+  }
+  if r == "" || r == "." {
+    "."
+  } else if String::starts_with(r, prefix = "-") {
+    String::concat("./", r)
+  } else {
+    r
+  }
+}
+
+/// A SOURCE path argument of `rewrite_user_argv` (one that already exists)
+/// as the guest should read it: an absolute in-project path relative to the
+/// root (`root_rel_of_absolute`), a relative one relative to the root through
+/// the invocation directory, and a relative one given at the root unchanged.
+/// An OUTPUT path (`-o`, `--guest-profile=`, ...) keeps an absolute spelling:
+/// the launcher hands some of them to a process it starts in the invocation
+/// directory, where a root-relative spelling names another file (Codex review
+/// of #3948).
+fn root_rel_arg(invoke_rel: String, project_root: String, path: String) -> String {
+  if path_is_absolute(path) {
+    root_rel_of_absolute(project_root = project_root, path = path)
+  } else if invoke_rel == "" {
+    path
+  } else {
+    root_rel_from_invoke(invoke_rel = invoke_rel, path = path)
+  }
+}
+
+/// Does any bare argument before a `--` name an absolute path inside the
+/// project root?
+fn has_abs_under_root(args: Array[String], project_root: String) -> Bool {
+  let mut found = false
+  let mut i = 1
+  while !found && i < Array::length(args) {
+    let a = Array::get(args, at = i)
+    if a == "--" {
+      i = Array::length(args)
+    } else {
+      found = root_rel_of_absolute(project_root = project_root, path = a) != a
+      i = i + 1
+    }
+  }
+  found
+}
+
 export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_root: String) -> Array[String] with Fs {
   let invoke_rel = invoke_rel_of(invoke_dir = invoke_dir, project_root = project_root)
-  if invoke_rel == "" || Array::length(args) == 0 {
+  if (invoke_rel == "" && !has_abs_under_root(args = args, project_root = project_root)) || Array::length(args) == 0 {
     args
   } else {
     let out: Array[String] = []
@@ -623,7 +711,7 @@ export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_roo
         Array::push(out, value = a)
         prev = a
       } else if looks_like_user_path(arg = a, invoke_dir = invoke_dir) && invoke_arg_exists(invoke_dir = invoke_dir, arg = a) {
-        Array::push(out, value = root_rel_from_invoke(invoke_rel = invoke_rel, path = a))
+        Array::push(out, value = root_rel_arg(invoke_rel = invoke_rel, project_root = project_root, path = a))
         prev = ""
       } else {
         Array::push(out, value = a)
