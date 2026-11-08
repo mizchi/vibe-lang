@@ -13,7 +13,7 @@ method call), ADR-0117 (`_` as pipe slot and section).
 
 ## Context
 
-Labels were optional, and the parameter marker `x~` (retired in Phase 4b)
+Before this decision, labels were optional, and the parameter marker `x~`
 had almost no effect. Measured on the committed seed at `db57c14`:
 
 <!-- doctest-skip: measured call shapes, not a standalone program -->
@@ -25,7 +25,7 @@ fn plain(x: Int, y: Int) -> Int { x - y }
 sub(1, 10)                   // -9: a `~` parameter accepts a positional argument (#1001)
 sub(y = 1, x = 10)           // 9: reordered into declared order
 plain(y = 1, x = 10)         // 9: any `fn` can be called by label (#986)
-String::concat(b = "a", a = "b")  // "ab": builtin labels are not checked
+String::concat(b = "a", a = "b")  // "ab": builtin labels were not checked
 ```
 
 Three things follow from this.
@@ -38,22 +38,22 @@ a mismatch the checker reports. That matters most for the reader this project
 designs for: an LLM in an edit-check loop gets a diagnostic that names the
 parameter, instead of a program that compiles and gives the wrong answer.
 
-**Builtin labels are silently wrong.** Builtins have no parameter names, so
-any label is accepted and the arguments bind in the order they were written.
-`String::concat(b = "a", a = "b")` answers `"ab"` with no diagnostic. Under
-the issue triage rules this is a P0, and it is a bug today whatever this ADR
-decides (#3651).
+**Builtin labels were silently wrong.** Builtins had no parameter names, so
+any label was accepted and the arguments bound in the order they were
+written. `String::concat(b = "a", a = "b")` answered `"ab"` with no
+diagnostic. Under the issue triage rules that is a P0, so it was fixed first,
+on its own (#3651).
 
-**Labels were resolved by a syntactic pass, removed in Phase 1c, with its own environment.**
-`normalize/desugar/labeled_args.vibe`, `binder_authority.vibe` and the
-label-name walk in `checker_stmt_labeled_name_check_expr.vibe` resolved a
-callee by name before the checker ran. They tracked shadowing,
+**Labels were resolved by a syntactic pass with its own environment.**
+`normalize/desugar/labeled_args.vibe` (removed in #3661), `binder_authority.vibe`
+and the label-name walk in `checker_stmt_labeled_name_check_expr.vibe`
+resolved a callee by name before the checker ran. They tracked shadowing,
 local lambdas and `let mut` rebinding themselves (`local_fn_tbl`,
 `unstable_mut_tbl`). #986, #1899 and #1994 were each a silently misbound
-argument caused by that resolver. Reordering also has a cost the reader has
-to remember: arguments are evaluated in parameter order, not in the order
-they are written (cheatsheet, "Labeled arguments"). The same shape of
-syntactic pass, deleted in #2773, had let sixty-three routes past it.
+argument caused by that resolver. Reordering also had a cost the reader had
+to remember: arguments were evaluated in parameter order, not in the order
+they were written. The same shape of syntactic pass, deleted in #2773, had
+let sixty-three routes past it.
 
 ## Decision
 
@@ -94,7 +94,7 @@ deleted.
 A parameter with a default (#3120), or an optional `x?` parameter (#1500),
 may be omitted anywhere in the list, not only at the end. The labels that are
 present identify which slots were given. This is the case where labels pay
-for themselves: today only trailing optionals can be omitted.
+for themselves: without labels, only trailing optionals could be omitted.
 
 ### D3. A declaration opts a parameter out with `_`
 
@@ -165,25 +165,46 @@ derived (ADR-0113).
 | Unknown label | the declared labels, nearest first |
 | Pipe into a labeled first parameter | the direct call, or `_` on the declaration |
 
-## Implementation consequences
+## Implementation
 
-**Label resolution moves into the checker.** A declaration's binding records
-its parameter labels and `_` positions. The checker validates each call
-against the binding it already resolved for typing, then strips the labels.
-After that, lowering sees positional arguments only, and omitted defaulted
-or optional slots are filled by label at that point. The syntactic resolver
-is deleted: about 2,300 lines in `labeled_args.vibe` and
-`binder_authority.vibe`, plus the label walk in
-`checker_stmt_labeled_name_check_expr.vibe`.
+**The checker owns labels.** A declaration's binding records its parameter
+labels and `_` positions, and the binding header carries them across
+imports and `.vpkg` contracts. The checker validates each call against the
+callee it already resolved for typing and publishes a placement: for each
+declared slot, the written argument that fills it, and whether that
+argument is wrapped in `Some`. Omitted defaulted and optional slots are
+recorded there too. Lowering consumes the placement, so it sees positional
+arguments only, and inserts `Some` / `None`. It refuses a call that needs a
+placement and has none, or whose placement would reorder the written
+arguments. No pass before the checker reads a label. The syntactic resolver
+(`labeled_args.vibe`, `binder_authority.vibe` and the checker's label-name
+walk, about 2,300 lines) was deleted in #3661.
 
-**Builtins get parameter names.** About 170 qualified builtins live in
-`core/builtin_registry.vibe` and `checker/builtin_sigs/`. The P0 fix
-(#3651: reject a builtin label that does not match its position) ships
-first, on its own.
+Lanes that lower without the checker (`*_unchecked_cached` and the grouped
+merge) have no placement. They refuse a labeled call to an imported
+function and ask for checked source.
 
-**The migration is mechanical and large.** Measured with
+**Builtins have parameter names.** Their `_` slots are part of the
+signature in `core/builtin_registry.vibe` and `checker/builtin_sigs/`.
+
+**Porting code uses two codemods.**
+
+1. `vibe refactor mark-positional --write` declares `_` on every `T::f`
+   receiver (a first parameter typed as the owner `T`) and on every lone
+   parameter. It works in `.vibe` sources and in the `index.vpkg` contract
+   alike.
+2. `vibe refactor add-labels --write --positional=none` then writes the
+   remaining labels.
+
+Both run on the import-resolving lane. They edit by byte range, so comments
+and layout survive, and they are safe to re-run. The tree itself carries no
+call site either codemod would change.
+
+### Measurements behind the decision
+
+**Size.** The size of the change was measured with
 `vibe grep --pattern '$(f:id)($(a:args))'` over every tracked `.vibe` /
-`.vibex` source at `db57c14`:
+`.vibex` source at `db57c14`, before any migration:
 
 | Measure | Count |
 |---|---:|
@@ -193,7 +214,9 @@ first, on its own.
 | ... of them to builtins | 74,759 |
 | Calls already labeled | about 100 |
 
-The number of labels to insert depends on where D3's `_` lands:
+How many labels that means depends on where D3's `_` lands. These are upper
+bounds, because the measurement did not separate calls through a function
+value, which need no label:
 
 | Rule | Labels |
 |---|---:|
@@ -201,56 +224,11 @@ The number of labels to insert depends on where D3's `_` lands:
 | Every argument but the first of a `T::f` | 335,578 |
 | Every argument but the first | 188,875 |
 
-The first two rows are upper bounds. A function value called through a
-variable needs no label, and the measurement did not separate those calls.
-
-The rewrite is a codemod on the import-resolving lane. It uses the same
-callee resolution as `vibe grep --where '$f = ..'` and edits by byte range,
-so comments and layout survive. It is safe to re-run, so a conflicting PR
-rebases by running it again.
-
-**Bootstrap.** Labels in declared order already bind correctly on the
-committed seed. That holds for builtins, which ignore the label, and for
-named and imported functions, where an in-position label is checked and
-stripped. So the migration does not wait for a seed bump. The `_`
-declaration syntax does: the seed must parse `_ x: T` before the compiler's
-own sources use it.
-
-### Plan
-
-1. **Checker owns labels.** Make the builtin-label P0 fix, give builtins
-   parameter names, validate labels in the checker, fill omitted slots after
-   checking, delete the syntactic resolver. No surface change yet.
-2. **Warn, and provide the edit.** Teach `vibe check` to report a missing
-   label as a warning, and land the codemod. Then parse `_ x: T` and bump
-   the seed.
-3. **Migrate.** Run the codemod package by package: `lib/`, then
-   `fixtures/`, `bench/`, `examples/`, then `book/` and `docs/`, keeping the
-   `book/en` and `book/ja` outputs identical. Each PR passes
-   `pkf run release-check`. Per package, `vibe refactor mark-positional
-   --write` first declares `_` on every `T::f` receiver (a first parameter
-   typed as the owner `T`) and on every lone parameter, in the `.vibe`
-   sources and the `index.vpkg` contract alike; then
-   `vibe refactor add-labels --write --positional=none` labels the rest.
-   The declaration fixes the spelling, so the codemod no longer guesses
-   which slots stay positional (see [Positional slots](#positional-slots)).
-
-Phase 1c (#3661) keeps the source argument order through checking. The
-checker publishes a placement on each call that needs labels or optional
-slots; lowering consumes its source indices and inserts `Some` / `None`.
-The syntactic resolver and paired binder-authority normalization are removed.
-A call through a value is positional since Phase 4b, and a call to a
-declaration whose labels are out of declared order is refused (D2) with the
-move and the declared order.
-Rowless build lanes refuse labeled calls and ask for checked source.
-
-### Positional slots
-
-The `_` rule follows the D3 guidance mechanically: a receiver, and a lone
-parameter, are named by the function. It was chosen by measuring
-`lib/@vibe/core` (65 files, all of them checked) at `main` 3f6a506 plus
-the codemod. Each policy names the slots it leaves positional; builtins
-always use their own `_` slots.
+**Which slots are `_`.** The rule follows the D3 guidance mechanically: a
+receiver and a lone parameter are already named by the function. It was
+chosen by measuring `lib/@vibe/core` (65 files, all of them checked) at
+`main` 3f6a506 plus the codemod. Each policy names the slots it leaves
+positional; builtins always use their own `_` slots.
 
 | `--positional` | Labels written | Calls |
 |---|---:|---:|
@@ -258,32 +236,9 @@ always use their own `_` slots.
 | `receiver` (a `T::f` receiver) | 3,713 | 2,427 |
 | `receiver+single` (also a lone parameter) | 3,138 | 1,852 |
 
-`receiver+single` writes 35% fewer labels than labeling every argument;
-the receiver rule accounts for 1,138 of those 1,713 labels, the
+`receiver+single` writes 35% fewer labels than labeling every argument. The
+receiver rule accounts for 1,138 of those 1,713 labels, and the
 lone-parameter rule for the other 575.
-
-Applied as declarations, the same rule marked 478 slots `_` in
-`lib/@vibe/core`, and `add-labels` then wrote 3,372 labels in 1,937 calls,
-with every edited file rechecked clean. In both runs the codemod skips
-the same calls: 62 through a local lambda, which D1 keeps positional, and
-10 whose written arguments do not line up with the checked call (pipes
-and calls inside interpolation).
-4. **Enforce.** In two steps:
-   - **4a.** An unlabeled argument at a call to a declaration (a top-level
-     `fn` or lambda-initialized `let`, `T::f`, an import, a builtin) is a
-     build error that lists the labels to write; a mixed call to a
-     declaration names the same edit. `vibe check --warn-missing-labels` is
-     retired. The codemod types the program it labels with the check
-     suspended. Argument sugar survives a label: `f = x -> x + 1`,
-     `f = _ * 2`, and a labeled pipe hole `x |> f(1, b = _)`.
-   - **4b.** Retire `x~` and the labeled function-type spelling, and make
-     a call through a value (a local lambda, a parameter, a field)
-     positional only, refusing a label there. Rewrite the cheatsheet's
-     labeled-argument sections and `syntax.md` to the final state.
-
-   Lanes that lower without the checker (`*_unchecked_cached`, the grouped
-   merge) have no placement for a labeled call to an imported function and
-   refuse it; they ask for checked source, as Phase 1c already specified.
 
 ## Acceptance
 
@@ -291,7 +246,7 @@ Accepted on 2026-11-08. Each condition, and the evidence for it, on main
 `1eebc3a`:
 
 - **No pass before the checker reads `ELabeledArg`.** The syntactic resolver
-  and the binder-authority normalization were deleted in Phase 1c (#3661).
+  and the binder-authority normalization were deleted in #3661.
   The passes that still run before the checker (`split_handler_or_arms`,
   `desugar_handled_host_calls`, the `inspect` expander) only rebuild the
   node; they do not read its label. The checker validates labels against
@@ -301,10 +256,10 @@ Accepted on 2026-11-08. Each condition, and the evidence for it, on main
 - **A mismatched builtin label is a build error** (#3651).
 - **Each misuse is refused with the edit.** Each case has
   `fixtures/typecheck/err_label_*` rows in `expected.tsv`:
-  - a missing label (Phase 4a, #3881);
+  - a missing label (#3881);
   - a label on `_` (#3681);
   - a label on a call through a value, and the retired `x~` and labeled
-    function-type spellings (Phase 4b);
+    function-type spellings (#3899);
   - an out-of-order label (D2, #3903), including through a local type
     alias.
 - **No call site needs the codemod.** The #3794 audit (#3914) swept the
