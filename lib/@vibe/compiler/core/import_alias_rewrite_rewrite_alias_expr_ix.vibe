@@ -2495,6 +2495,26 @@ export fn namespace_private_type_ctor_stage(path: String, value_renamed: Array[S
   }
 }
 
+/// #3929: apply the plan's per-provider renames of this file's exported type
+/// aliases (`Alias` -> `Alias_exp_<path>`) to the declaration and to every
+/// type position the file writes, the walk the private type renames use.
+export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(String, String)]) -> Array[Stmt] {
+  if Array::length(renames) == 0 {
+    stmts
+  } else {
+    for stmt in stmts {
+      let renamed = namespace_private_type_ctor_stmt(stmt = stmt, type_renames = renames, ctor_renames = array_empty(), private_enum_heads = empty_strings(), local_type_aliases = array_empty())
+      match renamed {
+        STypeAlias(exported, name, params, target) => match lookup_alias(aliases = renames, name = name) {
+          Some(next) => STypeAlias(exported, next, params, target),
+          None => renamed
+        },
+        _ => renamed
+      }
+    }
+  }
+}
+
 fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, String)], ctor_renames: Array[(String, String)], private_enum_heads: Array[String], local_type_aliases: Array[(String, Array[String], TypeExpr)]) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_private_type_opt(ty = ty, renames = type_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_name(aliases = ctor_renames, name = name))),

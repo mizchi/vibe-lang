@@ -140,6 +140,72 @@ export fn collect_export_def_value_names(_ stmts: Array[Stmt]) -> Array[String] 
   out
 }
 
+/// #3929: set by the wasm-gc merge, whose merged program is checked again as
+/// one program. There two files each exporting a type alias spelled `Alias`
+/// would become two top-level `type Alias` declarations and one of them would
+/// win every reference, so on that merge such a name is renamed per provider
+/// (`Alias_exp_<path>`), like an exported value, and its importers follow the
+/// same plan. The linear merge is never re-checked, so it keeps the spelling.
+let colliding_type_alias_rename_cell: Array[Int] = [0]
+
+/// Turn the #3929 per-provider alias renames on or off; answers the previous
+/// setting for the caller to restore.
+export fn swap_colliding_type_alias_renames(_ on: Bool) -> Bool {
+  let prev = Array::get(colliding_type_alias_rename_cell, at = 0) > 0
+  Array::set(colliding_type_alias_rename_cell, at = 0, value = if on {
+    1
+  } else {
+    0
+  })
+  prev
+}
+
+export fn colliding_type_alias_renames_enabled() -> Bool {
+  Array::get(colliding_type_alias_rename_cell, at = 0) > 0
+}
+
+/// The type aliases `stmts` publishes: `export type N = ..` and a `type N`
+/// named in an `export { .. }` list.
+export fn exported_type_alias_names(_ stmts: Array[Stmt]) -> Array[String] {
+  let listed = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      SExport(items) => for item in items {
+        Array::push(listed, value = item)
+      },
+      _ => ()
+    }
+  }
+  let out = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(exported, name, _, _) => if exported || import_alias_rewrite_string_array_contains(items = listed, target = name) {
+        Array::push(out, value = name)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// The exported type alias names two or more of the files publish.
+export fn colliding_exported_type_alias_names(_ stmts_list: Array[Array[Stmt]]) -> Array[String] {
+  let seen = empty_strings()
+  let out = empty_strings()
+  for stmts in stmts_list {
+    for name in exported_type_alias_names(stmts) {
+      if import_alias_rewrite_string_array_contains(items = seen, target = name) {
+        if !import_alias_rewrite_string_array_contains(items = out, target = name) {
+          Array::push(out, value = name)
+        }
+      } else {
+        Array::push(seen, value = name)
+      }
+    }
+  }
+  out
+}
+
 export struct ExportRenamePlan {
   plan_paths: Array[String];
   // #3932: `plan_paths` indexed once, for the per-import resolutions that

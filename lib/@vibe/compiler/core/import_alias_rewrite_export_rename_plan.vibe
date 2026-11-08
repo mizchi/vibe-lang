@@ -60,7 +60,10 @@ import ./import_alias_rewrite_reexport_edges_into.vibe {
   KnownPaths,
   collect_export_def_value_names,
   collect_reexport_edges_into,
+  colliding_exported_type_alias_names,
+  colliding_type_alias_renames_enabled,
   enum_alias_target_is_formal,
+  exported_type_alias_names,
   known_paths_index,
   namespace_exported_def_name,
   namespace_exported_name,
@@ -1308,8 +1311,23 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let known = known_paths_index(paths)
   let def_names_list = array_empty()
   let mut fi = 0
+  // #3929: on the gc merge an exported alias name two files publish is
+  // renamed per provider, through the same plan as an exported value.
+  let colliding_aliases = if colliding_type_alias_renames_enabled() {
+    colliding_exported_type_alias_names(stmts_list)
+  } else {
+    empty_strings()
+  }
   while fi < file_count {
-    Array::push(def_names_list, value = collect_export_def_value_names(Array::get(stmts_list, at = fi)))
+    let names = collect_export_def_value_names(Array::get(stmts_list, at = fi))
+    if Array::length(colliding_aliases) > 0 {
+      for name in exported_type_alias_names(Array::get(stmts_list, at = fi)) {
+        if import_alias_rewrite_string_array_contains(items = colliding_aliases, target = name) {
+          Array::push(names, value = name)
+        }
+      }
+    }
+    Array::push(def_names_list, value = names)
     fi = fi + 1
   }
   let edge_from = empty_strings()

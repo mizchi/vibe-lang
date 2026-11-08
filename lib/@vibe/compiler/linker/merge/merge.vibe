@@ -29,8 +29,10 @@ import @vibe/compiler/core {
   builtin_iterator_serialized_boundary_markers,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
+  colliding_type_alias_renames_enabled,
   dir_of_path,
   export_plan_renames_for,
+  exported_type_alias_names,
   import_value_rename_locals,
   linked_unit_in,
   loader_prepended_prefix_bytes,
@@ -42,11 +44,13 @@ import @vibe/compiler/core {
   namespace_private_value_stmts_after_renames,
   namespace_rename_originals_reset,
   refuse_linked_impl_overlaps,
+  rename_exported_type_alias_stmts,
   resolve_import_path,
   resolve_known_import_path,
   resolved_callee_row_rebase,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep,
+  swap_colliding_type_alias_renames,
   trait_import_local_operation_renames,
   trait_import_local_operation_renames_preserving_exports
 }
@@ -257,6 +261,11 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   } else {
     namespace_private_value_stmts_after_renames(path = path, stmts = collision_renamed, export_renames = export_plan_renames_for(plan = plan, path = path))
   }
+  let namespaced_stmts = if colliding_type_alias_renames_enabled() && !is_entry_source {
+    rename_exported_type_alias_stmts(stmts = namespaced_stmts, renames = exported_type_alias_renames(plan = plan, path = path, stmts = stmts))
+  } else {
+    namespaced_stmts
+  }
   if stmts_have_import_deep(stmts) {
     // #3443: only the locals the fallback cloned stop being rewritten. A
     // collision local with no value to clone (a type, a constructor) keeps
@@ -269,6 +278,19 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
   // #3544: this file's share of the linked program, for the impl-overlap check.
   Array::push(units, value = linked_unit_in(sources = sources, path = path, start = unit_start, end = Array::length(merged)))
+}
+
+/// #3929: the plan's renames of the type aliases this file exports.
+fn exported_type_alias_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] {
+  let aliases = exported_type_alias_names(stmts)
+  let out: Array[(String, String)] = []
+  for pair in export_plan_renames_for(plan = plan, path = path) {
+    let (name, _) = pair
+    if merge_path_listed(paths = aliases, path = name) {
+      Array::push(out, value = pair)
+    }
+  }
+  out
 }
 
 fn merge_path_listed(paths: Array[String], path: String) -> Bool {
@@ -445,6 +467,20 @@ export fn build_grouped_merged_source_configured(_ source_groups: Array[(String,
 }
 
 export fn build_grouped_merged_stmts_gc(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
+  // #3929: this merge is checked again as one program, so an exported type
+  // alias two files publish is renamed per provider.
+  let prev = swap_colliding_type_alias_renames(true)
+  let merged = handle {
+    build_grouped_merged_stmts_gc_impl(source_groups)
+  } with { Exception::Throw(message) => {
+    swap_colliding_type_alias_renames(prev)
+    throw(message)
+  } }
+  swap_colliding_type_alias_renames(prev)
+  merged
+}
+
+fn build_grouped_merged_stmts_gc_impl(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
   build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = array_empty(), flat_bases_out = array_empty(), clone_float_offsets_out = array_empty(), stmt_file_id_out = array_empty(), collect_stmt_ids = false, file_fps_out = [
   ], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient(), lowering_inputs = None)
 }

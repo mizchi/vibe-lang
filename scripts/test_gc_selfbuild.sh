@@ -333,6 +333,8 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/ordering_exact_shape_import_test.vibe \
     fixtures/ordering_exact_shape_ctor_import_test.vibe \
     fixtures/ordering_exact_shape_extra_derive_import_test.vibe \
+    fixtures/reexport_enum_alias_local_struct_test.vibe \
+    fixtures/type_alias_collision_import_test.vibe \
     lib/@vibe/compiler/tests/generic_formal_shadow_import_test.vibe \
     fixtures/constructor_indexed_map_gc_test.vibe \
     fixtures/constructor_indexed_async_iter_gc_test.vibe \
