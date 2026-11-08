@@ -30,6 +30,7 @@ import @vibe/compiler/core {
   dir_of_path,
   ensure_regular_source,
   ensure_regular_source_fs,
+  ensure_regular_source_token,
   env_bind,
   env_lookup,
   is_builtin_iterator_serialized_boundary_path,
@@ -1427,6 +1428,61 @@ fn collect_sources_walk_fs(_ entry_path: String, cfg: TargetCfg) -> Array[(Strin
   handle {
     collect_sources_source(entry_path)
   } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(path = p, source = text, cfg = cfg)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(path = p, pin_blanked = text, cfg = cfg)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(path = p, pin_blanked = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+}
+
+/// `exists` follows symlinks. Inspect an absent path's directory entry before
+/// treating it as virtual, so a dangling symlink still reaches the lstat-based
+/// regular-source policy. A genuinely new buffer has no stat token to reuse.
+fn query_entry_stat_token_fs(_ path: String) -> Int with Fs {
+  if Fs::exists(path) {
+    Fs::stat_token(path)
+  } else {
+    let parent = dir_of_path(path)
+    let directory = if parent == "" {
+      "."
+    } else {
+      parent
+    }
+    if Fs::exists(directory) && contains_path(visited = Fs::readdir(directory), path = path_basename(path)) {
+      Fs::stat_token(path)
+    } else {
+      0
+    }
+  }
+}
+
+/// Prepare an ordinary query entry from its current text before discovering
+/// imports. Other files still come from disk. Keep the original entry path:
+/// resolving a temporary sibling instead changes package and module identity.
+/// Do not read or publish whole-closure caches stamped with the disk entry.
+/// An entry before its first save has a neutral stat token for the regular-file
+/// policy; existing entries still pass the real symlink check.
+export fn collect_source_groups_fs_with_entry_source(entry_path: String, source: String, cfg: TargetCfg) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
+  let entry_token = query_entry_stat_token_fs(entry_path)
+  ensure_regular_source_token(path = entry_path, token = entry_token)
+  if Fs::is_dir(entry_path) {
+    throw("module source is a directory: \{entry_path}")
+  } else ()
+  if !String::ends_with(entry_path, suffix = ".vibe") && !String::ends_with(entry_path, suffix = ".vibex") {
+    throw("current-buffer project queries require a .vibe or .vibex entry; save the package contract before querying it")
+  } else ()
+  if String::ends_with(entry_path, suffix = ".vibex") {
+    validate_vibex_entry_source_with_config(path = entry_path, source = source, cfg = cfg)
+  } else ()
+  let sources = handle {
+    collect_sources_source(entry_path)
+  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(path = p, source = text, cfg = cfg)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(path = p, pin_blanked = text, cfg = cfg)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(path = p, pin_blanked = text, cfg = cfg)); Source::Read(p) => resume(if p == entry_path {
+    source
+  } else {
+    cache_read_source_fs(p)
+  }); Source::Exists(p) => resume(p == entry_path || Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(if p == entry_path {
+    entry_token
+  } else {
+    Fs::stat_token(p)
+  }) }
+  move_entry_last_grouped(groups = ingest_grouped_sources_fs([
+    ("query", sources)
+  ], cfg = cfg), entry_path = entry_path)
 }
 
 /// Recursively collect all source files from filesystem, following imports and re-exports.

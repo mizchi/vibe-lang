@@ -186,6 +186,13 @@ echo "[compiler-gate] 3af/3 deleted dependency cache refusal and diagnostic pari
 VIBE_RC=0 VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$stage2_wasm" \
   bash scripts/vibe_test.sh lib/@vibe/compiler/tests/loader_persistent_cache_test.vibe
 
+# #1960: entry text must choose its import graph before the shared query walk,
+# including edits rechecked by the production label codemod.
+echo "[compiler-gate] 3ag/3 current-entry import graph and edit recheck"
+VIBE_RC=0 VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$stage2_wasm" \
+  bash scripts/vibe_test.sh lib/@vibe/compiler/query/project_context/project_context_test.vibe \
+    lib/@vibe/compiler/query/label_sites_fs_test.vibe
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that

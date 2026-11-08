@@ -1,7 +1,7 @@
 // Shared source ingestion and dependency typing for grep and label queries.
 // Keep the final parse/check in each consumer: they record different answers.
 import @vibe/compiler/core {
-  TypeEnv
+  TypeEnv, ensure_regular_source_fs
 }
 import @vibe/core {
   array_empty
@@ -10,13 +10,16 @@ import @vibe/compiler/incremental {
   RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
 }
 import @vibe/compiler/loader {
-  collect_source_groups_fs
+  collect_source_groups_fs_with_config, collect_source_groups_fs_with_entry_source
 }
 import @vibe/compiler/runtime {
-  ensure_fingerprint_fs_impl, load_persistent_type_env, projected_import_env_for_test
+  ensure_fingerprint_fs_impl_with_config, load_persistent_type_env, projected_import_env_for_test
 }
-import @vibe/compiler/contract {
-  extract_require_pins
+import @vibe/compiler/config {
+  target_cfg_ambient
+}
+import @vibe/compiler/cache {
+  cache_read_source_fs
 }
 
 // These caches are keyed by dependency path, never by the current entry.
@@ -28,6 +31,7 @@ export struct QueryProjectState {
   dep_sources: Array[(String, String)]
 }
 
+/// Start a query sweep without retained module environments or source rows.
 export fn query_project_state_new() -> QueryProjectState {
   QueryProjectState::{
     env_cache: array_empty(),
@@ -45,20 +49,52 @@ export fn query_project_state_new() -> QueryProjectState {
 /// typing. Callers retain their incoming state on failure: array-backed rows
 /// already published for a complete module remain reusable on the next file.
 export fn query_project_context_fs(path: String, source: String, replacement: Option[QueryProjectEdit], state: QueryProjectState) -> QueryProjectContext with Env + Exception + Fs {
-  let groups = collect_source_groups_fs(path)
+  if Fs::exists(path) {
+    ensure_regular_source_fs(path)
+  } else ()
+  if Fs::is_dir(path) {
+    throw("module source is a directory: \{path}")
+  } else ()
+  let is_edit = match replacement {
+    Some(_) => true,
+    None => false
+  }
+  let disk_source = if Fs::exists(path) {
+    // Authorizing an edit needs current bytes, even under a preserved stat
+    // token. Ordinary queries share the loader's reading to avoid a full copy.
+    Some(if is_edit {
+      Fs::read_file(path)
+    } else {
+      cache_read_source_fs(path)
+    })
+  } else {
+    None
+  }
+  let current = match replacement {
+    None => source,
+    Some(edit) => {
+      if disk_source != Some(source) {
+        throw(edit.mismatch_message)
+      } else ()
+      edit.replacement
+    }
+  }
+  let cfg = target_cfg_ambient()
+  // An edit always collects its own text, including a no-op replacement: the
+  // FS closure cache can still hold an older same-token disk reading.
+  let groups = if !is_edit && disk_source == Some(current) {
+    collect_source_groups_fs_with_config(path, cfg = cfg)
+  } else {
+    collect_source_groups_fs_with_entry_source(entry_path = path, source = current, cfg = cfg)
+  }
   let mut rdb = state.rdb
-  let mut entry_source = source
+  let mut entry_source = current
   let mut gi = 0
   while gi < Array::length(groups) {
     let (_, sources) = Array::get(groups, at = gi)
     let mut si = 0
     while si < Array::length(sources) {
-      let (p, ingested) = Array::get(sources, at = si)
-      let text = if p == path {
-        query_project_entry_text(ingested = ingested, source = source, replacement = replacement)
-      } else {
-        ingested
-      }
+      let (p, text) = Array::get(sources, at = si)
       rdb = ripple_set_source(db = rdb, path = p, source = text)
       if p == path {
         entry_source = text
@@ -69,7 +105,7 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
     }
     gi = gi + 1
   }
-  let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path)
+  let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path, cfg = cfg)
   let deps = match ripple_get_deps(db = walked, path = path) {
     Some(d) => d,
     None => array_empty()
@@ -86,6 +122,7 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
   }
 }
 
+/// Persistent hits need hydration only when this exact module has no env row.
 fn query_project_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -128,43 +165,4 @@ fn query_project_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)
     i = i + 1
   }
   env_cache
-}
-
-/// The ingested text with the file's own bytes swapped for `replacement`, or
-/// None when it cannot be. The ingested text is the file plus a prefix, and a
-/// leading `require ... = #pkg:..` head may arrive blanked to spaces -- then
-/// the tail is compared, and the replacement written, blanked the same way.
-/// None makes the recheck refuse: typing the unedited file instead would
-/// certify an edit nobody checked.
-fn query_project_replace(ingested: String, source: String, replacement: String) -> Option[String] with Exception {
-  let cut = String::length(ingested) - String::length(source)
-  if cut < 0 {
-    None
-  } else {
-    let tail = ingested[cut: String::length(ingested)]
-    if tail == source {
-      Some(ingested[0: cut] + replacement)
-    } else {
-      let (_, blanked_source) = extract_require_pins(source)
-      if tail == blanked_source {
-        let (_, blanked_replacement) = extract_require_pins(replacement)
-        Some(ingested[0: cut] + blanked_replacement)
-      } else {
-        None
-      }
-    }
-  }
-}
-
-/// The entry's text to type: as ingested, or with `replacement` standing in
-/// for the file. A replacement that cannot stand in is refused rather than
-/// typed as the unedited file.
-fn query_project_entry_text(ingested: String, source: String, replacement: Option[QueryProjectEdit]) -> String with Exception {
-  match replacement {
-    None => ingested,
-    Some(edit) => match query_project_replace(ingested = ingested, source = source, replacement = edit.replacement) {
-      Some(t) => t,
-      None => throw(edit.mismatch_message)
-    }
-  }
 }

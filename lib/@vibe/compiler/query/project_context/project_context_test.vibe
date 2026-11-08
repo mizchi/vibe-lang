@@ -2,7 +2,20 @@ import ./project_context.vibe {
   query_project_context_fs, query_project_state_new
 }
 import @vibe/compiler/core {
-  env_lookup
+  env_lookup, loader_physical_text, type_to_string
+}
+import @vibe/compiler/config {
+  target_cfg_ambient
+}
+import @vibe/compiler/loader {
+  collect_source_groups_fs_with_entry_source
+}
+
+fn imported_type(context: QueryProjectContext, name: String) -> String {
+  match env_lookup(env = context.import_env, name = name) {
+    Some(ty) => type_to_string(ty),
+    None => "missing"
+  }
 }
 
 // Both queries depend on the same per-path import preparation. The second
@@ -61,6 +74,59 @@ test "project context refuses a replacement that does not match the ingested sou
   inspect(Fs::read_file(path), content = source)
 }
 
+test "a warmed disk reading does not authorize a replacement after a disk edit" {
+  let dir = "_build/query_current_entry_disk_edit_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibe"
+  let source = "fn main() -> Int { 7 }\n"
+  let latest = "fn main() -> Int { 1234 }\n"
+  Fs::write_file(path, contents = source)
+  let first = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new())
+  Fs::write_file(path, contents = latest)
+  let error = handle {
+    let edit = QueryProjectEdit::{
+      replacement: "fn main() -> Int { 0 }\n",
+      mismatch_message: "the source changed after the query"
+    }
+    let _ = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = first.state)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(error, content = "the source changed after the query")
+  let next = query_project_context_fs(path = path, source = latest, replacement = None, state = first.state)
+  inspect(next.entry_source, content = latest)
+  inspect(Fs::read_file(path), content = latest)
+}
+
+test "replacement authorization reads current bytes even when the stat token is unchanged" {
+  let dir = "_build/query_current_entry_same_stat_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibe"
+  let source = "fn main() -> Int { 7 }\n"
+  let latest = "fn main() -> Int { 8 }\n"
+  Fs::write_file(path, contents = source)
+  let first = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new())
+  let token = Fs::stat_token(path)
+  let _ = sh("python3 -c 'import os; p = \"_build/query_current_entry_same_stat_1960/main.vibe\"; s = os.stat(p); f = open(p, \"w\"); f.write(\"fn main() -> Int { 8 }\\n\"); f.close(); os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns))'")
+  assert(Fs::stat_token(path) == token)
+  assert(Fs::read_file(path) == latest)
+  let error = handle {
+    let edit = QueryProjectEdit::{
+      replacement: "fn main() -> Int { 0 }\n",
+      mismatch_message: "the original bytes changed"
+    }
+    let _ = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = first.state)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(error, content = "the original bytes changed")
+  let noop = QueryProjectEdit::{
+    replacement: latest,
+    mismatch_message: "the current bytes match"
+  }
+  let next = query_project_context_fs(path = path, source = latest, replacement = Some(noop), state = first.state)
+  inspect(next.entry_source, content = latest)
+  inspect(Fs::read_file(path), content = latest)
+}
+
 test "project context propagates a broken import and the next entry still checks" {
   let dir = "_build/query_project_context_failed_walk"
   Fs::mkdir_p(dir)
@@ -83,4 +149,146 @@ test "project context propagates a broken import and the next entry still checks
     Some(_) => true,
     None => false
   }, content = "true")
+}
+
+test "project context collects the current buffer's imports before typing" {
+  let dir = "_build/query_current_entry_imports_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibe"
+  let disk = "fn main() -> Int { 7 }\n"
+  let current = "import ./dep.vibe { answer }\nfn main() -> String { answer() }\n"
+  Fs::write_file(path, contents = disk)
+  Fs::write_file(dir + "/dep.vibe", contents = "export fn answer() -> String { \"current\" }\n")
+  let context = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new())
+  inspect(context.entry_source, content = current)
+  inspect(imported_type(context = context, name = "answer"), content = "() -> String")
+  inspect(Fs::read_file(path), content = disk)
+}
+
+test "current imports replace the warm graph and a fresh query agrees" {
+  let dir = "_build/query_current_entry_graph_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibe"
+  let disk = "import ./int.vibe { answer as selected }\nfn main() -> Int { selected() }\n"
+  let current = "// moved\nimport ./string.vibe { answer as selected }\nfn main() -> String { selected() }\n"
+  Fs::write_file(path, contents = disk)
+  Fs::write_file(dir + "/int.vibe", contents = "export fn answer() -> Int { 1 }\n")
+  Fs::write_file(dir + "/string.vibe", contents = "export fn answer() -> String { \"new\" }\n")
+  let first = query_project_context_fs(path = path, source = disk, replacement = None, state = query_project_state_new())
+  inspect(imported_type(context = first, name = "selected"), content = "() -> Int")
+  let changed = query_project_context_fs(path = path, source = current, replacement = None, state = first.state)
+  let fresh = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new())
+  inspect(imported_type(context = changed, name = "selected"), content = "() -> String")
+  inspect(imported_type(context = fresh, name = "selected"), content = "() -> String")
+  inspect(changed.entry_source, content = current)
+  let closed = query_project_context_fs(path = path, source = disk, replacement = None, state = changed.state)
+  inspect(imported_type(context = closed, name = "selected"), content = "() -> Int")
+  inspect(Fs::read_file(path), content = disk)
+}
+
+test "an entry buffer can exist before its first save" {
+  let dir = "_build/query_current_entry_new_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/unsaved.vibe"
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else ()
+  Fs::write_file(dir + "/dep.vibe", contents = "export fn answer() -> Int { 1 }\n")
+  let current = "import ./dep.vibe { answer }\nfn main() -> Int { answer() }\n"
+  let context = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new())
+  inspect(context.entry_source, content = current)
+  inspect(imported_type(context = context, name = "answer"), content = "() -> Int")
+  inspect(Fs::exists(path), content = "false")
+}
+
+test "replacement ingestion recomputes shared imports and preserves physical text" {
+  let dir = "_build/query_current_entry_shared_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/impl.vibe"
+  Fs::write_file(dir + "/index.vpkg", contents = "import @vibe/random { seed }\nfn wrapped(x: Int) -> Int\n")
+  let source = "export fn wrapped(x: Int) -> Int { seed(x) }\n"
+  let current = "// moved\nfn seed(x: Int, y: Int) -> Int { x - y }\nexport fn wrapped(x: Int) -> Int { seed(x = x, y = 3) }\n"
+  Fs::write_file(path, contents = source)
+  let edit = QueryProjectEdit::{
+    replacement: current,
+    mismatch_message: "the disk changed"
+  }
+  let context = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = query_project_state_new())
+  inspect(imported_type(context = context, name = "seed"), content = "missing")
+  inspect(loader_physical_text(context.entry_source), content = current)
+  inspect(Fs::read_file(path), content = source)
+}
+
+test "current entry imports still enforce package boundaries" {
+  let dir = "_build/query_current_entry_boundary_1960"
+  Fs::mkdir_p(dir + "/pkg")
+  Fs::write_file(dir + "/pkg/index.vpkg", contents = "fn secret() -> Int\n")
+  Fs::write_file(dir + "/pkg/impl.vibe", contents = "export fn secret() -> Int { 1 }\n")
+  let path = dir + "/main.vibe"
+  let disk = "fn main() -> Int { 7 }\n"
+  Fs::write_file(path, contents = disk)
+  let error = handle {
+    let _ = query_project_context_fs(path = path, source = "import ./pkg/impl.vibe { secret }\nfn main() -> Int { secret() }\n", replacement = None, state = query_project_state_new())
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(String::index_of(error, needle = "across a package boundary") >= 0, content = "true")
+  inspect(Fs::read_file(path), content = disk)
+}
+
+test "an executable buffer is validated before collecting its imports" {
+  let dir = "_build/query_current_entry_vibex_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibex"
+  let disk = "fn main() -> Unit with Console { println(\"disk\") }\n"
+  Fs::write_file(path, contents = disk)
+  let error = handle {
+    let _ = query_project_context_fs(path = path, source = "let main = () -> ()\n", replacement = None, state = query_project_state_new())
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(String::index_of(error, needle = "fn main") >= 0, content = "true")
+  inspect(Fs::read_file(path), content = disk)
+}
+
+test "an unsaved package contract is refused instead of typed as its disk version" {
+  let dir = "_build/query_current_entry_contract_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/index.vpkg"
+  let disk = "name = @test/current\nversion = 0.0.1\n"
+  Fs::write_file(path, contents = disk)
+  let error = handle {
+    let _ = query_project_context_fs(path = path, source = disk + "fn added() -> Int\n", replacement = None, state = query_project_state_new())
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(error, content = "current-buffer project queries require a .vibe or .vibex entry; save the package contract before querying it")
+  inspect(Fs::read_file(path), content = disk)
+}
+
+test "a dangling symlink cannot masquerade as an entry before its first save" {
+  let dir = "_build/query_current_entry_symlink_1960"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibe"
+  let _ = sh("ln -sf never_saved_target.vibe _build/query_current_entry_symlink_1960/main.vibe")
+  assert(!Fs::exists(path))
+  assert(Fs::stat_token(path) == -1)
+  let error = handle {
+    let _ = query_project_context_fs(path = path, source = "fn main() -> Int { 7 }\n", replacement = None, state = query_project_state_new())
+    ""
+  } with { Exception::Throw(message) => message }
+  Fs::remove(path)
+  inspect(error, content = "symlink module source is not allowed: _build/query_current_entry_symlink_1960/main.vibe")
+}
+
+test "the current-source collector refuses a directory as its entry" {
+  let path = "_build/query_current_entry_directory_1960/main.vibe"
+  Fs::mkdir_p(path)
+  let error = handle {
+    let _ = collect_source_groups_fs_with_entry_source(entry_path = path, source = "fn main() -> Int { 7 }\n", cfg = target_cfg_ambient())
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(error, content = "module source is a directory: _build/query_current_entry_directory_1960/main.vibe")
+  let query_error = handle {
+    let _ = query_project_context_fs(path = path, source = "fn main() -> Int { 7 }\n", replacement = None, state = query_project_state_new())
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(query_error == error)
 }
