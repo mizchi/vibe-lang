@@ -287,7 +287,16 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 ()
               }
             },
-            None => record_opaque_call_placement(cell = cell, value = placement_known_value(env = env, name = name), errors = errors)
+            None => if placement_unbound(env = env, name = name) && placement_is_mixed(args) {
+              // #3838: nothing binds the callee, so the `unknown name`
+              // diagnostic is the edit. With no parameters to place by,
+              // calling the arguments mixed would point at an edit that is
+              // not needed (`f(xs, at = 0)` is an ordinary call), and
+              // publishing their written order would bind them blind.
+              ()
+            } else {
+              record_opaque_call_placement(cell = cell, value = placement_known_value(env = env, name = name), errors = errors)
+            }
           }
         }
       },
@@ -501,7 +510,7 @@ fn placement_args_mixed(_ args: Array[Expr]) -> Bool {
   labeled && plain
 }
 
-fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+fn placement_is_mixed(_ args: Array[Expr]) -> Bool {
   let mut labeled = false
   let mut plain = false
   for arg in args {
@@ -510,11 +519,21 @@ fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: A
       _ => plain = true
     }
   }
-  if labeled && plain {
+  labeled && plain
+}
+
+fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  if placement_is_mixed(args) {
     Array::push(errors, value = "call to " + name + " mixes positional and labeled arguments — use either all positional or all labeled arguments" + off_marker_len(off = offset, len = String::length(name)))
   } else {
     ()
   }
+}
+
+/// Nothing binds the name, as a declaration, a value or a builtin: the
+/// checker reports it as an unknown name.
+fn placement_unbound(env: TypeEnv, name: String) -> Bool {
+  env_lookup_binding(env = env, name = name) is None && lookup_builtin_in_env(env = env, name = name) is None
 }
 
 /// A named callee is a value when typing bound it to something other than a
