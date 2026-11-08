@@ -250,13 +250,18 @@ jobs:
       - name: Set up wasmtime CLI
         run: |
           # The release download is retried: a transient 504 from GitHub
-          # used to fail every smoke job before any test ran.
-          for attempt in 1 2 3; do
-            curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version v47.0.2 && break
-            if [ "$attempt" = 3 ]; then
+          # used to fail every smoke job before any test ran. The installer
+          # exits 0 when its own download fails, so success is the binary
+          # being there, not the pipeline's status.
+          for attempt in 1 2 3 4 5; do
+            curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version v47.0.2 || true
+            if [ -x "$HOME/.wasmtime/bin/wasmtime" ]; then
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
               exit 1
             fi
-            sleep $((attempt * 10))
+            sleep $((attempt * 15))
           done
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
           "$HOME/.wasmtime/bin/wasmtime" --version
