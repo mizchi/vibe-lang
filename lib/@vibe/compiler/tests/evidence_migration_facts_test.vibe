@@ -117,6 +117,59 @@ test "a rewrite that stops binding a spelling to a lambda takes it out of the ba
   inspect(String::contains(walked_base(stmts), needle = "twin"), content = "false")
 }
 
+test "a rewrite that keeps the candidate names still changes the base" {
+  // #3950: the base reuses the candidate positions while every statement's
+  // candidate names stand. Rewriting `helper`'s lambda to call `asks`, which
+  // has a row, keeps the names, so the positions are reused, but the lambda
+  // it reads is the new one, and `helper` leaves the base.
+  let use_helper = ECall(EIdent("helper", -1), [EInt(1)], -1, [])
+  let asking = EFn([], [], [("x", None)], None, None, call("asks"))
+  let stmts = [
+    SLet(false, false, "asks", None, EFn([], [], [], None, Some("Ask"), EInt(0))),
+    top_fn(name = "top", params = [], body = ELet("helper", pure_lambda(), use_helper, -1)),
+    top_fn(name = "next", params = [], body = ELet("spare", pure_lambda(), EInt(0), -1))
+  ]
+  let facts = edp_mf_new()
+  assert(facts_agree(facts = facts, stmts = stmts))
+  inspect(walked_base(stmts), content = "top,next,Some,Ok,Err,helper,spare")
+  edp_mf_set_stmt(stmts = stmts, i = 1, stmt = top_fn(name = "top", params = [], body = ELet("helper", asking, use_helper, -1)))
+  assert(facts_agree(facts = facts, stmts = stmts))
+  inspect(walked_base(stmts), content = "top,next,Some,Ok,Err,spare")
+}
+
+test "a rewrite that adds a candidate before another moves the positions" {
+  // #3950: the positions index the candidates in statement order, so a new
+  // candidate in front of `pure_one` moves it. Reading the old positions would
+  // judge `pure_one` by the new impure lambda and leave it out of the base.
+  let asking = EFn([], [], [("x", None)], None, None, call("asks"))
+  let use_pure = ECall(EIdent("pure_one", -1), [EInt(1)], -1, [])
+  let stmts = [
+    SLet(false, false, "asks", None, EFn([], [], [], None, Some("Ask"), EInt(0))),
+    top_fn(name = "top", params = [], body = ELet("pure_one", pure_lambda(), use_pure, -1))
+  ]
+  let facts = edp_mf_new()
+  assert(facts_agree(facts = facts, stmts = stmts))
+  inspect(walked_base(stmts), content = "top,Some,Ok,Err,pure_one")
+  edp_mf_set_stmt(stmts = stmts, i = 1, stmt = top_fn(name = "top", params = [], body = ELet("first", asking, ELet("pure_one", pure_lambda(), use_pure, -1), -1)))
+  assert(facts_agree(facts = facts, stmts = stmts))
+  inspect(walked_base(stmts), content = "top,Some,Ok,Err,pure_one")
+}
+
+test "an appended candidate is judged, not admitted for want of a position" {
+  // #3950: a candidate the positions do not know has no bodies to check, which
+  // reads as "every body is pure". An appended statement must rebuild them.
+  let asking = EFn([], [], [("x", None)], None, None, call("asks"))
+  let stmts = [
+    SLet(false, false, "asks", None, EFn([], [], [], None, Some("Ask"), EInt(0))),
+    top_fn(name = "top", params = [], body = ELet("pure_one", pure_lambda(), EInt(0), -1))
+  ]
+  let facts = edp_mf_new()
+  assert(facts_agree(facts = facts, stmts = stmts))
+  Array::push(stmts, value = top_fn(name = "late", params = [], body = ELet("late_one", asking, EInt(0), -1)))
+  assert(facts_agree(facts = facts, stmts = stmts))
+  inspect(walked_base(stmts), content = "top,late,Some,Ok,Err,pure_one")
+}
+
 test "an unmarked rewrite is not seen, which is why every migration write is marked" {
   let stmts = program()
   let facts = edp_mf_new()
