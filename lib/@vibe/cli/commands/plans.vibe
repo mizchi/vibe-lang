@@ -590,17 +590,41 @@ export fn root_rel_of_absolute(project_root: String, path: String) -> String {
   } else {
     let prefix = String::concat(project_root, "/")
     if String::starts_with(path, prefix = prefix) {
-      let rel = strip_dot_slash(path[String::length(prefix): String::length(path)])
-      // The rewrite runs before the verb parses its flags, so a spelling
-      // that begins with `-` would read as an option (Codex review of #3948).
-      if String::starts_with(rel, prefix = "-") {
-        String::concat("./", rel)
-      } else {
-        rel
-      }
+      root_rel_spelling(path[String::length(prefix): String::length(path)])
     } else {
       path
     }
+  }
+}
+
+/// The spelling of `rest`, what follows `root/` in an in-project absolute
+/// path, as an argument the guest reads relative to the root. Leading and
+/// trailing separators and leading `./` segments go (`/root//x`, `root/./x`,
+/// `root/x/`); nothing left is the root itself, `.` (`vibe test "$PWD/"`); and
+/// a spelling that begins with `-` keeps a `./` prefix, because the rewrite
+/// runs before the verb parses its flags (Codex review of #3948).
+fn root_rel_spelling(_ rest: String) -> String {
+  let mut r = rest
+  let mut changed = true
+  while changed {
+    changed = false
+    if String::starts_with(r, prefix = "/") {
+      r = r[1: String::length(r)]
+      changed = true
+    } else if String::starts_with(r, prefix = "./") {
+      r = r[2: String::length(r)]
+      changed = true
+    } else if String::length(r) > 1 && String::ends_with(r, suffix = "/") {
+      r = r[0: String::length(r) - 1]
+      changed = true
+    } else ()
+  }
+  if r == "" || r == "." {
+    "."
+  } else if String::starts_with(r, prefix = "-") {
+    String::concat("./", r)
+  } else {
+    r
   }
 }
 
