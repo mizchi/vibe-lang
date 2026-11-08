@@ -31,8 +31,9 @@
 // owning occurrence that is a call or constructor argument, a tuple / array
 // / record / map item, or a collected `for` body value
 // (`cc_is_loop_borrowed_ident`, #706 / #715), so those occurrences consume
-// nothing; the planner counts the call arguments as borrows to match
-// (`pc_loop_call_arg_borrow`). Any other owning occurrence of a loop-carried
+// nothing; the planner counts each of them, and a `for` iterable, as a
+// borrow to match (`pc_loop_call_arg_borrow`, #3879). Any other owning
+// occurrence of a loop-carried
 // binding is a branch or block value codegen may or may not retain, and is
 // not checked. `break` ends the loop and `continue` the iteration; neither
 // leaves a loop-carried binding's scope. A parameter retained in a loop with
@@ -124,6 +125,11 @@ struct RvState {
   mut loop_ord: Int;
   mut loop_depth: Int;
   mut decl_loop: Int;
+  // The loop depth a `break` / `continue` exits at, and `x`'s. Equal to the
+  // two above except inside a `for` iterable, which is in the `for`'s
+  // retain context but still exits the enclosing loop (#3879 review).
+  mut exit_depth: Int;
+  mut decl_exit: Int;
   mut loop_sites: Int
 }
 
@@ -472,10 +478,12 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
     ESeq(a, b) => rv_seq(a = rv_walk(st = st, e = a, consume = false), b = rv_walk(st = st, e = b, consume = consume)),
     EWhile(c, body) => {
       st.loop_depth = st.loop_depth + 1
+      st.exit_depth = st.exit_depth + 1
       let co = rv_walk(st = st, e = c, consume = true)
       // Each iteration's body value is dropped unreleased.
       let bo = rv_walk(st = st, e = body, consume = false)
       st.loop_depth = st.loop_depth - 1
+      st.exit_depth = st.exit_depth - 1
       rv_loop(st = st, iter = rv_seq(a = co, b = bo), stop = co)
     },
     EForIn(vn, ix, it, fb) => {
@@ -483,9 +491,12 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       // `compile_forin_loop` registers the enclosing locals as loop-borrowed
       // before it compiles the iterable, so `for x in [d]` retains `d` at the
       // array item rather than transferring it (Codex review on #3880). A
-      // named iterable is read in place.
+      // named iterable is read in place. A `break` / `continue` in the
+      // iterable still exits the ENCLOSING loop: the `for` installs its exit
+      // boundary only after the iterable (#3879 review).
       st.loop_depth = st.loop_depth + 1
       let io = rv_operand(st = st, e = it)
+      st.exit_depth = st.exit_depth + 1
       let mark = Array::length(st.bound)
       Array::push(st.bound, value = vn)
       match ix {
@@ -502,6 +513,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       }
       Array::truncate(st.bound, length = mark)
       st.loop_depth = st.loop_depth - 1
+      st.exit_depth = st.exit_depth - 1
       rv_seq(a = io, b = rv_loop(st = st, iter = bo, stop = rv_unit()))
     },
     ELoop(params, lb) => {
@@ -518,6 +530,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
         i = i + 1
       }
       st.loop_depth = st.loop_depth + 1
+      st.exit_depth = st.exit_depth + 1
       let mark = Array::length(st.bound)
       let mut j = 0
       while j < Array::length(params) {
@@ -527,6 +540,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       let bo = rv_walk(st = st, e = lb, consume = consume)
       Array::truncate(st.bound, length = mark)
       st.loop_depth = st.loop_depth - 1
+      st.exit_depth = st.exit_depth - 1
       rv_seq(a = out, b = bo)
     },
     EReturn(v) => {
@@ -585,7 +599,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
 /// scope, and codegen releases what it holds there by the plan's exit rows,
 /// which this ledger does not model.
 fn rv_leave_note(_ st: RvState) -> Unit {
-  if st.loop_depth == st.decl_loop {
+  if st.exit_depth == st.decl_exit {
     rv_note(st = st, reason = "early exit: break or continue leaves its scope")
   } else {
     ()
@@ -744,6 +758,7 @@ fn rv_scope(st: RvState, n: String, b: Expr, consume: Bool) -> Array[RvOut] {
     st.active = true
     st.found = true
     st.decl_loop = st.loop_depth
+    st.decl_exit = st.exit_depth
     let r = rv_walk(st = st, e = b, consume = consume)
     st.scope_out = r
     st.active = saved
@@ -1019,6 +1034,8 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
     loop_ord: 0,
     loop_depth: 0,
     decl_loop: 0,
+    exit_depth: 0,
+    decl_exit: 0,
     loop_sites: 0
   }
 }

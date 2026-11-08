@@ -1,0 +1,160 @@
+// #3879: a binding declared before a loop and named by an aggregate item
+// inside it -- a tuple / array element, a record field, a collected `for`
+// body -- or by a `for` iterable keeps the RC heap frontier bounded.
+//
+// Codegen retains a loop-carried name at each of those items
+// (`cc_is_loop_borrowed_ident`), so the tuple gets a reference of its own on
+// every iteration; it registers the enclosing locals as loop-borrowed before
+// it compiles a `for` iterable, so `[d]` there is retained the same way. The
+// Perceus plan counted each such item as consuming the binding, so the
+// binding's own reference was never released: either the item took a dup at
+// the binding that nothing spent (`tuple_then_read`) or its "last use"
+// transferred the reference the binding still needed for its scope-end drop
+// (every other shape). It now counts the item as a borrow, as it already did
+// for a call argument (`pc_loop_call_arg_borrow`).
+//
+// Measured on a stage2 built from main at 425c7b91, VIBE_RC=1, this fixture
+// grew __heap_ptr by 1,232,316 B over its 2000 rounds: about 88 B a round
+// for each of its first seven shapes. `iterable_continue` does not leak on
+// main; under the first #3879 fix, which moved the exit boundary along with
+// the retain context, it leaked 352,172 B on its own. The gate compiles the
+// fixture under VIBE_RC=1 and bounds the growth (tests/gates/mid/run.sh,
+// 40f0m); the same gate checks the answer on the bump, rc, shadow and gc
+// lanes, and the shadow lane traps on the drop of a freed block -- which is
+// what a fix that released the binding while an item still held it would
+// hit.
+//
+// `main` sums, per round i, the Int results below; see `round`.
+
+struct Holder {
+  v: Array[Int]
+}
+
+fn wrap(_ a: Array[Int]) -> Array[Array[Int]] {
+  [a]
+}
+
+// The #3879 shape: a tuple item in a `while`, the binding read after the loop.
+fn tuple_then_read(_ n: Int) -> Int {
+  let d = [n, n + 1]
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let t = (d, 1)
+    acc = acc + t.1 + Array::length(t.0)
+    i = i + 1
+  }
+  acc + Array::length(d)
+}
+
+// The same with the tuple as the binding's only use.
+fn tuple_only(_ n: Int) -> Int {
+  let d = [n, n + 1]
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let t = (d, 2)
+    acc = acc + t.1
+    i = i + 1
+  }
+  acc
+}
+
+// An array element and a record field.
+fn array_and_record(_ n: Int) -> Int {
+  let d = [n, n + 1, n + 2]
+  let mut i = 0
+  let mut acc = 0
+  while i < 2 {
+    let xs = [d, d]
+    let h = Holder::{ v: d }
+    acc = acc + Array::length(xs) + Array::length(h.v)
+    i = i + 1
+  }
+  acc
+}
+
+// The #3879 follow-up shape: an outer binding inside a `for` iterable.
+fn iterable_item(_ n: Int) -> Int {
+  let d = [n, n + 1]
+  let mut acc = 0
+  for x in [d] {
+    acc = acc + Array::length(x)
+  }
+  acc
+}
+
+// An outer binding passed to a call inside a `for` iterable.
+fn iterable_call(_ n: Int) -> Int {
+  let d = [n]
+  let mut acc = 0
+  for x in wrap(d) {
+    acc = acc + Array::length(x)
+  }
+  acc + Array::length(d)
+}
+
+// A collected `for` whose body is the outer binding.
+fn collected_body(_ n: Int) -> Int {
+  let d = [n, n]
+  let r = for x in [1, 2, 3] {
+    d
+  }
+  Array::length(r) + Array::length(Array::get(r, at = 0))
+}
+
+// A tuple stored in the loop outlives the binding: `d` is released at the
+// end of `make_pair`, and the tuple handed back still reads it. Releasing `d`
+// while the tuple held it is the use-after-free the shadow lane traps on.
+fn make_pair(_ n: Int) -> (Array[Int], Int) {
+  let d = [n, n + 1, n + 2]
+  let mut t = ([0], 0)
+  let mut i = 0
+  while i < 2 {
+    t = (d, i)
+    i = i + 1
+  }
+  t
+}
+
+fn escaping(_ n: Int) -> Int {
+  let t = make_pair(n)
+  Array::length(t.0) + t.1 + Array::get(t.0, at = 2) - n
+}
+
+// A `continue` inside a `for` iterable leaves the ENCLOSING loop's body and
+// releases `d` there (#3879 review): the iterable is in the `for`'s retain
+// context, but compile_forin_loop installs the `for`'s exit boundary only
+// after it, so the exit still belongs to the `while`. Planning the exit at the
+// `for`'s floor gave `d` no exit row, and every skipped iteration leaked it.
+fn iterable_continue(_ n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 4 {
+    let d = [n, i]
+    i = i + 1
+    for x in wrap(if i % 2 == 0 {
+      continue
+    } else {
+      [1]
+    }) {
+      acc = acc + Array::length(x)
+    }
+    acc = acc + Array::length(d)
+  }
+  acc
+}
+
+fn round(_ i: Int) -> Int {
+  tuple_then_read(i) + tuple_only(i) + array_and_record(i) + iterable_item(i) + iterable_call(i) + collected_body(i) + escaping(i) + iterable_continue(i)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

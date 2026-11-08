@@ -1488,6 +1488,42 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_local_closure_capture.log"
 echo "[compiler-gate] RC local capture and self-reading array release ok (6003000 on all lanes, rc heap_used=$cl_used B; view control alive on rc + shadow)"
 
+# 40f0m. #3879: a binding declared before a loop and named by an aggregate
+#        item inside it (a tuple / array element, a record field, a collected
+#        `for` body), or by a `for` iterable, is retained there by codegen
+#        (`cc_is_loop_borrowed_ident`; compile_forin_loop registers the
+#        enclosing locals before it compiles the iterable). The plan counted
+#        each such item as the binding's consume, so the binding's own
+#        reference was never released. It is a borrow there now, as at a call
+#        argument. A `break` / `continue` inside the iterable still leaves
+#        the ENCLOSING loop (the `for` installs its exit boundary after the
+#        iterable), so it keeps releasing that loop body's bindings. Unfixed,
+#        the bounded fixture grew __heap_ptr by
+#        1,232,316 B over its 2000 rounds. The answer is checked on bump,
+#        rc, shadow and gc; the shadow lane traps on the drop of a freed
+#        block, which is what releasing the binding while an item still held
+#        it would hit.
+echo "[compiler-gate] 40f0m/40 a loop-carried binding stored into an aggregate or a for iterable is released (#3879)"
+gate_workdir laidir "_build/_gate_rc_loop_aggregate_item"
+for lai_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$lai_lane" "fixtures/rc_loop_aggregate_item_bounded_test.vibe" "$laidir/lai.wasm" main
+  gate_require_artifact "$laidir/lai.wasm" "rc_loop_aggregate_item_bounded fixture did not compile on the $lai_lane lane (#3879)"
+  gate_run lai_out last "$laidir/lai.wasm"
+  gate_require_eq "$lai_out" "96000" "rc_loop_aggregate_item_bounded got '$lai_out' on the $lai_lane lane (want 96000). A trap means a loop-carried binding was released while an aggregate item still held it (#3879)."
+  if [ "$lai_lane" = rc ]; then
+    lai_json="$(node scripts/measure_heap.mjs "$laidir/lai.wasm" main 2>/dev/null)"
+    lai_used="$(printf '%s' "$lai_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$lai_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_loop_aggregate_item_bounded heap ($lai_json)" >&2; exit 1
+    fi
+    if [ "$lai_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_loop_aggregate_item_bounded heap_used=$lai_used >= 20000 (#3879 regressed: an aggregate item or a for iterable naming a loop-carried binding consumes it in the plan again; unfixed, this fixture measured 1,232,316 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$laidir"
+echo "[compiler-gate] loop aggregate item guard ok (96000 on bump/rc/shadow/gc, rc heap_used=$lai_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"

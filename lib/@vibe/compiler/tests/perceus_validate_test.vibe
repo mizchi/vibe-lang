@@ -294,20 +294,41 @@ test "a break leaves a loop-carried binding live" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 3 {\n    if k > 1 {\n      break\n    }\n    k = k + keep(d)\n  }\n  k\n}"), content = "")
 }
 
-test "a loop-carried value stored into a tuple leaks" {
-  // A true positive: the plan transfers `d` into the tuple, and codegen
-  // retains it there instead (a loop-carried aggregate item), so `d`'s own
-  // reference is never released.
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    let t = (d, 1)\n    k = k + t.1\n  }\n  k\n}"), content = "run d -: owned value not consumed")
+let carried_tuple = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    let t = (d, 1)\n    k = k + t.1\n  }\n  k\n}"
+
+let carried_iterable = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  for x in [d] {\n    k = k + len(x)\n  }\n  k\n}"
+
+/// The plan without `d`'s scope-end drop: what the planner gave both shapes
+/// before #3879, when it counted the aggregate item as `d`'s consume.
+fn pre_3879(f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+  drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+    pa_is_drop(a) && a.name == "d"
+  })
 }
 
-test "an outer binding in a for iterable is retained there, so it leaks" {
-  // A true positive (#3879): codegen compiles the iterable with the enclosing
-  // locals already loop-borrowed, so `[d]` retains `d` while the plan counts
-  // the item as `d`'s consume and gives it no drop. Measured under VIBE_RC=1,
-  // 2000 calls of this shape keep 176,084 B. The iterable used to be walked
-  // outside the loop's retain context and `d` read as balanced.
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  for x in [d] {\n    k = k + len(x)\n  }\n  k\n}"), content = "run d -: owned value not consumed\nrun x -: not checked: loop binder (a for element or a loop parameter)")
+test "a loop-carried value stored into a tuple keeps its drop (#3879)" {
+  // Codegen retains a loop-carried name at an aggregate item, so the plan
+  // counts the item as a borrow and releases `d` at its scope end.
+  inspect(plan(carried_tuple), content = "run t drop 1\nrun __seq0 drop 1\nrun d drop 1")
+  inspect(validate(carried_tuple), content = "")
+}
+
+test "the pre-#3879 tuple plan leaks the loop-carried value" {
+  // Before the fix the item transferred `d` into the tuple and `d` had no
+  // drop; codegen's per-iteration retain left `d`'s own reference behind
+  // (88 B per call under VIBE_RC=1).
+  inspect(edited(body = carried_tuple, edit = pre_3879), content = "run d -: owned value not consumed")
+}
+
+test "an outer binding in a for iterable keeps its drop (#3879)" {
+  // `compile_forin_loop` makes the enclosing locals loop-borrowed before it
+  // compiles the iterable, so `[d]` retains `d` there; the plan now counts
+  // that item as a borrow too.
+  inspect(validate(carried_iterable), content = "run x -: not checked: loop binder (a for element or a loop parameter)")
+}
+
+test "the pre-#3879 for-iterable plan leaks the outer binding" {
+  inspect(edited(body = carried_iterable, edit = pre_3879), content = "run d -: owned value not consumed\nrun x -: not checked: loop binder (a for element or a loop parameter)")
 }
 
 test "a parameter retained in a loop with no planned drop is not checked" {
