@@ -55,6 +55,10 @@ import @vibe/compiler/core {
   trait_import_local_operation_renames_preserving_exports
 }
 
+import @vibe/ast {
+  impl_method_owner
+}
+
 import @vibe/compiler/codegen/common_base {
   DbgProv
 }
@@ -261,7 +265,8 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   // only while its declaration still matches the renamed export item
   // (Codex on #3942).
   let collision_renamed = if colliding_type_alias_renames_enabled() && !is_entry_source {
-    rename_exported_type_alias_stmts(stmts = collision_renamed, renames = exported_type_alias_renames(plan = plan, path = path, stmts = stmts))
+    let alias_renamed = rename_exported_type_alias_stmts(stmts = collision_renamed, renames = exported_type_alias_renames(plan = plan, path = path, stmts = stmts))
+    apply_export_renames_stmts(stmts = alias_renamed, renames = impl_owner_renames(before = collision_renamed, after = alias_renamed))
   } else {
     collision_renamed
   }
@@ -282,6 +287,45 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
   // #3544: this file's share of the linked program, for the impl-overlap check.
   Array::push(units, value = linked_unit_in(sources = sources, path = path, start = unit_start, end = Array::length(merged)))
+}
+
+/// #3929: an impl whose trait arguments or target the alias rename changed
+/// owns its methods under a binding name that encodes both
+/// (`impl_method_owner`), so each method binding of the old owner is renamed
+/// to the new one, references included (Codex on #3942).
+fn impl_owner_renames(before: Array[Stmt], after: Array[Stmt]) -> Array[(String, String)] {
+  let owners: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(before) && i < Array::length(after) {
+    match (Array::get(before, at = i), Array::get(after, at = i)) {
+      (SImpl(tparams, _, old_trait, old_target), SImpl(_, _, new_trait, new_target)) => {
+        let old_owner = impl_method_owner(tparams = tparams, trait_name = old_trait, target = old_target)
+        let new_owner = impl_method_owner(tparams = tparams, trait_name = new_trait, target = new_target)
+        if old_owner != new_owner {
+          Array::push(owners, value = (String::concat(old_owner, "::"), String::concat(new_owner, "::")))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[(String, String)] = []
+  if Array::length(owners) > 0 {
+    for stmt in after {
+      let name = match stmt {
+        SLet(_, _, n, _, _) => n,
+        SFnDecl(_, n, _, _, _) => n,
+        _ => ""
+      }
+      for owner in owners {
+        let (old_prefix, new_prefix) = owner
+        if String::starts_with(name, prefix = old_prefix) {
+          Array::push(out, value = (name, String::concat(new_prefix, String::substring(name, start = String::length(old_prefix), end = String::length(name)))))
+        }
+      }
+    }
+  }
+  out
 }
 
 /// #3929: the plan's renames of the type aliases this file exports.

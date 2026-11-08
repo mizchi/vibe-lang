@@ -2516,6 +2516,21 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
             rewrite_private_type_expr(ty = param, renames = mrenames)
           }, rewrite_private_type_expr(ty = ret, renames = mrenames))
         }, method_tparams, tparams),
+        // An applied trait reference spells its arguments inside the trait
+        // key (`impl Value[Alias] for Box`, Codex on #3942); the private walk
+        // rewrites only the target.
+        SImpl(tparams, bounds, trait_name, target) => {
+          let inner = alias_map_without_names(aliases = own, names = for t in tparams {
+            type_param_name(t)
+          })
+          let next_trait = match trait_ref_from_key(trait_name) {
+            Some(TyApp(head, args)) => trait_ref_key(TyApp(head, for arg in args {
+              rewrite_private_type_expr(ty = arg, renames = inner)
+            })),
+            _ => trait_name
+          }
+          SImpl(tparams, bounds, next_trait, rewrite_private_type_expr(ty = target, renames = inner))
+        },
         _ => namespace_private_type_ctor_stmt(stmt = stmt, type_renames = own, ctor_renames = array_empty(), private_enum_heads = empty_strings(), local_type_aliases = array_empty())
       }
       match renamed {
