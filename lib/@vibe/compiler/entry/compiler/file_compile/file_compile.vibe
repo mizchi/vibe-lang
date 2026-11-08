@@ -49,6 +49,7 @@ import @vibe/core {
 
 import @vibe/compiler/core {
   Stmt,
+  TypeExpr,
   dce_stmts_before_trait_desugar,
   mark_private_builtin_references,
   merged_offset_space_reset,
@@ -107,7 +108,7 @@ import @vibe/compiler/loader {
 }
 
 import @vibe/compiler/checker {
-  file_entry_cacheable, file_tests_cacheable, typed_lowering_binop_anchor
+  checker_swap_module_checked, file_entry_cacheable, file_tests_cacheable, typed_lowering_binop_anchor
 }
 
 import @vibe/compiler/runtime {
@@ -412,6 +413,44 @@ export fn compile_file_fs_mode_grants(entry_path: String, entry_name: String, mo
   compile_merged_for_mode_grants(mode = mode, merged_stmts = merged_stmts, entry_name = entry_name, float_offsets = float_offsets, int_offsets = int_offsets, bool_offsets = bool_offsets, eq_offsets = eq_offsets, eq_keys = eq_keys, grants = grants)
 }
 
+/// #3923: a dependency's `enum Ordering { Less; Equal; Greater }` IS the
+/// prelude for its importers (#3042), but merged into one program it reads as
+/// the program's own declaration, which shadows the prelude and has none of
+/// its operations: `Ordering::to_string` was an unknown name on this lane
+/// only. Every module was already checked, so a declaration of exactly that
+/// shape can mean nothing but the prelude's; dropping it lets the merged
+/// check seed the prelude and the lowering append it, with the same
+/// constructors in the same order.
+fn drop_prelude_shaped_ordering(_ stmts: Array[Stmt]) -> Unit {
+  let kept: Array[Stmt] = []
+  let mut dropped = false
+  for stmt in stmts {
+    if stmt_is_prelude_shaped_ordering(stmt) {
+      dropped = true
+    } else {
+      Array::push(kept, value = stmt)
+    }
+  }
+  if dropped {
+    Array::truncate(stmts, length = 0)
+    for stmt in kept {
+      Array::push(stmts, value = stmt)
+    }
+  }
+}
+
+fn stmt_is_prelude_shaped_ordering(_ stmt: Stmt) -> Bool {
+  match stmt {
+    SEnum(_, name, params, variants, _) => name == "Ordering" && Array::length(params) == 0 && Array::length(variants) == 3 && nullary_variant_is(variants = variants, i = 0, expected = "Less") && nullary_variant_is(variants = variants, i = 1, expected = "Equal") && nullary_variant_is(variants = variants, i = 2, expected = "Greater"),
+    _ => false
+  }
+}
+
+fn nullary_variant_is(variants: Array[(String, Array[TypeExpr])], i: Int, expected: String) -> Bool {
+  let (name, payload) = Array::get(variants, at = i)
+  name == expected && Array::length(payload) == 0
+}
+
 /// Import-resolving wasm-gc compilation. Module discovery, projected import
 /// environments, and namespace projection are the same ones used by the
 /// linear filesystem lane. The GC variant additionally rebases every file's
@@ -427,7 +466,18 @@ export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Byt
   // whole-program check, while retaining source names for method checking.
   // The normal post-check rename still owns definitions and ABI tables.
   mark_private_builtin_references(merged_stmts)
-  compile_generated_stmts_gc_only(stmts = merged_stmts, entry_name = entry_name)
+  drop_prelude_shaped_ordering(merged_stmts)
+  // #3923: every module was checked above, so the merged re-check keeps only
+  // what needs the whole program, not the module-scoped declaration guards.
+  let prev = checker_swap_module_checked(true)
+  let out = handle {
+    compile_generated_stmts_gc_only(stmts = merged_stmts, entry_name = entry_name)
+  } with { Exception::Throw(message) => {
+    checker_swap_module_checked(prev)
+    throw(message)
+  } }
+  checker_swap_module_checked(prev)
+  out
 }
 
 /// #701 RC variant: same load/merge as compile_file_fs_mode "no-dce" but routes
