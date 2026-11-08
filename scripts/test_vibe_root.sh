@@ -385,7 +385,12 @@ dot_case "$dots" 1 "$dots/.vibe/build/test/pkg/c_test.wasm" ./pkg/c_test.vibe
 dot_case "$dots" 1 "$dots/.vibe/build/test/pkg/c_test.wasm" ./pkg
 dot_case "$dots" 3 "$dots/.vibe/build/test/pkg/c_test.wasm" .
 dot_case "$dots" 3 "$dots/.vibe/build/test/a_test.wasm" ./
-dot_case "$dots" 1 "$dots/.vibe/build/test/_abs$dots/a_test.wasm" "$dots/./a_test.vibe"
+# An absolute path inside the project is read as its root-relative spelling
+# (#3882), so it shares that spelling's artifact; one outside the project
+# (here `$dots` from `$dots/sub`, whose own directory is the root) keeps the
+# `_abs` mapping.
+dot_case "$dots" 1 "$dots/.vibe/build/test/a_test.wasm" "$dots/./a_test.vibe"
+dot_case "$dots/sub" 1 "$dots/sub/.vibe/build/test/_abs$dots/a_test.wasm" "$dots/./a_test.vibe"
 dot_case "$dots/pkg" 1 "$dots/pkg/.vibe/build/test/c_test.wasm" ./c_test.vibe
 dot_case "$dots/pkg" 1 "$dots/pkg/.vibe/build/test/c_test.wasm" .
 dot_case "$dots/sub" 1 "$dots/sub/.vibe/build/test/_up/a_test.wasm" ../a_test.vibe
