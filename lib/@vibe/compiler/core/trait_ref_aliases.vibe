@@ -49,12 +49,22 @@ export fn canonicalize_trait_ref_aliases(_ stmts: Array[Stmt]) -> Unit {
 }
 
 /// `canonicalize_trait_ref_aliases` with the aliases the module imports as
-/// well, `(name, params, body)` under the name this module sees. The module's
-/// own aliases come first, so a local declaration wins over an import.
+/// well, `(name, params, body)` under the name this module sees. A type the
+/// module declares itself -- an alias, a struct, an enum -- wins over an import
+/// of the same name, as it does when the checker seeds imported type
+/// definitions (`seed_imported_type_defs`): expanding the imported alias in a
+/// module whose own `struct Alias` it names rewrote `impl Value[Alias]` to
+/// `Value[Int]` and refused its methods (Codex on #3961).
 export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[(String, Array[String], TypeExpr)]) -> Unit {
   let aliases = trait_ref_local_aliases(stmts)
+  let local_types = trait_ref_local_type_names(stmts)
   for alias in imported {
-    Array::push(aliases, value = alias)
+    let (name, _, _) = alias
+    if !trait_ref_names_contain(names = local_types, name = name) {
+      Array::push(aliases, value = alias)
+    } else {
+      ()
+    }
   }
   if Array::length(aliases) > 0 {
     // (old method-owner prefix, new one) for each impl whose key changed.
@@ -110,6 +120,21 @@ fn trait_ref_renamed(name: String, renames: Array[(String, String)]) -> Option[S
       out = Some(String::concat(new_prefix, String::substring(name, start = String::length(old_prefix), end = String::length(name))))
     } else {
       ()
+    }
+  }
+  out
+}
+
+/// Every type name the module declares itself.
+fn trait_ref_local_type_names(_ stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(_, name, _, _) => Array::push(out, value = name),
+      SStruct(_, name, _, _, _, _) => Array::push(out, value = name),
+      SEnum(_, name, _, _, _) => Array::push(out, value = name),
+      SSuberror(_, name, _) => Array::push(out, value = name),
+      _ => ()
     }
   }
   out
