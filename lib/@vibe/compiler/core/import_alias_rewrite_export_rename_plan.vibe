@@ -57,14 +57,16 @@ import ./import_alias_rewrite_pat_binds_shadowing_name.vibe {
 
 import ./import_alias_rewrite_reexport_edges_into.vibe {
   ExportRenamePlan,
+  KnownPaths,
   collect_export_def_value_names,
   collect_reexport_edges_into,
   enum_alias_target_is_formal,
+  known_paths_index,
   namespace_exported_def_name,
   namespace_exported_name,
   plan_rename_key,
   reexport_enum_origin,
-  resolve_known_import_path
+  resolve_known_import_path_in
 }
 
 import ./import_alias_rewrite_rewrite_alias_expr_ix.vibe {
@@ -651,21 +653,21 @@ fn effectset_alias_row(name: String, members: Array[String]) -> (String, Array[S
 /// binds (`import ./a.vibe { N as M }` reads `N`'s target as `M`). An alias
 /// is read only from an import that resolves to the file declaring it (Codex
 /// on #3467): a nominal `N` imported from another module is that module's.
-fn imported_type_aliases_into(stmts: Array[Stmt], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
+fn imported_type_aliases_into(stmts: Array[Stmt], path: String, known: KnownPaths, shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SImport(raw_path, items) => import_items_aliases_into(raw_path = raw_path, items = items, path = path, paths = paths, shared = shared, out = out),
+      SImport(raw_path, items) => import_items_aliases_into(raw_path = raw_path, items = items, path = path, known = known, shared = shared, out = out),
       // A direct re-export binds its names in the facade too (Codex on
       // #3492): `export ./sets.vibe { All }` beside `with All`.
-      SReExport(raw_path, items) => import_items_aliases_into(raw_path = raw_path, items = items, path = path, paths = paths, shared = shared, out = out),
+      SReExport(raw_path, items) => import_items_aliases_into(raw_path = raw_path, items = items, path = path, known = known, shared = shared, out = out),
       _ => ()
     }
   }
   ()
 }
 
-fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
-  let provider = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
+fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: String, known: KnownPaths, shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
+  let provider = resolve_known_import_path_in(known = known, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
   for item in items {
     let local = match item.alias {
       Some(a) => a,
@@ -699,7 +701,7 @@ fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: S
 
 /// The exported transparent aliases of the program, with the file that
 /// declares each.
-fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[Stmt]]) -> Array[(String, String, Array[String], TypeExpr)] {
+fn unique_exported_type_aliases(paths: Array[String], known: KnownPaths, stmts_list: Array[Array[Stmt]]) -> Array[(String, String, Array[String], TypeExpr)] {
   let all: Array[(String, String, Array[String], TypeExpr)] = []
   let mut fi = 0
   while fi < Array::length(stmts_list) {
@@ -758,7 +760,7 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
       let env: Array[(String, Array[String], TypeExpr)] = []
       while fi < Array::length(paths) {
         if Array::get(paths, at = fi) == from {
-          imported_type_aliases_into(stmts = Array::get(stmts_list, at = fi), path = from, paths = paths, shared = cur, out = env)
+          imported_type_aliases_into(stmts = Array::get(stmts_list, at = fi), path = from, known = known, shared = cur, out = env)
         }
         fi = fi + 1
       }
@@ -783,7 +785,7 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
     // too, under the name it exports (Codex on #3467): an importer of the
     // facade reads the declaring file's `N`. Each round follows one more
     // facade.
-    reexported_type_aliases_into(paths = paths, stmts_list = stmts_list, shared = cur, out = resolved)
+    reexported_type_aliases_into(paths = paths, known = known, stmts_list = stmts_list, shared = cur, out = resolved)
     if Array::length(resolved) != Array::length(cur) {
       changed = true
     } else {
@@ -807,7 +809,7 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
 /// The aliases each file re-exports, read from `shared` (`(provider, name,
 /// parameters, target)`) and appended to `out` keyed by the re-exporting
 /// file and the name it exports.
-fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[Stmt]], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, String, Array[String], TypeExpr)]) -> Unit {
+fn reexported_type_aliases_into(paths: Array[String], known: KnownPaths, stmts_list: Array[Array[Stmt]], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, String, Array[String], TypeExpr)]) -> Unit {
   let mut fi = 0
   while fi < Array::length(stmts_list) {
     let path = Array::get(paths, at = fi)
@@ -825,7 +827,7 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
         _ => ("", [], false)
       }
       if raw_path != "" {
-        let provider = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
+        let provider = resolve_known_import_path_in(known = known, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
         for item in items {
           let exported = match item.alias {
             Some(a) => a,
@@ -1140,7 +1142,7 @@ fn top_level_decl_name(_ stmt: Stmt) -> String {
 /// collision, while two modules the program actually uses that both publish
 /// `Box` are: the program held two `struct Box` and two `Box::plain`, and ran
 /// one module's for the other's type.
-fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int]) -> Array[String] {
+fn reached_type_collisions(paths: Array[String], known: KnownPaths, stmts_list: Array[Array[Stmt]], entry_path: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int]) -> Array[String] {
   let file_count = Array::length(paths)
   let decls: MutMap[String, Bool] = MutMap::new_string()
   let path_idx: MutMap[String, Int] = MutMap::new_string()
@@ -1203,7 +1205,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
               _ => ("", [])
             }
             if raw_path != "" {
-              let target = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
+              let target = resolve_known_import_path_in(known = known, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
               let mut ii = 0
               while ii < Array::length(items) {
                 Array::push(work_paths, value = target)
@@ -1256,7 +1258,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
   // it, under the name the import binds; a name two files export, or one the
   // file does not import (its own private `struct N`), stays unexpanded,
   // which can only keep two types apart, never join two that differ.
-  let shared_aliases = unique_exported_type_aliases(paths = paths, stmts_list = stmts_list)
+  let shared_aliases = unique_exported_type_aliases(paths = paths, known = known, stmts_list = stmts_list)
   let mut ci = 0
   while ci < file_count {
     let path = Array::get(paths, at = ci)
@@ -1264,7 +1266,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
       let stmts = Array::get(stmts_list, at = ci)
       let exported_names = collect_exported_value_names(stmts)
       let aliases = file_type_aliases(stmts)
-      imported_type_aliases_into(stmts = stmts, path = path, paths = paths, shared = shared_aliases, out = aliases)
+      imported_type_aliases_into(stmts = stmts, path = path, known = known, shared = shared_aliases, out = aliases)
       let mut pi = 0
       while pi < Array::length(stmts) {
         let stmt = Array::get(stmts, at = pi)
@@ -1302,6 +1304,8 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
 
 export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String) -> ExportRenamePlan {
   let file_count = Array::length(paths)
+  // #3932: every import the plan resolves is resolved against these paths.
+  let known = known_paths_index(paths)
   let def_names_list = array_empty()
   let mut fi = 0
   while fi < file_count {
@@ -1417,10 +1421,10 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         SSuberror(_, name, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
         SEffectDef(_, name, _, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
         SReExport(raw_path, _) => if raw_path == "@vibe/builtin" {
-          MutMap::set(builtin_paths, k = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path), v = true)
+          MutMap::set(builtin_paths, k = resolve_known_import_path_in(known = known, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path), v = true)
         },
         SImport(raw_path, items) => {
-          let resolved = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
+          let resolved = resolve_known_import_path_in(known = known, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
           if raw_path == "@vibe/builtin" {
             MutMap::set(builtin_paths, k = resolved, v = true)
           }
@@ -1449,7 +1453,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     MutMap::set(edge_last_idx, k = plan_rename_key(path = Array::get(edge_from, at = eli), name = Array::get(edge_pub, at = eli)), v = eli)
     eli = eli + 1
   }
-  let type_collision_errors = reached_type_collisions(paths = paths, stmts_list = stmts_list, entry_path = entry_path, edge_tpath = edge_tpath, edge_tname = edge_tname, edge_last_idx = edge_last_idx)
+  let type_collision_errors = reached_type_collisions(paths = paths, known = known, stmts_list = stmts_list, entry_path = entry_path, edge_tpath = edge_tpath, edge_tname = edge_tname, edge_last_idx = edge_last_idx)
   let enum_alias_idx: MutMap[String, String] = MutMap::new_string()
   let enum_alias_private_ctors: MutMap[String, Array[(String, String)]] = MutMap::new_string()
   let enum_alias_paths = empty_strings()
@@ -1715,6 +1719,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   }
   ExportRenamePlan::{
     plan_paths: paths,
+    plan_known: known,
     rename_paths: rename_paths,
     rename_names: rename_names,
     rename_mangled: rename_mangled,
@@ -1978,11 +1983,11 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
     while i >= 0 {
       match Array::get(stmts, at = i) {
         SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
-          let target = resolve_known_import_path(known_paths = plan.plan_paths, base_dir = base_dir, raw_path = raw_path, self_path = path)
+          let target = resolve_known_import_path_in(known = plan.plan_known, base_dir = base_dir, raw_path = raw_path, self_path = path)
           append_import_value_renames(plan = plan, target = target, items = items, plain_reexports_only = false, out = out, locals_seen = locals_seen)
         },
         SReExport(raw_path, items) => {
-          let target = resolve_known_import_path(known_paths = plan.plan_paths, base_dir = base_dir, raw_path = raw_path, self_path = path)
+          let target = resolve_known_import_path_in(known = plan.plan_known, base_dir = base_dir, raw_path = raw_path, self_path = path)
           append_import_value_renames(plan = plan, target = target, items = items, plain_reexports_only = true, out = out, locals_seen = locals_seen)
         },
         _ => ()
