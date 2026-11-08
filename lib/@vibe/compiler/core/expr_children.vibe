@@ -10,11 +10,59 @@ import @vibe/core {
 }
 
 import ./ast.vibe {
-  Expr, Pat
+  Expr, Pat, TypeExpr
 }
 
 import @vibe/ast {
   builtin_ref_offset, index_site_offset
+}
+
+/// The checked local-let type marker is a strict identity lambda. Keep its
+/// annotation in the AST for type-directed analyses, but emit only its value.
+/// An explicit return/effect row, type parameter, bound or non-identity body
+/// remains an ordinary call; shadow-uniquified synthetic names are accepted.
+export fn is_ascription_call(callee: Expr, args: Array[Expr]) -> Bool {
+  if Array::length(args) != 1 {
+    false
+  } else {
+    match callee {
+      EFn(tparams, bounds, params, ret, effect, body) => if Array::length(tparams) == 0 && Array::length(bounds) == 0 && Array::length(params) == 1 {
+        match (ret, effect) {
+          (None, None) => {
+            let (name, _) = Array::get(params, at = 0)
+            if name == "__asc" || String::starts_with(name, prefix = "__shadow_") && String::ends_with(name, suffix = "___asc") {
+              match body {
+                EIdent(value, _) => value == name,
+                _ => false
+              }
+            } else false
+          },
+          _ => false
+        }
+      } else false,
+      _ => false
+    }
+  }
+}
+
+/// The checked identity marker emits its argument directly. Predicate-only
+/// consumers use is_ascription_call without allocating a temporary Some.
+export fn ascription_call_value(callee: Expr, args: Array[Expr]) -> Option[Expr] {
+  if is_ascription_call(callee = callee, args = args) {
+    Some(Array::get(args, at = 0))
+  } else None
+}
+
+/// The checked identity marker's parameter also describes its result. An
+/// ordinary lambda's parameter never does: use the checker's result facts
+/// instead. Retain the same strict shape used by planning and emission.
+export fn ascription_call_annotation(callee: Expr, args: Array[Expr]) -> Option[TypeExpr] {
+  if is_ascription_call(callee = callee, args = args) {
+    match callee {
+      EFn(_, _, params, _, _, _) => Array::get(params, at = 0).1,
+      _ => None
+    }
+  } else None
 }
 
 /// #2424: the source offset that identifies an expression node to the

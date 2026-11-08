@@ -1,0 +1,72 @@
+import @vibe/compiler/core {
+  Expr, TypeExpr, ascription_call_annotation, ascription_call_value, is_ascription_call
+}
+import @vibe/compiler/codegen/common_analysis {
+  count_lambda_sites_expr
+}
+import @vibe/compiler/normalize/desugar {
+  infer_arg_type_name, scope_formals_pop, scope_formals_push
+}
+
+test "checked annotation identity has a result type and no lambda slot" {
+  let marker = EFn([], [], [("__asc", Some(TyName("Bool")))], None, None, EIdent("__asc", -1))
+  let args = [EBool(true)]
+  assert(is_ascription_call(callee = marker, args = args))
+  assert(ascription_call_annotation(callee = marker, args = args) == Some(TyName("Bool")))
+  assert(ascription_call_value(callee = marker, args = args) == Some(EBool(true)))
+  assert(count_lambda_sites_expr(expr = ECall(marker, args, -1, []), shadow_names = [
+  ]) == 0)
+}
+
+test "ordinary lambda never borrows its parameter annotation" {
+  let lambda = EFn([], [], [("__asc", Some(TyName("Bool")))], Some(TyName("Int")), None, EInt(42))
+  let args = [EBool(true)]
+  assert(!is_ascription_call(callee = lambda, args = args))
+  assert(ascription_call_annotation(callee = lambda, args = args) == None)
+  assert(ascription_call_value(callee = lambda, args = args) == None)
+  assert(count_lambda_sites_expr(expr = ECall(lambda, args, -1, []), shadow_names = [
+  ]) == 1)
+}
+
+test "unannotated lookalike body cannot borrow its parameter type" {
+  let lambda = EFn([], [], [("__shadow_0___asc", Some(TyName("String")))], None, None, EInt(43))
+  assert(ascription_call_annotation(callee = lambda, args = [
+    EString("input", -1)
+  ]) == None)
+  assert(ascription_call_value(callee = lambda, args = [EString("input", -1)]) == None)
+}
+
+test "identity name with a declared effect remains an ordinary lambda" {
+  let lambda = EFn([], [], [("__asc", Some(TyName("Int")))], None, Some("Console"), EIdent("__asc", -1))
+  assert(!is_ascription_call(callee = lambda, args = [EInt(7)]))
+  assert(ascription_call_annotation(callee = lambda, args = [EInt(7)]) == None)
+  assert(ascription_call_value(callee = lambda, args = [EInt(7)]) == None)
+}
+
+test "an enclosing formal annotation retains its witness identity" {
+  let marker = EFn([], [], [("__asc", Some(TyName("T")))], None, None, EIdent("__asc", -1))
+  scope_formals_push(tparams = ["T"], bounds = [("T", ["Eq"])], nested = false)
+  let head = infer_arg_type_name(arg = ECall(marker, [EIdent("value", -1)], -1, [
+  ]), struct_sets = [], var_types = [], fn_returns = [])
+  scope_formals_pop()
+  assert(head == Some("T"))
+}
+
+test "an ordinary call can return the caller's enclosing formal" {
+  let lambda = EFn([], [], [("x", Some(TyName("T")))], Some(TyName("T")), None, EIdent("x", -1))
+  scope_formals_push(tparams = ["T"], bounds = [("T", ["Eq"])], nested = false)
+  let head = infer_arg_type_name(arg = ECall(lambda, [EIdent("value", -1)], -1, [
+  ]), struct_sets = [], var_types = [], fn_returns = [])
+  scope_formals_pop()
+  assert(head == Some("T"))
+}
+
+test "a callee-local formal named Bool does not describe the caller's result" {
+  let lambda = EFn(["Bool"], [], [
+    ("pair", Some(TyTuple([TyName("Int"), TyName("Bool")])))
+  ], Some(TyName("Bool")), None, EDot(EIdent("pair", -1), "1", -1, -1))
+  let head = infer_arg_type_name(arg = ECall(lambda, [
+    ETuple([EInt(0), EInt(42)])
+  ], -1, []), struct_sets = [], var_types = [], fn_returns = [])
+  assert(head == None)
+}
