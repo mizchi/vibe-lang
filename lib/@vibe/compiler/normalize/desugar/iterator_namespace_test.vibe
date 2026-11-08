@@ -1,0 +1,50 @@
+// #3900: `iterator_array_intrinsic` compares a callee's head with the builtin
+// iterator namespaces in place instead of splitting the name. The head must
+// still be the WHOLE text before the first `::`: a namespace that is only a
+// prefix of the head, or a head that is a prefix of the namespace, is not it.
+import @vibe/compiler/core {
+  Expr
+}
+import @vibe/compiler/normalize/desugar {
+  dtd_builtin_iterator_namespaces, iterator_array_intrinsic
+}
+
+fn lowered(_ name: String) -> String {
+  match iterator_array_intrinsic(name = name, args = [EArray([EInt(1)])], gens = [
+  ], struct_sets = [], var_types = [], fn_returns = []) {
+    Some(callee) => callee,
+    None => "-"
+  }
+}
+
+fn with_namespaces(_ namespaces: Array[String]) -> Unit {
+  Array::truncate(dtd_builtin_iterator_namespaces, length = 0)
+  for namespace in namespaces {
+    Array::push(dtd_builtin_iterator_namespaces, value = namespace)
+  }
+  ()
+}
+
+test "only a head equal to a builtin iterator namespace lowers" {
+  with_namespaces(["Iterator", "Iterator_exp_7"])
+  inspect(String::join([
+    lowered("Iterator::map"),
+    lowered("Iterator::fold"),
+    lowered("IteratorX::map"),
+    lowered("Iter::map"),
+    lowered("Other::map"),
+    lowered("map"),
+    lowered("Iterator::unknown")
+  ], sep = " "), content = "Array::map Array::fold - - - - -")
+}
+
+test "the provider namespace of flatmap is the head" {
+  with_namespaces(["Iterator", "Iterator_exp_7"])
+  inspect(lowered("Iterator_exp_7::flatmap"), content = "Array_exp_7::flatmap")
+  inspect(lowered("Iterator::flatmap"), content = "Array::flatmap")
+}
+
+test "no namespaces, nothing lowers" {
+  with_namespaces([])
+  inspect(lowered("Iterator::map"), content = "-")
+}

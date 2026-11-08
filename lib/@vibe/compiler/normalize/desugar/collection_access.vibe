@@ -46,7 +46,7 @@ import ./type_names.vibe {
 }
 
 import ./utilities.vibe {
-  split_qualified, str_array_contains
+  str_array_contains
 }
 
 /// #3148: `for x in e` over a Map. The residual loop (and every classified
@@ -339,17 +339,28 @@ export fn dtd_builtin_iterator_set_boundary(_ markers: Array[String]) -> Unit {
   dtd_add_builtin_iterator_markers(markers)
 }
 
+/// Whether `name`'s head (the bytes before the `::` at `sep`) is one of the
+/// builtin iterator namespaces.
+fn builtin_iterator_namespace_is_prefix(name: String, sep: Int) -> Bool {
+  let mut found = false
+  for namespace in dtd_builtin_iterator_namespaces {
+    if !found && String::length(namespace) == sep && String::starts_with(name, prefix = namespace) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 export fn iterator_array_intrinsic(name: String, args: Array[Expr], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
-  let member = match split_qualified(name) {
-    Some(parts) => {
-      let (namespace, operation) = parts
-      if str_array_contains(arr = dtd_builtin_iterator_namespaces, val = namespace) {
-        operation
-      } else {
-        ""
-      }
-    },
-    None => ""
+  // #3900: the namespace is compared in place, so a call outside the builtin
+  // iterator namespaces -- nearly every call -- allocates nothing here.
+  let sep = String::index_of(name, needle = "::")
+  let member = if sep >= 0 && builtin_iterator_namespace_is_prefix(name = name, sep = sep) {
+    String::substring(name, start = sep + 2, end = String::length(name))
+  } else {
+    ""
   }
   if Array::length(args) == 0 || member == "" {
     None
@@ -385,10 +396,7 @@ export fn iterator_array_intrinsic(name: String, args: Array[Expr], gens: Array[
       Some("Array::all")
     } else if member == "flatmap" {
       let provider_prefix = "Iterator_exp_"
-      let provider_namespace = match split_qualified(name) {
-        Some(parts) => parts.0,
-        None => ""
-      }
+      let provider_namespace = String::substring(name, start = 0, end = sep)
       if String::starts_with(provider_namespace, prefix = provider_prefix) {
         let provider_suffix = String::substring(provider_namespace, start = String::length(provider_prefix), end = String::length(provider_namespace))
         Some(String::concat("Array_exp_", String::concat(provider_suffix, "::flatmap")))
