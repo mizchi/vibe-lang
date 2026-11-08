@@ -345,6 +345,7 @@ export fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[Stri
     borrowed_view: [],
     branch_value: [],
     loop_floor: 0,
+    exit_floor: 0,
     decl_flags: [],
     mark_ids: [],
     mark_offs: [],
@@ -452,6 +453,7 @@ export fn pctx_reset(_ ctx: PCtx) -> Int {
   Array::truncate(ctx.borrowed_view, length = 0)
   Array::truncate(ctx.branch_value, length = 0)
   ctx.loop_floor = 0
+  ctx.exit_floor = 0
   Array::truncate(ctx.decl_flags, length = 0)
   Array::truncate(ctx.mark_ids, length = 0)
   Array::truncate(ctx.mark_offs, length = 0)
@@ -1334,11 +1336,14 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EWhile(cond, body) => {
       // #3134: bindings declared from here on belong to the loop body.
       let saved_floor = ctx.loop_floor
+      let saved_exit = ctx.exit_floor
       ctx.loop_floor = ctx.next_id
+      ctx.exit_floor = ctx.loop_floor
       pc_emit(ctx = ctx, scope = scope, expr = cond)
       // #3162: each iteration's body value is dropped unreleased.
       pc_emit(ctx = ctx, scope = scope, expr = pe_discarded_spine(body))
       ctx.loop_floor = saved_floor
+      ctx.exit_floor = saved_exit
       0
     },
     EReturn(e) => {
@@ -1352,16 +1357,16 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       match opt {
         Some(e) => {
           pc_emit(ctx = ctx, scope = scope, expr = e)
-          pe_exit(ctx = ctx, scope = scope, kind = pe_exit_break, floor = ctx.loop_floor, operand = e)
+          pe_exit(ctx = ctx, scope = scope, kind = pe_exit_break, floor = ctx.exit_floor, operand = e)
         },
-        None => pe_exit(ctx = ctx, scope = scope, kind = pe_exit_break, floor = ctx.loop_floor, operand = EUnit)
+        None => pe_exit(ctx = ctx, scope = scope, kind = pe_exit_break, floor = ctx.exit_floor, operand = EUnit)
       }
       0
     },
     // #3141: codegen compiles no `continue` payload (the parameterized loop
     // is lowered before this plan), so neither does the plan.
     EContinue(_) => {
-      pe_exit(ctx = ctx, scope = scope, kind = pe_exit_continue, floor = ctx.loop_floor, operand = EUnit)
+      pe_exit(ctx = ctx, scope = scope, kind = pe_exit_continue, floor = ctx.exit_floor, operand = EUnit)
       0
     },
     // compile_lambda gives the closure environment its own reference to
@@ -1379,8 +1384,16 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // same floor: such an occurrence is a borrow. The loop reads a named
       // iterable without taking its reference; a temporary expression
       // otherwise follows its normal ownership path.
+      //
+      // #3879 review: only the retain context moves. compile_forin_loop
+      // installs the loop's exit-stack boundary AFTER the iterable, so a
+      // `break` / `continue` inside the iterable still leaves the ENCLOSING
+      // loop and releases what that loop's body declared (`exit_floor`
+      // stays the enclosing one until the body).
+      let saved_exit = ctx.exit_floor
       ctx.loop_floor = ctx.next_id
       pc_operand_emit(ctx = ctx, scope = scope, e_in = iterable)
+      ctx.exit_floor = ctx.loop_floor
       let idv = pe_declare(ctx = ctx, name = value_name)
       let s2 = PsBind(value_name, idv, scope)
       let s3 = match index_opt {
@@ -1397,6 +1410,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_item_emit(ctx = ctx, scope = s3, e = fbody)
       pe_scope_end(ctx = ctx, id = idv, name = value_name)
       ctx.loop_floor = saved_floor
+      ctx.exit_floor = saved_exit
       0
     },
     ELoop(params, lbody) => {
@@ -1404,7 +1418,9 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // EWhile's. The parameters count as inside: each iteration rebinds
       // them to the values `continue` passes.
       let saved_floor = ctx.loop_floor
+      let saved_exit = ctx.exit_floor
       ctx.loop_floor = ctx.next_id
+      ctx.exit_floor = ctx.loop_floor
       let mut s = scope
       let pids: Array[Int] = []
       let pnames: Array[String] = []
@@ -1425,6 +1441,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         j = j + 1
       }
       ctx.loop_floor = saved_floor
+      ctx.exit_floor = saved_exit
       0
     },
     EMatch(scrut, arms) => {

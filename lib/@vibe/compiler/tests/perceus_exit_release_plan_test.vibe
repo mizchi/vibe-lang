@@ -184,3 +184,14 @@ test "a let mut a call moves out of and back into is released once" {
   let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  let mut i = 0\n  while i < 3 {\n    d = keep(d)\n    i = i + 1\n  }\n  if n > 0 {\n    return 1\n  }\n  0\n}"))
   assert(String::contains(plan, needle = "run d exit_drop:0:1 1"))
 }
+
+test "a continue inside a for iterable releases the enclosing loop body's binding" {
+  // #3879 review: the iterable is planned in the `for`'s retain context, but
+  // compile_forin_loop installs the `for`'s exit boundary only after it, so
+  // the `continue` leaves the enclosing `while` body -- and `d` with it. With
+  // the boundary moved to the iterable, `d` got no exit row and leaked on
+  // every skipped iteration.
+  let plan = plan_of(program("fn wrap(_ a: Array[Int]) -> Array[Array[Int]] {\n  [a]\n}\n\nlet run: (Int) -> Int = (n) -> {\n  let mut i = 0\n  let mut acc = 0\n  while i < 4 {\n    let d = A([n, i])\n    i = i + 1\n    for x in wrap(if i % 2 == 0 {\n      continue\n    } else {\n      [1]\n    }) {\n      acc = acc + Array::length(x)\n    }\n    acc = acc + Array::length(keep(d))\n  }\n  acc\n}"))
+  assert(String::contains(plan, needle = "run d exit_drop:0:1 1"))
+}
+
