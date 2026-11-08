@@ -597,10 +597,14 @@ export fn root_rel_of_absolute(project_root: String, path: String) -> String {
   }
 }
 
-/// A path argument of `rewrite_user_argv` as the guest should read it: an
-/// absolute in-project path relative to the root (`root_rel_of_absolute`), a
-/// relative one relative to the root through the invocation directory, and a
-/// relative one given at the root unchanged.
+/// A SOURCE path argument of `rewrite_user_argv` (one that already exists)
+/// as the guest should read it: an absolute in-project path relative to the
+/// root (`root_rel_of_absolute`), a relative one relative to the root through
+/// the invocation directory, and a relative one given at the root unchanged.
+/// An OUTPUT path (`-o`, `--guest-profile=`, ...) keeps an absolute spelling:
+/// the launcher hands some of them to a process it starts in the invocation
+/// directory, where a root-relative spelling names another file (Codex review
+/// of #3948).
 fn root_rel_arg(invoke_rel: String, project_root: String, path: String) -> String {
   if path_is_absolute(path) {
     root_rel_of_absolute(project_root = project_root, path = path)
@@ -611,8 +615,8 @@ fn root_rel_arg(invoke_rel: String, project_root: String, path: String) -> Strin
   }
 }
 
-/// Does any argument before a `--` name an absolute path inside the project
-/// root (bare, or as the value of an `=` flag)?
+/// Does any bare argument before a `--` name an absolute path inside the
+/// project root?
 fn has_abs_under_root(args: Array[String], project_root: String) -> Bool {
   let mut found = false
   let mut i = 1
@@ -621,13 +625,7 @@ fn has_abs_under_root(args: Array[String], project_root: String) -> Bool {
     if a == "--" {
       i = Array::length(args)
     } else {
-      let eq = String::index_of(a, needle = "=")
-      let v = if String::starts_with(a, prefix = "--") && eq > 0 {
-        a[eq + 1: String::length(a)]
-      } else {
-        a
-      }
-      found = root_rel_of_absolute(project_root = project_root, path = v) != v
+      found = root_rel_of_absolute(project_root = project_root, path = a) != a
       i = i + 1
     }
   }
@@ -653,30 +651,30 @@ export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_roo
         Array::push(out, value = a)
         prev = ""
       } else if flag_takes_output_path(prev) {
-        Array::push(out, value = root_rel_arg(invoke_rel = invoke_rel, project_root = project_root, path = a))
+        Array::push(out, value = root_rel_from_invoke(invoke_rel = invoke_rel, path = a))
         prev = ""
       } else if flag_takes_non_path(prev) {
         Array::push(out, value = a)
         prev = ""
       } else if String::starts_with(a, prefix = "--guest-profile=") {
-        Array::push(out, value = String::concat("--guest-profile=", root_rel_arg(invoke_rel = invoke_rel, project_root = project_root, path = a[16: String::length(a)])))
+        Array::push(out, value = String::concat("--guest-profile=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[16: String::length(a)])))
         prev = ""
       } else if String::starts_with(a, prefix = "--file-list=") {
         // The equals spellings need their own arms for the same reason
         // `--guest-profile=` and `--out=` do: an argument beginning with `-`
         // never reaches the generic path branch, so the value rides through
         // untouched and resolves against the wrong directory.
-        Array::push(out, value = String::concat("--file-list=", root_rel_arg(invoke_rel = invoke_rel, project_root = project_root, path = a[12: String::length(a)])))
+        Array::push(out, value = String::concat("--file-list=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[12: String::length(a)])))
         prev = ""
         ()
       } else if String::starts_with(a, prefix = "--resume-out=") {
-        Array::push(out, value = String::concat("--resume-out=", root_rel_arg(invoke_rel = invoke_rel, project_root = project_root, path = a[13: String::length(a)])))
+        Array::push(out, value = String::concat("--resume-out=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[13: String::length(a)])))
         prev = ""
         ()
       } else if String::starts_with(a, prefix = "--out=") {
         // The equals spelling `vibe profile --out=prof.json` names an output
         // path the same way the split one does (Codex review of #2858).
-        Array::push(out, value = String::concat("--out=", root_rel_arg(invoke_rel = invoke_rel, project_root = project_root, path = a[6: String::length(a)])))
+        Array::push(out, value = String::concat("--out=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[6: String::length(a)])))
         prev = ""
       } else if String::length(a) > 0 && String::byte_at(a, at = 0) == 45 {
         Array::push(out, value = a)

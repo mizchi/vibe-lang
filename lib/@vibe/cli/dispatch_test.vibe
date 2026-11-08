@@ -836,6 +836,19 @@ test "rewrite_user_argv prefixes relative paths with the invoke dir" {
     "/tmp/vibe_user_dispatch_rewrite_root/sub/deep.vibex"
   ], invoke_dir = sub, project_root = root)
   assert(Array::get(abs, at = 1) == "sub/deep.vibex")
+  // From a subdirectory too, an absolute OUTPUT path is left absolute: the
+  // launcher hands `--guest-profile=` to a guest it starts in the invocation
+  // directory (Codex review of #3948).
+  let abs_out = rewrite_user_argv(args = [
+    "run",
+    String::concat("--guest-profile=", String::concat(root, "/p.json")),
+    "deep.vibex",
+    "-o",
+    String::concat(root, "/o.wasm")
+  ], invoke_dir = sub, project_root = root)
+  assert(Array::get(abs_out, at = 1) == String::concat("--guest-profile=", String::concat(root, "/p.json")))
+  assert(Array::get(abs_out, at = 2) == "sub/deep.vibex")
+  assert(Array::get(abs_out, at = 4) == String::concat(root, "/o.wasm"))
   let outside = rewrite_user_argv(args = ["check", "/elsewhere/deep.vibex"], invoke_dir = sub, project_root = root)
   assert(Array::get(outside, at = 1) == "/elsewhere/deep.vibex")
   let at_root = rewrite_user_argv(args = ["run", "deep.vibex"], invoke_dir = root, project_root = root)
@@ -873,9 +886,10 @@ test "root_rel_of_absolute spells an in-project absolute path from the root" {
   assert(root_rel_of_absolute(project_root = "", path = "/proj/x.vibe") == "/proj/x.vibe")
 }
 
-// #3882: at the project root, an absolute in-project path is rewritten to the
-// root-relative spelling the relative invocation uses; a relative path, a path
-// outside the root and a guest argument after `--` are left as given.
+// #3882: at the project root, an absolute in-project SOURCE path is rewritten
+// to the root-relative spelling the relative invocation uses; an output path,
+// a relative path, a path outside the root and a guest argument after `--`
+// are left as given.
 test "rewrite_user_argv spells absolute in-project paths from the root" {
   let root = "/tmp/vibe_user_dispatch_rewrite_abs_root"
   Fs::mkdir_p(String::concat(root, "/pkg"))
@@ -898,10 +912,15 @@ test "rewrite_user_argv spells absolute in-project paths from the root" {
     String::concat(root, "/guest.txt")
   ], invoke_dir = root, project_root = root)
   assert(Array::get(o, at = 1) == "pkg/a_test.vibe")
-  assert(Array::get(o, at = 3) == "out.wasm")
+  // An output path keeps its absolute spelling (Codex review of #3948).
+  assert(Array::get(o, at = 3) == String::concat(root, "/out.wasm"))
   assert(Array::get(o, at = 5) == String::concat(root, "/guest.txt"))
-  let eq = rewrite_user_argv(args = ["run", String::concat("--guest-profile=", String::concat(root, "/p.json")), "pkg/a_test.vibe"], invoke_dir = root, project_root = root)
-  assert(Array::get(eq, at = 1) == "--guest-profile=p.json")
+  let eq = rewrite_user_argv(args = [
+    "run",
+    String::concat("--guest-profile=", String::concat(root, "/p.json")),
+    "pkg/a_test.vibe"
+  ], invoke_dir = root, project_root = root)
+  assert(Array::get(eq, at = 1) == String::concat("--guest-profile=", String::concat(root, "/p.json")))
   let rel = ["check", "pkg/a_test.vibe"]
   assert(Array::get(rewrite_user_argv(args = rel, invoke_dir = root, project_root = root), at = 1) == "pkg/a_test.vibe")
   let out = rewrite_user_argv(args = ["check", "/elsewhere/a.vibe"], invoke_dir = root, project_root = root)
