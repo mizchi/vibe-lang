@@ -350,8 +350,9 @@ pub(super) fn vibe_read_dir_names(
     Ok(names)
 }
 
-// Match the guest allocator's geometric policy while retaining exact-growth
-// fallback when a module maximum or the store's soft limit rejects spare pages.
+// Match the guest allocator's geometric policy, `max(deficit, current / 16)`
+// (#3931), while retaining exact-growth fallback when a module maximum or the
+// store's soft limit rejects spare pages.
 fn ensure_vibe_memory_capacity(
     caller: &mut Caller<'_, HostState>,
     mem: &wasmtime::Memory,
@@ -362,7 +363,7 @@ fn ensure_vibe_memory_capacity(
         return Ok(());
     }
     let pages = (end - current).div_ceil(65536);
-    let grow_by = pages.max(current / 65536 / 2);
+    let grow_by = pages.max(current / 65536 / 16);
     if grow_by != pages && mem.grow(&mut *caller, grow_by).is_ok() {
         return Ok(());
     }
@@ -1792,6 +1793,7 @@ mod allocation_growth_tests {
     const BYTES: &[u8] = &[0, 255, 9, 31, 128, 20, 8, 2, 5, 6];
 
     fn exercise(
+        initial: u64,
         maximum: u64,
         soft_pages: usize,
         start: usize,
@@ -1806,7 +1808,7 @@ mod allocation_growth_tests {
                     format!(
                         r#"(module
                     (import "test" "alloc" (func $alloc (result i64)))
-                    (memory (export "memory") 4 {maximum})
+                    (memory (export "memory") {initial} {maximum})
                     (global (export "__heap_ptr") (mut {heap_type}) ({heap_type}.const {start}))
                     (func (export "run") (result i64) call $alloc))"#
                     ),
@@ -1879,10 +1881,10 @@ mod allocation_growth_tests {
                     .iter()
                     .map(|(_, from, to)| (*from, *to))
                     .collect();
-                let expected = if expected_pages == 4 {
+                let expected = if expected_pages == initial {
                     vec![]
                 } else {
-                    vec![(4 * PAGE as u64, expected_pages * PAGE as u64)]
+                    vec![(initial * PAGE as u64, expected_pages * PAGE as u64)]
                 };
                 assert_eq!(events, expected);
             }
@@ -1891,22 +1893,28 @@ mod allocation_growth_tests {
     }
     #[test]
     fn geometric_growth_preserves_raw_payloads() -> Result<()> {
-        exercise(8, 8, 4 * PAGE - 8, 6, false)
+        // 32 pages grow by 32 / 16 = 2, not by the 1-page deficit.
+        exercise(32, 64, 64, 32 * PAGE - 8, 34, false)
+    }
+    #[test]
+    fn small_memory_grows_by_its_deficit() -> Result<()> {
+        // 4 / 16 rounds to 0, so the deficit (1 page) decides.
+        exercise(4, 8, 8, 4 * PAGE - 8, 5, false)
     }
     #[test]
     fn declared_maximum_retries_exact_growth() -> Result<()> {
-        exercise(5, 8, 4 * PAGE - 8, 5, false)
+        exercise(32, 33, 64, 32 * PAGE - 8, 33, false)
     }
     #[test]
     fn store_limit_retries_exact_growth() -> Result<()> {
-        exercise(8, 5, 4 * PAGE - 8, 5, false)
+        exercise(32, 64, 33, 32 * PAGE - 8, 33, false)
     }
     #[test]
     fn failed_growth_preserves_heap_and_existing_bytes() -> Result<()> {
-        exercise(4, 8, 4 * PAGE - 8, 4, true)
+        exercise(32, 32, 64, 32 * PAGE - 8, 32, true)
     }
     #[test]
     fn fitting_payload_does_not_grow() -> Result<()> {
-        exercise(8, 8, 8, 4, false)
+        exercise(32, 64, 64, 8, 32, false)
     }
 }

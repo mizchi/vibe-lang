@@ -80,10 +80,15 @@ fn emit_heap_page_deficit(_ buf: Bytes) -> Unit {
   bytebuf_push(buf = buf, byte = op_i32_sub)
 }
 
-/// pushes `memory_size / 2` on the stack.
-fn emit_heap_half_current(_ buf: Bytes) -> Unit {
+/// log2 of the growth divisor: a grow asks for at least
+/// `memory_size >> heap_growth_shift` pages (1/16 of the current memory).
+let heap_growth_shift = 4
+
+/// pushes `memory_size >> heap_growth_shift` (the minimum growth step) on the
+/// stack.
+fn emit_heap_growth_step(_ buf: Bytes) -> Unit {
   bytebuf_push2(buf = buf, b1 = op_memory_size, b2 = 0)
-  emit_i32_const(buf = buf, value = 1)
+  emit_i32_const(buf = buf, value = heap_growth_shift)
   bytebuf_push(buf = buf, byte = op_i32_shr_u)
 }
 
@@ -94,19 +99,24 @@ export fn emit_heap_memory_grow_check(_ buf: Bytes) -> Unit {
   // bump allocator hands out) is always addressable even when it lands
   // exactly on a page boundary. Monotonic: never grows LESS than before.
   //
-  // Growth POLICY (2026-07 perf): grow by `max(deficit, memory_size / 2)`
-  // instead of the exact deficit. The exact-deficit policy grew a large
-  // compile's heap in thousands of 1-2 page steps; on the node host every
-  // `memory.grow` invalidates the cached typed-array views and stampedes
-  // V8's external-memory GC accounting — profiling the selfcompile KPI
-  // showed 38% of CPU inside V8's GC and pre-growing the memory up front
-  // halved wall time (14.1s -> 6.4s). Exponential growth caps the number of
-  // grows at O(log heap) with at most 50% address-space overshoot; untouched
-  // tail pages are never written by the bump allocator, so RSS barely moves.
-  // If the 1.5x request fails (memory.grow == -1: the module declares no
-  // max, so only near the wasm32 4GB ceiling), RETRY with the exact deficit
-  // — the old policy's request — so a large-but-satisfiable allocation near
-  // the ceiling still succeeds exactly as before.
+  // Growth POLICY: grow by `max(deficit, memory_size / 16)` instead of the
+  // exact deficit. The exact-deficit policy grew a large compile's heap in
+  // thousands of 1-2 page steps; on the node host every `memory.grow`
+  // invalidates the cached typed-array views and stampedes V8's
+  // external-memory GC accounting (2026-07: 38% of the selfcompile KPI's CPU
+  // was V8 GC). Geometric growth caps the number of grows at O(log heap).
+  //
+  // The factor is 1/16, not 1/2 (#3931). Reserved memory is what an isolate
+  // limit counts (bench/perf/reserved_pages_baseline.tsv), and at 1/2 it ran
+  // up to 50% past the heap and moved in x1.5 steps: a heap change of 5%
+  // that crossed a step moved reserved pages by 50%. At 1/16 the overshoot
+  // and the step are both at most 6.25%, under the KPI's 10% tolerance, for
+  // about 100 grows on a compiler-sized heap instead of about 20. RSS is the
+  // same either way: untouched tail pages are never written.
+  //
+  // If the request fails (memory.grow == -1: the module declares no max, so
+  // only near the wasm32 4GB ceiling), RETRY with the exact deficit, so a
+  // large-but-satisfiable allocation near the ceiling still succeeds.
   emit_global_get(buf = buf, idx = 0)
   emit_i32_const(buf = buf, value = 65536)
   bytebuf_push(buf = buf, byte = op_i32_add)
@@ -115,13 +125,13 @@ export fn emit_heap_memory_grow_check(_ buf: Bytes) -> Unit {
   bytebuf_push2(buf = buf, b1 = op_memory_size, b2 = 0)
   bytebuf_push(buf = buf, byte = op_i32_gt_u)
   bytebuf_push2(buf = buf, b1 = op_if, b2 = bt_void)
-  // grow_by = max(deficit, memory_size/2)  (select re-derives both operands:
+  // grow_by = max(deficit, memory_size/16)  (select re-derives both operands:
   // this body has no locals, and it runs O(log heap) times, so the few extra
   // instructions are irrelevant)
   emit_heap_page_deficit(buf)
-  emit_heap_half_current(buf)
+  emit_heap_growth_step(buf)
   emit_heap_page_deficit(buf)
-  emit_heap_half_current(buf)
+  emit_heap_growth_step(buf)
   bytebuf_push(buf = buf, byte = op_i32_gt_u)
   bytebuf_push(buf = buf, byte = op_select)
   bytebuf_push2(buf = buf, b1 = op_memory_grow, b2 = 0)
@@ -138,23 +148,23 @@ export fn emit_heap_memory_grow_check(_ buf: Bytes) -> Unit {
 
 /// emit_heap_memory_grow_check for a body with two i32 locals it may
 /// clobber: the same test and the same growth policy, with the deficit
-/// computed once into `deficit_local` (and `memory_size / 2` into
-/// `half_local`) instead of re-derived for every use. The deficit is a
+/// computed once into `deficit_local` (and the minimum step into
+/// `step_local`) instead of re-derived for every use. The deficit is a
 /// signed page count, at most 65536 either way: heap_ptr never passes
 /// 2^32 - 65537 (the allocator traps first), so `heap_ptr + 65536` does not
 /// wrap, and "deficit > 0" is the unsigned `pages > memory_size` above.
-export fn emit_heap_memory_grow_check_locals(buf: Bytes, deficit_local: Int, half_local: Int) -> Unit {
+export fn emit_heap_memory_grow_check_locals(buf: Bytes, deficit_local: Int, step_local: Int) -> Unit {
   emit_heap_page_deficit(buf)
   bytebuf_push_opcode_u32(buf = buf, opcode = op_local_tee, value = deficit_local)
   emit_i32_const(buf = buf, value = 0)
   bytebuf_push(buf = buf, byte = op_i32_gt_s)
   bytebuf_push2(buf = buf, b1 = op_if, b2 = bt_void)
-  // grow_by = max(deficit, memory_size / 2)
+  // grow_by = max(deficit, memory_size / 16)
   bytebuf_push_opcode_u32(buf = buf, opcode = op_local_get, value = deficit_local)
-  emit_heap_half_current(buf)
-  bytebuf_push_opcode_u32(buf = buf, opcode = op_local_tee, value = half_local)
+  emit_heap_growth_step(buf)
+  bytebuf_push_opcode_u32(buf = buf, opcode = op_local_tee, value = step_local)
   bytebuf_push_opcode_u32(buf = buf, opcode = op_local_get, value = deficit_local)
-  bytebuf_push_opcode_u32(buf = buf, opcode = op_local_get, value = half_local)
+  bytebuf_push_opcode_u32(buf = buf, opcode = op_local_get, value = step_local)
   bytebuf_push(buf = buf, byte = op_i32_gt_u)
   bytebuf_push(buf = buf, byte = op_select)
   bytebuf_push2(buf = buf, b1 = op_memory_grow, b2 = 0)
