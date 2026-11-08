@@ -52,8 +52,11 @@ test "disk adapter loads complete records and refuses damaged records" {
 test "disk adapter preserves dependency cache versions and repeated occurrences" {
   let path = "_build/env-adapter-logical-module.vibe"
   let source = "fn answer() -> Int { 42 }"
+  let dependency = "_build/env-adapter-logical-dependency.vibe"
+  Fs::mkdir_p("_build")
+  Fs::write_file(dependency, contents = "export fn dependency() -> Int { 1 }\n")
   let cache_path = persistent_dep_list_cache_path(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
-  for deps in [[], ["a.vibe"], ["a.vibe", "a.vibe"]] {
+  for deps in [[], [dependency], [dependency, dependency]] {
     Fs::write_file(cache_path, contents = persistent_dep_list_text(deps))
     match load_persistent_dep_list(path = path, source = source) {
       Some(decoded) => assert(decoded == deps),
@@ -73,7 +76,11 @@ test "disk adapter refuses stale resolved package index paths" {
   let source = "import @vibe/core { array_empty }"
   let cache_path = persistent_dep_list_cache_path(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
   let stale = "_build/stale-root/@vibe/core/index.vpkg"
-  for deps in [[stale], [stale, "a.vibe"]] {
+  let dependency = "_build/env-adapter-stale-root-dependency.vibe"
+  Fs::mkdir_p("_build/stale-root/@vibe/core")
+  Fs::write_file(stale, contents = "name = @vibe/core\nversion = 0.0.1\n")
+  Fs::write_file(dependency, contents = "export fn dependency() -> Int { 1 }\n")
+  for deps in [[stale], [stale, dependency]] {
     Fs::write_file(cache_path, contents = persistent_dep_list_text(deps))
     match load_persistent_dep_list(path = path, source = source) {
       None => (),

@@ -66,6 +66,9 @@ project/cache paths were used for both editor measurements.
   rejected in each revision's oracle verification.
 - Targeted loader/source/persistent-cache suites: 47 tests in each of bump and
   RC modes, through the exact candidate compiler.
+- Disk-adapter fixture: three more tests in each mode. Valid dependency rows
+  use real files, and the stale-package control uses an existing wrong root
+  so an absent file cannot satisfy its refusal assertion.
 
 No-op medians over three independent sessions (milliseconds):
 
