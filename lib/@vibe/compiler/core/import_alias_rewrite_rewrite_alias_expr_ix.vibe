@@ -2178,7 +2178,14 @@ fn rewrite_private_type_ctor_expr(expr: Expr, type_renames: Array[(String, Strin
     }, off, callee_resolution),
     EBinOp(op, left, right, boff) => EBinOp(op, rewrite_private_type_ctor_expr(expr = left, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = right, type_renames = type_renames, ctor_renames = ctor_renames), boff),
     EUnaryOp(op, value) => EUnaryOp(op, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
-    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, rewrite_private_bound_keys(bounds = bounds, renames = alias_map_without_names(aliases = type_renames, names = type_params)), rewrite_private_params(params = params, type_renames = type_renames), rewrite_private_type_opt(ty = ret_ty, renames = type_renames), effect, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params))),
+    // A binder's own type parameters are not the renamed types, anywhere
+    // under it (`[Alias](x: Alias) -> Alias`, Codex on #3942).
+    EFn(type_params, bounds, params, ret_ty, effect, body) => {
+      let own = alias_map_without_names(aliases = type_renames, names = for t in type_params {
+        type_param_name(t)
+      })
+      EFn(type_params, rewrite_private_bound_keys(bounds = bounds, renames = own), rewrite_private_params(params = params, type_renames = own), rewrite_private_type_opt(ty = ret_ty, renames = own), effect, rewrite_private_type_ctor_expr(expr = body, type_renames = own, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params)))
+    },
     EDot(obj, field, off, fdoff) => EDot(rewrite_private_type_ctor_expr(expr = obj, type_renames = type_renames, ctor_renames = ctor_renames), field, off, fdoff),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
     EReturn(value) => EReturn(rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
@@ -2515,7 +2522,12 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
           (mname, for param in params {
             rewrite_private_type_expr(ty = param, renames = mrenames)
           }, rewrite_private_type_expr(ty = ret, renames = mrenames))
-        }, method_tparams, tparams),
+        }, for row in method_tparams {
+          // A method's own bounds are trait keys too
+          // (`run[T: Value[Alias]](Self, T)`).
+          let (mname, mtparams, mbounds) = row
+          (mname, mtparams, rewrite_private_bound_keys(bounds = mbounds, renames = alias_map_without_names(aliases = own, names = trait_method_tparam_names(method_tparams = method_tparams, method = mname))))
+        }, tparams),
         // An applied trait reference spells its arguments inside the trait
         // key (`impl Value[Alias] for Box`, Codex on #3942); the private walk
         // rewrites only the target.
@@ -2532,6 +2544,16 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
       match renamed {
         STypeAlias(exported, name, params, target) => match lookup_alias(aliases = renames, name = name) {
           Some(next) => STypeAlias(exported, next, params, target),
+          None => renamed
+        },
+        // A companion declared on the alias (`fn Alias::tag()`) follows it,
+        // as its calls do (Codex on #3942).
+        SLet(exported, is_rec, name, ty, body) => match alias_companion_rename(name = name, renames = renames) {
+          Some(next) => SLet(exported, is_rec, next, ty, body),
+          None => renamed
+        },
+        SFnDecl(exported, name, body, attrs, off) => match alias_companion_rename(name = name, renames = renames) {
+          Some(next) => SFnDecl(exported, next, body, attrs, off),
           None => renamed
         },
         _ => renamed
@@ -2564,6 +2586,19 @@ fn rewrite_private_bound_keys(bounds: Array[(String, Array[String])], renames: A
       (param, for trait_ref in traits {
         rewrite_private_trait_key(trait_name = trait_ref, renames = renames)
       })
+    }
+  }
+}
+
+/// `Alias::tag` -> `Alias_exp_<path>::tag` when `Alias` is renamed.
+fn alias_companion_rename(name: String, renames: Array[(String, String)]) -> Option[String] {
+  let sep = String::index_of(name, needle = "::")
+  if sep <= 0 {
+    None
+  } else {
+    match lookup_alias(aliases = renames, name = String::substring(name, start = 0, end = sep)) {
+      Some(next) => Some(String::concat(next, String::substring(name, start = sep, end = String::length(name)))),
+      None => None
     }
   }
 }
