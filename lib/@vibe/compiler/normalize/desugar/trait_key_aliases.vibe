@@ -1,14 +1,10 @@
 // Applied trait keys through type aliases (#3947).
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeDef, TypeExpr, canonical_trait_arg_type_expr, resolve_type_expr_core_shadowed
+  Expr, Pat, Stmt, TypeDef, canonical_key_defs, canonical_trait_key
 }
 
 import @vibe/ast {
-  impl_method_owner, trait_ref_from_key, trait_ref_is_applied, trait_ref_key, type_param_name
-}
-
-import ./state.vibe {
-  dtd_eq_type_aliases
+  impl_method_owner, trait_ref_is_applied, type_param_name
 }
 
 //# Functions
@@ -25,106 +21,40 @@ import ./state.vibe {
 /// renamed with it. An argument that names one of the declaration's own type
 /// parameters is left as written.
 ///
-/// Each argument is resolved and written back the way the checker's
-/// `canonical_impl_trait_key` does it (`resolve_type_expr_core_shadowed`,
-/// then `canonical_trait_arg_type_expr`), not expanded syntactically: every
-/// spelling the resolver identifies (`Unit` and `()`, `StringMap[V]` and
-/// `Map[String, V]`) then encodes as one key on both sides. That is also why
-/// it runs whether or not the program declares an alias.
-///
-/// Reads the alias table `eq_known_types_reset` fills, so it runs after it.
+/// Each key goes through core's `canonical_trait_key`, the function the
+/// checker's impl registration and the linked program's coherence check use,
+/// over the program's own declarations (`canonical_key_defs`): every spelling
+/// the resolver identifies (`Unit` and `()`, `StringMap[V]` and
+/// `Map[String, V]`) then encodes as one key everywhere, and a program's own
+/// type keeps its name. That is also why it runs whether or not the program
+/// declares an alias.
 export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
-  // The definitions are built on the first applied key the pass meets
-  // (`tka_defs_ensure`): most programs and modules spell none, and those
-  // pay nothing for them.
-  Array::set(tka_defs_ready, at = 0, value = false)
+  // The definitions are built on the first applied key the pass meets: most
+  // programs and modules spell none, and those pay nothing for them.
+  Array::truncate(tka_defs, length = 0)
   Array::truncate(tka_defs_source, length = 0)
   Array::push(tka_defs_source, value = stmts)
   expand_trait_key_aliases_in(stmts)
   Array::truncate(tka_defs_source, length = 0)
+  Array::truncate(tka_defs, length = 0)
 }
 
-let tka_defs_ready: Array[Bool] = [false]
+let tka_defs: Array[Array[TypeDef]] = []
 
 let tka_defs_source: Array[Array[Stmt]] = []
 
-fn tka_defs_ensure() -> Unit {
-  if !Array::get(tka_defs_ready, at = 0) {
-    Array::set(tka_defs_ready, at = 0, value = true)
-    if Array::length(tka_defs_source) > 0 {
-      tka_defs_reset(Array::get(tka_defs_source, at = 0))
+fn tka_key_defs() -> Array[TypeDef] {
+  if Array::length(tka_defs) == 0 {
+    let built = if Array::length(tka_defs_source) > 0 {
+      canonical_key_defs(Array::get(tka_defs_source, at = 0))
     } else {
-      Array::truncate(tka_defs, length = 0)
+      []
     }
+    Array::push(tka_defs, value = built)
   } else {
     ()
   }
-}
-
-/// The program's type declarations as the checker's resolver reads them, so a
-/// key is resolved here exactly as `canonical_impl_trait_key` resolves it.
-/// Aliases resolve their bodies; an alias naming a later one resolves on a
-/// later round, and one round per alias closes every chain. A struct, enum or
-/// suberror is entered by name and parameters only: the resolver keeps a
-/// declared name as written, so a program's own `struct StringMap[T]` stays
-/// that type rather than the builtin `Map[String, T]` (Codex on #3956).
-let tka_defs: Array[TypeDef] = []
-
-fn tka_defs_reset(_ stmts: Array[Stmt]) -> Unit {
-  let nominal: Array[TypeDef] = []
-  for stmt in stmts {
-    match stmt {
-      SStruct(_, name, _, _, _, tparams) => Array::push(nominal, value = TDStruct(name, [
-      ], [], tparams)),
-      SEnum(_, name, params, _, _) => Array::push(nominal, value = TDEnum(name, params, [
-      ])),
-      SSuberror(_, name, _) => Array::push(nominal, value = TDEnum(name, [], [])),
-      _ => ()
-    }
-  }
-  Array::truncate(tka_defs, length = 0)
-  for d in nominal {
-    Array::push(tka_defs, value = d)
-  }
-  // One round resolves every alias whose body names no other alias; only a
-  // chain needs more, at most one per alias.
-  let alias_names: Array[String] = []
-  for row in dtd_eq_type_aliases {
-    let (name, _, _) = row
-    Array::push(alias_names, value = name)
-  }
-  let mut chained = false
-  for row in dtd_eq_type_aliases {
-    let (_, _, target) = row
-    if !chained && type_expr_names_any(ty = target, names = alias_names) {
-      chained = true
-    } else {
-      ()
-    }
-  }
-  let rounds = if chained {
-    Array::length(dtd_eq_type_aliases)
-  } else if Array::length(dtd_eq_type_aliases) > 0 {
-    1
-  } else {
-    0
-  }
-  let mut r = 0
-  while r < rounds {
-    let next: Array[TypeDef] = []
-    for d in nominal {
-      Array::push(next, value = d)
-    }
-    for row in dtd_eq_type_aliases {
-      let (name, params, target) = row
-      Array::push(next, value = TDAlias(name, params, resolve_type_expr_core_shadowed(te = target, defs = tka_defs, shadow = params)))
-    }
-    Array::truncate(tka_defs, length = 0)
-    for d in next {
-      Array::push(tka_defs, value = d)
-    }
-    r = r + 1
-  }
+  Array::get(tka_defs, at = 0)
 }
 
 fn expand_trait_key_aliases_in(_ stmts: Array[Stmt]) -> Unit {
@@ -498,38 +428,7 @@ fn expand_key_aliases(key: String, names: Array[String]) -> String {
   if !trait_ref_is_applied(key) {
     key
   } else {
-    expand_applied_key(key = key, names = names)
-  }
-}
-
-fn expand_applied_key(key: String, names: Array[String]) -> String {
-  tka_defs_ensure()
-  match trait_ref_from_key(key) {
-    Some(TyApp(head, args)) => {
-      let mut changed = false
-      let mapped = for arg in args {
-        let next = if type_expr_names_any(ty = arg, names = names) {
-          arg
-        } else {
-          match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = tka_defs, shadow = names)) {
-            Some(written) => written,
-            None => arg
-          }
-        }
-        if next != arg {
-          changed = true
-        } else {
-          ()
-        }
-        next
-      }
-      if changed {
-        trait_ref_key(TyApp(head, mapped))
-      } else {
-        key
-      }
-    },
-    _ => key
+    canonical_trait_key(key = key, binders = names, defs = tka_key_defs())
   }
 }
 
@@ -596,36 +495,4 @@ fn renamed_owner(name: String, renames: Array[(String, String)]) -> Option[Strin
     }
   }
   out
-}
-
-fn type_expr_names_any(ty: TypeExpr, names: Array[String]) -> Bool {
-  match ty {
-    TyName(name) => {
-      let mut found = false
-      for n in names {
-        if n == name {
-          found = true
-        } else {
-          ()
-        }
-      }
-      found
-    },
-    TyApp(name, args) => type_expr_names_any(ty = TyName(name), names = names) || type_exprs_name_any(tys = args, names = names),
-    TyTuple(items) => type_exprs_name_any(tys = items, names = names),
-    TyFn(params, ret, _) => type_expr_names_any(ty = ret, names = names) || type_exprs_name_any(tys = params, names = names),
-    TyUnit => false
-  }
-}
-
-fn type_exprs_name_any(tys: Array[TypeExpr], names: Array[String]) -> Bool {
-  let mut found = false
-  for t in tys {
-    if !found && type_expr_names_any(ty = t, names = names) {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
 }

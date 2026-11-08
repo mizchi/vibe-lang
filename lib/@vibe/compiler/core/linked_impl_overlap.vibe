@@ -77,7 +77,7 @@ import ./loader_prepended_prefix.vibe {
 }
 
 import ./types_env_cache.vibe {
-  Type
+  Type, TypeDef
 }
 
 import ./types_types_equal.vibe {
@@ -85,11 +85,11 @@ import ./types_types_equal.vibe {
 }
 
 import ./types_unify.vibe {
-  impl_trait_and_target_patterns_overlap
+  canonical_key_defs, canonical_trait_key, impl_trait_and_target_patterns_overlap
 }
 
 import @vibe/ast {
-  impl_method_owner, impl_target_head, trait_ref_from_key, trait_ref_name, type_param_name
+  impl_method_owner, impl_target_head, trait_ref_from_key, trait_ref_is_applied, trait_ref_name, type_param_name
 }
 
 import @vibe/core {
@@ -530,6 +530,11 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
     u = u + 1
   }
   let heads: Array[ImplHead] = []
+  // #3947: impls whose trait arguments name one type through different
+  // spellings (`Value[Alias]` beside `Value[Int]`) are one impl twice, and
+  // the lowering would key both alike (Codex on #3956), so the coherence test
+  // compares canonical keys. Built on the first applied key only.
+  let key_defs: Array[Array[TypeDef]] = []
   let mut v = 0
   while v < Array::length(units) {
     let unit = Array::get(units, at = v)
@@ -552,7 +557,7 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
             } else {
               -1
             },
-            trait_key: trait_key,
+            trait_key: linked_canonical_key(key = trait_key, tparams = tparams, merged = merged, cell = key_defs),
             trait_name: name,
             params: tparams,
             target: resolved,
@@ -618,6 +623,19 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
     v = v + 1
   }
   heads
+}
+
+fn linked_canonical_key(key: String, tparams: Array[String], merged: Array[Stmt], cell: Array[Array[TypeDef]]) -> String {
+  if !trait_ref_is_applied(key) {
+    key
+  } else {
+    if Array::length(cell) == 0 {
+      Array::push(cell, value = canonical_key_defs(merged))
+    } else {
+      ()
+    }
+    canonical_trait_key(key = key, binders = tparams, defs = Array::get(cell, at = 0))
+  }
 }
 
 fn decl_key(unit: Int, trait_name: String) -> String {
