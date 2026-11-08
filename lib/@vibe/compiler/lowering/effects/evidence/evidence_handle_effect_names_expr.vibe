@@ -2263,11 +2263,60 @@ fn edp_row_lit_shape(expr: Expr, row_efn: Array[Bool], ident_lets: Array[String]
   expr_children_pop(mark)
 }
 
-fn edp_names_any(names: Array[String], wanted: MutSet[String]) -> Bool {
+/// A name set that rejects most names without hashing them (#3950).
+///
+/// `shapes[b]` has bit `n` set when some name in `set` starts with byte `b`
+/// and is `n` bytes long, with every length from 61 up sharing bit 61. A
+/// name whose (first byte, length) no member has is not a member, so only
+/// the names that pass reach the hash lookup. The answer is
+/// `MutSet::has(set, name)` in every case. The empty name has no first byte
+/// and is looked up directly.
+struct EdpWanted {
+  set: MutSet[String];
+  shapes: Array[Int]
+}
+
+fn edp_wanted_shape_bit(_ n: Int) -> Int {
+  if n < 61 {
+    1<<n
+  } else {
+    1<<61
+  }
+}
+
+fn edp_wanted(_ names: Array[String]) -> EdpWanted {
+  let shapes: Array[Int] = []
+  let mut b = 0
+  while b < 256 {
+    Array::push(shapes, value = 0)
+    b = b + 1
+  }
+  for name in names {
+    let n = String::length(name)
+    if n > 0 {
+      let first = String::char_code_at(name, at = 0)
+      Array::set(shapes, at = first, value = Array::get(shapes, at = first)|edp_wanted_shape_bit(n))
+    } else ()
+  }
+  EdpWanted::{ set: edp_name_set(names), shapes: shapes }
+}
+
+fn edp_wanted_has(w: EdpWanted, name: String) -> Bool {
+  let n = String::length(name)
+  if n == 0 {
+    MutSet::has(w.set, x = name)
+  } else if (Array::get(w.shapes, at = String::char_code_at(name, at = 0))&edp_wanted_shape_bit(n)) == 0 {
+    false
+  } else {
+    MutSet::has(w.set, x = name)
+  }
+}
+
+fn edp_names_any(names: Array[String], wanted: EdpWanted) -> Bool {
   let mut hit = false
   let mut k = 0
   while !hit && k < Array::length(names) {
-    hit = MutSet::has(wanted, x = Array::get(names, at = k))
+    hit = edp_wanted_has(w = wanted, name = Array::get(names, at = k))
     k = k + 1
   }
   hit
@@ -2280,7 +2329,7 @@ fn edp_names_any(names: Array[String], wanted: MutSet[String]) -> Bool {
 export fn edp_mf_statements_naming(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], needing: Array[String], lets: Bool) -> Array[Int] {
   edp_mf_refresh(facts = facts, stmts = stmts)
   // Every identifier of every statement is looked up, so `needing` is a set.
-  let wanted = edp_name_set(needing)
+  let wanted = edp_wanted(needing)
   let out: Array[Int] = []
   let mut i = 0
   while Array::length(needing) > 0 && i < Array::length(facts) {
@@ -2301,7 +2350,7 @@ export fn edp_mf_row_lit_scan(facts: Option[Array[(Array[String], Array[Expr], A
   match facts {
     Some(known) => {
       edp_mf_refresh(facts = known, stmts = stmts)
-      let wanted = edp_name_set(needing)
+      let wanted = edp_wanted(needing)
       let candidates: Array[Int] = []
       let mut i = 0
       while i < Array::length(known) {

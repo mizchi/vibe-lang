@@ -226,3 +226,35 @@ test "the facts-filtered eta-wrap and escape walks match the whole walks" {
   assert(wrap_and_escape(true) == whole)
   inspect(whole, content = "escape=f rebuilt=yes written=2,3")
 }
+
+fn passes(_ arg: String) -> Stmt {
+  SExpr(ECall(EIdent("g", -1), [EIdent(arg, -1)], -1, []))
+}
+
+fn naming(stmts: Array[Stmt], needing: Array[String], lets: Bool) -> String {
+  let found: Array[String] = []
+  for i in edp_mf_statements_naming(facts = edp_mf_new(), stmts = stmts, needing = needing, lets = lets) {
+    Array::push(found, value = Int::to_string(i))
+  }
+  String::join(found, sep = ",")
+}
+
+test "the statements naming a needing function, whatever their names look like" {
+  // #3950: a name is rejected by its first byte and length before it is
+  // hashed. A non-member sharing both with a member, two long names sharing
+  // the overflow bit, and a non-ASCII first byte must still answer as the set.
+  let long_a = "a_function_name_long_enough_to_share_the_overflow_bit_with_another_one_a"
+  let long_b = "a_function_name_long_enough_to_share_the_overflow_bit_with_another_one_b"
+  let stmts = [
+    passes("fa"),
+    passes("fb"),
+    passes(long_a),
+    passes(long_b),
+    SExpr(ELet("h", EIdent("fb", -1), EInt(0), -1)),
+    passes("élan")
+  ]
+  let needing = ["fb", long_b, "élan"]
+  inspect(naming(stmts = stmts, needing = needing, lets = false), content = "1,3,5")
+  inspect(naming(stmts = stmts, needing = needing, lets = true), content = "1,3,4,5")
+  inspect(naming(stmts = stmts, needing = [], lets = true), content = "")
+}
