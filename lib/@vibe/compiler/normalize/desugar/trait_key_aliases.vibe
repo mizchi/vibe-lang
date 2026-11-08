@@ -34,21 +34,42 @@ import ./state.vibe {
 ///
 /// Reads the alias table `eq_known_types_reset` fills, so it runs after it.
 export fn expand_trait_key_aliases(_ stmts: Array[Stmt]) -> Unit {
-  tka_defs_reset()
+  tka_defs_reset(stmts)
   expand_trait_key_aliases_in(stmts)
 }
 
-/// The program's type aliases as the checker's resolver reads them, so a key
-/// is resolved here exactly as `canonical_impl_trait_key` resolves it. An
-/// alias naming a later one resolves on a later round; one round per alias
-/// closes every chain.
+/// The program's type declarations as the checker's resolver reads them, so a
+/// key is resolved here exactly as `canonical_impl_trait_key` resolves it.
+/// Aliases resolve their bodies; an alias naming a later one resolves on a
+/// later round, and one round per alias closes every chain. A struct, enum or
+/// suberror is entered by name and parameters only: the resolver keeps a
+/// declared name as written, so a program's own `struct StringMap[T]` stays
+/// that type rather than the builtin `Map[String, T]` (Codex on #3956).
 let tka_defs: Array[TypeDef] = []
 
-fn tka_defs_reset() -> Unit {
+fn tka_defs_reset(_ stmts: Array[Stmt]) -> Unit {
+  let nominal: Array[TypeDef] = []
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, name, _, _, _, tparams) => Array::push(nominal, value = TDStruct(name, [
+      ], [], tparams)),
+      SEnum(_, name, params, _, _) => Array::push(nominal, value = TDEnum(name, params, [
+      ])),
+      SSuberror(_, name, _) => Array::push(nominal, value = TDEnum(name, [], [])),
+      _ => ()
+    }
+  }
+  Array::truncate(tka_defs, length = 0)
+  for d in nominal {
+    Array::push(tka_defs, value = d)
+  }
   let rounds = Array::length(dtd_eq_type_aliases)
   let mut r = 0
   while r < rounds {
     let next: Array[TypeDef] = []
+    for d in nominal {
+      Array::push(next, value = d)
+    }
     for row in dtd_eq_type_aliases {
       let (name, params, target) = row
       Array::push(next, value = TDAlias(name, params, resolve_type_expr_core_shadowed(te = target, defs = tka_defs, shadow = params)))
@@ -58,9 +79,6 @@ fn tka_defs_reset() -> Unit {
       Array::push(tka_defs, value = d)
     }
     r = r + 1
-  }
-  if rounds == 0 {
-    Array::truncate(tka_defs, length = 0)
   }
 }
 
