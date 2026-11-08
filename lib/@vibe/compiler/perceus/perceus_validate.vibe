@@ -130,6 +130,9 @@ struct RvState {
   // retain context but still exits the enclosing loop (#3879 review).
   mut exit_depth: Int;
   mut decl_exit: Int;
+  // #3919: walking a `for` iterable, whose result leaves codegen retains
+  // when they name a loop-carried binding.
+  mut iter_tail: Bool;
   mut loop_sites: Int
 }
 
@@ -358,15 +361,24 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
   match e {
     EIdent(n, off) => if n == st.x && consume {
       Array::push(st.cons_offs, value = off)
-      if rv_carried(st) {
-        // Not one of the positions codegen retains a loop-carried value at.
-        rv_note(st = st, reason = "loop: consumed through a branch or block value")
+      if rv_carried(st) && st.iter_tail {
+        // #3919: a result leaf of a compound `for` iterable. compile_forin_loop
+        // retains it and releases the iterable after the loop, or leaves both
+        // undone; either way the binding's own reference is untouched.
+        [
+          rv_out(c = 0, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+        ]
       } else {
-        ()
+        if rv_carried(st) {
+          // Not one of the positions codegen retains a loop-carried value at.
+          rv_note(st = st, reason = "loop: consumed through a branch or block value")
+        } else {
+          ()
+        }
+        [
+          rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+        ]
       }
-      [
-        rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
-      ]
     } else {
       rv_unit()
     },
@@ -477,6 +489,8 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
     // The head of a sequence is discarded without a release.
     ESeq(a, b) => rv_seq(a = rv_walk(st = st, e = a, consume = false), b = rv_walk(st = st, e = b, consume = consume)),
     EWhile(c, body) => {
+      let saved_tail = st.iter_tail
+      st.iter_tail = false
       st.loop_depth = st.loop_depth + 1
       st.exit_depth = st.exit_depth + 1
       let co = rv_walk(st = st, e = c, consume = true)
@@ -484,6 +498,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       let bo = rv_walk(st = st, e = body, consume = false)
       st.loop_depth = st.loop_depth - 1
       st.exit_depth = st.exit_depth - 1
+      st.iter_tail = saved_tail
       rv_loop(st = st, iter = rv_seq(a = co, b = bo), stop = co)
     },
     EForIn(vn, ix, it, fb) => {
@@ -495,7 +510,10 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       // iterable still exits the ENCLOSING loop: the `for` installs its exit
       // boundary only after the iterable (#3879 review).
       st.loop_depth = st.loop_depth + 1
+      let saved_tail = st.iter_tail
+      st.iter_tail = true
       let io = rv_operand(st = st, e = it)
+      st.iter_tail = false
       st.exit_depth = st.exit_depth + 1
       let mark = Array::length(st.bound)
       Array::push(st.bound, value = vn)
@@ -514,6 +532,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       Array::truncate(st.bound, length = mark)
       st.loop_depth = st.loop_depth - 1
       st.exit_depth = st.exit_depth - 1
+      st.iter_tail = saved_tail
       rv_seq(a = io, b = rv_loop(st = st, iter = bo, stop = rv_unit()))
     },
     ELoop(params, lb) => {
@@ -1036,6 +1055,7 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
     decl_loop: 0,
     exit_depth: 0,
     decl_exit: 0,
+    iter_tail: false,
     loop_sites: 0
   }
 }

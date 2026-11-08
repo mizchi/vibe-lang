@@ -599,6 +599,34 @@ fn cc_retain_view_tails_logged(e: Expr, local_names: Array[String], ctx: Compile
   }
 }
 
+/// #3919: is every result-path leaf (`rs_map`) of the compound `for`
+/// iterable `e` either a fresh owned value (`cc_is_owned_temp`) or a view that
+/// `cc_retain_view_tails_unlogged` retains (`cc_tail_is_view`)? Then the
+/// value `e` produces, with those views retained, is the loop's to release
+/// once it is done. A leaf that leaves the iterable instead of producing a
+/// value (`break`, `continue`, `return`) produces nothing to release. Any
+/// other leaf -- a name bound inside `e`, a call that may return a view the
+/// retain does not recognize -- has an owner this lowering cannot see, so
+/// the iterable stays unreleased, as before (a leak, never a double free).
+export fn cc_iter_tails_owned(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let ok = [true]
+  let _ = rs_map(e = e, shadow = array_empty(), leaf = (x: Expr, shadow: Array[String]) -> Expr {
+    let leaves = match x {
+      EBreak(_) => true,
+      EContinue(_) => true,
+      EReturn(_) => true,
+      _ => cc_is_owned_temp(e = x, ctx = ctx) || cc_tail_is_view(x = x, shadow = shadow, local_names = local_names, ctx = ctx)
+    }
+    if !leaves {
+      Array::set(ok, at = 0, value = false)
+    } else {
+      ()
+    }
+    x
+  }, bind = rs_keep_bind)
+  Array::get(ok, at = 0)
+}
+
 /// The leaf test of `cc_retain_view_tails`. `shadow` holds the names bound
 /// between the argument's root and this leaf.
 fn cc_tail_is_view(x: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
