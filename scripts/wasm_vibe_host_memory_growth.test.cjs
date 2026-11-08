@@ -11,12 +11,19 @@ function fixture(initial=4, maximum=8, heap=initial*PAGE-8, type='i32') {
   return {host,instance,memory,global};
 }
 test('ordinary host growth is geometric and retains the raw string address', () => {
-  const f=fixture(); const text='abc日本語';
+  // 32 pages grow by 32 / 16 = 2, not by the 1-page deficit.
+  const f=fixture(32,64); const text='abc日本語';
   const before=Number(f.global.value);
   const result=f.host.encodeHostString(f.instance,text);
   assert.equal(Number(BigInt.asUintN(64,result)>>32n),before);
   assert.equal(f.host.decodeStringArg(f.instance,result),text);
-  assert.equal(f.memory.buffer.byteLength,6*PAGE);
+  assert.equal(f.memory.buffer.byteLength,34*PAGE);
+});
+test('a small memory grows by its deficit', () => {
+  // 4 / 16 rounds to 0, so the deficit (1 page) decides.
+  const f=fixture(); const result=f.host.encodeHostString(f.instance,'abc日本語');
+  assert.equal(f.host.decodeStringArg(f.instance,result),'abc日本語');
+  assert.equal(f.memory.buffer.byteLength,5*PAGE);
 });
 for (const type of ['i32','i64']) {
   test(`bounded memory retries exact growth and retains ${type} heap/string content`, () => {
@@ -52,7 +59,7 @@ test('non-capacity errors are preserved without retry', () => {
   assert.throws(()=>f.host.encodeHostString(f.instance,'abc日本語'),e=>e===error);
   assert.equal(calls,1);
 });
-test('exact deficit larger than half the current capacity is requested directly', () => {
+test('exact deficit larger than the geometric step is requested directly', () => {
   const f=fixture(2,12);const text='q'.repeat(6*PAGE);
   const result=f.host.encodeHostString(f.instance,text);
   assert.equal(f.host.decodeStringArg(f.instance,result),text);
@@ -99,12 +106,12 @@ test('raw arena growth retains its separate allocation cursor', () => {
   process.env.VIBE_WASM_HOST_ALLOC_MODE='arena';
   process.env.VIBE_WASM_HOST_ARENA_GUARD_BYTES='0';
   try {
-    const f=fixture(); const before=f.global.value;
+    const f=fixture(32,64); const before=f.global.value;
     const result=f.host.encodeHostString(f.instance,'abc日本語');
     assert.equal(f.host.decodeStringArg(f.instance,result),'abc日本語');
     assert.equal(f.global.value,before);
-    assert.equal(f.memory.buffer.byteLength,6*PAGE);
-    assert.equal(f.host.hostAllocPtrGlobal,4*PAGE+8);
+    assert.equal(f.memory.buffer.byteLength,34*PAGE);
+    assert.equal(f.host.hostAllocPtrGlobal,32*PAGE+8);
   } finally {
     for (const [key,value] of [['VIBE_WASM_HOST_ALLOC_MODE',oldMode],['VIBE_WASM_HOST_ARENA_GUARD_BYTES',oldGuard]]) {
       if(value===undefined)delete process.env[key];else process.env[key]=value;

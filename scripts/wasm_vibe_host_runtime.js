@@ -369,10 +369,11 @@ function decodeUtf8Range(instance, ptr, len) {
   return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
 }
 
-// Match guest geometric growth, retrying the exact deficit at a capacity limit.
+// Match guest geometric growth, `max(deficit, current / 16)` (#3931), retrying
+// the exact deficit at a capacity limit.
 function growHostMemory(memory, pagesNeeded) {
   const currentPages = memory.buffer.byteLength / WASM_PAGE_BYTES;
-  const growBy = Math.max(pagesNeeded, Math.floor(currentPages / 2));
+  const growBy = Math.max(pagesNeeded, Math.floor(currentPages / 16));
   try {
     memory.grow(growBy);
   } catch (error) {
