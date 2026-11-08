@@ -2178,7 +2178,7 @@ fn rewrite_private_type_ctor_expr(expr: Expr, type_renames: Array[(String, Strin
     }, off, callee_resolution),
     EBinOp(op, left, right, boff) => EBinOp(op, rewrite_private_type_ctor_expr(expr = left, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = right, type_renames = type_renames, ctor_renames = ctor_renames), boff),
     EUnaryOp(op, value) => EUnaryOp(op, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
-    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, rewrite_private_params(params = params, type_renames = type_renames), rewrite_private_type_opt(ty = ret_ty, renames = type_renames), effect, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params))),
+    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, rewrite_private_bound_keys(bounds = bounds, renames = alias_map_without_names(aliases = type_renames, names = type_params)), rewrite_private_params(params = params, type_renames = type_renames), rewrite_private_type_opt(ty = ret_ty, renames = type_renames), effect, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params))),
     EDot(obj, field, off, fdoff) => EDot(rewrite_private_type_ctor_expr(expr = obj, type_renames = type_renames, ctor_renames = ctor_renames), field, off, fdoff),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
     EReturn(value) => EReturn(rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
@@ -2519,17 +2519,13 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
         // An applied trait reference spells its arguments inside the trait
         // key (`impl Value[Alias] for Box`, Codex on #3942); the private walk
         // rewrites only the target.
+        // A generic impl's bounds are trait keys as well
+        // (`impl [T: Value[Alias]] Read for Box[T]`).
         SImpl(tparams, bounds, trait_name, target) => {
           let inner = alias_map_without_names(aliases = own, names = for t in tparams {
             type_param_name(t)
           })
-          let next_trait = match trait_ref_from_key(trait_name) {
-            Some(TyApp(head, args)) => trait_ref_key(TyApp(head, for arg in args {
-              rewrite_private_type_expr(ty = arg, renames = inner)
-            })),
-            _ => trait_name
-          }
-          SImpl(tparams, bounds, next_trait, rewrite_private_type_expr(ty = target, renames = inner))
+          SImpl(tparams, rewrite_private_bound_keys(bounds = bounds, renames = inner), rewrite_private_trait_key(trait_name = trait_name, renames = inner), rewrite_private_type_expr(ty = target, renames = inner))
         },
         _ => namespace_private_type_ctor_stmt(stmt = stmt, type_renames = own, ctor_renames = array_empty(), private_enum_heads = empty_strings(), local_type_aliases = array_empty())
       }
@@ -2540,6 +2536,34 @@ export fn rename_exported_type_alias_stmts(stmts: Array[Stmt], renames: Array[(S
         },
         _ => renamed
       }
+    }
+  }
+}
+
+/// Rewrite the type arguments an applied trait key spells (`Value[Alias]`);
+/// a bare trait name has none.
+fn rewrite_private_trait_key(trait_name: String, renames: Array[(String, String)]) -> String {
+  if Array::length(renames) == 0 {
+    trait_name
+  } else {
+    match trait_ref_from_key(trait_name) {
+      Some(TyApp(head, args)) => trait_ref_key(TyApp(head, for arg in args {
+        rewrite_private_type_expr(ty = arg, renames = renames)
+      })),
+      _ => trait_name
+    }
+  }
+}
+
+fn rewrite_private_bound_keys(bounds: Array[(String, Array[String])], renames: Array[(String, String)]) -> Array[(String, Array[String])] {
+  if Array::length(renames) == 0 || Array::length(bounds) == 0 {
+    bounds
+  } else {
+    for bound in bounds {
+      let (param, traits) = bound
+      (param, for trait_ref in traits {
+        rewrite_private_trait_key(trait_name = trait_ref, renames = renames)
+      })
     }
   }
 }
