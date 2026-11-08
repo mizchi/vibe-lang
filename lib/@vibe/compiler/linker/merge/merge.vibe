@@ -256,15 +256,19 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
     trait_import_local_operation_renames(stmts = stmts, path = path)
   }
   let collision_renamed = apply_export_renames_stmts(stmts = stmts, renames = collision_renames)
+  // #3929: rename this file's colliding exported aliases before the private
+  // namespacing, which reads an alias named in `export { .. }` as exported
+  // only while its declaration still matches the renamed export item
+  // (Codex on #3942).
+  let collision_renamed = if colliding_type_alias_renames_enabled() && !is_entry_source {
+    rename_exported_type_alias_stmts(stmts = collision_renamed, renames = exported_type_alias_renames(plan = plan, path = path, stmts = stmts))
+  } else {
+    collision_renamed
+  }
   let namespaced_stmts = if is_entry_source {
     namespace_entry_import_shadows(path = path, stmts = collision_renamed)
   } else {
     namespace_private_value_stmts_after_renames(path = path, stmts = collision_renamed, export_renames = export_plan_renames_for(plan = plan, path = path))
-  }
-  let namespaced_stmts = if colliding_type_alias_renames_enabled() && !is_entry_source {
-    rename_exported_type_alias_stmts(stmts = namespaced_stmts, renames = exported_type_alias_renames(plan = plan, path = path, stmts = stmts))
-  } else {
-    namespaced_stmts
   }
   if stmts_have_import_deep(stmts) {
     // #3443: only the locals the fallback cloned stop being rewritten. A
