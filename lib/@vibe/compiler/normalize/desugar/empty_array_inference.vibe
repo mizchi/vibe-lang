@@ -32,6 +32,10 @@ import ./constructor_environments.vibe {
   extend_var_types
 }
 
+import ./env_keys.vibe {
+  eq_shape_key_prefix, lookup_var_type_keyed, shape_key_prefix, tuple_shape_key_prefix
+}
+
 import ./equality_aliases.vibe {
   eq_subst_ty
 }
@@ -628,7 +632,7 @@ fn loop_binds_bind_name(binds: Array[(String, Expr)], name: String) -> Bool {
 /// `name` with the element shape its own body pushes, when there is one. A
 /// no-op for every other binding.
 export fn empty_array_shape_from_body(var_types: Array[(String, String)], name: String, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let is_untyped_empty = match lookup_var_type(var_types = var_types, name = eq_shape_key(name)) {
+  let is_untyped_empty = match lookup_var_type_keyed(var_types = var_types, prefix = eq_shape_key_prefix(), name = name) {
     Some(sh) => sh == "[__EqEmpty]",
     None => false
   }
@@ -683,14 +687,14 @@ fn dtd_tuple_elem_type_names(scrut: Expr, var_types: Array[(String, String)], st
       // The older per-tuple sentinel still answers for a binding `shape_bind`
       // declined to record -- a PARAMETER annotation, which `seed_var_types`
       // seeds directly and which never goes through `bind_shapes`.
-      EIdent(n, _) => match lookup_var_type(var_types = var_types, name = tuple_shape_key(n)) {
+      EIdent(n, _) => match lookup_var_type_keyed(var_types = var_types, prefix = tuple_shape_key_prefix(), name = n) {
         Some(sentinel) => tuple_shape_parts(sentinel),
         // A tuple PARAMETER seeds only the equality sentinel: `seed_var_types`
         // deliberately records no render shape for one, because rendering has
         // a better path through the real TypeExpr (see its TyTuple arm). The
         // eq shape carries the element list all the same, and reading it here
         // changes nothing about what is recorded.
-        None => dtd_tuple_parts_of_shape(lookup_var_type(var_types = var_types, name = eq_shape_key(n)))
+        None => dtd_tuple_parts_of_shape(lookup_var_type_keyed(var_types = var_types, prefix = eq_shape_key_prefix(), name = n))
       },
       // `Array::get(ps, i)` / `ps[i]` on a name whose shape is an array OF
       // tuples. `infer_shape` does not project an array element, and
@@ -700,7 +704,7 @@ fn dtd_tuple_elem_type_names(scrut: Expr, var_types: Array[(String, String)], st
       ECall(callee, cargs, _, _) => match callee {
         EIdent(cn, _) => if (cn == "Array::get" || cn == "__index") && Array::length(cargs) == 2 {
           match Array::get(cargs, at = 0) {
-            EIdent(arrname, _) => match lookup_var_type(var_types = var_types, name = shape_key(arrname)) {
+            EIdent(arrname, _) => match lookup_var_type_keyed(var_types = var_types, prefix = shape_key_prefix(), name = arrname) {
               Some(sh) => if String::starts_with(sh, prefix = "[") {
                 dtd_tuple_parts_of_shape(Some(shape_inner(sh)))
               } else {

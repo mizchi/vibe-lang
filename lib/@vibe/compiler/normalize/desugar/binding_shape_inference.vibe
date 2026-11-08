@@ -30,6 +30,10 @@ import ./constructor_environments.vibe {
   extend_var_types
 }
 
+import ./env_keys.vibe {
+  eq_shape_key_prefix, lookup_var_type_keyed, shape_key_prefix, tuple_shape_key_prefix
+}
+
 import ./equality_aliases.vibe {
   eq_subst_ty
 }
@@ -430,7 +434,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         ""
       }
     },
-    EIdent(n, _) => match lookup_var_type(var_types = var_types, name = shape_key(n)) {
+    EIdent(n, _) => match lookup_var_type_keyed(var_types = var_types, prefix = shape_key_prefix(), name = n) {
       // Same rule as interp_expand's: a recorded empty is an answer ("not
       // composite"), so fall through to the head name rather than to the
       // older sentinels.
@@ -442,7 +446,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
       } else {
         sh
       },
-      None => match lookup_var_type(var_types = var_types, name = tuple_shape_key(n)) {
+      None => match lookup_var_type_keyed(var_types = var_types, prefix = tuple_shape_key_prefix(), name = n) {
         Some(sentinel) => String::concat("(", String::concat(sentinel, ")")),
         None => match array_elem_type_of(var_types = var_types, name = n) {
           Some(elem) => String::concat("[", String::concat(elem, "]")),
@@ -452,7 +456,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
           // #3083: a tuple parameter (`t: (Int, String)`) likewise: its
           // annotation is recorded only there, so the render reached codegen
           // unexpanded, where #2987 refuses it.
-          None => match lookup_var_type(var_types = var_types, name = eq_shape_key(n)) {
+          None => match lookup_var_type_keyed(var_types = var_types, prefix = eq_shape_key_prefix(), name = n) {
             Some(esh) => if (String::starts_with(esh, prefix = "{g:") || String::starts_with(esh, prefix = "(")) && String::length(interp_shape(esh)) > 0 {
               esh
             } else {
@@ -483,7 +487,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         String::concat("{o:", String::concat(infer_shape(e = Array::get(cargs, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns), "}"))
       } else if String::length(show_generic_enum_ctor_shape(fname = fname, cargs = cargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)) > 0 {
         show_generic_enum_ctor_shape(fname = fname, cargs = cargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
-      } else match lookup_var_type(var_types = var_types, name = eq_shape_key(fname)) {
+      } else match lookup_var_type_keyed(var_types = var_types, prefix = eq_shape_key_prefix(), name = fname) {
         Some(sh) => interp_shape(sh),
         None => match fn_return_type(fn_returns = fn_returns, fname = fn_eq_shape_key(fname)) {
           Some(sh) => interp_shape(sh),
