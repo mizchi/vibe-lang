@@ -21,7 +21,7 @@ longer occupies any frontend or lowering memory.
 | Consumer | Source of the fact |
 | --- | --- |
 | Bool, String, Float64/Float32 codegen classification | The exact checked identity marker's annotation, plus existing checker result channels; never an ordinary lambda's input type |
-| Desugaring's call-result head | The ordinary lambda's declared result or the exact marker annotation; a callee-owned formal is not a caller type identity |
+| Desugaring's call-result head | The declared result or an independently proved unary identity's parameter type; a callee-owned formal is not a caller type identity |
 | Caller type formals and trait witnesses | Preserve the enclosing formal's name: withholding it loses the Eq witness on annotated fields and loop items |
 | Aggregate equality and ownership | Keep the existing annotation-bearing AST through analysis; preserve the owning-call conversion and retain decisions |
 | Linear lambda plan / both emitters | The same core identity predicate |
@@ -32,6 +32,12 @@ was classified from its input too. Scalar predicates and desugaring now refuse
 that substitution. Generic lambda result formals named Bool/String are not
 concrete builtin results. The regression matrix includes those cases and the
 caller-formal witness cases a selected set alone missed.
+
+Ordinary unary identity IIFEs retain their result head even without a written
+return type: `((x: S) -> x)(s).read()` and a let-bound result both resolve
+`S::read`. This is separate result inference: an ordinary identity keeps its
+call and lambda slot. A nonidentity body cannot borrow its input head, and
+a callee-owned formal is still withheld.
 
 ## Measurements (2026-11-09 JST)
 
@@ -59,10 +65,10 @@ between before/after and across all rounds.
 
 | Workload | Before heap_ptr (B) | After heap_ptr (B) | Delta | Before wall (s) | After wall (s) | Delta |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Compiler closure cold | 1,169,647,784 | 1,169,743,152 | +0.0082% | 8.388 | 8.473 | +1.01% |
-| Compiler closure warm | 645,441,912 | 645,505,232 | +0.0098% | 4.562 | 4.604 | +0.91% |
-| CLI cold | 2,543,083,512 | 2,543,268,480 | +0.0073% | 17.344 | 17.445 | +0.59% |
-| CLI warm | 1,383,104,296 | 1,383,225,120 | +0.0087% | 9.944 | 10.051 | +1.08% |
+| Compiler closure cold | 1,169,663,672 | 1,169,724,728 | +0.0052% | 8.520 | 8.523 | +0.03% |
+| Compiler closure warm | 645,452,672 | 645,498,744 | +0.0071% | 4.621 | 4.628 | +0.13% |
+| CLI cold | 2,543,101,104 | 2,543,236,408 | +0.0053% | 17.588 | 17.609 | +0.12% |
+| CLI warm | 1,383,116,104 | 1,383,211,488 | +0.0069% | 10.150 | 10.137 | -0.12% |
 
 These wall deltas do not establish a whole-build speedup. The tiny deterministic
 heap-pointer increase is reported rather than rounded to a memory win. The
@@ -76,7 +82,7 @@ Baseline revision: `7e810fce887734c0cc0b78232c15f5d9b1c660f3`.
 Baseline compiler SHA-256:
 `c5d7082472c59dcf50eb394cf29c65d031bb48a43acafe9152efd1060844e13b`.
 Final compiler SHA-256:
-`84f49dedaf0c6e3d025f328ab23c713a76495eda7df904fc12d6170ef79d66ad`.
+`9e6228868d8ad0308b49905d70e14abffbd09c7339006b10180fc038468ce6b8`.
 The receipts carry the staged source tree and artifact/runner hashes; final
 report files were added after measuring, without changing compiler sources.
 
@@ -88,7 +94,7 @@ Raw receipts: [micro](micro-cost.json), [full closure/CLI](compile-cost.json),
 The seed-built final stage2 and stage3 are byte-identical. The full current
 checkout corpus passes **2,027/2,027 files**, using that explicit compiler with
 output cache disabled and RC enabled. The [19-file targeted matrix](targeted-files.txt)
-passes 350 tests each in bump, RC and shadow, plus real GC execution of the
+passes 357 tests each in bump, RC and shadow, plus real GC execution of the
 ascription fixture. GC byte-equality unit probes cover ordinary, repeated and
 mutable annotated bindings. A changed GC expectation was verified to fail with
 actual 42 versus expected 99, proving the body executes.

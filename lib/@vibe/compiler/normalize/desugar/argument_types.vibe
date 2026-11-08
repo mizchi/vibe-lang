@@ -1,7 +1,7 @@
 // Argument types.
 
 import @vibe/compiler/core {
-  Expr, TypeExpr, ascription_call_annotation, typed_lowering_arg_offset
+  Expr, TypeExpr, typed_lowering_arg_offset
 }
 
 import @vibe/ast {
@@ -610,12 +610,22 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
       },
       // A callee-local result formal is not a type identity in the caller.
       // Enclosing formals ARE caller identities: preserve their names so
-      // witness resolution can use the bound already in scope. Without a
-      // declared result, only the strict identity marker has an annotation.
-      EFn(type_params, _, _, ret, _, _) => {
+      // witness resolution can use the bound already in scope. An ordinary
+      // unary identity also returns its parameter's type, regardless of the
+      // parameter's spelling. This result inference does not classify the
+      // lambda as a synthetic marker or remove its runtime call/table slot.
+      EFn(type_params, _, params, ret, _, body) => {
         let ann = match ret {
-          Some(ty) => Some(ty),
-          None => ascription_call_annotation(callee = callee, args = cargs)
+          None => if Array::length(params) == 1 {
+            let (param_name, param_ty) = Array::get(params, at = 0)
+            match body {
+              EIdent(name, _) => if name == param_name {
+                param_ty
+              } else None,
+              _ => None
+            }
+          } else None,
+          _ => ret
         }
         let head = match ann {
           Some(TyName(n)) => Some(n),
