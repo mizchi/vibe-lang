@@ -1068,28 +1068,48 @@ fn bounds_on(bounds: Array[(String, Array[String])], name: String) -> Array[Stri
 /// Does a value known to satisfy every trait in `have` satisfy `wanted`?
 /// It does when one of them is `wanted` or extends it, transitively: a
 /// `Loud` witness carries `trait Loud: Show`'s `Show`.
-fn bound_implied(env: TypeEnv, wanted: String, have: Array[String], seen: Array[String]) -> Bool {
+fn bound_implied(env: TypeEnv, wanted: String, have: Array[String], seen: Array[String], binders: Array[String]) -> Bool {
   let mut hit = false
   for h in have {
     if hit || string_list_has(names = seen, wanted = h) {
       ()
-    } else if h == wanted || same_canonical_key(env = env, a = h, b = wanted) {
+    } else if h == wanted || same_canonical_key(env = env, a = h, b = wanted, binders = binders) {
       hit = true
     } else {
       Array::push(seen, value = h)
-      hit = bound_implied(env = env, wanted = wanted, have = trait_supers(env = env, name = h), seen = seen)
+      hit = bound_implied(env = env, wanted = wanted, have = trait_supers(env = env, name = h), seen = seen, binders = binders)
     }
   }
   hit
 }
 
 /// #3947: `Value[Alias]` and `Value[Int]` are one bound once
-/// `type Alias = Int` expands.
-fn same_canonical_key(env: TypeEnv, a: String, b: String) -> Bool {
+/// `type Alias = Int` expands. An argument naming one of the binders in scope
+/// is that binder, not an alias of its spelling, so it is left as written
+/// (`run[T, U: Value[T]]` beside `type T = Int`, Codex on #3956).
+fn same_canonical_key(env: TypeEnv, a: String, b: String, binders: Array[String]) -> Bool {
   let defs = env_type_defs(env)
-  let none: Array[String] = []
-  let ca = canonical_impl_trait_key(key = a, tparams = none, defs = defs)
-  ca == canonical_impl_trait_key(key = b, tparams = none, defs = defs)
+  let ca = canonical_impl_trait_key(key = a, tparams = binders, defs = defs)
+  ca == canonical_impl_trait_key(key = b, tparams = binders, defs = defs)
+}
+
+/// Every type binder an impl method's bound may name: the method's own, the
+/// trait method's (written and rigid) and the impl's.
+fn binder_scope_names(_ scope: BinderScope) -> Array[String] {
+  let out: Array[String] = []
+  for t in scope.own_tparams {
+    Array::push(out, value = type_param_name(t))
+  }
+  for t in scope.method_names {
+    Array::push(out, value = t)
+  }
+  for t in scope.method_rigid {
+    Array::push(out, value = t)
+  }
+  for t in scope.impl_names {
+    Array::push(out, value = t)
+  }
+  out
 }
 
 fn displayed_keys(_ keys: Array[String]) -> Array[String] {
@@ -1163,7 +1183,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
             let tname = Array::get(scope.method_names, at = at)
             let have = bounds_on(bounds = scope.method_bounds, name = tname)
             for w in wanted {
-              if bound_implied(env = env, wanted = w, have = have, seen = []) {
+              if bound_implied(env = env, wanted = w, have = have, seen = [], binders = binder_scope_names(scope)) {
                 ()
               } else {
                 let grown: Array[String] = []
@@ -1213,7 +1233,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
           } else if string_list_has(names = scope.impl_names, wanted = met) {
             let have = bounds_on(bounds = origin.bounds, name = met)
             for w in wanted {
-              if bound_implied(env = env, wanted = w, have = have, seen = []) {
+              if bound_implied(env = env, wanted = w, have = have, seen = [], binders = binder_scope_names(scope)) {
                 ()
               } else {
                 let grown: Array[String] = []
