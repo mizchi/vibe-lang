@@ -1195,7 +1195,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        pc_emit(ctx = ctx, scope = scope, expr = Array::get(items, at = i))
+        pc_item_emit(ctx = ctx, scope = scope, e = Array::get(items, at = i))
         i = i + 1
       }
       0
@@ -1203,7 +1203,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        pc_emit(ctx = ctx, scope = scope, expr = Array::get(items, at = i))
+        pc_item_emit(ctx = ctx, scope = scope, e = Array::get(items, at = i))
         i = i + 1
       }
       0
@@ -1211,7 +1211,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     ERecord(_, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
-        pc_emit(ctx = ctx, scope = scope, expr = (Array::get(fields, at = i)).1)
+        pc_item_emit(ctx = ctx, scope = scope, e = (Array::get(fields, at = i)).1)
         i = i + 1
       }
       0
@@ -1219,7 +1219,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EMap(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        pc_emit(ctx = ctx, scope = scope, expr = (Array::get(fields, at = i)).1)
+        pc_item_emit(ctx = ctx, scope = scope, e = (Array::get(fields, at = i)).1)
         i = i + 1
       }
       0
@@ -1369,13 +1369,18 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     // defining binding; its initial reference still needs a scope drop.
     EFn(_, _, _, _, _, _) => 0,
     EForIn(value_name, index_opt, iterable, fbody) => {
-      // The loop reads a named iterable without taking its reference.
-      // A temporary expression still follows its normal ownership path.
-      pc_operand_emit(ctx = ctx, scope = scope, e_in = iterable)
       // #3134: the iterable runs once; the element binding and the body
       // run per element (see the EWhile arm).
       let saved_floor = ctx.loop_floor
+      // #3879: codegen registers every enclosing local as loop-borrowed
+      // BEFORE it compiles the iterable (compile_forin_loop), so a name that
+      // a temporary iterable stores (`for x in [d]`) or passes to a call is
+      // retained there exactly as in the body. Plan the iterable under the
+      // same floor: such an occurrence is a borrow. The loop reads a named
+      // iterable without taking its reference; a temporary expression
+      // otherwise follows its normal ownership path.
       ctx.loop_floor = ctx.next_id
+      pc_operand_emit(ctx = ctx, scope = scope, e_in = iterable)
       let idv = pe_declare(ctx = ctx, name = value_name)
       let s2 = PsBind(value_name, idv, scope)
       let s3 = match index_opt {
@@ -1385,7 +1390,11 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         },
         None => s2
       }
-      pc_emit(ctx = ctx, scope = s3, expr = fbody)
+      // #3879: a collected body that IS a loop-carried name is retained
+      // before it is pushed (compile_forin_loop's `cc_is_loop_borrowed_ident`
+      // on the body); a discarded one reaches here already a borrow
+      // (`pe_discarded_head`).
+      pc_item_emit(ctx = ctx, scope = s3, e = fbody)
       pe_scope_end(ctx = ctx, id = idv, name = value_name)
       ctx.loop_floor = saved_floor
       0
@@ -1694,6 +1703,36 @@ fn pc_loop_call_arg_borrow(ctx: PCtx, scope: PScope, e: Expr) -> Bool {
   }
 }
 
+/// #3879: an aggregate item -- a tuple / array element, a record field or a
+/// map value -- and a collected `for` body. Codegen retains a loop-carried
+/// name there before storing it (`cc_is_loop_borrowed_ident` in the ETuple /
+/// EArray arms of compile_expr_tail2, the ERecord / EMap arms of
+/// compile_expr_tail4 and compile_forin_loop's collected body), exactly as at
+/// a call argument, so the plan counts it as a borrow too. Counted as an
+/// owning use, it took a dup at the binding (or its last use transferred the
+/// binding's own reference) that the per-iteration retain left unreleased:
+/// 88 B per call for `let d = [..]; while .. { let t = (d, 1) }`.
+fn pc_item_count(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+  if pc_loop_call_arg_borrow(ctx = ctx, scope = scope, e = e) {
+    match e {
+      EIdent(x, _) => pc_count_borrow(ctx = ctx, scope = scope, name = x),
+      _ => 0
+    }
+  } else {
+    pc_count(ctx = ctx, scope = scope, expr = e)
+  }
+}
+
+/// The emission twin of `pc_item_count`: a loop-carried name there plans no
+/// dup and spends no reference.
+fn pc_item_emit(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+  if pc_loop_call_arg_borrow(ctx = ctx, scope = scope, e = e) {
+    0
+  } else {
+    pc_emit(ctx = ctx, scope = scope, expr = e)
+  }
+}
+
 export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
@@ -1843,7 +1882,7 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        pc_count(ctx = ctx, scope = scope, expr = Array::get(items, at = i))
+        pc_item_count(ctx = ctx, scope = scope, e = Array::get(items, at = i))
         i = i + 1
       }
       0
@@ -1851,7 +1890,7 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        pc_count(ctx = ctx, scope = scope, expr = Array::get(items, at = i))
+        pc_item_count(ctx = ctx, scope = scope, e = Array::get(items, at = i))
         i = i + 1
       }
       0
@@ -1859,7 +1898,7 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     ERecord(_, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
-        pc_count(ctx = ctx, scope = scope, expr = (Array::get(fields, at = i)).1)
+        pc_item_count(ctx = ctx, scope = scope, e = (Array::get(fields, at = i)).1)
         i = i + 1
       }
       0
@@ -1867,7 +1906,7 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EMap(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        pc_count(ctx = ctx, scope = scope, expr = (Array::get(fields, at = i)).1)
+        pc_item_count(ctx = ctx, scope = scope, e = (Array::get(fields, at = i)).1)
         i = i + 1
       }
       0
@@ -1934,9 +1973,10 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       0
     },
     EForIn(value_name, index_opt, iterable, fbody) => {
-      pc_operand_count(ctx = ctx, scope = scope, e_in = iterable)
+      // #3879: the iterable is planned under the loop's floor, as in pc_emit.
       let saved_floor = ctx.loop_floor
       ctx.loop_floor = ctx.next_id
+      pc_operand_count(ctx = ctx, scope = scope, e_in = iterable)
       let idv = pc_declare(ctx = ctx, _name = value_name, scalar = false)
       let s2 = PsBind(value_name, idv, scope)
       let s3 = match index_opt {
@@ -1946,7 +1986,7 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         },
         None => s2
       }
-      pc_count(ctx = ctx, scope = s3, expr = fbody)
+      pc_item_count(ctx = ctx, scope = s3, e = fbody)
       ctx.loop_floor = saved_floor
       0
     },

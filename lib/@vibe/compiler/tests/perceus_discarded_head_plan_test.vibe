@@ -44,9 +44,18 @@ test "a bare name at the head of a sequence keeps its drop" {
 }
 
 test "a collecting for still moves its body value into the result" {
-  // Only the discarded form changed: the collected array owns its items.
+  // Only the discarded form changed: the collected array owns its items, so
+  // a value the body makes moves into it.
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let r = for x in ns {\n    let e = A([x])\n    e\n  }\n  Array::length(r)\n}")
+  assert(!String::contains(plan_of(src), needle = "run e drop"))
+}
+
+test "a collecting for retains a loop-carried body name, which keeps its drop" {
+  // #3879: compile_forin_loop retains a collected body that is a
+  // loop-carried name before it pushes it, so `d` is read there, not moved;
+  // planned as a move, its own reference leaked once per call.
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let r = for x in ns {\n    d\n  }\n  Array::length(r)\n}")
-  assert(!String::contains(plan_of(src), needle = "run d drop"))
+  assert(String::contains(plan_of(src), needle = "run d drop 1"))
 }
 
 // #3162: a `handle` at the head of a sequence is discarded the same way --
