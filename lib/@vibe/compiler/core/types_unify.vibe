@@ -1363,12 +1363,14 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
 /// Constructor/head name of a type. Returns "" for types with no nominal
 /// constructor (tuples, primitives, vars) so they never match a generic impl.
 /// #3947: the key a trait reference is matched under, with each type argument
-/// that names none of `binders` resolved over `defs` and written back
-/// (`canonical_trait_arg_type_expr`). The checker's impl registration, the
-/// linked program's coherence check and the lowering all canonicalize through
-/// this, so `Value[Alias]` (`type Alias = Int`) and `Value[Int]` are one key
-/// to each of them. A bare trait name, or an argument naming a binder, is kept
-/// as written.
+/// resolved over `defs` and written back (`canonical_trait_arg_type_expr`).
+/// The checker's impl registration, the linked program's coherence check and
+/// the lowering all canonicalize through this, so `Value[Alias]`
+/// (`type Alias = Int`) and `Value[Int]` are one key to each of them. A name
+/// in `binders` is kept as written, even beside `type T = Int`, while the
+/// structure around it is canonical: `Value[StringMap[T]]` is
+/// `Value[Map[String, T]]` (Codex on #3956). A bare trait name is kept as
+/// written.
 export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[TypeDef]) -> String {
   if !trait_ref_is_applied(key) {
     key
@@ -1377,20 +1379,16 @@ export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[T
       Some(TyApp(head, args)) => {
         let mut changed = false
         let mapped = for arg in args {
-          if canonical_key_arg_names(ty = arg, binders = binders) {
-            arg
-          } else {
-            match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)) {
-              Some(next) => {
-                if next != arg {
-                  changed = true
-                } else {
-                  ()
-                }
-                next
-              },
-              None => arg
-            }
+          match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)) {
+            Some(next) => {
+              if next != arg {
+                changed = true
+              } else {
+                ()
+              }
+              next
+            },
+            None => arg
           }
         }
         if changed {
