@@ -179,6 +179,59 @@ export fn leb128_encode_u32_slot(buf: Bytes, value: Int) -> Unit {
   }
 }
 
+/// The number of bytes minimal signed LEB128 takes for `value`.
+export fn leb128_s_min_width(_ value: Int) -> Int {
+  let mut v = value
+  let mut n = 1
+  let mut done = false
+  while !done {
+    let byte = v&127
+    v = v>>7
+    if (v == 0 && (byte&64) == 0) || (v == 0 - 1 && (byte&64) != 0) {
+      done = true
+    } else {
+      n = n + 1
+    }
+  }
+  n
+}
+
+/// `value` as signed LEB128 of exactly `max(width, minimal)` bytes. After
+/// `w - 1` arithmetic shifts the rest fits one byte's 7 bits with its sign
+/// in bit 6, so the last byte needs no special case.
+export fn leb128_encode_s_padded(buf: Bytes, value: Int, width: Int) -> Unit {
+  let min = leb128_s_min_width(value)
+  let w = if width > min {
+    width
+  } else {
+    min
+  }
+  let mut v = value
+  let mut i = 0
+  while i < w {
+    let byte = v&127
+    v = v>>7
+    if i + 1 < w {
+      Bytes::push(buf, value = byte|128)
+    } else {
+      Bytes::push(buf, value = byte)
+    }
+    i = i + 1
+  }
+}
+
+/// A funcref TABLE SLOT carried by a constant (#3941): the function value
+/// `i64.const ((slot << 2) | 2)` and the closure header's `i32.const slot`.
+/// Same compile-wide width as a function index; minimal while it is 0.
+export fn leb128_encode_s_slot(buf: Bytes, value: Int) -> Unit {
+  let w = reloc_slot_width()
+  if w == 0 {
+    leb128_encode_s32(buf = buf, value = value)
+  } else {
+    leb128_encode_s_padded(buf = buf, value = value, width = w)
+  }
+}
+
 export fn bytebuf_push_string(buf: Bytes, s: String) -> Unit {
   let slen = String::length(s)
   leb128_encode_u32(buf = buf, value = slen)

@@ -7,11 +7,19 @@
 //# Imports
 
 import @vibe/compiler/core {
-  leb128_encode_u32, leb128_encode_u32_padded, leb128_encode_u32_slot, leb128_u32_min_width, reloc_slot_width, set_reloc_slot_width
+  leb128_encode_s32,
+  leb128_encode_s_padded,
+  leb128_encode_u32,
+  leb128_encode_u32_padded,
+  leb128_encode_u32_slot,
+  leb128_s_min_width,
+  leb128_u32_min_width,
+  reloc_slot_width,
+  set_reloc_slot_width
 }
 
 import @vibe/compiler/codegen/wasm_emit {
-  emit_call
+  emit_call, emit_i32_const, emit_i32_const_slot, emit_i64_const, emit_i64_const_slot
 }
 
 //# Functions
@@ -93,4 +101,61 @@ test "the setter clamps to what a u32 LEB128 can hold" {
   set_reloc_slot_width(0)
   assert_eq(hi, 5)
   assert_eq(lo, 0)
+}
+
+fn i64_const_bytes(_ v: Int) -> Array[Int] {
+  let b = Bytes::new()
+  emit_i64_const_slot(buf = b, value = v)
+  ints_of(b)
+}
+
+test "minimal signed width matches the minimal signed encoder" {
+  let mut v = 0 - 9000
+  while v < 9000 {
+    let b = Bytes::new()
+    leb128_encode_s32(buf = b, value = v)
+    assert_eq(leb128_s_min_width(v), Bytes::length(b))
+    v = v + 61
+  }
+  // 63 is one byte, 64 needs two: bit 6 is the sign.
+  assert_eq(leb128_s_min_width(63), 1)
+  assert_eq(leb128_s_min_width(64), 2)
+  assert_eq(leb128_s_min_width(0 - 64), 1)
+  assert_eq(leb128_s_min_width(0 - 65), 2)
+}
+
+test "padded signed encoding keeps the sign in the last byte" {
+  let a = Bytes::new()
+  leb128_encode_s_padded(buf = a, value = 2, width = 3)
+  assert_eq(ints_of(a), [0x82, 0x80, 0x00])
+  let b = Bytes::new()
+  leb128_encode_s_padded(buf = b, value = 64, width = 3)
+  assert_eq(ints_of(b), [0xC0, 0x80, 0x00])
+  let c = Bytes::new()
+  leb128_encode_s_padded(buf = c, value = 0 - 1, width = 3)
+  assert_eq(ints_of(c), [0xFF, 0xFF, 0x7F])
+}
+
+test "width 0 leaves the slot constants byte-identical to the plain ones" {
+  set_reloc_slot_width(0)
+  let plain = Bytes::new()
+  emit_i64_const(buf = plain, value = (31<<2)|2)
+  let slotted = i64_const_bytes((31<<2)|2)
+  let plain32 = Bytes::new()
+  emit_i32_const(buf = plain32, value = 31)
+  let slotted32 = Bytes::new()
+  emit_i32_const_slot(buf = slotted32, value = 31)
+  assert_eq(slotted, ints_of(plain))
+  assert_eq(ints_of(slotted32), ints_of(plain32))
+}
+
+test "width 3 keeps a function value's length across the slot 15 -> 16 band" {
+  // slot 15 is `i64.const 62` (one byte), slot 16 is `i64.const 66` (two):
+  // the band a function value crosses is at 2^4 slots, not 2^7.
+  set_reloc_slot_width(3)
+  let a = i64_const_bytes((15<<2)|2)
+  let b = i64_const_bytes((16<<2)|2)
+  set_reloc_slot_width(0)
+  assert_eq(a, [0x42, 0xBE, 0x80, 0x00])
+  assert_eq(b, [0x42, 0xC2, 0x80, 0x00])
 }
