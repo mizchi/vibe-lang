@@ -1108,6 +1108,29 @@ fn collect_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(String,
   out
 }
 
+/// The private-type stage's owner renames: an impl's method bindings follow
+/// its key and target exactly as `namespace_private_type_ctor_stmt` rewrites
+/// them, which renames a trait key's arguments and never its head (#3958).
+fn collect_private_impl_owner_aliases(stmts: Array[Stmt], type_renames: Array[(String, String)]) -> Array[(String, String)] {
+  let out = empty_aliases()
+  for stmt in stmts {
+    match stmt {
+      SImpl(tparams, _, trait_name, target) => {
+        let inner = alias_map_without_names(aliases = type_renames, names = tparams)
+        let source_owner = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target)
+        let rewritten_owner = impl_method_owner(tparams = tparams, trait_name = rewrite_private_trait_key(trait_name = trait_name, renames = inner), target = rewrite_private_type_expr(ty = target, renames = inner))
+        if source_owner != rewritten_owner {
+          Array::push(out, value = (source_owner, rewritten_owner))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
 fn rewrite_impl_method_binding_name(name: String, owner_aliases: Array[(String, String)]) -> String {
   let mut out = name
   let mut i = 0
@@ -1519,7 +1542,58 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
       let type_am = aliasidx_without_names(am = am, names = tparams)
       SImpl(tparams, rewrite_alias_bounds(bounds = bounds, am = type_am), rewrite_alias_trait_ref(trait_ref = trait_name, am = type_am), rewrite_alias_type_expr(te = target, am = type_am))
     },
+    // #3954: an importer's own declarations name an `as`-renamed import
+    // (`struct Holder { value: CA }` under `import { Alias as CA }`). With no
+    // arm here the name outlived the import: on linear the derived
+    // `Holder::equals` called `CA::equals`, which nothing binds, and the gc
+    // lane's merged re-check reported an unknown type. A declaration's own
+    // type parameters are bound names and stay as written.
+    SStruct(exported, name, fields, derives, mut_fields, tparams) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      SStruct(exported, name, for field in fields {
+        let (field_name, field_ty) = field
+        (field_name, rewrite_alias_type_expr(te = field_ty, am = type_am))
+      }, derives, mut_fields, tparams)
+    },
+    SEnum(exported, name, params, ctors, derives) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      SEnum(exported, name, params, rewrite_alias_ctor_payloads(ctors = ctors, am = type_am), derives)
+    },
+    SSuberror(exported, name, ctors) => SSuberror(exported, name, rewrite_alias_ctor_payloads(ctors = ctors, am = am)),
+    STrait(exported, name, supers, methods, method_tparams, tparams) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      STrait(exported, name, for sup in supers {
+        rewrite_alias_trait_ref(trait_ref = sup, am = type_am)
+      }, for m in methods {
+        let (mname, params, ret) = m
+        let method_am = aliasidx_without_names(am = type_am, names = trait_method_tparam_names(method_tparams = method_tparams, method = mname))
+        (mname, for param in params {
+          rewrite_alias_type_expr(te = param, am = method_am)
+        }, rewrite_alias_type_expr(te = ret, am = method_am))
+      }, for row in method_tparams {
+        let (mname, mtparams, mbounds) = row
+        (mname, mtparams, rewrite_alias_bounds(bounds = mbounds, am = aliasidx_without_names(am = type_am, names = mtparams)))
+      }, tparams)
+    },
+    SEffectDef(exported, name, params, ops) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      SEffectDef(exported, name, params, for op in ops {
+        let (op_name, op_params, ret_ty) = op
+        (op_name, for param in op_params {
+          rewrite_alias_type_expr(te = param, am = type_am)
+        }, rewrite_alias_type_expr(te = ret_ty, am = type_am))
+      })
+    },
     _ => stmt
+  }
+}
+
+fn rewrite_alias_ctor_payloads(ctors: Array[(String, Array[TypeExpr])], am: AliasIdx) -> Array[(String, Array[TypeExpr])] {
+  for ctor in ctors {
+    let (ctor_name, args) = ctor
+    (ctor_name, for arg in args {
+      rewrite_alias_type_expr(te = arg, am = am)
+    })
   }
 }
 
@@ -1746,10 +1820,17 @@ export fn namespace_private_name(path: String, name: String) -> String {
 /// taken here.
 let namespace_rename_originals: Array[(String, String)] = array_empty()
 
+/// #3958: the same (mangled -> original) pairs for private type ALIASES, kept
+/// apart because the table above also names types in derive's recursion
+/// checks, where two files' same-spelled aliases must stay distinct. Only a
+/// diagnostic reads this one (`namespace_alias_original`).
+let namespace_alias_originals: Array[(String, String)] = array_empty()
+
 /// Reset the #2205 rename table. Called by each merge driver before it
 /// populates, and by desugar_trait_dicts once the derive generators are done.
 export fn namespace_rename_originals_reset() -> Unit {
   Array::truncate(namespace_rename_originals, length = 0)
+  Array::truncate(namespace_alias_originals, length = 0)
 }
 
 /// #2205 (Codex round 4 on #2213): metadata-only replay of the private
@@ -1814,6 +1895,22 @@ export fn namespace_rename_original(_ name: String) -> String {
       ()
     }
     i = i + 1
+  }
+  found
+}
+
+/// #3958: the source spelling of a merge-renamed private type alias, for a
+/// diagnostic that names one (`impl Value[Alias] for Note`). Returns the name
+/// unchanged when no alias was renamed to it.
+export fn namespace_alias_original(_ name: String) -> String {
+  let mut found = name
+  for pair in namespace_alias_originals {
+    let (mangled, original) = pair
+    if mangled == name {
+      found = original
+    } else {
+      ()
+    }
   }
   found
 }
@@ -2289,7 +2386,9 @@ fn collect_private_type_renames(path: String, stmts: Array[Stmt], namespace_suff
         Array::push(renames, value = (name, mangled))
       },
       STypeAlias(false, name, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
-        Array::push(renames, value = (name, namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
+        Array::push(namespace_alias_originals, value = (mangled, name))
+        Array::push(renames, value = (name, mangled))
       },
       SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
         let mangled = namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
@@ -2560,7 +2659,7 @@ export fn namespace_private_type_ctor_stage(path: String, value_renamed: Array[S
       }
     }
     let local_type_aliases = collect_local_type_aliases(value_renamed)
-    let owner_aliases = collect_impl_method_owner_aliases(stmts = value_renamed, aliases = type_renames)
+    let owner_aliases = collect_private_impl_owner_aliases(stmts = value_renamed, type_renames = type_renames)
     let owner_renamed = for stmt in value_renamed {
       rewrite_impl_method_binding(stmt = stmt, owner_aliases = owner_aliases)
     }
@@ -2808,7 +2907,18 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
       }
       (qualifier, variant)
     }),
-    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_private_type_expr(ty = target, renames = alias_map_without_names(aliases = type_renames, names = tparams))),
+    // #3958: the trait key's arguments and the bounds name private types too
+    // (`impl Value[Alias] for Note` with `type Alias = Int` private); left as
+    // written, the key named an alias no declaration carries any more, and the
+    // linked overlap check let a sibling's `impl Value[Int]` through. Only the
+    // ARGUMENTS are renamed: a trait spelled like a private type
+    // (`type Key = Int` beside `trait Key`) lives in another namespace (Codex
+    // on #3971). `collect_private_impl_owner_aliases` names the methods after
+    // the same rewrite.
+    SImpl(tparams, bounds, trait_name, target) => {
+      let inner = alias_map_without_names(aliases = type_renames, names = tparams)
+      SImpl(tparams, rewrite_private_bound_keys(bounds = bounds, renames = inner), rewrite_private_trait_key(trait_name = trait_name, renames = inner), rewrite_private_type_expr(ty = target, renames = inner))
+    },
     SExternLet(name, ty) => SExternLet(name, rewrite_private_type_expr(ty = ty, renames = type_renames)),
     STest(name, body) => STest(name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
     SBench(name, body) => SBench(name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),

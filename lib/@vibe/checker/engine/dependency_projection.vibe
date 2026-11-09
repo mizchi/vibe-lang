@@ -229,16 +229,24 @@ fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Ar
     let item = Array::get(names, at = i)
     let name = item.name
     let alias = item.alias
-    let before = Array::length(selected)
     if contains_str(arr = selectable, target = name) {
       engine_typedef_projection_add_named(name = name, dep_defs = dep_defs, selected = selected)
     } else {
       ()
     }
-    if Array::length(selected) > before {
-      match alias {
-        Some(local_name) => if local_name != name && !engine_typedef_projection_contains(defs = selected, name = local_name) {
-          let source = Array::get(selected, at = before)
+    // #3972: the source definition is looked up in `selected` by name rather
+    // than taken as the one this item just added. An earlier item can have
+    // added it already, directly (`S, S as T`) or as another definition's
+    // closure (`Alias as CA, S as T` with `type Alias = S`); the alias `T`
+    // then got no definition and was an unknown type.
+    let source_def = if contains_str(arr = selectable, target = name) {
+      engine_typedef_projection_find(defs = selected, name = name)
+    } else {
+      None
+    }
+    if source_def is Some(_) {
+      match (alias, source_def) {
+        (Some(local_name), Some(source)) => if local_name != name && !engine_typedef_projection_contains(defs = selected, name = local_name) {
           let alias_def = match source {
             TDEnum(_, params, _) => TDAlias(local_name, params, CtNamed(name, for param in params {
               CtNamed(param, array_empty())
@@ -254,7 +262,7 @@ fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Ar
         } else {
           ()
         },
-        None => ()
+        _ => ()
       }
     } else if contains_str(arr = selectable, target = name) && (resolve_builtin(name) is Some(_)) {
       // Compiler-owned builtin types have no TypeDef node in the dependency
@@ -281,6 +289,17 @@ fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Ar
     i = i + 1
   }
   selected
+}
+fn engine_typedef_projection_find(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
+  let mut found = None
+  for def in defs {
+    if (found is None) && engine_typedef_projection_name(def) == name {
+      found = Some(def)
+    } else {
+      ()
+    }
+  }
+  found
 }
 fn engine_prepend_dependency_type_defs(view: DependencyInterfaceView, names: Array[ImportItem], tail: TypeEnv) -> TypeEnv {
   let defs = engine_dependency_typedef_projection(view = view, names = names)
