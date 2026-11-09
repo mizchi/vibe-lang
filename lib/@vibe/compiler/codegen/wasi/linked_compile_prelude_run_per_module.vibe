@@ -38,7 +38,11 @@ import @vibe/compiler/normalize {
   collect_trivial_wrapper_names,
   desugar_handled_host_calls,
   desugar_inspect_calls,
+  desugar_module_reports_begin,
+  desugar_module_reports_flush,
+  desugar_module_reports_pending,
   desugar_trait_dicts_module,
+  desugar_trait_dicts_module_deferring,
   desugar_trait_dicts_module_with_facts,
   desugar_trait_dicts_with_typed_eq,
   eq_deferred_requests_list,
@@ -968,6 +972,12 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       diagnostics: link.diags
     })
   } else ()
+  // #2826: one report for the program. Each module's trait-dict refusals are
+  // filed with the program's and thrown once, after the last module, in the
+  // whole-program pass's order -- see `desugar_trait_dicts_module_deferring`.
+  // The batch and executor routes above lower a module elsewhere and still
+  // report per module.
+  desugar_module_reports_begin()
   fi = 0
   while fi < file_count && !execute_batch {
     let part_entry = if fi == entry_fid {
@@ -1070,7 +1080,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     if execute_module {
       Array::get(prelude_module_executors, at = 0)(part, ctx, fi, file_count, part_entry, checker_eq_offsets, checker_eq_type_keys, env, synth_keys, link.tail, link.diags)
     } else {
-      let synthesized = desugar_trait_dicts_module_with_facts(own = part, ctx = ctx, module_tag = "f\{fi}", typed_eq_offsets = checker_eq_offsets, typed_eq_keys = checker_eq_type_keys, facts = env.trait_facts)
+      let synthesized = desugar_trait_dicts_module_deferring(own = part, ctx = ctx, module_tag = "f\{fi}", typed_eq_offsets = checker_eq_offsets, typed_eq_keys = checker_eq_type_keys, facts = env.trait_facts)
       match observations {
         Some(st) => {
           lc_union_into(dst = st.requests, src = eq_synthesis_requests_list())
@@ -1115,7 +1125,16 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       //
       // What the split still buys: 0..10 is most of the prelude, and it is the
       // half a per-module cache can reuse.
-      let mut j2 = 5
+      //
+      // Once a module has been refused, so has the program: the whole program
+      // throws at the end of pass 4 and never runs 5..10, so neither does any
+      // module lowered after the refusal. Without this, a later module's pass
+      // could throw first and replace the refusal the whole program reports.
+      let mut j2 = if desugar_module_reports_pending() {
+        11
+      } else {
+        5
+      }
       while j2 < 11 {
         lc_apply_pass_recording(k = j2, part = part, part_entry = part_entry, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, synth_keys = synth_keys, tail = link.tail, errs = link.diags, env = env)
         // After pass 5, where production runs it.
@@ -1170,6 +1189,8 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     fi = fi + 1
   }
+  // #2826: the program's trait-dict refusals, once, before the link.
+  desugar_module_reports_flush()
   match observations {
     Some(st) => {
       // Final ownership closes the complete call graph against globally
