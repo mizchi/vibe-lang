@@ -871,6 +871,37 @@ test "#1429: an empty braceless row is a located error, not a silent empty row" 
   assert(String::contains(dangling, needle = "effect name"))
 }
 
+//# ADR-0094: resource parameters on an effect (#3143)
+
+test "#3143: an effect's resource parameter keeps its kind and round-trips" {
+  let printed = handle {
+    print_program(parse_program(lex("effect Kv[R: Store::Bucket] { Get(String) -> String }\neffect Clock[_: Process::Root] { Now() -> Int }\n")))
+  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
+  assert(String::contains(printed, needle = "effect Kv[R: Store::Bucket] {"))
+  assert(String::contains(printed, needle = "effect Clock[_: Process::Root] {"))
+}
+
+test "#3143: an effect parameter's bound must be a single qualified kind" {
+  let refused = for src in [
+    "effect Kv[R: Bucket] { Get(String) -> String }\n",
+    "effect Kv[_] { Get(String) -> String }\n",
+    "effect Kv[R: A::B + C::D] { Get(String) -> String }\n",
+    "effect Kv[F[_]: A::B] { Get(String) -> String }\n"
+  ] {
+    handle {
+      let _ = parse_program(lex(src))
+      "ok"
+    } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
+  }
+  for r in refused {
+    assert(String::starts_with(r, prefix = "ERROR: "))
+  }
+  assert(String::contains(Array::get(refused, at = 0), needle = "resource KIND"))
+  assert(String::contains(Array::get(refused, at = 1), needle = "needs its kind"))
+  assert(String::contains(Array::get(refused, at = 2), needle = "not a sum"))
+  assert(String::contains(Array::get(refused, at = 3), needle = "without the brackets"))
+}
+
 //# ADR-0075 Phase 2: `resource` declarations (#1343 実装順 2)
 
 test "#1343: `resource Name : Owner::Kind` parses and round-trips" {

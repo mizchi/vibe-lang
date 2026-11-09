@@ -4,7 +4,7 @@ import test from "node:test";
 import { parseArtifactInputTrace } from "./artifact_input_trace_oracle.mjs";
 
 const validTrace = {
-  schema: 2,
+  schema: 3,
   run_nonce: "unit-nonce",
   scope_disclaimer: "observation-only file_compile persistent pre-strip WASI bump lane; trace-only graph/context work; not a production cache key, format, or reuse decision",
   compile_lane: "file_compile.persistent_pre_strip_wasi_cached_bump",
@@ -13,10 +13,10 @@ const validTrace = {
   source_groups_fingerprint: "20:1:2",
   source_groups_fingerprint_kind: "build_source_groups_fingerprint(source_groups)",
   production_artifact_input_fingerprint: "30:3:4",
-  production_artifact_input_fingerprint_kind: "build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)",
+  production_artifact_input_fingerprint_kind: "build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode, exports_stripped)",
   compiler_cache_version_tag: "v17|cg-example",
   compiler_cache_version_tag_kind: "persistent_cache_version_tag()",
-  effective_config: { checked_error_row_mode: "checked", diagnostics_mode: "fail-fast", dep_order_seed: "0", target: "wasi", memory: "bump", dce_mode: "no-dce", strip_stage: "pre-strip", instrumentation: "uninstrumented" },
+  effective_config: { checked_error_row_mode: "checked", diagnostics_mode: "fail-fast", dep_order_seed: "0", target: "wasi", memory: "bump", dce_mode: "no-dce", strip_stage: "pre-strip", instrumentation: "uninstrumented", exports_stripped: true },
   dependency_plan: { fingerprint: "40:5:6", fingerprint_kind: "compact_string_fingerprint(vibe-artifact-input-dependency-plan:v1 length-prefixed planned order/ranks/dependency occurrences)", module_count: 2, edge_occurrence_count: 1 },
   resolution: { env_seed: "|roots=|pins=0", env_seed_kind: "resolution_env_seed()", context_fingerprint: "50:7:8", context_fingerprint_kind: "persistent_resolution_context_fingerprint_fs(entry_path, grouped_source_paths(source_groups))" },
   shadow_artifact_input_fingerprint: "60:9:10",
@@ -24,14 +24,18 @@ const validTrace = {
   persistent_lookup: "miss",
 };
 
-test("artifact input trace accepts the exact schema-2 observation", () => {
+test("artifact input trace accepts the exact schema-3 observation", () => {
   assert.deepEqual(parseArtifactInputTrace(JSON.stringify(validTrace), "unit-nonce"), validTrace);
+  const kept = structuredClone(validTrace);
+  kept.effective_config.exports_stripped = false;
+  assert.deepEqual(parseArtifactInputTrace(JSON.stringify(kept)), kept);
 });
 
-test("artifact input trace rejects schema 1, stale, widened, and dishonest observations", () => {
-  const schema1 = structuredClone(validTrace);
-  schema1.schema = 1;
-  assert.throws(() => parseArtifactInputTrace(JSON.stringify(schema1)), /unsupported schema 1/);
+test("artifact input trace rejects old schemas, stale, widened, and dishonest observations", () => {
+  for (const schema of [1, 2]) {
+    const oldSchema = { ...validTrace, schema };
+    assert.throws(() => parseArtifactInputTrace(JSON.stringify(oldSchema)), /unsupported schema/);
+  }
   assert.throws(() => parseArtifactInputTrace(JSON.stringify(validTrace), "other-nonce"), /run_nonce mismatch/);
   const widened = structuredClone(validTrace);
   widened.extra = true;
@@ -54,6 +58,9 @@ test("artifact input trace rejects malformed nested evidence and config vocabula
   const badConfigValue = structuredClone(validTrace);
   badConfigValue.effective_config.dep_order_seed = "000";
   assert.throws(() => parseArtifactInputTrace(JSON.stringify(badConfigValue)), /invalid normalized dep-order seed/);
+  const badExportStrip = structuredClone(validTrace);
+  badExportStrip.effective_config.exports_stripped = "false";
+  assert.throws(() => parseArtifactInputTrace(JSON.stringify(badExportStrip)), /invalid export-strip policy/);
   const badLaneFact = structuredClone(validTrace);
   badLaneFact.effective_config.instrumentation = "coverage";
   assert.throws(() => parseArtifactInputTrace(JSON.stringify(badLaneFact)), /dishonest fixed lane config/);

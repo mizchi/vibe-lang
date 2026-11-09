@@ -1,0 +1,40 @@
+// ADR-0094 (#3143): an effect declares a resource parameter with its kind
+// (`R: Store::Bucket`, or `_:` when no operation names it), a row names the
+// resource it acts on, and the effect is handled like any other.
+effect Kv[R: Store::Bucket] {
+  Get(String) -> String
+}
+
+effect Clock[_: Process::Root] {
+  Now() -> Int
+}
+
+resource Posts: Store::Bucket
+
+fn lookup(_ key: String) -> String with Kv[Posts] {
+  perform Kv::Get(key)
+}
+
+fn any_bucket(_ key: String) -> String with Kv {
+  perform Kv::Get(key)
+}
+
+fn tick() -> Int with Clock {
+  let now = perform Clock::Now()
+  now + 1
+}
+
+test "a resource-parameterized effect is handled like any other" {
+  let got = handle {
+    String::concat(lookup("a"), any_bucket("b"))
+  } with {
+    Kv::Get(k) => resume("<\{k}>")
+  }
+  inspect(got, content = "<a><b>")
+  let t = handle {
+    tick()
+  } with {
+    Clock::Now() => resume(41)
+  }
+  inspect(t, content = "42")
+}

@@ -3684,14 +3684,18 @@ unchanged when `VIBE_ARTIFACT_INPUT_TRACE_OUT` is empty; this wrapper does not
 alter a production cache key, on-disk format, or reuse decision, and it does not
 instrument `fs_compile`, module, or profiled lanes.
 
-Strict schema version 2 records the nonce and scope disclaimer, exact
+Strict schema version 3 records the nonce and scope disclaimer, exact
 `compile_lane`, persistent artifact kind, entry path/name/mode, and the
-unchanged production lookup identity under the explicit name
-`production_artifact_input_fingerprint`. It also records the exact existing
+actual production lookup identity under the explicit name
+`production_artifact_input_fingerprint`. The production constructor includes
+`exports_stripped` so a cached stripped compile cannot bypass a kept export
+root's evidence-lowering diagnostics. Both persistent and in-memory artifact
+caches use this complete identity. The trace itself does not select it. It also
+records the exact existing
 `persistent_cache_version_tag()` (the embedded compiler codegen/cache tag,
 **not** #1443's `.generated.stamp`), normalized effective compile
-configuration, and only a fingerprint plus module/edge-occurrence counts for
-an exact dependency plan. That plan is obtained from `module_plan_data_fs`,
+configuration (including the Boolean `exports_stripped` root policy), and only a
+fingerprint plus module/edge-occurrence counts for an exact dependency plan. That plan is obtained from `module_plan_data_fs`,
 therefore preserves planned module order/ranks and every dependency occurrence
 (including duplicates); it is not source-group order.
 

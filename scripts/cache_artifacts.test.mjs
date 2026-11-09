@@ -101,13 +101,18 @@ test("declines when the module is absent from the pool entirely", () => {
     [entry(artifact({ path: "lib/leaf.vibe" }))]), null);
 });
 
-test("tells the two cache kinds apart by payload magic", () => {
+test("tells the three cache kinds apart by payload magic", () => {
   const module = artifact();
   const body = artifact({ payloadMagic: Buffer.from("VBW2") });
+  const ast = artifact({ payloadMagic: Buffer.from("vAST") });
   assert.equal(isArtifact(module, "checked_module"), true);
   assert.equal(isArtifact(module, "codegen_body_cache"), false);
+  assert.equal(isArtifact(module, "ast"), false);
   assert.equal(isArtifact(body, "codegen_body_cache"), true);
   assert.equal(isArtifact(body, "checked_module"), false);
+  assert.equal(isArtifact(ast, "ast"), true);
+  assert.equal(isArtifact(ast, "checked_module"), false);
+  assert.equal(isArtifact(ast, "codegen_body_cache"), false);
   assert.throws(() => isArtifact(module, "nonesuch"), /unknown artifact kind: nonesuch/);
 });
 
@@ -117,15 +122,16 @@ test("counts what a cache directory holds, and ignores what it does not own", ()
     fs.writeFileSync(path.join(dir, "a.bin"), artifact({ path: "lib/leaf.vibe" }));
     fs.writeFileSync(path.join(dir, "b.bin"), artifact({ path: "lib/mid.vibe" }));
     fs.writeFileSync(path.join(dir, "c.bin"), artifact({ payloadMagic: Buffer.from("VBW2") }));
+    fs.writeFileSync(path.join(dir, "f.bin"), artifact({ payloadMagic: Buffer.from("vAST") }));
     // A type-environment entry, a header list, a stray directory: the cache
     // root holds many things, and a count that included them would report a
     // populated cache for a cache that published nothing.
     fs.writeFileSync(path.join(dir, "d.txt"), "not an artifact envelope at all");
     fs.writeFileSync(path.join(dir, "e.bin"), artifact({ envelopeMagic: Buffer.from("VART2") }));
     fs.mkdirSync(path.join(dir, "sub"));
-    assert.deepEqual(countArtifacts(dir), { checked_module: 2, codegen_body_cache: 1 });
-    assert.deepEqual(countArtifacts(path.join(dir, "sub")), { checked_module: 0, codegen_body_cache: 0 });
-    assert.deepEqual(countArtifacts(path.join(dir, "absent")), { checked_module: 0, codegen_body_cache: 0 });
+    assert.deepEqual(countArtifacts(dir), { checked_module: 2, codegen_body_cache: 1, ast: 1 });
+    assert.deepEqual(countArtifacts(path.join(dir, "sub")), { checked_module: 0, codegen_body_cache: 0, ast: 0 });
+    assert.deepEqual(countArtifacts(path.join(dir, "absent")), { checked_module: 0, codegen_body_cache: 0, ast: 0 });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
