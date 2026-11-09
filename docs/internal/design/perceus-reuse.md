@@ -223,7 +223,13 @@ for an owned heap parameter only. The planner adds what the epilogue needs
 parameter at an exit from a table that reads no path flag; no owning use
 inside a loop; a name no other binding of the plan has; and a body that
 cannot hand back a view of the parameter, since the guarded drop does not
-retain an escaping interior read. A pattern bind is still declined: its
+retain an escaping interior read. Any field read of the parameter counts as
+a possible view, except in a function declared to return an `Int`, a `Bool`
+or `Unit`: such a result holds no pointer, so no path can return a view, and
+`fn f(ctx: Ctx, o: Option[Int]) -> Int { match o { Some(_) => keep(ctx),
+None => ctx.n } }` takes the drop. The declared result is the one
+`fn_result_is_immediate` reads for the truncate rows (#2837). A pattern bind
+is still declined: its
 references are dups taken at the bind (`bind_match_pat`), so the path that
 skips its consume leaks the dup, which is the #1980 shape rather than this
 one.
@@ -466,8 +472,9 @@ unrelated place, at a location that moves with the binary layout.
 ## Checks
 
 - `lib/@vibe/compiler/tests/perceus_rc_test.vibe`,
-  `perceus_reuse_plan_test.vibe`, `perceus_path_release_plan_test.vibe` and
-  `perceus_param_path_release_plan_test.vibe` pin plan rows.
+  `perceus_reuse_plan_test.vibe`, `perceus_path_release_plan_test.vibe`,
+  `perceus_param_path_release_plan_test.vibe` and
+  `perceus_param_scalar_result_plan_test.vibe` pin plan rows.
 - `perceus_reuse_e2e_test.vibe`, `hof_rc_ownership_test.vibe`,
   `lambda_param_consume_rc_test.vibe`, `borrowed_temp_release_rc_test.vibe`,
   `map_builder_rc_test.vibe` and `map_reuse_rc_test.vibe` (all under
@@ -478,4 +485,6 @@ unrelated place, at a location that moves with the binary layout.
   [`rc_shadow_regression_test.vibe`](../../../fixtures/rc_shadow_regression_test.vibe)
   runs the bug-shape corpus under shadow;
   [`rc_param_path_release_bounded_test.vibe`](../../../fixtures/rc_param_path_release_bounded_test.vibe)
-  bounds the parameter split shapes.
+  and
+  [`rc_param_scalar_result_release_bounded_test.vibe`](../../../fixtures/rc_param_scalar_result_release_bounded_test.vibe)
+  bound the parameter split shapes.

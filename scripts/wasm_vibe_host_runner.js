@@ -1126,7 +1126,17 @@ async function main() {
 
   // Typed core-wasm imports (`import ./x.wasm`): instantiate each foreign
   // module and expose it under its `vibe:wasm:<path>` import name.
-  const compiledModule = await WebAssembly.compile(wasmBytes);
+  // #2509: VIBE_WASM_RC_CENSUS adds one export (the RC legacy free-list head)
+  // to the bytes compiled here, and to nothing else; see wasm_rc_census.js.
+  const rcCensusEnabled = process.env.VIBE_WASM_RC_CENSUS === "1" || process.env.VIBE_WASM_RC_CENSUS === "detail";
+  // Required lazily: several gates copy this runner and its runtime alone into
+  // a scratch directory, and an ordinary run must not need the census module.
+  const rcCensus = rcCensusEnabled ? require("./wasm_rc_census.js") : null;
+  const rcCensusPrep = rcCensus !== null ? rcCensus.prepareRcCensus(wasmBytes) : null;
+  if (rcCensusPrep !== null && rcCensusPrep.binsBase === null) {
+    console.error(`[rc-census] skipped reason=${rcCensusPrep.reason}`);
+  }
+  const compiledModule = await WebAssembly.compile(rcCensusPrep !== null ? rcCensusPrep.bytes : wasmBytes);
   const foreignModules = await linkForeignWasmModules(compiledModule);
   const imports = new Proxy(
     {
@@ -1166,6 +1176,10 @@ async function main() {
   instanceRef = instance;
   host.instanceRefGlobal = instance;
   host.hostAllocPtrGlobal = null;
+  host.rcCensusReader =
+    rcCensusPrep !== null && rcCensusPrep.binsBase !== null
+      ? rcCensus.createRcCensusReader(instance, rcCensusPrep.binsBase)
+      : null;
   preGrowWasmMemory(instance);
   // #2914: the same `VIBE_MEM=1` contract viberun has had since `vibe run
   // --mem`, on this runner too. It is the same measurement -- `__heap_ptr` is
@@ -1864,6 +1878,7 @@ async function main() {
   }
   const { result, isSelfhost } = runInvokes(passthroughArgs);
   emitWasmMemoryStats("run");
+  if (host.rcCensusReader) host.rcCensusReader("end");
   // #cov: after running an instrumented build, dump the hit bitmaps.
   if (process.env.VIBE_COV_OUT) {
     if (!dumpCoverage(null)) {

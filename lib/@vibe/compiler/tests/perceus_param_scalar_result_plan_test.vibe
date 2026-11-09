@@ -1,0 +1,91 @@
+//# Imports
+
+// #2827: a parameter consumed on some paths only takes its guarded epilogue
+// drop even when another path hands back a FIELD of it, provided the
+// function is declared to return an Int, a Bool or Unit. The guarded drop
+// does not retain an escaping interior read, so the planner declines a body
+// that may return a view of the parameter -- and any field read used to
+// count, `ctx.n` of an `Int` field included. A value of those three types
+// holds no pointer, so no path can return a view. A function returning a
+// pointer-carrying type still declines: a `String`, an `Array` or a struct
+// field read is a view of the parameter it is read from.
+
+import @vibe/compiler/query {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(_ source: String) -> String with Exception {
+  rc_plan_source(source = source, fn_filter = "")
+}
+
+let prelude = "struct Ctx {\n  xs: Array[Int];\n  n: Int;\n  ok: Bool;\n  name: String;\n  inner: Box\n}\nstruct Box {\n  v: Int\n}\nfn keep(_ c: Ctx) -> Ctx {\n  c\n}\n"
+
+test "an Int field returned by the other match arm no longer blocks the drop" {
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, o: Option[Int]) -> Int {\n  match o {\n    Some(_) => Array::length(keep(ctx).xs),\n    None => ctx.n\n  }\n}\n")
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick ctx path_drop 1"))
+  assert(String::contains(plan, needle = "pick ctx consume_mark:"))
+}
+
+test "a Bool field returned by the other if-branch no longer blocks the drop" {
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, c: Bool) -> Bool {\n  if c {\n    Array::length(keep(ctx).xs) > 5\n  } else {\n    ctx.ok\n  }\n}\n")
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick ctx path_drop 1"))
+  assert(String::contains(plan, needle = "pick ctx consume_mark:"))
+}
+
+test "a let alias of an Int field no longer blocks the drop" {
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, c: Bool) -> Int {\n  if c {\n    Array::length(keep(ctx).xs)\n  } else {\n    let n = ctx.n\n    n\n  }\n}\n")
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick ctx path_drop 1"))
+  assert(String::contains(plan, needle = "pick ctx consume_mark:"))
+}
+
+test "a lambda's annotated Int result no longer blocks the drop" {
+  let src = String::concat(prelude, "let pick: (Ctx, Bool) -> Int = (ctx, c) -> {\n  if c {\n    Array::length(keep(ctx).xs)\n  } else {\n    ctx.n\n  }\n}\n")
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick ctx path_drop 1"))
+}
+
+test "a String field returned by the other arm still blocks the drop" {
+  // The negative control: `ctx.name` is a view of `ctx`, and the guarded
+  // drop would free the string it hands back.
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, c: Bool) -> String {\n  if c {\n    keep(ctx).name\n  } else {\n    ctx.name\n  }\n}\n")
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick ctx path_drop"))
+  assert(!String::contains(plan, needle = "pick ctx consume_mark:"))
+}
+
+test "an Array field returned by the other arm still blocks the drop" {
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, c: Bool) -> Array[Int] {\n  if c {\n    keep(ctx).xs\n  } else {\n    ctx.xs\n  }\n}\n")
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick ctx path_drop"))
+  assert(!String::contains(plan, needle = "pick ctx consume_mark:"))
+}
+
+test "a struct field returned by the other arm still blocks the drop" {
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, c: Bool) -> Box {\n  if c {\n    keep(ctx).inner\n  } else {\n    ctx.inner\n  }\n}\n")
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick ctx path_drop"))
+  assert(!String::contains(plan, needle = "pick ctx consume_mark:"))
+}
+
+test "an Int field read after a consuming early return takes the branch-dup pair" {
+  // The read makes the consume a planned dup, so this is the #1980 merge,
+  // whose exit release for a parameter is counted per path: the same rows a
+  // `Array::length(ctx.xs)` tail already got.
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, c: Bool) -> Int {\n  if c {\n    return Array::length(keep(ctx).xs)\n  } else {\n    ()\n  }\n  ctx.n\n}\n")
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick ctx path_drop 1"))
+  assert(String::contains(plan, needle = "pick ctx consume_mark:"))
+  assert(String::contains(plan, needle = "pick ctx exit_drop:0:1 1"))
+}
+
+test "a String field read after a consuming early return still declines" {
+  let src = String::concat(prelude, "fn pick(ctx: Ctx, c: Bool) -> String {\n  if c {\n    return keep(ctx).name\n  } else {\n    ()\n  }\n  ctx.name\n}\n")
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick ctx path_drop"))
+  assert(!String::contains(plan, needle = "pick ctx consume_mark:"))
+}
