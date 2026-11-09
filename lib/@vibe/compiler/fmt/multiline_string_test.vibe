@@ -36,3 +36,21 @@ test "formatter preserves multiline string content and the following statement" 
     inspect(String::contains(formatted, needle = "\nlet next"), content = "true")
   }
 }
+
+// #2503: a `#|` block is a source spelling worth keeping. A generated
+// program held as text (the Double runtime prelude) is written as `#|` lines
+// so it reads like the program it is and compiles to one string constant;
+// re-spelling it as one escaped `"..."` line would turn hundreds of readable
+// lines into a single unreadable one. The formatter keeps the `#|` lines,
+// re-aligns every continuation on the column the block now starts at, and
+// keeps the newline that must end the block even inside parentheses.
+test "formatter keeps the #| spelling of a multiline string" {
+  let aligned = "fn f() -> String {\n  let s = #|first \"q\"\n          #|\n          #|  indented \\n\n  s\n}\n"
+  assert_eq(format_script(aligned), aligned)
+  let moved = "fn f() -> String {\n    let s = #|one\n            #|two\n  s\n}\n"
+  inspect(format_script(moved), content = "fn f() -> String {\n  let s = #|one\n          #|two\n  s\n}\n")
+  let in_call = "fn f() -> Int {\n  String::length(\n    #|abc\n  )\n}\n"
+  let formatted = format_script(in_call)
+  inspect(formatted, content = "fn f() -> Int {\n  String::length(#|abc\n  )\n}\n")
+  assert_eq(format_script(formatted), formatted)
+}
