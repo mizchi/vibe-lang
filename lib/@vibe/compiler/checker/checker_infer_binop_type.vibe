@@ -2878,10 +2878,10 @@ export fn record_float_arith(capture: Option[TypedOccurrenceRoleLaneCapture], of
 /// offset, as kind 4 on the binop capture arrays (two identical rows, because
 /// every reader of those arrays walks them in pairs). Entries-only captures
 /// only, like the binop rows above. A receiver whose head is already an
-/// Array, String or Bytes is skipped: a resolved head never changes under a
-/// later substitution, and such an index is array indexing whatever else the
-/// checker learns -- so the per-module capture carries a row only where the
-/// answer is still open.
+/// Array, String or Bytes is filed under that head: a resolved head never
+/// changes under a later substitution, and the extraction files it as
+/// `typed_index_seq_verdict()`, the answer the pass reads in place of the
+/// receiver's spelling (#2501).
 export fn record_index_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, s: Subst) -> Unit {
   record_receiver_kind(capture = capture, bracket_off = bracket_off, recv_ty = recv_ty, resolved = resolved, kind = 4, s = s)
 }
@@ -2955,10 +2955,16 @@ export fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], 
       }
       let row_ty = if settled_formal >= 0 {
         CtVar(settled_formal)
+      } else if settled {
+        resolved
       } else {
         recv_ty
       }
-      if !settled || settled_formal >= 0 {
+      // #2501: a settled index or `for` iterand is filed too, so the pass
+      // reads the checker's "not a Map" (`typed_index_seq_verdict`) rather
+      // than recovering the receiver from its spelling. An Array reader
+      // (kind 5) files only what is still open: nothing reads a settled one.
+      if !settled || settled_formal >= 0 || kind == 4 || kind == 7 {
         Array::push(c.binop_offsets, value = bracket_off)
         Array::push(c.binop_kinds, value = row_kind)
         Array::push(c.binop_types, value = row_ty)

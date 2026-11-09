@@ -13,7 +13,7 @@ import ./argument_types.vibe {
 }
 
 import ./binding_shape_queries.vibe {
-  dtd_mask_shadowed_params
+  dtd_mask_shadowed_params, dtd_pat_binder_names
 }
 
 import ./collection_access.vibe {
@@ -49,7 +49,7 @@ import ./models.vibe {
 }
 
 import ./parameter_annotations.vibe {
-  seed_var_types
+  mask_shadowed_names, seed_var_types
 }
 
 import ./type_names.vibe {
@@ -154,6 +154,38 @@ export fn lower_try_op(_ val: Expr) -> Expr {
 /// NOT run) and — idempotently — the codegen `desugar_trait_dicts`. It is inert
 /// for programs that use no `let*`/`?` (no sentinels present). `var_types` tracks
 /// locals so `let* x = some_opt` then `let* y = uses(x)` resolves x's type.
+/// #2501: the environment for one `match` arm's body in this pass. Every name
+/// the pattern binds shadows the outer bindings of that name -- the way a
+/// lambda parameter does (`seed_var_types`) -- before the binders the arm
+/// recovers (`arm_binder_var_types_env`) are added. Without the mask an arm
+/// binder `m` settled as an Array kept an outer `m: StringMap[V]`'s spelling,
+/// and this pass, which runs before the check and so has no row to ask,
+/// rewrote `m[k]` to `Map::get`. The arm's binders are read against the
+/// unmasked environment, because the scrutinee may share a binder's name
+/// (`match m { Some(m) => .. }`); `arm_binder_var_types_env` only appends to
+/// what it is given, so its own rows are the ones past `var_types`.
+fn railway_arm_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let names = dtd_pat_binder_names(p)
+  let arm_vars = arm_binder_var_types_env(scrut = scrut, p = p, var_types = var_types, struct_sets = struct_sets, fn_returns = fn_returns)
+  let masked = if Array::length(names) == 0 {
+    var_types
+  } else {
+    mask_shadowed_names(base = var_types, names = names)
+  }
+  if Array::length(masked) == Array::length(var_types) {
+    // Nothing outer is shadowed (`masked` may be `var_types` itself).
+    arm_vars
+  } else {
+    // `masked` is a fresh copy here, so it takes the arm's own rows.
+    let mut i = Array::length(var_types)
+    while i < Array::length(arm_vars) {
+      Array::push(masked, value = Array::get(arm_vars, at = i))
+      i = i + 1
+    }
+    masked
+  }
+}
+
 fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], changed: Option[Array[Bool]]) -> Expr {
   match expr {
     ECall(callee, args, off, callee_resolution) => {
@@ -284,7 +316,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
         // binders (see arm_binder_var_types) — this walk runs BEFORE the
         // checker, so the arm body's `binding.field` reads rewrite to
         // positional `__rec_field` here too.
-        let arm_vars = arm_binder_var_types_env(scrut = scrut, p = p, var_types = var_types, struct_sets = struct_sets, fn_returns = fn_returns)
+        let arm_vars = railway_arm_var_types(scrut = scrut, p = p, var_types = var_types, struct_sets = struct_sets, fn_returns = fn_returns)
         Array::push(out, value = (p, railway_rw(expr = b, struct_sets = struct_sets, var_types = arm_vars, fn_returns = fn_returns, changed = changed)))
         i = i + 1
       }
@@ -295,7 +327,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, at = i)
-        Array::push(out, value = (p, railway_rw(expr = b, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, changed = changed)))
+        Array::push(out, value = (p, railway_rw(expr = b, struct_sets = struct_sets, var_types = mask_shadowed_names(base = var_types, names = dtd_pat_binder_names(p)), fn_returns = fn_returns, changed = changed)))
         i = i + 1
       }
       EHandle(railway_rw(expr = scrut, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, changed = changed), out)

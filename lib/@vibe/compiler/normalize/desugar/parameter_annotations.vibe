@@ -116,6 +116,59 @@ fn param_shadows_key(key: String, pnames: Array[String], dollar_pnames: Array[St
   hit
 }
 
+/// Push onto `out` every entry of `base` that a new binding of any of `names`
+/// does not shadow. A binding shadows the plain name and every key derived
+/// from it (`param_shadows_key`). A parameter list masks this way
+/// (`seed_var_types`), and so does a `match` arm's pattern in the pass that
+/// runs before the check (#2501).
+/// #3900: the test reads each outer key against the names; the derived keys
+/// are not built per name, nor `$<name>` per outer row.
+fn mask_shadowed_names_into(out: Array[(String, String)], base: Array[(String, String)], names: Array[String]) -> Unit {
+  let dollar_names = dollar_spellings(names)
+  let mut b = 0
+  while b < Array::length(base) {
+    let (bn, _) = Array::get(base, at = b)
+    if !param_shadows_key(key = bn, pnames = names, dollar_pnames = dollar_names) {
+      Array::push(out, value = Array::get(base, at = b))
+    } else {
+      ()
+    }
+    b = b + 1
+  }
+}
+
+/// `base` without the entries a new binding of any of `names` shadows
+/// (`mask_shadowed_names_into`); `base` itself when it holds none, so a
+/// caller must not push onto the result.
+export fn mask_shadowed_names(base: Array[(String, String)], names: Array[String]) -> Array[(String, String)] {
+  let dollar_names = dollar_spellings(names)
+  let mut any = false
+  let mut b = 0
+  while !any && b < Array::length(base) {
+    let (bn, _) = Array::get(base, at = b)
+    any = param_shadows_key(key = bn, pnames = names, dollar_pnames = dollar_names)
+    b = b + 1
+  }
+  if any {
+    let out = array_empty()
+    mask_shadowed_names_into(out = out, base = base, names = names)
+    out
+  } else {
+    base
+  }
+}
+
+/// `$<name>` for each name, the suffix a constructor-payload key ends in.
+fn dollar_spellings(_ names: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(out, value = String::concat("$", Array::get(names, at = i)))
+    i = i + 1
+  }
+  out
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -127,29 +180,15 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
   // parameter `m` shadowing an outer `m: StringMap[Int]` had its `m[0]`
   // rewritten to `Map::get` by the spelling (#3133 review). Drop the outer
   // entries -- the plain name and the keys derived from it -- first.
-  // #3900: the test reads each outer key against the names; the derived keys
-  // are no longer built per parameter, nor `$<name>` per outer row.
   let pnames = array_empty()
-  let dollar_pnames = array_empty()
   if Array::length(base) > 0 {
     for param in params {
       let (raw_pname, _) = param
-      let pname = strip_label_tilde(raw_pname)
-      Array::push(pnames, value = pname)
-      Array::push(dollar_pnames, value = String::concat("$", pname))
+      Array::push(pnames, value = strip_label_tilde(raw_pname))
     }
   } else ()
   let out = array_empty()
-  let mut b = 0
-  while b < Array::length(base) {
-    let (bn, _) = Array::get(base, at = b)
-    if !param_shadows_key(key = bn, pnames = pnames, dollar_pnames = dollar_pnames) {
-      Array::push(out, value = Array::get(base, at = b))
-    } else {
-      ()
-    }
-    b = b + 1
-  }
+  mask_shadowed_names_into(out = out, base = base, names = pnames)
   let mut i = 0
   while i < Array::length(params) {
     let (raw_pname, ann) = Array::get(params, at = i)
