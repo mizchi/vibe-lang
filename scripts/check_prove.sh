@@ -230,21 +230,26 @@ replay_case() {
     return
   fi
   set +e
-  VIBE_TEST_CLI_WASM="$cli" VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$work"/*_test.vibe > "$work/run.log" 2>&1
+  # One file at a time: the verdicts are read back per file from one log, so
+  # nothing may run beside a replay and write into it.
+  VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$cli" VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$work"/*_test.vibe > "$work/run.log" 2>&1
   set -e
   if ! node -e '
     const fs = require("fs");
     const [work, spurious, name] = process.argv.slice(1);
     const listed = spurious.split(" ").filter((s) => s !== "");
     // vibe_test.sh reports each file as `ok   PATH`, `FAIL PATH` or
-    // `FAIL (compile) PATH`, followed by its indented detail lines.
+    // `FAIL (compile) PATH`, followed by its indented detail lines. A block
+    // runs to the next file header or the closing `[vibe-test]` summary; a
+    // blank line inside it does not end it. `raw` keeps the block as printed,
+    // so a verdict this cannot read is shown rather than summarized.
     const blocks = new Map();
     let cur = null;
     for (const line of fs.readFileSync(`${work}/run.log`, "utf8").split("\n")) {
-      const m = line.match(/^(ok|FAIL \(compile\)|FAIL) +(\S+)$/);
-      if (m) { cur = { verdict: m[1], detail: [] }; blocks.set(m[2], cur); }
-      else if (cur && line.startsWith(" ")) cur.detail.push(line.trim());
-      else cur = null;
+      const m = line.match(/^(ok|FAIL \(compile\)|FAIL) +(\S+)/);
+      if (m) { cur = { verdict: m[1], detail: [], raw: [line] }; blocks.set(m[2], cur); }
+      else if (line.startsWith("[vibe-test]")) cur = null;
+      else if (cur) { cur.raw.push(line); if (line.trim() !== "") cur.detail.push(line.trim()); }
     }
     const errs = [];
     const seen = new Set();
@@ -258,7 +263,7 @@ replay_case() {
       if (listed.includes(fn)) {
         if (b.verdict !== "ok") errs.push(`replay of \`${fn}\` is listed as spurious but no longer runs clean: ${call} -- drop it from replay_spurious`);
       } else if (!trapped) {
-        errs.push(`replay of \`${fn}\` does not trap in \`${fn}\` at run time: ${call} (${b.verdict}${b.detail.length ? ": " + b.detail.join(" / ") : ""})`);
+        errs.push(`replay of \`${fn}\` does not trap in \`${fn}\` at run time: ${call} (${b.verdict}${b.detail.length ? ": " + b.detail.join(" / ") : ", with no report: the runner printed " + JSON.stringify(b.raw.join("\n"))})`);
       }
     }
     for (const fn of listed) if (name === "unproved" && !seen.has(fn)) errs.push(`\`${fn}\` is listed as spurious but has no counterexample to replay`);
