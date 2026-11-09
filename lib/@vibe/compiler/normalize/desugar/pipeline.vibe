@@ -124,7 +124,7 @@ import ./lambda_hoist.vibe {
 }
 
 import ./models.vibe {
-  DtdTypedRows, ModuleTraitFacts
+  DesugarModuleReports, DtdTypedRows, ModuleTraitFacts
 }
 
 import ./railway_binds.vibe {
@@ -144,7 +144,14 @@ import ./rewrite.vibe {
 }
 
 import ./add32_rows.vibe {
-  dtd_add32_insert, dtd_add32_report, dtd_add32_reset, dtd_add32_split_collect, dtd_add32_split_report, dtd_add32_split_reset
+  dtd_add32_insert,
+  dtd_add32_report,
+  dtd_add32_reset,
+  dtd_add32_split_collect,
+  dtd_add32_split_merge,
+  dtd_add32_split_report,
+  dtd_add32_split_reset,
+  dtd_add32_split_rows
 }
 
 import ./state.vibe {
@@ -1168,6 +1175,62 @@ export fn desugar_module_reports_flush() -> Unit with Exception {
   } else {
     dtd_add32_split_report()
   }
+}
+
+/// A copy of the refusals filed since `desugar_module_reports_begin`. A
+/// worker that lowers one module of a program calls `begin`, lowers it with
+/// `desugar_trait_dicts_module_deferring`, and sends this back, so that its
+/// coordinator can file the module with the program's
+/// (`desugar_module_reports_merge`).
+export fn desugar_module_reports_take() -> DesugarModuleReports {
+  let (offs, types, used) = dtd_add32_split_rows()
+  DesugarModuleReports::{
+    eq: dtd_split_strings_copy(dtd_split_eq_refusals),
+    show: dtd_split_strings_copy(dtd_split_show_refusals),
+    index: dtd_split_strings_copy(dtd_split_index_refusals),
+    add32_offs: offs,
+    add32_types: types,
+    add32_used: used
+  }
+}
+
+/// File refusals another run took (`desugar_module_reports_take`) with the
+/// program's, exactly as that run's own module would have been filed:
+/// deduplicated, in order, and a 32-bit `Add` row consumed when either side
+/// consumed it. Merging each module's reports in module order gives the
+/// program the reports one in-process driver would have collected.
+export fn desugar_module_reports_merge(_ reports: DesugarModuleReports) -> Unit {
+  dtd_split_collect_into(dst = dtd_split_eq_refusals, src = reports.eq)
+  dtd_split_collect_into(dst = dtd_split_show_refusals, src = reports.show)
+  dtd_split_collect_into(dst = dtd_split_index_refusals, src = reports.index)
+  dtd_add32_split_merge(offs = reports.add32_offs, types = reports.add32_types, used = reports.add32_used)
+}
+
+/// No refusals: what a module that was not refused sends back.
+export fn desugar_module_reports_none() -> DesugarModuleReports {
+  DesugarModuleReports::{
+    eq: [],
+    show: [],
+    index: [],
+    add32_offs: [],
+    add32_types: [],
+    add32_used: []
+  }
+}
+
+/// Do `reports` hold a refusal? Then so does the program, and -- as
+/// `desugar_module_reports_pending` says -- the module they came from runs
+/// none of the passes after this one. Rows alone are not a refusal.
+export fn desugar_module_reports_refused(_ reports: DesugarModuleReports) -> Bool {
+  Array::length(reports.eq) > 0 || Array::length(reports.show) > 0 || Array::length(reports.index) > 0
+}
+
+fn dtd_split_strings_copy(_ src: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for s in src {
+    Array::push(out, value = s)
+  }
+  out
 }
 
 /// File this module's refusals with the program's.
