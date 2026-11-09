@@ -30,6 +30,7 @@ import @vibe/compiler/fmt/lexer {
   k_newline,
   k_none,
   k_pipe,
+  k_raw_string,
   k_rbrace,
   k_rbracket,
   k_record,
@@ -263,6 +264,10 @@ fn collection_fits_inline(toks: Array[LTok], open_idx: Int, close_idx: Int, base
         i = i + 1
       } else if k == k_string_interp && text_contains_newline(tok.text) {
         ok = false
+      } else if k == k_raw_string {
+        // A `#|` block runs to the end of its line, so nothing can follow it
+        // on the line it ends.
+        ok = false
       } else {
         col = col + (if approx_needs_space(prev_kind = prev_kind, curr_kind = k) {
           1
@@ -380,6 +385,10 @@ fn token_text_for_output(tok: LTok, next_kind: Int) -> String {
   let k = tok.kind
   if k == k_string {
     quote_string_literal(tok.text)
+  } else if k == k_raw_string {
+    // Placeholder only: the block's continuation lines depend on the column
+    // it is written at, which the caller knows (`raw_string_block`).
+    String::concat("#|", tok.text)
   } else if k == k_string_interp {
     String::concat("\"", String::concat(tok.text, "\""))
   } else if k == k_char {
@@ -540,6 +549,37 @@ fn needs_space(prev_prev_kind: Int, prev_kind: Int, curr_kind: Int, prev_prefix:
   }
 }
 
+/// #2503: a `#|` multiline raw string written at column `col`. Every content
+/// line gets its own `#|`, and each continuation's `#` sits at `col`, which is
+/// what the lexer requires for the lines to join into one literal.
+fn raw_string_block(text: String, col: Int) -> String {
+  let lines = String::split(text, sep = "\n")
+  let out = StringBuilder::new()
+  let pad = spaces(col)
+  let mut i = 0
+  while i < Array::length(lines) {
+    if i > 0 {
+      StringBuilder::push(out, value = "\n")
+      StringBuilder::push(out, value = pad)
+    }
+    StringBuilder::push(out, value = "#|")
+    StringBuilder::push(out, value = Array::get(lines, at = i))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Width of the last line of `text`: after a `raw_string_block` that spans
+/// lines, the column the cursor is left at.
+fn last_line_width(_ text: String) -> Int {
+  let n = String::length(text)
+  let mut i = n
+  while i > 0 && String::char_code_at(text, at = i - 1) != '\n' {
+    i = i - 1
+  }
+  n - i
+}
+
 fn spaces(_ n: Int) -> String {
   let mut out = ""
   let mut i = 0
@@ -679,8 +719,10 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         } else {
           0
         }
-        if paren_depth > base_paren || bracket_depth > base_bracket || collapse_generic_break ||
-        in_effects_brace || inline_depth > 0 {
+        // #2503: the newline that ends a `#|` block is never swallowed --
+        // whatever followed on the joined line would become string content.
+        if prev_kind != k_raw_string &&
+        (paren_depth > base_paren || bracket_depth > base_bracket || collapse_generic_break || in_effects_brace || inline_depth > 0) {
           i = i + 1
         } else {
           let max_nl = if brace_depth == 0 {
@@ -711,6 +753,15 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       if pending_newlines == 0 && inline_depth == 0 &&
       should_force_newline_before(kind = kind, container_stack = container_stack) {
         pending_newlines = 1
+      }
+      // #2503 review: a `#|` line directly under a block is that block's
+      // continuation (same column) or a lex error (any other column), so two
+      // distinct blocks with nothing written between them -- the blank line
+      // that separated them is capped away inside braces -- must keep a blank
+      // line. Without it the lexer joined them into one literal and the
+      // program's value changed.
+      if kind == k_raw_string && prev_kind == k_raw_string {
+        pending_newlines = 2
       }
       let mut dedented_before = false
       if pending_newlines > 0 {
@@ -790,8 +841,18 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
           Array::push(out, value = " ")
           cur_col = cur_col + 1
         }
-        Array::push(out, value = rendered_text)
-        cur_col = cur_col + String::length(rendered_text)
+        if kind == k_raw_string {
+          let block = raw_string_block(text = tok.text, col = cur_col)
+          Array::push(out, value = block)
+          cur_col = if text_contains_newline(tok.text) {
+            last_line_width(block)
+          } else {
+            cur_col + String::length(block)
+          }
+        } else {
+          Array::push(out, value = rendered_text)
+          cur_col = cur_col + String::length(rendered_text)
+        }
         line_has_content = true
         if kind == k_enum {
           type_decl_header = decl_enum
