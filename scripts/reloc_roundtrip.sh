@@ -47,9 +47,20 @@ if [ "${#targets[@]}" -eq 0 ]; then
   # fixed byte per group reported SUCCESS on this module while scanning from
   # one byte early -- classifying a type site as a blocktype site and still
   # round-tripping. A probe that cannot reach a construct is not coverage of
-  # it.
+  # it. `risky` / the `handle` give both lanes a `throw` and a `try_table`
+  # catch, so exception TAG sites are scanned on the gc lane too: at a slot
+  # width (#3941) the gc lane's hand-encoded tags were left minimal while the
+  # rebuild padded them, and the earlier probe had no tag site to show it.
   cat > "$probe_dir/gcprobe.vibe" <<'PROBE'
 struct Pt { x: Int; y: Int }
+
+fn risky(n: Int) -> Int with Exception {
+  if n > 3 {
+    throw("big")
+  } else {
+    n
+  }
+}
 
 fn build() -> Array[Int] {
   let xs = [1, 2, 3, 4]
@@ -64,7 +75,10 @@ fn main() -> Int {
   let xs = build()
   let p = Pt::{ x: Array::get(xs, at = 0), y: Array::get(xs, at = 3) }
   let ys = [mid(p = p), mid(p = p)]
-  Array::get(ys, at = 0) + Array::get(ys, at = 1) + Array::length(xs)
+  let caught = handle {
+    risky(n = Array::length(xs) + 1)
+  } with { Exception::Throw(_) => 0 }
+  Array::get(ys, at = 0) + Array::get(ys, at = 1) + Array::length(xs) + caught
 }
 PROBE
   for backend in linear gc; do
