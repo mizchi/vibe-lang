@@ -907,17 +907,21 @@ fn geff_validate_row_targs(stmts: Array[Stmt], defs: Array[TypeDef], errors: Arr
     Array::push(res.effect_kinds, value = standard_provider_default_resource_kind(provider))
   }
   // The resolved declarations, so an IMPORTED resource-parameterized effect
-  // (under its local name) is checked like a local one.
+  // (under its local name) is checked like a local one. Every declared
+  // effect is recorded, with `""` when it takes no resource: a program's own
+  // `effect Fs[T]` overrides the provider default above, so `Fs[Int]` stays a
+  // type argument (Codex review on #4020). The last entry for a name wins.
   for def in defs {
     match def {
       TDEffect(dname, _, _, dkinds) => {
+        let mut dkind = ""
         for k in dkinds {
           if k != "" {
-            Array::push(res.effects, value = dname)
-            Array::push(res.effect_kinds, value = k)
+            dkind = k
           }
         }
-        ()
+        Array::push(res.effects, value = dname)
+        Array::push(res.effect_kinds, value = dkind)
       },
       _ => ()
     }
@@ -939,12 +943,8 @@ fn geff_validate_row_targs(stmts: Array[Stmt], defs: Array[TypeDef], errors: Arr
             ekind = resource_param_kind(key)
           }
         }
-        if ekind != "" {
-          Array::push(res.effects, value = ename)
-          Array::push(res.effect_kinds, value = ekind)
-        } else {
-          ()
-        }
+        Array::push(res.effects, value = ename)
+        Array::push(res.effect_kinds, value = ekind)
         Array::push(ed_names, value = ename)
         Array::push(ed_tpcounts, value = Array::length(eparams))
         let first_arity = if Array::length(eparams) > 0 {
