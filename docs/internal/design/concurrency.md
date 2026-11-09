@@ -874,6 +874,19 @@ one spawn covers both shapes (#3200).
 up to its first suspension; it does not enter the ready queue. A body that
 finishes without suspending settles the task at once.
 
+The library also has the start a unified `spawn` needs (#3200):
+`__conc_spawn_async(g, f)`, a compiler-facing entry with `spawn_suspend`'s
+signature that queues the task Ready like `spawn` does. When `join`, a channel
+`send` / `recv` or the close dispatches it, its first leg runs under the same
+`Async` handle as `spawn_suspend`'s (`conc_first_leg`), and from then on it is
+a suspendable task: it parks, and the pump resumes it. A cancel or a sibling's
+failure before dispatch resolves it Cancelled without running it. No program
+calls it by name yet; it is the target the lowering is to give a
+`TaskGroup::spawn` whose task closure uses `Async`. Pinned by
+`lib/@vibe/concurrent/experimental/spawn_async_test.vibe`, including the mixed
+group whose order differs between the two starts (`plain s1 s2` queued,
+`s1 plain s2` with `spawn_suspend`).
+
 The body is written inline, as a closure literal at the call. A closure passed
 to `spawn_suspend` -- or to any parameter whose row carries `Async`, such as a
 wrapper around it -- must be compiled with the step-returning convention, and
