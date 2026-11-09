@@ -2,6 +2,10 @@
 // `canonical_trait_key` resolves a trait key's arguments against (#3947,
 // #3953), built from a module's statements and the definitions it imports.
 
+import ./alias_expansion_count.vibe {
+  alias_expansion_node_limit, type_expr_expansion_node_count
+}
+
 import ./ast.vibe {
   Stmt, TypeExpr
 }
@@ -35,6 +39,16 @@ export fn canonical_key_defs(_ stmts: Array[Stmt]) -> Array[TypeDef] {
 /// seeds imported type definitions (`seed_imported_type_defs`); the imports
 /// are entered after the module's own nominal types and before its aliases'
 /// rounds, so a local alias over an imported type resolves through it.
+///
+/// Resolving an alias copies its expansion, and a few lines of aliases can
+/// expand to tens of millions of nodes (Codex on #3995). So each resolution is
+/// preflighted with the checker's own count (`type_expr_expansion_node_count`,
+/// the one `refresh_completed_alias_defs` runs) before it allocates, against
+/// the same limit. An alias the count puts over the limit is capped: it is not
+/// resolved again, an alias that names it counts as over the limit too, and
+/// none of them is returned. A key through a capped alias stays as written,
+/// and the checker's preflight refuses the source with the edit; an alias the
+/// checker accepts is expanded alike on an impl's key and on a bound's.
 export fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) -> Array[TypeDef] {
   let nominal: Array[TypeDef] = []
   let aliases: Array[(String, Array[String], TypeExpr)] = []
@@ -49,47 +63,7 @@ export fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) 
       _ => ()
     }
   }
-  // An alias that would expand to more than `canonical_key_alias_node_limit`
-  // nodes is left out: resolving it copies its expansion, and a branching
-  // chain (`type A1[T] = (A0[T], A0[T])` .. `A24`) is a few lines that expand
-  // to tens of millions (Codex on #3995). A key through it stays as written,
-  // and the checker's alias preflight refuses the source with the edit. The
-  // count is memoized per alias and follows substitution (see
-  // `canonical_key_alias_sizes`), so it never expands anything itself.
-  // An imported alias counts with the size of its (resolved) body: a local
-  // chain that doubles through `import { Dup }` (`type Dup[T] = (T, T)`)
-  // expands as much as one that doubles locally (Codex on #3995).
-  let declared: Array[String] = []
-  for row in aliases {
-    let (name, _, _) = row
-    Array::push(declared, value = name)
-  }
-  for d in nominal {
-    Array::push(declared, value = canonical_key_def_name(d))
-  }
-  let imported_forms: Array[(String, Array[Int])] = []
-  for d in imported {
-    match d {
-      TDAlias(name, params, body) => if !canonical_key_names_contain(names = declared, name = name) {
-        Array::push(imported_forms, value = (name, canonical_key_resolved_form(params = params, body = body)))
-      } else {
-        ()
-      },
-      _ => ()
-    }
-  }
-  let sized = canonical_key_alias_sizes(aliases = aliases, imported = imported_forms)
-  let kept: Array[(String, Array[String], TypeExpr)] = []
-  let mut ai = 0
-  while ai < Array::length(aliases) {
-    if Array::get(sized, at = ai) <= canonical_key_alias_node_limit {
-      Array::push(kept, value = Array::get(aliases, at = ai))
-    } else {
-      ()
-    }
-    ai = ai + 1
-  }
-  let aliases = kept
+  let limit = alias_expansion_node_limit()
   let alias_names: Array[String] = []
   for row in aliases {
     let (name, _, _) = row
@@ -104,12 +78,7 @@ export fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) 
   }
   for d in imported {
     let name = canonical_key_def_name(d)
-    // An imported alias past the limit is left out like a local one.
-    let oversized = match canonical_key_imported_size(imported = imported_forms, name = name) {
-      Some(size) => size > canonical_key_alias_node_limit,
-      None => false
-    }
-    if !canonical_key_names_contain(names = local_names, name = name) && !oversized {
+    if !canonical_key_names_contain(names = local_names, name = name) && !canonical_key_imported_oversized(def = d, limit = limit) {
       Array::push(nominal, value = d)
     } else {
       ()
@@ -131,346 +100,81 @@ export fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) 
   } else {
     0
   }
-  let mut defs: Array[TypeDef] = []
+  // The aliases sit after the nominal definitions, at fixed positions, so
+  // `capped` can name them by index as the count expects. Before its first
+  // round an alias stands for itself, as a name the resolver keeps.
+  let defs: Array[TypeDef] = []
   for d in nominal {
     Array::push(defs, value = d)
   }
+  let base = Array::length(defs)
+  for row in aliases {
+    let (name, params, _) = row
+    Array::push(defs, value = TDAlias(name, params, CtNamed(name, [])))
+  }
+  let capped: Array[Int] = []
   let mut r = 0
   while r < rounds {
-    let next: Array[TypeDef] = []
-    for d in nominal {
-      Array::push(next, value = d)
+    let mut ai = 0
+    while ai < Array::length(aliases) {
+      let at = base + ai
+      if !canonical_key_ints_contain(items = capped, wanted = at) {
+        let (name, params, target) = Array::get(aliases, at = ai)
+        if type_expr_expansion_node_count(te = target, defs = defs, shadow = params, capped_aliases = capped, limit = limit) > limit {
+          Array::push(capped, value = at)
+        } else {
+          Array::set(defs, at = at, value = TDAlias(name, params, resolve_type_expr_core_shadowed(te = target, defs = defs, shadow = params)))
+        }
+      } else {
+        ()
+      }
+      ai = ai + 1
     }
-    for row in aliases {
-      let (name, params, target) = row
-      Array::push(next, value = TDAlias(name, params, resolve_type_expr_core_shadowed(te = target, defs = defs, shadow = params)))
-    }
-    defs = next
     r = r + 1
   }
-  defs
-}
-
-/// The most nodes an alias may expand to and still be resolved for a key: the
-/// checker's alias preflight limit (`alias_expansion_node_limit`), so an
-/// alias the checker accepts is expanded alike on an impl's key and a bound's,
-/// and one past it is refused by the preflight (Codex on #3995).
-let canonical_key_alias_node_limit = 262144
-
-/// One past the limit: every count saturates here, so the arithmetic stays
-/// small however the aliases branch.
-let canonical_key_alias_size_cap = 262145
-
-// The size an alias expands to is a linear form over its parameters' sizes:
-// `form[0]` nodes of its own, plus `form[1 + i]` copies of parameter `i`.
-// Applying an alias substitutes its arguments' forms into its own, so the
-// count follows substitution exactly: `type A0[T] = (Int, Int)` applied to
-// anything is 3 nodes, and `type Dup[T] = (T, T)` applied to `X` is 1 + 2|X|
-// (Codex on #3995). Every coefficient saturates at the cap.
-
-/// The size each of `aliases` expands to (its parameters counted as one node
-/// each), in their order. A cycle saturates: a recursive alias names no type,
-/// and resolving it once per round doubled it each time (Codex on #3995).
-fn canonical_key_alias_sizes(aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])]) -> Array[Int] {
-  // None = not visited; Some([]) = in progress; else the form.
-  let memo: Array[Option[Array[Int]]] = []
-  // The largest argument each alias's resolution expands on the way: the
-  // resolver expands an argument before it substitutes it, so
-  // `Ignore[Dup[..]]` (`type Ignore[T] = Int`) builds its argument although
-  // the result is one node (Codex on #3995).
-  let peaks: Array[Int] = []
-  for _ in aliases {
-    Array::push(memo, value = None)
-    Array::push(peaks, value = 0)
-  }
-  let out: Array[Int] = []
+  let out: Array[TypeDef] = []
   let mut i = 0
-  while i < Array::length(aliases) {
-    let total = canonical_key_form_total(canonical_key_alias_form(aliases = aliases, imported = imported, memo = memo, peaks = peaks, at = i))
-    let peak = Array::get(peaks, at = i)
-    Array::push(out, value = if peak > total {
-      peak
-    } else {
-      total
-    })
-    i = i + 1
-  }
-  out
-}
-
-/// A form's size with every parameter one node.
-fn canonical_key_form_total(_ form: Array[Int]) -> Int {
-  let mut total = 0
-  for c in form {
-    total = canonical_key_saturating_add(a = total, b = c)
-  }
-  total
-}
-
-fn canonical_key_saturated_form(_ arity: Int) -> Array[Int] {
-  let out: Array[Int] = [canonical_key_alias_size_cap]
-  let mut i = 0
-  while i < arity {
-    Array::push(out, value = canonical_key_alias_size_cap)
-    i = i + 1
-  }
-  out
-}
-
-fn canonical_key_alias_form(aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])], memo: Array[Option[Array[Int]]], peaks: Array[Int], at: Int) -> Array[Int] {
-  let (_, params, target) = Array::get(aliases, at = at)
-  match Array::get(memo, at = at) {
-    Some(form) => if Array::length(form) == 0 {
-      canonical_key_saturated_form(Array::length(params))
-    } else {
-      form
-    },
-    None => {
-      Array::set(memo, at = at, value = Some([]))
-      let names = for p in params {
-        type_param_name(p)
-      }
-      let peak = [0]
-      let form = canonical_key_expr_form(te = target, params = names, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak)
-      Array::set(memo, at = at, value = Some(form))
-      Array::set(peaks, at = at, value = Array::get(peak, at = 0))
-      form
-    }
-  }
-}
-
-fn canonical_key_alias_index(aliases: Array[(String, Array[String], TypeExpr)], name: String) -> Int {
-  let mut found = 0 - 1
-  let mut i = 0
-  while i < Array::length(aliases) && found < 0 {
-    let (alias_name, _, _) = Array::get(aliases, at = i)
-    if alias_name == name {
-      found = i
+  while i < Array::length(defs) {
+    if !canonical_key_ints_contain(items = capped, wanted = i) {
+      Array::push(out, value = Array::get(defs, at = i))
     } else {
       ()
     }
     i = i + 1
   }
-  found
+  out
 }
 
-fn canonical_key_imported_form(imported: Array[(String, Array[Int])], name: String) -> Option[Array[Int]] {
-  let mut found: Option[Array[Int]] = None
-  for row in imported {
-    let (n, form) = row
-    if (found is None) && n == name {
-      found = Some(form)
+/// An imported alias whose resolved body is over the limit is left out like a
+/// local one: a key through it would copy that body. The body is counted with
+/// each parameter as one node, by the same count.
+fn canonical_key_imported_oversized(def: TypeDef, limit: Int) -> Bool {
+  match def {
+    TDAlias(name, params, _) => {
+      let te = if Array::length(params) == 0 {
+        TyName(name)
+      } else {
+        TyApp(name, for p in params {
+          TyName(type_param_name(p))
+        })
+      }
+      type_expr_expansion_node_count(te = te, defs = [def], shadow = [], capped_aliases = [
+      ], limit = limit) > limit
+    },
+    _ => false
+  }
+}
+
+fn canonical_key_ints_contain(items: Array[Int], wanted: Int) -> Bool {
+  let mut found = false
+  for item in items {
+    if !found && item == wanted {
+      found = true
     } else {
       ()
     }
   }
   found
-}
-
-/// The total size of an imported alias, if `name` is one.
-fn canonical_key_imported_size(imported: Array[(String, Array[Int])], name: String) -> Option[Int] {
-  match canonical_key_imported_form(imported = imported, name = name) {
-    Some(form) => Some(canonical_key_form_total(form)),
-    None => None
-  }
-}
-
-/// An imported alias's form, read from its resolved body by a walk that stops
-/// once it reaches the cap: the body can be a shared graph.
-fn canonical_key_resolved_form(params: Array[String], body: Type) -> Array[Int] {
-  let form: Array[Int] = [0]
-  for _ in params {
-    Array::push(form, value = 0)
-  }
-  let budget = [canonical_key_alias_size_cap]
-  canonical_key_spend(ty = body, params = params, form = form, budget = budget)
-  if Array::get(budget, at = 0) <= 0 {
-    canonical_key_saturated_form(Array::length(params))
-  } else {
-    form
-  }
-}
-
-fn canonical_key_spend(ty: Type, params: Array[String], form: Array[Int], budget: Array[Int]) -> Unit {
-  let left = Array::get(budget, at = 0)
-  if left > 0 {
-    Array::set(budget, at = 0, value = left - 1)
-    let slot = match ty {
-      CtNamed(name, items) => if Array::length(items) == 0 {
-        canonical_key_param_slot(params = params, name = name)
-      } else {
-        0
-      },
-      _ => 0
-    }
-    Array::set(form, at = slot, value = Array::get(form, at = slot) + 1)
-    match ty {
-      CtTuple(items) => for item in items {
-        canonical_key_spend(ty = item, params = params, form = form, budget = budget)
-      },
-      CtArray(item) => canonical_key_spend(ty = item, params = params, form = form, budget = budget),
-      CtOption(item) => canonical_key_spend(ty = item, params = params, form = form, budget = budget),
-      CtFn(fparams, ret, _) => {
-        for param in fparams {
-          canonical_key_spend(ty = param, params = params, form = form, budget = budget)
-        }
-        canonical_key_spend(ty = ret, params = params, form = form, budget = budget)
-      },
-      CtNamed(_, items) => for item in items {
-        canonical_key_spend(ty = item, params = params, form = form, budget = budget)
-      },
-      CtApplied(head, items) => {
-        canonical_key_spend(ty = head, params = params, form = form, budget = budget)
-        for item in items {
-          canonical_key_spend(ty = item, params = params, form = form, budget = budget)
-        }
-      },
-      CtForAll(_, _, body) => canonical_key_spend(ty = body, params = params, form = form, budget = budget),
-      CtRecord(fields) => for field in fields {
-        let (_, fty) = field
-        canonical_key_spend(ty = fty, params = params, form = form, budget = budget)
-      },
-      _ => ()
-    }
-  } else {
-    ()
-  }
-}
-
-/// `1 + i` when `name` is parameter `i` of `params`, else 0 (an own node).
-fn canonical_key_param_slot(params: Array[String], name: String) -> Int {
-  let mut slot = 0
-  let mut i = 0
-  while i < Array::length(params) && slot == 0 {
-    if type_param_name(Array::get(params, at = i)) == name {
-      slot = 1 + i
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  slot
-}
-
-fn canonical_key_raise_peak(peak: Array[Int], size: Int) -> Unit {
-  if size > Array::get(peak, at = 0) {
-    Array::set(peak, at = 0, value = size)
-  } else {
-    ()
-  }
-}
-
-fn canonical_key_saturating_add(a: Int, b: Int) -> Int {
-  if a + b > canonical_key_alias_size_cap {
-    canonical_key_alias_size_cap
-  } else {
-    a + b
-  }
-}
-
-fn canonical_key_saturating_mul(a: Int, b: Int) -> Int {
-  if a == 0 || b == 0 {
-    0
-  } else if a > canonical_key_alias_size_cap / b {
-    canonical_key_alias_size_cap
-  } else {
-    a * b
-  }
-}
-
-/// `acc += k * form`, coefficient by coefficient.
-fn canonical_key_form_add_scaled(acc: Array[Int], form: Array[Int], k: Int) -> Unit {
-  let mut i = 0
-  while i < Array::length(acc) && i < Array::length(form) {
-    Array::set(acc, at = i, value = canonical_key_saturating_add(a = Array::get(acc, at = i), b = canonical_key_saturating_mul(a = Array::get(form, at = i), b = k)))
-    i = i + 1
-  }
-}
-
-/// `te`'s size as a form over `params` (the enclosing alias's parameters).
-fn canonical_key_expr_form(te: TypeExpr, params: Array[String], aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])], memo: Array[Option[Array[Int]]], peaks: Array[Int], peak: Array[Int]) -> Array[Int] {
-  let out: Array[Int] = [0]
-  for _ in params {
-    Array::push(out, value = 0)
-  }
-  let (head, args) = match te {
-    TyName(n) => (Some(n), []),
-    TyApp(n, items) => (Some(n), items),
-    _ => (None, [])
-  }
-  let arg_forms = for arg in args {
-    canonical_key_expr_form(te = arg, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak)
-  }
-  for form in arg_forms {
-    canonical_key_raise_peak(peak = peak, size = canonical_key_form_total(form))
-  }
-  let callee: Option[Array[Int]] = match head {
-    Some(n) => {
-      let slot = canonical_key_param_slot(params = params, name = n)
-      if slot > 0 && Array::length(args) == 0 {
-        Array::set(out, at = slot, value = 1)
-        Some([])
-      } else {
-        let at = canonical_key_alias_index(aliases = aliases, name = n)
-        if at >= 0 {
-          let form = canonical_key_alias_form(aliases = aliases, imported = imported, memo = memo, peaks = peaks, at = at)
-          canonical_key_raise_peak(peak = peak, size = Array::get(peaks, at = at))
-          Some(form)
-        } else {
-          canonical_key_imported_form(imported = imported, name = n)
-        }
-      }
-    },
-    None => None
-  }
-  match callee {
-    // A parameter of the enclosing alias: already counted above.
-    Some(form) => if Array::length(form) == 0 {
-      ()
-    } else {
-      // An alias application: its own nodes, plus each parameter's copies of
-      // the argument written for it (a missing argument counts one node).
-      let own: Array[Int] = [Array::get(form, at = 0)]
-      for _ in params {
-        Array::push(own, value = 0)
-      }
-      canonical_key_form_add_scaled(acc = out, form = own, k = 1)
-      let mut i = 1
-      while i < Array::length(form) {
-        let copies = Array::get(form, at = i)
-        if i - 1 < Array::length(arg_forms) {
-          canonical_key_form_add_scaled(acc = out, form = Array::get(arg_forms, at = i - 1), k = copies)
-        } else {
-          Array::set(out, at = 0, value = canonical_key_saturating_add(a = Array::get(out, at = 0), b = copies))
-        }
-        i = i + 1
-      }
-    },
-    None => match te {
-      TyTuple(items) => {
-        Array::set(out, at = 0, value = 1)
-        for item in items {
-          canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = item, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak), k = 1)
-        }
-      },
-      TyFn(fparams, ret, _) => {
-        Array::set(out, at = 0, value = 1)
-        canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = ret, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak), k = 1)
-        for param in fparams {
-          canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = param, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak), k = 1)
-        }
-      },
-      // A non-alias head (`Array[..]`, a struct) or a builtin name: one node
-      // and its arguments.
-      _ => {
-        Array::set(out, at = 0, value = 1)
-        for form in arg_forms {
-          canonical_key_form_add_scaled(acc = out, form = form, k = 1)
-        }
-      }
-    }
-  }
-  out
 }
 
 fn canonical_key_def_name(_ def: TypeDef) -> String {

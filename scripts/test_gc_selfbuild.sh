@@ -351,6 +351,7 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/trait_key_large_alias_test.vibe \
     fixtures/trait_key_alias_constant_chain_test.vibe \
     fixtures/trait_key_alias_param_shadow_test.vibe \
+    fixtures/trait_key_alias_kinded_param_shadow_test.vibe \
     fixtures/constructor_indexed_map_gc_test.vibe \
     fixtures/constructor_indexed_async_iter_gc_test.vibe \
     fixtures/bytes_index_of_bytes_test.vibe \
