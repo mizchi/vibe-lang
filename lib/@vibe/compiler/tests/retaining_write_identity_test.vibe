@@ -14,14 +14,19 @@ import @vibe/compiler/core {
 // operation the checker resolved for the call, not of its spelling. Before,
 // a program's own `fn Array::push` that keeps nothing was refused inside a
 // region as if it were the builtin, by name and by dot call alike.
+//
+// Each diagnostic snapshot here has a distinct expected text, so
+// `vibe test --update` can tell them apart; the `Array::set` refusal, which
+// reads like the `Array::push` one, is in
+// `retaining_write_identity_set_test.vibe`.
 
 let keep_nothing_push = "fn Array::push(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  let _ = xs\n  let _ = value\n  ()\n}\n"
 
 test "a program's own Array::push that keeps nothing is not judged as the builtin" {
   let by_name = String::concat(keep_nothing_push, "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    Array::push(sink, value = cell)\n    MutList::length(cell)\n  }\n}\n")
-  inspect(check_source_report(by_name), content = "")
+  assert(check_source_ok(by_name))
   let by_dot = String::concat(keep_nothing_push, "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    sink.push(value = cell)\n    MutList::length(cell)\n  }\n}\n")
-  inspect(check_source_report(by_dot), content = "")
+  assert(check_source_ok(by_dot))
 }
 
 test "a program's own MutList::push that keeps its value is refused once, by its body" {
@@ -32,8 +37,6 @@ test "a program's own MutList::push that keeps its value is refused once, by its
 test "the builtin operations keep their retained arguments" {
   let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    Array::push(sink, value = cell)\n    0\n  }\n}\n"
   inspect(check_source_report(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
-  let set_src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    Array::set(sink, at = 0, value = cell)\n    0\n  }\n}\n"
-  inspect(check_source_report(set_src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
   assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    MutList::length(cell)\n  }\n}\n"))
 }
 
