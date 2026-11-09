@@ -99,10 +99,12 @@ cp fixtures/prove/proved.vibe "$work/proved.vibe"
 # #3717: a counterexample that runs clean at run time, and is not one of the
 # gate's named spurious cases, must fail the replay. `plain_again` is
 # `plain`'s shape under another name: the prover forgets the loop-assigned
-# local and reports `result == 0` unproved, while every run returns 0.
+# local and reports `result == 0` unproved, while every run returns 0. The
+# length bound keeps its counterexample within the eight elements a model
+# shows, so the replay always runs it rather than noting a truncated array.
 cat >> "$work/unproved.vibe" <<'VIBE'
 
-fn plain_again(xs: Array[Int]) -> Int where { ensures: result == 0 } {
+fn plain_again(xs: Array[Int]) -> Int where { requires: Array::length(xs) <= 8, ensures: result == 0 } {
   let mut n = 0
   for x in xs {
     n = 0
