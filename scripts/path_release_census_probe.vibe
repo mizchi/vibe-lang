@@ -60,10 +60,11 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/perceus {
-  build_perceus_plan_with_params,
+  build_perceus_plan_with_params_split,
   compute_borrow_returning_names,
   compute_heap_returning,
   compute_scalar_returning_names,
+  fn_result_is_immediate,
   pa_is_path_drop,
   type_expr_is_heap
 }
@@ -529,13 +530,15 @@ fn census(source: String) -> Unit with Exception + Console {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
-      SLet(_, _, name, _, value) => match value {
+      SLet(_, _, name, sig, value) => match value {
         EFn(_, _, _, _, _, _) => {
           let seen: Array[String] = []
           let norm = lift_match_scrutinees(expr = uniquify_shadowed_bindings_fresh(expr = value, counter = uq_shadow_counter, seen = seen), counter = m_scrut_counter)
           match norm {
             EFn(_, _, nparams, _, _, nbody) => {
-              let plan = build_perceus_plan_with_params(params = nparams, body = nbody, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret)
+              // The codegen's question about the declared result (#2827).
+              let plan = build_perceus_plan_with_params_split(params = nparams, body = nbody, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret, out_param_drop_start = [
+              ], result_immediate = fn_result_is_immediate(sig = sig, value = value))
               // This function's own parameters. Everything else in scope at a
               // row is accumulated per site by find_let_value, because
               // compile_match and for-in truncate `local_names` at their

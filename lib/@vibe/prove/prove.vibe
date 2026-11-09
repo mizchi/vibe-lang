@@ -9,7 +9,7 @@ import @vibe/parser {
 }
 
 import ./solver.vibe {
-  smt_unquote
+  arr_data, arr_datatype_decl, arr_len, arr_sort, model_terms, smt_unquote
 }
 
 import ./walk.vibe {
@@ -198,31 +198,6 @@ fn sort_of(adts: Array[Adt], ty: Option[TypeExpr]) -> String {
     },
     _ => ""
   }
-}
-
-//# `Array[Int]` (#3717)
-
-/// An `Array[Int]` is one SMT datatype: its contents as an SMT array and its
-/// length. An array stays a value: `Array::set`, an index write and
-/// `Array::push` are admitted only on a local no other name holds
-/// (`writable_arrays`), where a write replaces that binding's value, and a
-/// parameter is never written, so no call changes an array a caller holds.
-/// The contents past the length are unconstrained, so `==` on arrays is not
-/// encoded (SMT `=` would compare them too).
-fn arr_sort() -> String {
-  "|Array[Int]|"
-}
-
-fn arr_len(_ t: String) -> String {
-  "(|Array[Int].len| \{t})"
-}
-
-fn arr_data(_ t: String) -> String {
-  "(|Array[Int].data| \{t})"
-}
-
-fn arr_datatype_decl() -> String {
-  "(declare-datatypes ((|Array[Int]| 0)) (((|Array[Int]::mk| (|Array[Int].data| (Array Int Int)) (|Array[Int].len| Int)))))"
 }
 
 /// The SMT sort of a type spelled `n`: `Int`, `Bool`, a datatype of the
@@ -481,9 +456,11 @@ fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
   Array::push(lines, value = "(check-sat)")
   let names: Array[String] = []
   for d in ctx.decls {
-    let (n, _) = d
+    let (n, s) = d
     if !String::starts_with(n, prefix = "|r!") && !String::starts_with(n, prefix = "|w!") {
-      Array::push(names, value = n)
+      for t in model_terms(name = n, sort = s) {
+        Array::push(names, value = t)
+      }
     } else {
       ()
     }

@@ -1016,15 +1016,18 @@ export fn perceus_pin_tables(borrow_ret_names: Array[String], borrow_param_fns: 
   tok
 }
 
-export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
+/// `result_immediate`: the function's declared result is an Int, a Bool or
+/// Unit (`fn_result_is_immediate`), so its body hands back no pointer -- and
+/// so no view of a parameter (`pe_split_release_ok`).
+export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int], result_immediate: Bool) -> Array[PerceusAction] {
   let ctx = pctx_cache_select(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns)
-  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start)
+  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start, result_immediate = result_immediate)
 }
 
 /// `build_perceus_plan_with_params_split` for a caller holding a
 /// `perceus_pin_tables` token: the same tables, the compare skipped while the
 /// token is current.
-export fn build_perceus_plan_pinned_split(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
+export fn build_perceus_plan_pinned_split(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int], result_immediate: Bool) -> Array[PerceusAction] {
   let ctx = if token > 0 && Array::length(pctx_cache) > 0 && Array::get(pctx_cache, at = 0).pinned == token {
     let c = Array::get(pctx_cache, at = 0)
     pctx_reset(c)
@@ -1032,12 +1035,12 @@ export fn build_perceus_plan_pinned_split(token: Int, params: Array[(String, Opt
   } else {
     pctx_cache_select(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns)
   }
-  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start)
+  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start, result_immediate = result_immediate)
 }
 
 export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
   let ignored = array_empty()
-  build_perceus_plan_pinned_split(token = token, params = params, body = body, borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns, out_param_drop_start = ignored)
+  build_perceus_plan_pinned_split(token = token, params = params, body = body, borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns, out_param_drop_start = ignored, result_immediate = false)
 }
 
 /// #2389 per-path release: turn the recorded initial-reference occurrences of
@@ -1134,7 +1137,7 @@ fn pe_emit_path_release(_ ctx: PCtx) -> Unit {
   }
 }
 
-fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
+fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int], result_immediate: Bool) -> Array[PerceusAction] {
   let mut scope: PScope = PsNil
   let mut pi = 0
   while pi < Array::length(params) {
@@ -1157,7 +1160,16 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
     // A parameter's dups are taken at entry and its scope is the whole body
     // (`pe_dup_merge`).
     pe_flag_or(ctx = ctx, id = id, bit = pf_param)
-    Array::set(ctx.decl_bodies, at = id, value = body)
+    // What `pe_tail_may_view` asks whether the parameter's guarded drop could
+    // free a returned view of it: the body. A function declared to return an
+    // Int, a Bool or Unit hands back no pointer on any path, a read of an
+    // `Int` field of the parameter included (#2827), so there is nothing to
+    // ask -- `EUnit` answers no.
+    Array::set(ctx.decl_bodies, at = id, value = if result_immediate {
+      EUnit
+    } else {
+      body
+    })
     scope2 = PsBind(pname, id, scope2)
     Array::push(param_ids, value = id)
     pj = pj + 1
@@ -1258,5 +1270,5 @@ export fn perceus_last_plan_classes(out_names: Array[String], out_bits: Array[In
 /// so it is never in the borrow-param set).
 export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
   let ignored = array_empty()
-  build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns, out_param_drop_start = ignored)
+  build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns, out_param_drop_start = ignored, result_immediate = false)
 }

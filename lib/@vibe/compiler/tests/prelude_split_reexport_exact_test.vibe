@@ -1,5 +1,8 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  ordinary_lane_closure_admits, ordinary_lane_closure_edges, ordinary_lane_split_shape
+  compile_file_fs_mode_rc_body_cached_split, ordinary_lane_closure_admits, ordinary_lane_closure_edges, ordinary_lane_split_shape
+}
+import @vibe/compiler/codegen/wasi {
+  prelude_split_last_module_count
 }
 
 // #2658. The regression the issue asks for: all three shapes in ONE program.
@@ -17,17 +20,24 @@ import @vibe/compiler/entry/compiler/file_compile {
 // private imports, which no real compile of it exposes, and it hands every
 // module the whole program, which is the live set #2494 exists to bound.
 //
-// The bounded generic in `leaf` is here as a SHAPE the closure has to carry,
-// not as a byte assertion. Measured on this program: the split lane emits a
-// module that does not instantiate ("not enough arguments on the stack for
-// call (need 3, got 2)") because the caller omits the witness dictionary --
-// and it does so for a DIRECT import of `leaf` as well, with a one-edge
-// closure. That failure is therefore not about the closure and is tracked on
-// its own; asserting bytes here would pin an unrelated defect to this file.
+// The bounded generic in `leaf` is the shape #2826 asks to be EXECUTED: the
+// caller adds the witness dictionary argument only when the trait is in
+// scope, so `main` lowers `apply_dbl` correctly only if `Doubler` reaches it
+// across the re-export edge. When #2658 was measured the split lane emitted a
+// module that did not instantiate here (the caller omitted the dictionary),
+// for a direct import as well. The two `2826:` tests below compile this
+// program and a same-name collision variant through both lanes and run both
+// modules;
+// `prelude_split_witness_abi_test.vibe` does the same for the direct and the
+// facade-only programs.
 //
-// Both errors fail OPEN to the same working program, so bytes cannot tell
-// them apart. The observable that can is the closure's SHAPE -- and it has to
-// be MEMBERSHIP, not the edge total.
+// The two closure errors are NOT equally visible in the bytes. Measured by
+// mutating `reexport_admits` (#2826): dropping the re-export edge makes the
+// split emit an invalid module (`main` fails validation with "expected i64
+// but nothing on stack"), so the executed test catches it. Admitting `priv`
+// leaves the split's bytes identical to the whole program's, so for that
+// direction the closure's SHAPE is the only observable -- and it has to be
+// MEMBERSHIP, not the edge total.
 //
 // The total does not decide this, which is the whole reason the assertions
 // below name modules. Dropping `leaf` from `main`'s row and admitting `priv`
@@ -61,17 +71,16 @@ fn rx_paths(_ tag: String) -> (String, String, String, String, String) {
 fn write_three_shape_program(_ tag: String) -> String with Exception + Fs {
   let (priv_p, mid_p, leaf_p, facade_p, main_p) = rx_paths(tag)
   Fs::write_file(priv_p, contents = "export fn secret_add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
-  Fs::write_file(mid_p, contents = String::concat("import ./vibe_rxx_priv_", String::concat(tag, ".vibe {\n  secret_add\n}\n\nexport fn via_mid(n: Int) -> Int {\n  secret_add(n, 1)\n}\n")))
+  Fs::write_file(mid_p, contents = String::concat("import ./vibe_rxx_priv_", String::concat(tag, ".vibe {\n  secret_add\n}\n\nexport fn via_mid(n: Int) -> Int {\n  secret_add(a = n, b = 1)\n}\n")))
   // The bounded generic is the third shape the issue asks for: `apply_dbl` is
   // rewritten to take a witness dictionary, and the CALLER adds that argument
   // only when the trait is in scope. `main` reaches `Doubler` ONLY across the
   // re-export edge, so this is what makes the edge load-bearing rather than
   // decorative -- a closure that drops it leaves `main` lowering a call into a
-  // trait it cannot see. See the header for why that is asserted on the
-  // closure's shape here and not on bytes.
+  // trait it cannot see, which the executed test below observes.
   Fs::write_file(leaf_p, contents = "export trait Doubler {\n  dbl(Self) -> Int\n}\n\nexport struct Box {\n  v: Int\n}\n\nimpl Doubler for Box {\n  dbl(b: Box) -> Int {\n    b.v * 2\n  }\n}\n\nexport fn apply_dbl[T: Doubler](x: T) -> Int {\n  T::dbl(x)\n}\n")
   Fs::write_file(facade_p, contents = String::concat("export ./vibe_rxx_leaf_", String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n")))
-  let main_tail = String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n\nfn main() -> Int {\n  apply_dbl(Box::{ v: via_mid(20) })\n}\n")
+  let main_tail = String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n\nfn main() -> Int {\n  apply_dbl(x = Box::{ v: via_mid(n = 20) })\n}\n")
   let main_mid = String::concat(".vibe {\n  via_mid\n}\n\nimport ./vibe_rxx_facade_", main_tail)
   Fs::write_file(main_p, contents = String::concat("import ./vibe_rxx_mid_", String::concat(tag, main_mid)))
   main_p
@@ -98,4 +107,51 @@ test "2658: the closure admits a re-exported module and excludes a private one" 
   inspect(ordinary_lane_closure_admits(entry_path = entry, owner = "main_edges.vibe", member = "facade_edges.vibe"), content = "true")
   // Coarse cross-check only -- see the header for why this cannot stand alone.
   inspect(ordinary_lane_closure_edges(entry), content = "5")
+}
+
+/// Compiles `entry` through the whole-program prelude and through the
+/// per-module split, runs both modules under wasmtime (which validates them
+/// first), and renders everything the two lanes have to agree on.
+fn whole_and_split(entry: String, tag: String) -> String with Console + Env + Exception + Fs + Process {
+  let whole = compile_file_fs_mode_rc_body_cached_split(entry_path = entry, entry_name = "main", cache_mode = "off", use_split = false)
+  let whole_modules = prelude_split_last_module_count()
+  let split = compile_file_fs_mode_rc_body_cached_split(entry_path = entry, entry_name = "main", cache_mode = "off", use_split = true)
+  // Non-vacuity: the split lane really partitioned the program, and the
+  // whole-program compile did not.
+  let split_modules = prelude_split_last_module_count()
+  let identical = if whole == split {
+    "true"
+  } else {
+    "false"
+  }
+  let mut out = "modules whole=" + Int::to_string(whole_modules) + " split=" + Int::to_string(split_modules) + " identical=" + identical
+  for row in [("whole", whole), ("split", split)] {
+    let path = "/tmp/vibe_rxx_" + tag + "_" + row.0 + ".wasm"
+    Fs::write_bytes(path, bytes = row.1)
+    // The exported closure takes its hidden env parameter explicitly.
+    let lines = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0")
+    out = out + " " + row.0 + "=" + String::join(lines, sep = ",")
+  }
+  out
+}
+
+test "2826: the three-shape program runs the same through the whole program and the split" {
+  let entry = write_three_shape_program("exec")
+  // (20 + 1) * 2: `priv` through `mid`, the witness through `facade`.
+  inspect(whole_and_split(entry = entry, tag = "exec"), content = "modules whole=0 split=5 identical=true whole=42 split=42")
+}
+
+test "2826: a privately imported bounded generic of the same name does not reach the caller" {
+  // `priv` now declares its OWN `apply_dbl`, bounded by another trait and
+  // taking one more argument; `mid` calls it. `main` must lower its
+  // `apply_dbl` against `leaf`'s signature and witness, not `priv`'s.
+  // Measured: a closure that also admits `priv` still answers 122 here, so
+  // this pins the split's lowering of the collision, not the exclusion --
+  // the membership test above is what pins that.
+  let entry = write_three_shape_program("collide")
+  let (priv_p, mid_p, _, _, _) = rx_paths("collide")
+  Fs::write_file(priv_p, contents = "export trait Tripler {\n  tri(Self) -> Int\n}\n\nexport struct Cell {\n  v: Int\n}\n\nimpl Tripler for Cell {\n  tri(c: Cell) -> Int {\n    c.v * 3\n  }\n}\n\nexport fn apply_dbl[T: Tripler](x: T, k: Int) -> Int {\n  T::tri(x) + k\n}\n")
+  Fs::write_file(mid_p, contents = "import ./vibe_rxx_priv_collide.vibe {\n  Tripler, Cell, apply_dbl\n}\n\nexport fn via_mid(n: Int) -> Int {\n  apply_dbl(x = Cell::{ v: n }, k = 1)\n}\n")
+  // (20 * 3 + 1) * 2.
+  inspect(whole_and_split(entry = entry, tag = "collide"), content = "modules whole=0 split=5 identical=true whole=122 split=122")
 }
