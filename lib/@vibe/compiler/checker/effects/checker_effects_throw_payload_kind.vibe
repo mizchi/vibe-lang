@@ -36,7 +36,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  type_param_name
+  resource_param_kind, type_param_name
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -2185,6 +2185,30 @@ export fn row_owner_display_name(_ fn_name: String) -> String {
 // linked program contains private `effect Env { Get ... }` declarations as
 // well as the real host `Env::get` builtin used by its entry point.
 export let entry_user_effect_operations: Array[String] = array_empty()
+
+// ADR-0094 (#3143): each declared effect with the resource kind its resource
+// parameter names (`""` when it takes none) -- the declarations
+// `classify_label_in` reads, filled with `entry_user_effect_operations`.
+export let entry_declared_effect_kinds: Array[(String, String)] = []
+
+export fn collect_entry_declared_effect_kinds(stmts: Array[Stmt], out: Array[(String, String)]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SEffectDef(_, name, keys, _) => {
+        let mut kind = ""
+        for key in keys {
+          if resource_param_kind(key) != "" {
+            kind = resource_param_kind(key)
+          }
+        }
+        Array::push(out, value = (name, kind))
+      },
+      SModule(_, _, body) => collect_entry_declared_effect_kinds(stmts = body, out = out),
+      _ => ()
+    }
+  }
+  ()
+}
 
 export fn collect_entry_user_effect_operations(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let mut i = 0
