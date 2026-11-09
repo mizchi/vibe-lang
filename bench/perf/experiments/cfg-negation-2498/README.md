@@ -8,9 +8,10 @@ The recovery parser also reports directive and inactive-body syntax errors
 instead of silently discarding them.
 
 This is a prerequisite for #2498, not completion of telemetry separation.
-The full compiler's runtime telemetry is unchanged. The committed seed does
-not understand this form yet, so compiler declarations cannot use it until
-a compatible seed is pinned. New syntax appears only in test source strings.
+The measurements used `seed/process-exit-op-2026-11-05`, and the compiler
+declarations in that experiment kept the new syntax inside test source
+strings. The current `seed/cfg-negation-2026-11-09` also resolves negated guards
+during bootstrap, enabling the subsequent compiler-source migration.
 No new effect, ambient configuration cell, or runtime sink policy is added.
 
 ## Artifact and behavior checks

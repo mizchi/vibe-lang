@@ -56,7 +56,7 @@ import @vibe/core {
 }
 
 import ./collection_access.vibe {
-  dtd_builtin_iterator_reset, dtd_builtin_iterator_set_boundary, dtd_typed_index_insert, dtd_typed_row_insert, index_refusals_report
+  dtd_builtin_iterator_reset, dtd_builtin_iterator_set_boundary, dtd_typed_row_insert, index_refusals_report
 }
 
 import ./collection_equality_generation.vibe {
@@ -104,7 +104,7 @@ import ./float_rounding.vibe {
 }
 
 import ./int32.vibe {
-  refuse_int32_owned_decls, refuse_rowless_int32_program, rewrite_int32_stmts
+  program_mentions_int32, refuse_int32_owned_decls, refuse_rowless_int32_program, rewrite_int32_stmts_vouched
 }
 
 import ./formal_scope.vibe {
@@ -124,7 +124,7 @@ import ./lambda_hoist.vibe {
 }
 
 import ./models.vibe {
-  ModuleTraitFacts
+  DtdTypedRows, ModuleTraitFacts
 }
 
 import ./railway_binds.vibe {
@@ -182,7 +182,7 @@ import ./type_names.vibe {
 }
 
 import ./typed_row_queries.vibe {
-  dtd_is_own_index, dtd_own_end, dtd_trait_declared_here, dtd_typed_render_insert, dtd_typed_render_reset, eq_deferred_reset
+  dtd_is_own_index, dtd_own_end, dtd_trait_declared_here, dtd_typed_render_insert_into, dtd_typed_render_install, eq_deferred_reset
 }
 
 import ./utilities.vibe {
@@ -270,7 +270,7 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
   // wants the union across the modules of one split run, and resets once at
   // that boundary (#2642 review, Codex P2).
   eq_deferred_reset()
-  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, report = true)
+  dtd_run(stmts = stmts, rows = desugar_typed_rows(typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys), ctx_int32_free = false, report = true)
   // #3144 round 4: a witness field is named by COMPUTING `<Type>::<method>`,
   // which for an impl method at a listed name (`impl Measured for String {
   // length(..) }`) is the source spelling of a definition renamed above.
@@ -309,7 +309,7 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_
 /// above passes none, which is right for a MEASUREMENT and wrong for a
 /// production driver -- a caller that means to compile passes real ones.
 export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
-  desugar_trait_dicts_module_impl(own = own, ctx = ctx, module_tag = module_tag, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, facts = facts, report = true)
+  desugar_trait_dicts_module_impl(own = own, ctx = ctx, module_tag = module_tag, rows = desugar_typed_rows(typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys), ctx_int32_free = false, facts = facts, report = true)
 }
 
 /// #2826: the same entry for a driver that lowers EVERY module of one program
@@ -325,11 +325,25 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
 /// refusal of a later one, and a 32-bit `Add` row -- filed for the whole
 /// program, consumed only by the module holding the call -- refused a valid
 /// program from every other module's run.
-export fn desugar_trait_dicts_module_deferring(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
-  desugar_trait_dicts_module_impl(own = own, ctx = ctx, module_tag = module_tag, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, facts = facts, report = false)
+///
+/// #3976: such a driver lowers every module against the same typed rows, so it
+/// sorts them once (`desugar_typed_rows`) and passes the result here. It also
+/// reads each dependency interface once, where every importer used to read it
+/// again: `ctx_int32_free` vouches that no statement of `ctx` spells `Int32` /
+/// `UInt32` (`desugar_stmts_spell_int32` over the interfaces it was drawn
+/// from), and false is always safe.
+export fn desugar_trait_dicts_module_deferring(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, rows: DtdTypedRows, ctx_int32_free: Bool, facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
+  desugar_trait_dicts_module_impl(own = own, ctx = ctx, module_tag = module_tag, rows = rows, ctx_int32_free = ctx_int32_free, facts = facts, report = false)
 }
 
-fn desugar_trait_dicts_module_impl(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts, report: Bool) -> Array[Stmt] with Exception {
+/// #3976: whether some statement of `stmts` spells `Int32` or `UInt32` in a
+/// type or a qualified name -- the question the trait-dict pass asks before
+/// its 32-bit rewrite, for a driver that answers it once per interface.
+export fn desugar_stmts_spell_int32(_ stmts: Array[Stmt]) -> Bool {
+  program_mentions_int32(stmts)
+}
+
+fn desugar_trait_dicts_module_impl(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, rows: DtdTypedRows, ctx_int32_free: Bool, facts: ModuleTraitFacts, report: Bool) -> Array[Stmt] with Exception {
   Array::set(dtd_rowless_build, at = 0, value = false)
   dtd_facts_set(facts)
   let stmts: Array[Stmt] = []
@@ -347,7 +361,7 @@ fn desugar_trait_dicts_module_impl(own: Array[Stmt], ctx: Array[Stmt], module_ta
   Array::set(dtd_ctx_len, at = 0, value = Array::length(ctx))
   Array::set(dtd_own_growth, at = 0, value = 0)
   Array::set(dlh_module_tag, at = 0, value = module_tag)
-  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, report = report)
+  dtd_run(stmts = stmts, rows = rows, ctx_int32_free = ctx_int32_free, report = report)
   // #3144 round 4: as in the whole-program entry. The module's own
   // definitions and its context's are both in `stmts`, so a witness naming
   // either is pointed at the renamed definition.
@@ -499,26 +513,31 @@ fn dtd_stmts_derive_ord(_ stmts: Array[Stmt]) -> Bool {
   found
 }
 
-fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], report: Bool) -> Unit with Exception {
-  // #2441: (re)populate the typed-`==` table for THIS program before any
-  // rewrite can read it.
-  Array::truncate(dtd_typed_eq_offs, length = 0)
-  Array::truncate(dtd_typed_eq_keys, length = 0)
+/// #3976: sort the checker's typed rows into the tables `dtd_run` reads, by
+/// row kind. This reads the rows and nothing else -- not the program, and no
+/// table a run writes -- so one set of rows always sorts the same way. The
+/// per-module driver lowers every module of a program against the same rows,
+/// and used to repeat this sort for each of them: 722 modules times about
+/// 16,000 rows on the CLI closure. It now sorts once and passes the result to
+/// every module (`desugar_trait_dicts_module_deferring`).
+export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> DtdTypedRows {
   // #3066: the render rows ride the same channel under the
   // `typed_render_row_head` wrapper; they are split off here so a `==` lookup
   // never reads one.
-  dtd_typed_render_reset()
+  let eq_offs: Array[Int] = []
+  let eq_keys: Array[String] = []
+  let render_offs: Array[Int] = []
+  let render_keys: Array[String] = []
   let render_prefix = impl_target_key(TyApp(typed_render_row_head(), [
     TyName("Int")
   ]))
   let render_head_len = String::index_of(render_prefix, needle = impl_target_key(TyName("Int")))
   let render_head = String::substring(render_prefix, start = 0, end = render_head_len)
   // #3133: the index-receiver rows, split off the same way.
-  Array::truncate(dtd_typed_index_offs, length = 0)
-  Array::truncate(dtd_typed_index_verdicts, length = 0)
-  Array::truncate(dtd_index_refusals, length = 0)
-  Array::truncate(dtd_typed_forin_offs, length = 0)
-  Array::truncate(dtd_typed_forin_verdicts, length = 0)
+  let index_offs: Array[Int] = []
+  let index_verdicts: Array[String] = []
+  let forin_offs: Array[Int] = []
+  let forin_verdicts: Array[String] = []
   let forin_map_key = impl_target_key(TyApp(typed_forin_row_head(), [
     TyName(typed_index_map_verdict())
   ]))
@@ -590,20 +609,22 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   let i32_neg_offs: Array[Int] = []
   let u32_not_offs: Array[Int] = []
   let scalar_local_key = impl_target_key(TyName(typed_scalar_local_row_head()))
-  dtd_add32_reset()
   let add32_keys = [
     impl_target_key(TyApp(typed_add32_call_row_head(), [TyName("Int32")])),
     impl_target_key(TyApp(typed_add32_call_row_head(), [TyName("UInt32")])),
     impl_target_key(TyApp(typed_add32_call_row_head(), [TyName("mixed")]))
   ]
   let add32_types = ["Int32", "UInt32", "mixed"]
+  let add32_offs: Array[Int] = []
+  let add32_row_types: Array[String] = []
   let scalar_local_offs: Array[Int] = []
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
     let tkey = Array::get(typed_eq_keys, at = teq_i)
     let add32_at = add32_key_index(keys = add32_keys, key = tkey)
     if add32_at >= 0 {
-      dtd_add32_insert(off = Array::get(typed_eq_offsets, at = teq_i), ty = Array::get(add32_types, at = add32_at))
+      Array::push(add32_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+      Array::push(add32_row_types, value = Array::get(add32_types, at = add32_at))
     } else if tkey == f32_binop_key {
       Array::push(f32_binop_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == f32_assign_key {
@@ -633,25 +654,125 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
     } else if tkey == map_scalar_key {
       Array::push(map_scalar_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == forin_map_key {
-      dtd_typed_row_insert(dtd_typed_index_offs = dtd_typed_forin_offs, dtd_typed_index_verdicts = dtd_typed_forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_map_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = forin_offs, dtd_typed_index_verdicts = forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_map_verdict())
     } else if tkey == forin_open_key {
-      dtd_typed_row_insert(dtd_typed_index_offs = dtd_typed_forin_offs, dtd_typed_index_verdicts = dtd_typed_forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_open_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = forin_offs, dtd_typed_index_verdicts = forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_open_verdict())
     } else if tkey == index_map_key {
-      dtd_typed_index_insert(off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_map_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = index_offs, dtd_typed_index_verdicts = index_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_map_verdict())
     } else if tkey == index_open_key {
-      dtd_typed_index_insert(off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_open_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = index_offs, dtd_typed_index_verdicts = index_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_open_verdict())
     } else if tkey == forin_seq_key {
-      dtd_typed_row_insert(dtd_typed_index_offs = dtd_typed_forin_offs, dtd_typed_index_verdicts = dtd_typed_forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = forin_offs, dtd_typed_index_verdicts = forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
     } else if tkey == index_seq_key {
-      dtd_typed_index_insert(off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = index_offs, dtd_typed_index_verdicts = index_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
     } else if render_head_len > 0 && String::starts_with(tkey, prefix = render_head) {
-      dtd_typed_render_insert(off = Array::get(typed_eq_offsets, at = teq_i), key = tkey)
+      dtd_typed_render_insert_into(offs = render_offs, keys = render_keys, off = Array::get(typed_eq_offsets, at = teq_i), key = tkey)
     } else {
-      Array::push(dtd_typed_eq_offs, value = Array::get(typed_eq_offsets, at = teq_i))
-      Array::push(dtd_typed_eq_keys, value = tkey)
+      Array::push(eq_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+      Array::push(eq_keys, value = tkey)
     }
     teq_i = teq_i + 1
   }
+  DtdTypedRows::{
+    eq_offs: eq_offs,
+    eq_keys: eq_keys,
+    render_offs: render_offs,
+    render_keys: render_keys,
+    index_offs: index_offs,
+    index_verdicts: index_verdicts,
+    forin_offs: forin_offs,
+    forin_verdicts: forin_verdicts,
+    add32_offs: add32_offs,
+    add32_types: add32_row_types,
+    f32_binop: f32_binop_offs,
+    f32_assign: f32_assign_offs,
+    f32_negation: f32_negation_offs,
+    fop_binop: fop_binop_offs,
+    fop_assign: fop_assign_offs,
+    fop_negation: fop_negation_offs,
+    i32_binop: i32_binop_offs,
+    u32_binop: u32_binop_offs,
+    i32_assign: i32_assign_offs,
+    u32_assign: u32_assign_offs,
+    i32_neg: i32_neg_offs,
+    u32_not: u32_not_offs,
+    scalar_local: scalar_local_offs,
+    map_scalar: map_scalar_offs
+  }
+}
+
+/// #3976: make `rows` this run's lookup tables, as the sort used to fill them
+/// in place: every table cleared first, then refilled from a copy, with no
+/// 32-bit `Add` row consumed yet and no index refusal filed.
+fn dtd_typed_rows_install(_ rows: DtdTypedRows) -> Unit {
+  // #2441: (re)populate the typed-`==` table for THIS program before any
+  // rewrite can read it.
+  Array::truncate(dtd_typed_eq_offs, length = 0)
+  Array::truncate(dtd_typed_eq_keys, length = 0)
+  dtd_append_ints(dst = dtd_typed_eq_offs, src = rows.eq_offs)
+  dtd_append_strings(dst = dtd_typed_eq_keys, src = rows.eq_keys)
+  dtd_typed_render_install(offs = rows.render_offs, keys = rows.render_keys)
+  Array::truncate(dtd_typed_index_offs, length = 0)
+  Array::truncate(dtd_typed_index_verdicts, length = 0)
+  Array::truncate(dtd_index_refusals, length = 0)
+  Array::truncate(dtd_typed_forin_offs, length = 0)
+  Array::truncate(dtd_typed_forin_verdicts, length = 0)
+  dtd_append_ints(dst = dtd_typed_index_offs, src = rows.index_offs)
+  dtd_append_strings(dst = dtd_typed_index_verdicts, src = rows.index_verdicts)
+  dtd_append_ints(dst = dtd_typed_forin_offs, src = rows.forin_offs)
+  dtd_append_strings(dst = dtd_typed_forin_verdicts, src = rows.forin_verdicts)
+  dtd_add32_reset()
+  let mut i = 0
+  while i < Array::length(rows.add32_offs) {
+    dtd_add32_insert(off = Array::get(rows.add32_offs, at = i), ty = Array::get(rows.add32_types, at = i))
+    i = i + 1
+  }
+}
+
+fn dtd_append_ints(dst: Array[Int], src: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, value = Array::get(src, at = i))
+    i = i + 1
+  }
+}
+
+fn dtd_append_strings(dst: Array[String], src: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, value = Array::get(src, at = i))
+    i = i + 1
+  }
+}
+
+fn dtd_ints_copy(_ src: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = []
+  dtd_append_ints(dst = out, src = src)
+  out
+}
+
+/// `ctx_int32_free`: the caller vouches that no statement of the module's
+/// dependency interface spells `Int32` / `UInt32`, so the test for whether
+/// the rewrite below must run skips them (`rewrite_int32_stmts_vouched`).
+/// False reads them, as the whole program does.
+fn dtd_run(stmts: Array[Stmt], rows: DtdTypedRows, ctx_int32_free: Bool, report: Bool) -> Unit with Exception {
+  dtd_typed_rows_install(rows)
+  // `rewrite_float_arith_stmts` sorts its rows in place, so each run gets its
+  // own copy of every row array a rewrite consumes.
+  let f32_binop_offs = dtd_ints_copy(rows.f32_binop)
+  let f32_assign_offs = dtd_ints_copy(rows.f32_assign)
+  let f32_negation_offs = dtd_ints_copy(rows.f32_negation)
+  let fop_binop_offs = dtd_ints_copy(rows.fop_binop)
+  let fop_assign_offs = dtd_ints_copy(rows.fop_assign)
+  let fop_negation_offs = dtd_ints_copy(rows.fop_negation)
+  let i32_binop_offs = dtd_ints_copy(rows.i32_binop)
+  let u32_binop_offs = dtd_ints_copy(rows.u32_binop)
+  let i32_assign_offs = dtd_ints_copy(rows.i32_assign)
+  let u32_assign_offs = dtd_ints_copy(rows.u32_assign)
+  let i32_neg_offs = dtd_ints_copy(rows.i32_neg)
+  let u32_not_offs = dtd_ints_copy(rows.u32_not)
+  let scalar_local_offs = dtd_ints_copy(rows.scalar_local)
+  let map_scalar_offs = dtd_ints_copy(rows.map_scalar)
   // #2286: the record describes THIS program. The unit-test batch compiles
   // many files in one long-lived daemon, so a table left standing would
   // relabel a later program's struct after an earlier program's trait.
@@ -667,7 +788,20 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   rewrite_float_arith_stmts(stmts = stmts, binop_offs = f32_binop_offs, assign_offs = f32_assign_offs, operand_offs = fop_binop_offs, operand_assign_offs = fop_assign_offs, negation_offs = fop_negation_offs, f32_negation_offs = f32_negation_offs)
   // #3730: wrap every `Int32` / `UInt32` result to 32 bits and erase both
   // types to `Int`, before any pass below reads a type or copies a site.
-  rewrite_int32_stmts(stmts = stmts, binop32 = i32_binop_offs, binopu32 = u32_binop_offs, assign32 = i32_assign_offs, assignu32 = u32_assign_offs, neg32 = i32_neg_offs, notu32 = u32_not_offs)
+  // #3976: a module's context sits at own_limit .. own_limit + ctx_len until
+  // the trait namespace operations below grow the own region.
+  let own_lim = Array::get(dtd_own_limit, at = 0)
+  let i32_free_from = if ctx_int32_free && own_lim >= 0 {
+    own_lim
+  } else {
+    0
+  }
+  let i32_free_to = if ctx_int32_free && own_lim >= 0 {
+    own_lim + Array::get(dtd_ctx_len, at = 0)
+  } else {
+    0
+  }
+  rewrite_int32_stmts_vouched(stmts = stmts, binop32 = i32_binop_offs, binopu32 = u32_binop_offs, assign32 = i32_assign_offs, assignu32 = u32_assign_offs, neg32 = i32_neg_offs, notu32 = u32_not_offs, free_from = i32_free_from, free_to = i32_free_to)
   // #2334: and every scalar-keyed map call to its scalar operation, before a
   // pass below copies or inlines the call.
   rewrite_map_scalar_key_stmts(stmts = stmts, offs = map_scalar_offs)
