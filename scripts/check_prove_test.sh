@@ -122,4 +122,25 @@ if ! grep -qF 'replay of `plain_again` does not trap in `plain_again` at run tim
   exit 1
 fi
 cp fixtures/prove/unproved.vibe "$work/unproved.vibe"
+# A counterexample whose array is longer than the elements the model shows
+# (`[a, ..., ...] (length N)`) is not a value a call can be written with: the
+# replay must name it in a note, not fail it as a replay that does not compile.
+cat >> "$work/unproved.vibe" <<'VIBE'
+
+fn ninth(xs: Array[Int]) -> Int where { requires: Array::length(xs) >= 9, ensures: result == 0 } {
+  xs[8]
+}
+VIBE
+VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" > "$work/partial.log" 2>&1 || true
+if ! grep -qF 'not replayed, an array longer than the model shows: ninth' "$work/partial.log"; then
+  echo "[prove-selftest] FAIL: a truncated array counterexample was not named as not replayed:" >&2
+  cat "$work/partial.log" >&2
+  exit 1
+fi
+if grep -qF 'replay of `ninth`' "$work/partial.log"; then
+  echo "[prove-selftest] FAIL: a truncated array counterexample was replayed:" >&2
+  grep -F 'replay of `ninth`' "$work/partial.log" >&2
+  exit 1
+fi
+cp fixtures/prove/unproved.vibe "$work/unproved.vibe"
 echo "[prove-selftest] ok (a weakened implementation stops proving, a counterexample that runs clean fails the replay, and the gate fails)"

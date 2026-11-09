@@ -176,7 +176,9 @@ spelled_case unproved
 # `test` block of a copy of the fixture, and it must TRAP with that function
 # on the stack. A counterexample that runs clean means the prover's model of
 # the program and the program disagree. `overflow` obligations are not
-# replayed: an `Int` wraps at run time (#1877), it does not exit.
+# replayed: an `Int` wraps at run time (#1877), it does not exit. Nor is a
+# counterexample whose array is longer than the elements the model shows
+# (`[a, ..., ...] (length N)`): it is named in a note instead.
 #
 # A counterexample can be spurious by design, where the prover deliberately
 # knows less than the run does. Those are named here, and each must keep
@@ -209,9 +211,14 @@ replay_case() {
       return out;
     };
     const rows = [];
+    const partial = [];
     for (const d of JSON.parse(fs.readFileSync(report, "utf8"))) {
       const m = d.message.match(/^unproved: (.*) `([A-Za-z_0-9]+)` -- counterexample: (.*)$/);
       if (!m || m[1].startsWith("overflow in")) continue;
+      // An array longer than the elements the model was asked for prints as
+      // `[a, b, ..., ...] (length N)`: a true counterexample, but not a value
+      // a call can be written with. It is named, not replayed.
+      if (/, \.\.\.\] \(length /.test(m[3])) { partial.push(m[2]); continue; }
       const args = m[3].startsWith("none needed") ? [] : split(m[3]).map((p) => {
         const eq = p.indexOf(" = ");
         // The least `Int` has no literal: its magnitude is one past the bound.
@@ -223,6 +230,7 @@ replay_case() {
       rows.push(`${file}\t${m[2]}\t${call}`);
     }
     fs.writeFileSync(`${work}/plan.tsv`, rows.join("\n") + "\n");
+    fs.writeFileSync(`${work}/partial.txt`, partial.join(" "));
     if (rows.length === 0) { console.error("no counterexample to replay"); process.exit(1); }
   ' "$dir/$name.vibe" "$work/report.json" "$work"; then
     echo "[prove] FAIL ($solver): $name.vibe: could not plan the counterexample replay" >&2
@@ -236,7 +244,8 @@ replay_case() {
   set -e
   if ! node -e '
     const fs = require("fs");
-    const [work, spurious, name] = process.argv.slice(1);
+    const [work, spurious, name, partialText] = process.argv.slice(1);
+    const partial = (partialText || "").split(" ").filter((s) => s !== "");
     const listed = spurious.split(" ").filter((s) => s !== "");
     // vibe_test.sh reports each file as `ok   PATH`, `FAIL PATH` or
     // `FAIL (compile) PATH`, followed by its indented detail lines. A block
@@ -266,11 +275,15 @@ replay_case() {
         errs.push(`replay of \`${fn}\` does not trap in \`${fn}\` at run time: ${call} (${b.verdict}${b.detail.length ? ": " + b.detail.join(" / ") : ", with no report: the runner printed " + JSON.stringify(b.raw.join("\n"))})`);
       }
     }
+    for (const fn of partial) seen.add(fn);
     for (const fn of listed) if (name === "unproved" && !seen.has(fn)) errs.push(`\`${fn}\` is listed as spurious but has no counterexample to replay`);
     if (errs.length) { for (const e of errs) console.error(e); process.exit(1); }
-  ' "$work" "$replay_spurious" "$name" 2> "$work/judge.err"; then
+  ' "$work" "$replay_spurious" "$name" "$(cat "$work/partial.txt")" 2> "$work/judge.err"; then
     sed "s|^|[prove] FAIL ($solver): $name.vibe: |" "$work/judge.err" >&2
     fail=1
+  fi
+  if [ -s "$work/partial.txt" ]; then
+    echo "[prove] note ($solver): $name.vibe: not replayed, an array longer than the model shows: $(cat "$work/partial.txt")" >&2
   fi
   rm -rf "$work"
 }
