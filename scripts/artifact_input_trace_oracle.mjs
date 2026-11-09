@@ -16,10 +16,10 @@ const expectedKeys = [
   "dependency_plan", "resolution", "shadow_artifact_input_fingerprint",
   "shadow_artifact_input_fingerprint_kind", "persistent_lookup",
 ].sort();
-const configKeys = ["checked_error_row_mode", "diagnostics_mode", "dep_order_seed", "target", "memory", "dce_mode", "strip_stage", "instrumentation"].sort();
+const configKeys = ["checked_error_row_mode", "diagnostics_mode", "dep_order_seed", "target", "memory", "dce_mode", "strip_stage", "instrumentation", "exports_stripped"].sort();
 const planKeys = ["fingerprint", "fingerprint_kind", "module_count", "edge_occurrence_count"].sort();
 const resolutionKeys = ["env_seed", "env_seed_kind", "context_fingerprint", "context_fingerprint_kind"].sort();
-const productionKind = "build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)";
+const productionKind = "build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode, exports_stripped)";
 const planKind = "compact_string_fingerprint(vibe-artifact-input-dependency-plan:v1 length-prefixed planned order/ranks/dependency occurrences)";
 const shadowKind = "compact_string_fingerprint(vibe-artifact-input-observation:v2 fixed-order length-prefixed components)";
 
@@ -40,7 +40,7 @@ function nonnegativeInteger(value, label) {
   if (!Number.isSafeInteger(value) || value < 0) fail(`invalid ${label}`);
 }
 
-/// Strict parser for successful schema-2 artifact-input observations only.
+/// Strict parser for successful schema-3 artifact-input observations only.
 export function parseArtifactInputTrace(text, expectedNonce = undefined) {
   let trace;
   try {
@@ -49,7 +49,7 @@ export function parseArtifactInputTrace(text, expectedNonce = undefined) {
     fail(`invalid JSON (${error.message})`);
   }
   exactKeys(trace, expectedKeys, "trace");
-  if (trace.schema !== 2) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
+  if (trace.schema !== 3) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
   for (const key of ["run_nonce", "scope_disclaimer", "compile_lane", "persistent_artifact_kind", "source_groups_fingerprint", "source_groups_fingerprint_kind", "production_artifact_input_fingerprint", "production_artifact_input_fingerprint_kind", "compiler_cache_version_tag", "compiler_cache_version_tag_kind", "shadow_artifact_input_fingerprint", "shadow_artifact_input_fingerprint_kind", "persistent_lookup"]) nonemptyString(trace[key], key);
   if (expectedNonce !== undefined && trace.run_nonce !== expectedNonce) fail("run_nonce mismatch (stale sidecar)");
   if (trace.compile_lane !== "file_compile.persistent_pre_strip_wasi_cached_bump") fail("wrong compile lane");
@@ -69,6 +69,7 @@ export function parseArtifactInputTrace(text, expectedNonce = undefined) {
   if (config.checked_error_row_mode !== "checked" && config.checked_error_row_mode !== "unchecked") fail("invalid checked Error-row mode");
   if (config.diagnostics_mode !== "all" && config.diagnostics_mode !== "fail-fast") fail("invalid diagnostics mode");
   if (typeof config.dep_order_seed !== "string" || !/^(0|-?[1-9]\d*)$/.test(config.dep_order_seed)) fail("invalid normalized dep-order seed");
+  if (typeof config.exports_stripped !== "boolean") fail("invalid export-strip policy");
   if (config.target !== "wasi" || config.memory !== "bump" || config.dce_mode !== "no-dce" || config.strip_stage !== "pre-strip" || config.instrumentation !== "uninstrumented") fail("dishonest fixed lane config");
 
   exactKeys(trace.dependency_plan, planKeys, "dependency_plan");
@@ -191,7 +192,7 @@ function run(stage2) {
     compile("failed", "artifact-failed", false);
     writeFileSync(join(project, "main.vibe"), "import ./dep.vibe { answer }\nexport fn main() -> Int { answer() }\n");
     compile("no-nonce", "", false);
-    console.log(JSON.stringify({ schema: 2, scenario: "fresh-stage2-artifact-input-trace", cold: cold.persistent_lookup, warm: warm.persistent_lookup, dependency_edit: edited.persistent_lookup }));
+    console.log(JSON.stringify({ schema: 3, scenario: "fresh-stage2-artifact-input-trace", cold: cold.persistent_lookup, warm: warm.persistent_lookup, dependency_edit: edited.persistent_lookup }));
   } finally {
     if (process.env.VIBE_ARTIFACT_INPUT_TRACE_KEEP_TMP === "1") console.error(`artifact-input-trace-oracle: kept ${work}`);
     else rmSync(work, { recursive: true, force: true });

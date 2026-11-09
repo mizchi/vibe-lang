@@ -146,6 +146,7 @@ Existing checks distinguish these cases:
 | --- | --- | --- |
 | `__heap_ptr`, or its delta | Main linear allocator frontier / growth | Live objects; total allocation under RC reuse; region churn; native GC heap size |
 | Linear memory pages / bytes | Current guest linear-memory capacity | Resident memory or live-object size |
+| `[rc-census]` `free` / `unfreed` (`VIBE_WASM_RC_CENSUS=1`, node runner) | RC-lane bytes on the free lists (exact), and the frontier minus those | Which unfreed bytes are reachable: `unfreed` also holds leaked blocks and headerless string/bytes payloads; `detail`'s `est_*` split is a heuristic scan |
 | End RSS | Process resident memory at the reading | Peak memory or guest-only memory |
 | Peak RSS | Peak resident memory reported by the host OS | Which allocator owns the memory; directly comparable values across engines/OSes |
 | Native GC heap / collection data | Requires engine-specific telemetry | Anything, when no measurement was taken; record it as unavailable |

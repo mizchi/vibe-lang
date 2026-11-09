@@ -300,12 +300,12 @@ There are three ways to wait, and they differ in what else gets to run:
 | waits by | siblings | operations |
 |---|---|---|
 | blocking the instance | nothing runs | `sleep_blocking` |
-| driving on the caller's stack | queued siblings run to completion | `join`, `send` / `recv` |
+| driving on the caller's stack | queued siblings run to completion, parked ones resume | `join`, `send` / `recv` |
 | suspending the task | siblings interleave with it | `sleep`, `await`, and in a suspendable task `sleep_wait`, `send_wait` / `recv_wait`, `result_wait` |
 
 `join`, `send` and `recv` are not blocking: while the caller waits, they run
-the group's queued tasks on its stack until the value, the room or the
-message it needs is there. What they cannot do is pause the caller mid-body
+the group's queued tasks on its stack, and resume its parked suspendable
+tasks, until the value, the room or the message it needs is there. What they cannot do is pause the caller mid-body
 and come back to it later, so a task that has to wait halfway through for a
 sibling which in turn waits on it cannot be written that way.
 `sleep_blocking(ms)` stops everything.
@@ -325,9 +325,9 @@ the wait out of it, or into a suspendable task.
 build needs `VIBE_UNSTABLE=1`), starts a task that can suspend. Inside it,
 `sleep` and `sleep_wait` park the task so its siblings run,
 `TaskHandle::result_wait` is the suspending `join`, and `send_wait` /
-`recv_wait` are the suspending channel operations. `TaskGroup::pump_all(g)`
-runs parked tasks until none is left; a `join` on a parked task does the same
-for that task.
+`recv_wait` are the suspending channel operations. You never drive the
+scheduler yourself: a `join`, `send` or `recv` that waits on a parked task
+resumes it, and the group's close runs every parked task to its end.
 
 Unlike `spawn`, `spawn_suspend` does not queue its task: it runs it at once, at
 the call, up to its first wait, and a task that never waits has finished by the
@@ -352,7 +352,6 @@ fn main allows Console + Exception + Async {
       println("b2 saw a = \{va}")
       va + 1
     })
-    TaskGroup::pump_all(g)
     TaskHandle::join(a) + TaskHandle::join(b)
   })
   println("total = \{total}")

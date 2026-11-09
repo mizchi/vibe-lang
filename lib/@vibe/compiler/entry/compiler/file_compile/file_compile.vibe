@@ -54,6 +54,7 @@ import @vibe/compiler/core {
   mark_private_builtin_references,
   merged_offset_space_reset,
   namespace_private_value_stmts,
+  reloc_slot_width,
   resolution_env_seed,
   sorted_names_of
 }
@@ -388,6 +389,18 @@ fn artifact_kind_for_mode(_ mode: String) -> String with Exception {
 /// this is defence in depth rather than the only separator -- but a kind per
 /// mode keeps the two caches reading the same way.
 fn persistent_artifact_kind_for_mode(_ mode: String) -> String with Exception {
+  // #3941: a module emitted at a slot width is a different artifact; width 0
+  // keeps the historical kinds.
+  let w = reloc_slot_width()
+  let base = persistent_artifact_kind_for_mode_minimal(mode)
+  if w == 0 {
+    base
+  } else {
+    String::concat(base, String::concat("-rsw", __to_string(w)))
+  }
+}
+
+fn persistent_artifact_kind_for_mode_minimal(_ mode: String) -> String with Exception {
   if mode == "mvp" {
     "file-compile-wasi-mvp"
   } else if mode == "no-dce" {
@@ -1317,6 +1330,24 @@ export fn prepare_file_fs_mode_rc_body(entry_path: String, entry_name: String, e
   ], exports_stripped = exports_stripped)
 }
 
+/// The persisted codegen-body-cache slot of a root: scoped to the entry PATH,
+/// independent of source content (the point is to hit after an edit). Two
+/// roots that share an entry name (`run`, `main`) must not share one slot, or
+/// their concurrent stores race on the same temp file.
+///
+/// #3941: a body emitted at a relocatable-slot width is not interchangeable
+/// with a minimal one, so the width scopes the slot; width 0 keeps the
+/// historical key. Exported so a test that clears the slot clears the one the
+/// compile will read, at whatever width it runs.
+export fn codegen_body_cache_artifact_key(_ entry_path: String) -> String {
+  let slot_width = reloc_slot_width()
+  if slot_width == 0 {
+    String::concat("self-describing-", compact_string_fingerprint(entry_path))
+  } else {
+    String::concat("self-describing-rsw", String::concat(__to_string(slot_width), String::concat("-", compact_string_fingerprint(entry_path))))
+  }
+}
+
 fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, source_groups: Array[(String, Array[(String, String)])], cache_mode: String, use_split: Bool, counts_out: Array[Int], exports_stripped: Bool) -> Bytes with Env + Exception + Fs {
   let prepared = prepare_file_body_inputs_fs(source_groups = source_groups, use_split = use_split)
   let merged_stmts = prepared.stmts
@@ -1330,11 +1361,8 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
   let eq_keys = prepared.eq_keys
   let lane_prov = prepared.prov
   let lane_split = prepared.split
-  // The key is independent of source CONTENT (the point is to hit after an
-  // edit) but scoped to the entry PATH: two roots that share a conventional
-  // entry name (`run`, `main`) must not share one artifact slot, or their
-  // concurrent stores race on the same temp file and one aborts.
-  let artifact_key = String::concat("self-describing-", compact_string_fingerprint(entry_path))
+  // Scoped to the entry path and the slot width (`codegen_body_cache_artifact_key`).
+  let artifact_key = codegen_body_cache_artifact_key(entry_path)
   // `"off"` IS OFF (#2647 Codex round 5). It used to load the artifact, compile
   // against it and store the result -- only `"verify"` was special-cased, so
   // every other value behaved like `"on"` while reading as a bypass. The
@@ -1721,13 +1749,11 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
 fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
   let load_start = profiler_now_us()
   let source_groups = collect_source_groups_fs(entry_path)
-  // The ingested source-group fingerprint is the authoritative identity for
-  // both cache layers. Keep it beside the collected sources instead of
-  // re-hashing every source once for the persistent lookup and again for the
-  // TypeDb lookup below. The `_from_group_fingerprint` constructor is
-  // byte-for-byte equivalent to the legacy source-taking constructor.
+  // Hash sources once, then include the entry, mode and export-root policy
+  // in the artifact identity shared by both cache layers. The constructor
+  // taking the precomputed group fingerprint equals the source-taking one.
   let source_groups_fingerprint = build_source_groups_fingerprint(source_groups)
-  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode)
+  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode, exports_stripped = false)
   match load_persistent_artifact(kind = persistent_artifact_kind, entry_name = entry_name, fingerprint = persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db, elapsed_us_since(load_start), 0, 0, 0, 0),
     None => {
@@ -1736,9 +1762,9 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db = db, entry_path = entry_path, source_groups = source_groups)
       let type_us = elapsed_us_since(type_start)
       let bundle_start = profiler_now_us()
-      let merge_fingerprint = source_groups_fingerprint
       let bundle_us = elapsed_us_since(bundle_start)
-      let artifact_fingerprint = merge_fingerprint
+      // Reuse the complete production identity in TypeDb too.
+      let artifact_fingerprint = persistent_artifact_fingerprint
       let artifact_kind = artifact_kind_for_mode(mode)
       match db_load_artifact(db = next_db, _path = entry_path, kind = artifact_kind, entry_name = entry_name, fingerprint = artifact_fingerprint) {
         Some(bytes) => (bytes, next_db, load_us, type_us, bundle_us, 0, 0),
@@ -1764,12 +1790,13 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
 fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String, exports_stripped: Bool) -> (Bytes, TypeDb, String, String, String) with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let source_groups_fingerprint = build_source_groups_fingerprint(source_groups)
-  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode)
+  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode, exports_stripped = exports_stripped)
   match load_persistent_artifact(kind = persistent_artifact_kind, entry_name = entry_name, fingerprint = persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db, source_groups_fingerprint, persistent_artifact_fingerprint, "hit"),
     None => {
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db = db, entry_path = entry_path, source_groups = source_groups)
-      let artifact_fingerprint = source_groups_fingerprint
+      // Reuse the complete production identity in TypeDb too.
+      let artifact_fingerprint = persistent_artifact_fingerprint
       let artifact_kind = artifact_kind_for_mode(mode)
       match db_load_artifact(db = next_db, _path = entry_path, kind = artifact_kind, entry_name = entry_name, fingerprint = artifact_fingerprint) {
         Some(bytes) => (bytes, next_db, source_groups_fingerprint, persistent_artifact_fingerprint, "miss"),
@@ -1788,7 +1815,7 @@ fn compile_file_fs_mode_cached_observed(db: TypeDb, entry_path: String, entry_na
   let persistent_artifact_kind = persistent_artifact_kind_for_mode(mode)
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) => {
-      let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode)
+      let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode, exports_stripped = exports_stripped)
       match load_persistent_artifact(kind = persistent_artifact_kind, entry_name = entry_name, fingerprint = persistent_artifact_fingerprint) {
         Some(bytes) => (bytes, db, source_groups_fingerprint, persistent_artifact_fingerprint, "hit"),
         // Preserve the ordinary cached path's validation/slow-path sequence;
@@ -1892,7 +1919,7 @@ export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, e
     let compiler_cache_version_tag = persistent_cache_version_tag_for_observation()
     let shadow_artifact_input_fingerprint = artifact_input_trace_shadow_fingerprint(production_fingerprint = production_artifact_input_fingerprint, source_groups_fingerprint = source_groups_fingerprint, compiler_cache_version_tag = compiler_cache_version_tag, checked_error_row_mode = checked_error_row_mode, diagnostics_mode = diagnostics_mode, dep_order_seed = dep_order_seed, dependency_plan_fingerprint = dependency_plan_fingerprint, resolution_seed = resolution_seed, resolution_context_fingerprint = resolution_context_fingerprint)
     let out = StringBuilder::new()
-    StringBuilder::push(out, value = "{\"schema\":2,\"run_nonce\":")
+    StringBuilder::push(out, value = "{\"schema\":3,\"run_nonce\":")
     StringBuilder::push(out, value = artifact_input_trace_json_string(run_nonce))
     StringBuilder::push(out, value = ",\"scope_disclaimer\":\"observation-only file_compile persistent pre-strip WASI bump lane; trace-only graph/context work; not a production cache key, format, or reuse decision\",\"compile_lane\":\"file_compile.persistent_pre_strip_wasi_cached_bump\",\"persistent_artifact_kind\":")
     StringBuilder::push(out, value = artifact_input_trace_json_string(persistent_artifact_kind))
@@ -1906,7 +1933,7 @@ export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, e
     StringBuilder::push(out, value = artifact_input_trace_json_string(source_groups_fingerprint))
     StringBuilder::push(out, value = ",\"source_groups_fingerprint_kind\":\"build_source_groups_fingerprint(source_groups)\",\"production_artifact_input_fingerprint\":")
     StringBuilder::push(out, value = artifact_input_trace_json_string(production_artifact_input_fingerprint))
-    StringBuilder::push(out, value = ",\"production_artifact_input_fingerprint_kind\":\"build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)\",\"compiler_cache_version_tag\":")
+    StringBuilder::push(out, value = ",\"production_artifact_input_fingerprint_kind\":\"build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode, exports_stripped)\",\"compiler_cache_version_tag\":")
     StringBuilder::push(out, value = artifact_input_trace_json_string(compiler_cache_version_tag))
     StringBuilder::push(out, value = ",\"compiler_cache_version_tag_kind\":\"persistent_cache_version_tag()\",\"effective_config\":{\"checked_error_row_mode\":")
     StringBuilder::push(out, value = artifact_input_trace_json_string(checked_error_row_mode))
@@ -1914,6 +1941,12 @@ export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, e
     StringBuilder::push(out, value = artifact_input_trace_json_string(diagnostics_mode))
     StringBuilder::push(out, value = ",\"dep_order_seed\":")
     StringBuilder::push(out, value = artifact_input_trace_json_string(dep_order_seed))
+    StringBuilder::push(out, value = ",\"exports_stripped\":")
+    StringBuilder::push(out, value = if exports_stripped {
+      "true"
+    } else {
+      "false"
+    })
     StringBuilder::push(out, value = ",\"target\":\"wasi\",\"memory\":\"bump\",\"dce_mode\":\"no-dce\",\"strip_stage\":\"pre-strip\",\"instrumentation\":\"uninstrumented\"},\"dependency_plan\":{\"fingerprint\":")
     StringBuilder::push(out, value = artifact_input_trace_json_string(dependency_plan_fingerprint))
     StringBuilder::push(out, value = ",\"fingerprint_kind\":\"compact_string_fingerprint(vibe-artifact-input-dependency-plan:v1 length-prefixed planned order/ranks/dependency occurrences)\",\"module_count\":")
@@ -1944,7 +1977,7 @@ export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, e
   let load_start = profiler_now_us()
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>
-    match load_persistent_artifact(kind = persistent_artifact_kind, entry_name = entry_name, fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode)) {
+    match load_persistent_artifact(kind = persistent_artifact_kind, entry_name = entry_name, fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = source_groups_fingerprint, entry_path = entry_path, entry_name = entry_name, mode = mode, exports_stripped = false)) {
       Some(bytes) => (bytes, db, elapsed_us_since(load_start), 0, 0, 0, 0, elapsed_us_since(total_start)),
       None => {
         let prefix_load_us = elapsed_us_since(load_start)

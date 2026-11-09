@@ -41,9 +41,11 @@ import @vibe/compiler/codegen/expr {
 
 import @vibe/compiler/perceus {
   PerceusAction,
-  build_perceus_plan_with_params,
+  build_perceus_plan_with_params_split,
   compute_borrow_returning_names,
   compute_scalar_returning_names,
+  fn_result_is_immediate,
+  fn_sig_return_type,
   pa_is_alias_dup,
   pa_is_consume_mark,
   pa_is_drop,
@@ -288,8 +290,9 @@ export fn rc_classify_source(_ source: String) -> String with Exception {
   StringBuilder::freeze(acc)
 }
 
-fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret: Array[String], borrow_param: Array[String], masks: Array[Int], view_ret: Array[String]) -> Unit {
-  let plan = build_perceus_plan_with_params(params = params, body = body, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret)
+fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret: Array[String], borrow_param: Array[String], masks: Array[Int], view_ret: Array[String], result_immediate: Bool) -> Unit {
+  let plan = build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret, out_param_drop_start = [
+  ], result_immediate = result_immediate)
   let mut i = 0
   while i < Array::length(plan) {
     let a = Array::get(plan, at = i)
@@ -346,6 +349,17 @@ fn rcq_body_free_names(_ e: Expr) -> Array[String] {
     },
     _ => collect_free_vars_used_builtins(body = e, param_names = [], fn_name_index = [
     ])
+  }
+}
+
+/// The function's declared result, as the RC codegen reads it
+/// (`fn_result_is_immediate`): the binding's signature first, else the
+/// lambda's own annotation. Folded into the planned `EFn` so a caller can ask
+/// `fn_result_is_immediate(sig = None, value = ..)` the codegen's question.
+fn rcq_declared_ret(sig: Option[TypeExpr], ret: Option[TypeExpr]) -> Option[TypeExpr] {
+  match fn_sig_return_type(sig) {
+    Some(t) => Some(t),
+    None => ret
   }
 }
 
@@ -438,7 +452,7 @@ export fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_n
             matched = true
             Array::push(out_names, value = name)
             Array::push(out_fns, value = match norm {
-              EFn(tps, tbs, ps, ret, eff, nbody) => EFn(tps, tbs, rcq_norm_params(params = ps, sig = sig), ret, eff, nbody),
+              EFn(tps, tbs, ps, ret, eff, nbody) => EFn(tps, tbs, rcq_norm_params(params = ps, sig = sig), rcq_declared_ret(sig = sig, ret = ret), eff, nbody),
               _ => norm
             })
           } else {
@@ -472,7 +486,7 @@ export fn rc_plan_source(source: String, fn_filter: String) -> String with Excep
   let mut i = 0
   while i < Array::length(fns) {
     match Array::get(fns, at = i) {
-      EFn(_, _, nparams, _, _, nbody) => rcq_emit_fn_plan(acc = acc, first = first, fname = Array::get(names, at = i), params = nparams, body = nbody, borrow_ret = Array::get(tables, at = 0), borrow_param = Array::get(tables, at = 1), masks = masks, view_ret = Array::get(tables, at = 2)),
+      EFn(_, _, nparams, _, _, nbody) => rcq_emit_fn_plan(acc = acc, first = first, fname = Array::get(names, at = i), params = nparams, body = nbody, borrow_ret = Array::get(tables, at = 0), borrow_param = Array::get(tables, at = 1), masks = masks, view_ret = Array::get(tables, at = 2), result_immediate = fn_result_is_immediate(sig = None, value = Array::get(fns, at = i))),
       _ => ()
     }
     i = i + 1

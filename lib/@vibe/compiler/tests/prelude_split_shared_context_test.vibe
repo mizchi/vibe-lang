@@ -1,0 +1,102 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_split
+}
+import @vibe/compiler/codegen/wasi {
+  prelude_split_last_module_count
+}
+
+// #3976: what the per-module split lane computes once and hands to every
+// module, asked of real multi-file programs against the whole-program lane.
+//
+// - The typed rows are sorted by kind once per program (`desugar_typed_rows`)
+//   rather than once per module. Each module's run installs a copy, so the
+//   32-bit `Add` rows, which a run marks consumed, start unconsumed in every
+//   module, as they did when each module sorted its own.
+// - Whether a dependency interface spells `Int32` / `UInt32` is asked once
+//   per interface. A module whose own statements spell neither still erases
+//   them from its context when an interface does: the context's declarations
+//   are what the module's `==`, renderers and return types are looked up in.
+//
+// Each row compiles one program with `use_split` off and on, runs what
+// compiled under wasmtime, and asserts that the two lanes agree exactly.
+
+/// The answer one lane gives: the diagnostic it throws, or "" and the module.
+fn one_lane(entry: String, split: Bool) -> (String, Bytes) with Env + Fs {
+  handle {
+    let bytes = compile_file_fs_mode_rc_body_cached_split(entry_path = entry, entry_name = "main", cache_mode = "off", use_split = split, exports_stripped = false)
+    ("", bytes)
+  } with { Exception::Throw(msg) => (msg, Bytes::new(0)) }
+}
+
+/// One lane's answer, rendered: `refused` with the diagnostic's first line,
+/// or `ran[output]` with the module validated and executed by wasmtime.
+fn rendered(tag: String, lane: String, answer: (String, Bytes)) -> String with Console + Exception + Fs + Process {
+  if answer.0 != "" {
+    "refused[" + Array::get(String::split(answer.0, sep = "\n"), at = 0) + "]"
+  } else {
+    let path = "/tmp/vibe_pss_" + tag + "_" + lane + ".wasm"
+    Fs::write_bytes(path, bytes = answer.1)
+    // The exported closure takes its hidden env parameter explicitly.
+    let lines = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0")
+    "ran[" + String::join(lines, sep = ",") + "]"
+  }
+}
+
+/// Writes `files` as `/tmp/vibe_pss_<tag>_<name>.vibe`, compiles `main`
+/// through both lanes, and renders what the two have to agree on.
+fn both_lanes(tag: String, files: Array[(String, String)]) -> String with Console + Env + Exception + Fs + Process {
+  for file in files {
+    Fs::write_file("/tmp/vibe_pss_" + tag + "_" + file.0 + ".vibe", contents = file.1)
+  }
+  let entry = "/tmp/vibe_pss_" + tag + "_main.vibe"
+  let whole = one_lane(entry = entry, split = false)
+  let split = one_lane(entry = entry, split = true)
+  // Non-vacuity for a program that compiles: the split really partitioned it.
+  let split_modules = prelude_split_last_module_count()
+  let identical = if whole.0 == split.0 && whole.1 == split.1 {
+    "true"
+  } else {
+    "false"
+  }
+  "whole=" + rendered(tag = tag, lane = "whole", answer = whole) + " split=" + rendered(tag = tag, lane = "split", answer = split) + " split_modules=" + Int::to_string(split_modules) + " identical=" + identical
+}
+
+/// `import ./vibe_pss_<tag>_<dep>.vibe { names }`, then a blank line.
+fn import_of(tag: String, dep: String, names: String) -> String {
+  "import ./vibe_pss_" + tag + "_" + dep + ".vibe {\n  " + names + "\n}\n\n"
+}
+
+//# Whether a context spells `Int32` is asked once per interface
+
+test "a module that spells no Int32 erases it from a context that does" {
+  // Nothing in the program does 32-bit arithmetic, so the checker files no
+  // wrap row and only a spelling decides whether a run erases the type.
+  // `main` spells neither type; its context's declaration of `Pair` does, and
+  // `main` builds the `Pair[Int]` comparator from that declaration. The whole
+  // program erases every `Int32` first, so the field is an `Int` there, and
+  // the split's run for `main` has to erase its context too. With every
+  // context vouched free of `Int32`, the split refuses this program:
+  // `Int32::equals` reaches code generation unresolved.
+  let leaf = "export struct Pair[T] {\n  a: T;\n  b: Int32\n} derive (Eq)\n\nexport fn mk(n: Int) -> Pair[Int] {\n  Pair::{ a: n, b: Int::wrap_int32(n) }\n}\n"
+  let main = import_of(tag = "pairi32", dep = "leaf", names = "mk") + "fn main() -> Int {\n  if mk(n = 1) == mk(n = 1) && !(mk(n = 1) == mk(n = 4294967297)) {\n    42\n  } else {\n    0\n  }\n}\n"
+  inspect(both_lanes(tag = "pairi32", files = [("main", main), ("leaf", leaf)]), content = "whole=ran[42] split=ran[42] split_modules=2 identical=true")
+}
+
+test "an Int32 spelled only inside a dependency's body leaves its importers' context free" {
+  // The leaf's interface is `fn twice(_ n: Int) -> Int`; the `Int32` is in its
+  // body, which no context carries. Its own run erases it.
+  let leaf = "export fn twice(_ n: Int) -> Int {\n  let x: Int32 = Int::wrap_int32(n)\n  Int32::to_int(x) * 2\n}\n"
+  let main = import_of(tag = "bodyi32", dep = "leaf", names = "twice") + "fn main() -> Int {\n  twice(4294967317)\n}\n"
+  inspect(both_lanes(tag = "bodyi32", files = [("main", main), ("leaf", leaf)]), content = "whole=ran[42] split=ran[42] split_modules=2 identical=true")
+}
+
+//# The typed rows are sorted once and installed per module
+
+test "each of two modules consumes its own 32-bit Add row" {
+  // Two modules each hold an `Add`-bounded call at `Int32`. Every module's
+  // run installs the program's rows unconsumed and consumes the one its call
+  // holds; the report counts a row consumed when any module consumed it.
+  let leaf = "export fn add[T: Add](a: T, b: T) -> T {\n  a + b\n}\n\nexport fn leaf_sum() -> Int {\n  let top: Int32 = 2147483647\n  let two: Int32 = 2\n  Int32::to_int(add(a = top, b = two))\n}\n"
+  let main = import_of(tag = "add32two", dep = "leaf", names = "add, leaf_sum") + "fn main() -> Int {\n  let top: Int32 = 2147483647\n  let one: Int32 = 1\n  Int32::to_int(add(a = top, b = one)) - leaf_sum()\n}\n"
+  inspect(both_lanes(tag = "add32two", files = [("main", main), ("leaf", leaf)]), content = "whole=ran[-1] split=ran[-1] split_modules=2 identical=true")
+}
