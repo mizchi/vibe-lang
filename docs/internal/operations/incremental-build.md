@@ -820,6 +820,7 @@ when the layout behind it moves.
 | function index (`call`, `ref.func`) | W | index < 2^21 at W=3 |
 | exception tag (`throw`, `try_table` catch) | W | tag < 2^21 |
 | global (`global.get`, `global.set`) | W | global < 2^21 |
+| type index of `call_indirect` | W | type < 2^21 |
 | funcref table slot: `i64.const ((slot << 2) \| 2)` (kind 101), `i32.const slot` (kind 102) | W | slot < 2^18 |
 | string address, bare offset (`blind_kind_str_ref`) | W | offset < 2^20 |
 | string address, `(offset << 32) \| length` (`blind_kind_str_fat`) | W+5 | offset < 2^23 |
@@ -829,13 +830,16 @@ A non-minimal LEB128 is valid wasm. It is the slot shape that the
 tool-conventions object format, `wasm-ld` and wild reserve for this reason.
 Unset is minimal, and the output is byte-identical to a compiler without the
 switch. A built-in constructor tag (below `2 << 16`) never moves and stays
-minimal; so do type indices and the generated runtime helpers' message
-addresses.
+minimal. So do the `call_indirect` table index (always 0), the gc lane's
+type-index blocktypes and heap types, and the generated runtime helpers'
+message addresses.
 
 **Every writer of a padded reference goes through one encoder.**
 
-- `leb128_encode_u32_slot` writes function indices, tags and globals:
+- `leb128_encode_u32_slot` writes function indices, tags, globals and type
+  indices:
   - `emit_call`, `emit_ref_func`, `emit_global_get` and `emit_global_set`;
+  - the type index in `emit_call_indirect`;
   - the inline-wat `call`;
   - the hand-encoded `throw` / `try_table` sites (`common_base_return_frame`,
     `compile_call_call_core`, `compile_call_named_1`, `compile_expr_tail6`);
@@ -853,10 +857,11 @@ persisted `codegen-body-cache` slot and the linked-output memo are keyed on
 the width, so the two encodings never replay into each other.
 
 **Coverage is checked, not assumed.** `scripts/reloc_roundtrip.sh` with
-`RELOC_ROUNDTRIP_SLOT_WIDTH=W` rebuilds every function, tag and global site at
-width W and requires the bytes back unchanged. An emitter that wrote one of
+`RELOC_ROUNDTRIP_SLOT_WIDTH=W` rebuilds every function, tag, global and type
+site at width W and requires the bytes back unchanged. An emitter that wrote one of
 them narrower fails it by name. On the corpus below at W=3 it is clean over
-200,348 function, 740 tag and 3266 global sites. The same module rebuilt at
+200,348 function, 740 tag, 3266 global and 1121 type sites. The build before
+type indices were padded fails the same check in 222 bodies. The same module rebuilt at
 width 0 is the red control and reports 6979 mismatches.
 
 Measured with `scripts/wasm_index_stability.mjs`, corpus
@@ -865,20 +870,21 @@ Each W=3 column adds one class to the column before it. "Length changed"
 counts bodies whose byte length differs. At W=0 every build is byte-identical
 to main.
 
-| edit | W=0 | function indices | + table slots | + strings | + tags, globals | + ctor tags |
-|---|---:|---:|---:|---:|---:|---:|
-| body only (`hex_encode`) | 1 | 1 | 1 | 1 | 1 | 1 |
-| +1 fn above the 127/128 band (`hex.vibe`) | 1 | 1 | 1 | 1 | 1 | 1 |
-| +1 fn below the band (`base64.vibe`) | 6 | **1** | 1 | 1 | 1 | 1 |
-| module reorder (`base64` imports `hex`) | 15 | **0** | 0 | 0 | 0 | 0 |
-| +400 fn (a function value moves 1667 → 2068) | 16 | 3 | **1** | 1 | 1 | 1 |
-| +300-byte literal (strings cross 8192 / 2^15) | 109 | 109 | 109 | **3** | 3 | 3 |
-| +1 top-level thunk (+2 memo globals; two cross 127 → 128) | 8 | 3 | 3 | 3 | **1** | 1 |
-| +1 effect (every tag 1 higher) | 6 | **1** | 1 | 1 | 1 | 1 |
-| +1 unused enum (6301 ctor tags +1 type; `Deque` crosses 15 → 16) | 25 | — | — | — | 25 | **0** |
-| +1 used enum (the same, plus a function) | 31 | 26 | 26 | 26 | 26 | **1** |
+| edit | W=0 | function indices | + table slots | + strings | + tags, globals | + ctor tags | + type indices |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| body only (`hex_encode`) | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| +1 fn above the 127/128 band (`hex.vibe`) | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| +1 fn below the band (`base64.vibe`) | 6 | **1** | 1 | 1 | 1 | 1 | 1 |
+| module reorder (`base64` imports `hex`) | 15 | **0** | 0 | 0 | 0 | 0 | 0 |
+| +400 fn (a function value moves 1667 → 2068) | 16 | 3 | **1** | 1 | 1 | 1 | 1 |
+| +300-byte literal (strings cross 8192 / 2^15) | 109 | 109 | 109 | **3** | 3 | 3 | 3 |
+| +1 top-level thunk (+2 memo globals; two cross 127 → 128) | 8 | 3 | 3 | 3 | **1** | 1 | 1 |
+| +1 effect (every tag 1 higher) | 6 | **1** | 1 | 1 | 1 | 1 | 1 |
+| +1 unused enum (6301 ctor tags +1 type; `Deque` crosses 15 → 16) | 25 | — | — | — | 25 | **0** | 0 |
+| +1 used enum (the same, plus a function) | 31 | 26 | 26 | 26 | 26 | **1** | 1 |
+| +1 30-parameter function (types 35 → 41, four reordered) | 6 | — | — | — | — | 1 | 1 |
 
-In every row the 1 is the edited body. A dash was not measured. Four rows
+In every row the 1 is the edited body. A dash was not measured. Five rows
 need a note:
 
 - **Strings.** The 3 left are the edited body, `__rt_oob_abort` and
@@ -896,6 +902,11 @@ need a note:
   width alone does not change it; it takes W+1. Built-in tags are left minimal
   because they never move. Padding them too (an earlier variant) cost 35,679
   bytes instead of 16,579, for the same table.
+- **Type indices.** The linear lane's type section is identical across every
+  other edit here. A new signature does move it: four old types reorder (9→3,
+  10→4, 11→8, 34→40). But with 35–41 types every index is one byte, so no
+  length moves. Type padding is paid for and, at this size, unused. A type
+  crossing needs more than 127 distinct signatures.
 
 - **Cost.** W=0 is 6,636,149 bytes. Each class adds:
 
@@ -906,7 +917,8 @@ need a note:
   | strings | 7,004,443 | +8,711 B |
   | tags and globals | 7,010,864 | +6,421 B |
   | constructor tags (user types) | 7,027,443 | +16,579 B |
-  | **total** | | **+5.90%** |
+  | type indices | 7,029,688 | +2,245 B |
+  | **total** | | **+5.93%** |
 
   Function indices are almost all of it: 200,348 sites, most of them one or
   two bytes.
@@ -920,6 +932,7 @@ need a note:
   | function value ahead of every slot | 7044 | 342 |
   | +300-byte literal | 7046 | 340 |
   | thunk, effect | 7045 | 341 |
+  | 30-parameter function (types reorder) | 7047 | 339 |
 
   Inserting a type is different. The cache declines the whole build (7387
   recompiled, at W=0 as well), so the constructor-tag relocator is not reached
