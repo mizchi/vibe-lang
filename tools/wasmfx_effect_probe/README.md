@@ -21,6 +21,13 @@ line used to read "Run on Apple Silicon macOS", which a reader takes as a
 platform requirement; #2221's acceptance gate asks for the same matrix on both,
 and nobody had run the probe on the second one.
 
+Four further cases (a consumed continuation, a handle table with take-and-null
+ownership, `resume_throw` cancellation, and the storage positions a `contref`
+may occupy) back
+[the continuation-ownership decision](../../docs/internal/design/wasmfx-continuation-ownership.md).
+They were added and measured on Linux x64 under rustc 1.98.1 on 2026-11-09,
+and they have not yet been run on macOS.
+
 The toolchain floor is real and is above several distributions' default: the
 manifest says `rust-version = "1.96"` and this was measured on 1.97.1. A 1.94
 toolchain is refused by cargo before any code is compiled.
