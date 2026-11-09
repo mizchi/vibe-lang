@@ -1,0 +1,52 @@
+// Which arguments a mutable operation retains in its receiver, for the
+// region write checks (`retaining_write_region_check`, `lapw_scan`).
+
+import @vibe/compiler/core {
+  builtin_array_push, builtin_array_set, builtin_mutlist_push, builtin_mutlist_truncate, canonical_builtin_name
+}
+
+/// Argument positions retained by a mutable operation, encoded as a two-bit
+/// mask for positions 1 and 2. `operation` is the checker's answer for the
+/// call (`resolve_builtin_callee`): a builtin operation identity, -1 for a
+/// program binding of a builtin spelling, or 0 for a spelling with no
+/// identity yet, which is the only case read from `source_name`.
+///
+/// #3255: an operation with an identity is classified by that identity. Its
+/// spelling used to be in the ladder below, so a program's own `fn
+/// Array::push` that keeps nothing was refused inside a region as if it were
+/// the builtin. A program binding retains what its body retains, and
+/// `retention_call_region_check` re-checks that body at the call.
+///
+/// The ladder is the checker-owned inventory for the operations without an
+/// identity: other shipped primitives and standard-library mutable wrappers.
+/// Aliases are listed beside their canonical spelling.
+export fn retaining_write_argument_mask(source_name: String, operation: Int) -> Int {
+  if operation > 0 {
+    retaining_write_operation_mask(operation)
+  } else if operation < 0 {
+    0
+  } else {
+    let name = canonical_builtin_name(source_name)
+    if name == "ArrayBuilder::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
+      1
+    } else if name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "__set_field" {
+      2
+    } else if name == "MapBuilder::set" || name == "MutMap::set" || name == "HashMap::set" || name == "MutSortedMap::set" || name == "SortedMap::set" {
+      3
+    } else {
+      0
+    }
+  }
+}
+
+/// The same mask for a builtin operation identity; 0 for every operation that
+/// stores none of its arguments.
+fn retaining_write_operation_mask(_ operation: Int) -> Int {
+  if operation == builtin_array_push || operation == builtin_mutlist_push || operation == builtin_mutlist_truncate {
+    1
+  } else if operation == builtin_array_set {
+    2
+  } else {
+    0
+  }
+}
