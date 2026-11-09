@@ -117,6 +117,10 @@ import @vibe/compiler/module_graph {
   plan_module_order
 }
 
+import @vibe/compiler/lowering/trait_namespaces {
+  derive_trait_namespace_operations
+}
+
 import @vibe/compiler/syntax {
   Token, lex_with_offsets_recovering
 }
@@ -610,7 +614,7 @@ fn checked_module_artifact_outcome_with_config(job: ModuleJob, artifact: Checked
     throw("checked module: validated imports no longer resolve")
   }
   let fingerprint = typecheck_fs_build_fingerprint_with_config(path = job.path, source = job.source, dep_fps = job.dep_fps, semantics_seed = typing_semantics_seed(), cfg = cfg)
-  let env = checked_module_public_env_for_path(path = job.path, stmts = artifact.parsed_stmts, full_checked_env = artifact.checked_program.final_env, reexport_declarations = reexports)
+  let env = checked_module_public_env_for_path(path = job.path, stmts = checked_module_publication_stmts(artifact.parsed_stmts), full_checked_env = artifact.checked_program.final_env, reexport_declarations = reexports)
   module_typed_lowering_memo_put(path = job.path, fingerprint = fingerprint, offsets = artifact.lowering_offsets, eq_offs = artifact.eq_offsets, eq_keys = artifact.eq_keys)
   module_typed_lowering_bind_source_with_config(path = job.path, fingerprint = fingerprint, source = job.source, cfg = cfg)
   let tracing = incremental_interface_trace_enabled()
@@ -627,6 +631,21 @@ fn checked_module_artifact_outcome_with_config(job: ModuleJob, artifact: Checked
   } else {
     ""
   }, None)
+}
+
+/// #3965: the statements a reused module publishes from. A fresh check
+/// publishes from its statements AFTER checking, which by then hold the
+/// `Trait::operation` wrappers the checker derives for the module's own traits
+/// (`derive_trait_namespace_operations`); the artifact keeps the statements as
+/// parsed, before that. Publishing from them dropped `Value::value` from the
+/// module's surface, so an importer's `Value::value(note)` was `unknown name`
+/// under `VIBE_CHECKED_MODULE_CACHE=on` while `off` and `verify` compiled it.
+/// The same derivation on a copy restores the fresh check's surface; the
+/// artifact itself is unchanged.
+fn checked_module_publication_stmts(_ parsed: Array[Stmt]) -> Array[Stmt] {
+  let out = Array::slice(parsed, start = 0, end = Array::length(parsed))
+  let _ = derive_trait_namespace_operations(stmts = out, own_end = Array::length(out))
+  out
 }
 
 /// One accepting edge for complete artifacts. An unchanged public dependency
