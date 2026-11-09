@@ -157,8 +157,9 @@ Today rows are comma-joined label strings and comparison is by label:
 - generic effects compare by base name (`State[Int]` and `State[String]` are
   the same row element). `Exception[E]` is the one exception: its kinds are
   compared (`exception_kinds_compatible`, ADR-0085);
-- there is no `OperationRef` type in the compiler; resource-kind metadata on it
-  is #3143.
+- an `OperationRef` type exists (`core/operation_ref.vibe`), but only entry
+  admission lowers a label to one and classifies it; rows themselves are not
+  made of it, and resource-kind metadata from declarations is #3143.
 
 ## Rejected alternatives
 

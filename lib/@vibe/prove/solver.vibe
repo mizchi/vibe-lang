@@ -1,6 +1,8 @@
 // What the solver's answer means for one query (#3717, ADR-0121): only
 // `unsat` proves, and a model is read back as the parameter values that
 // break the obligation. Split from prove.vibe, which builds the queries.
+// The `Array[Int]` encoding lives here too, because reading a model back
+// needs the same accessor names the queries are written with.
 
 //# Solver output
 
@@ -42,45 +44,138 @@ export fn prove_verdict_in(_ z3_out: String, query: String) -> (String, String) 
   }
 }
 
-/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`.
+/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`. An array arrives as its
+/// length and its first elements (`model_terms`), one pair each, and is shown
+/// as one `xs = [1, -2]`. An answer of another shape is shown as z3 gave it.
 fn model_text(text: String, fields: Array[(String, Array[String])]) -> String {
+  let toks = smt_tokens(text)
+  let n = Array::length(toks)
   let parts: Array[String] = []
-  let mut i = 0
-  let n = String::length(text)
-  while i < n {
-    if String::byte_at(text, at = i) == '|' {
-      let close = find_byte(text = text, byte = '|', from = i + 1)
-      let name = String::substring(text, start = i + 1, end = close)
-      let mut j = close + 1
-      let mut depth = 0
-      let start = j
-      let mut done = false
-      while j < n && !done {
-        let c = String::byte_at(text, at = j)
-        if c == '(' {
-          depth = depth + 1
-        } else if c == ')' {
-          if depth == 0 {
-            done = true
-          } else {
-            depth = depth - 1
-          }
-        } else {
-          ()
-        }
-        if !done {
-          j = j + 1
-        } else {
-          ()
-        }
-      }
-      Array::push(parts, value = "\{name} = \{smt_value_text(v = String::trim(String::substring(text, start = start, end = j)), fields = fields)}")
-      i = j
+  let arr = ArrModel::{ name: [""], len: [""], elems: [] }
+  let pos = [1]
+  let mut ok = n >= 2 && Array::get(toks, at = 0) == "("
+  while ok && Array::get(pos, at = 0) < n && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
+    if Array::get(toks, at = Array::get(pos, at = 0)) != "(" {
+      ok = false
     } else {
-      i = i + 1
+      let start = Array::get(pos, at = 0) + 1
+      Array::set(pos, at = 0, value = start)
+      smt_skip(toks = toks, pos = pos)
+      let term = Array::slice(toks, start = start, end = Array::get(pos, at = 0))
+      let value = smt_render(toks = toks, pos = pos, fields = fields)
+      if Array::get(pos, at = 0) < n && Array::get(toks, at = Array::get(pos, at = 0)) == ")" {
+        Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+        model_pair(parts = parts, arr = arr, term = term, value = value)
+      } else {
+        ok = false
+      }
     }
   }
-  String::join(parts, sep = ", ")
+  if ok {
+    flush_array(parts = parts, arr = arr)
+    String::join(parts, sep = ", ")
+  } else {
+    String::trim(text)
+  }
+}
+
+/// The array `model_text` is collecting: its name, the length the model
+/// gave, and the elements read so far.
+struct ArrModel {
+  name: Array[String];
+  len: Array[String];
+  elems: Array[String]
+}
+
+/// One `(term value)` pair of a `get-value` answer: a constant is shown at
+/// once, an array's length starts collecting that array, and an element
+/// joins it.
+fn model_pair(parts: Array[String], arr: ArrModel, term: Array[String], value: String) -> Unit {
+  let k = Array::length(term)
+  if k == 1 {
+    flush_array(parts = parts, arr = arr)
+    Array::push(parts, value = "\{smt_unquote(Array::get(term, at = 0))} = \{value}")
+  } else if k == 4 && Array::get(term, at = 1) == "|Array[Int].len|" {
+    flush_array(parts = parts, arr = arr)
+    Array::set(arr.name, at = 0, value = smt_unquote(Array::get(term, at = 2)))
+    Array::set(arr.len, at = 0, value = value)
+  } else if k == 8 && Array::get(term, at = 1) == "select" && Array::get(term, at = 3) == "|Array[Int].data|" && smt_unquote(Array::get(term, at = 4)) == Array::get(arr.name, at = 0) {
+    Array::push(arr.elems, value = value)
+  } else {
+    flush_array(parts = parts, arr = arr)
+    Array::push(parts, value = "\{String::join(term, sep = " ")} = \{value}")
+  }
+}
+
+/// Emit the array being collected, if any: its first `length` elements, or
+/// the elements asked for and the length when it is longer than that.
+fn flush_array(parts: Array[String], arr: ArrModel) -> Unit {
+  let name = Array::get(arr.name, at = 0)
+  if name != "" {
+    let len_text = Array::get(arr.len, at = 0)
+    let len = small_nat(len_text)
+    let have = Array::length(arr.elems)
+    if len >= 0 && len <= have {
+      let shown = Array::slice(arr.elems, start = 0, end = len)
+      Array::push(parts, value = "\{name} = [\{String::join(shown, sep = ", ")}]")
+    } else {
+      Array::push(parts, value = "\{name} = [\{String::join(arr.elems, sep = ", ")}, ...] (length \{len_text})")
+    }
+    Array::set(arr.name, at = 0, value = "")
+    Array::set(arr.len, at = 0, value = "")
+    Array::truncate(arr.elems, length = 0)
+  } else {
+    ()
+  }
+}
+
+/// A decimal of at most nine digits as its value, and -1 for anything else
+/// (a longer number, a negative one, or not a number).
+fn small_nat(_ t: String) -> Int {
+  let n = String::length(t)
+  if n == 0 || n > 9 {
+    0 - 1
+  } else {
+    let mut v = 0
+    let mut i = 0
+    let mut ok = true
+    while i < n {
+      let c = String::byte_at(t, at = i)
+      if c >= '0' && c <= '9' {
+        v = v * 10 + (c - '0')
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      v
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// Move `pos` past one s-expression: an atom, or a parenthesized list.
+fn smt_skip(toks: Array[String], pos: Array[Int]) -> Unit {
+  let mut depth = 0
+  let mut go = true
+  while go && Array::get(pos, at = 0) < Array::length(toks) {
+    let t = Array::get(toks, at = Array::get(pos, at = 0))
+    Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+    if t == "(" {
+      depth = depth + 1
+    } else if t == ")" {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    if depth <= 0 {
+      go = false
+    } else {
+      ()
+    }
+  }
 }
 
 fn find_byte(text: String, byte: Int, from: Int) -> Int {
@@ -92,17 +187,14 @@ fn find_byte(text: String, byte: Int, from: Int) -> Int {
 }
 
 /// A model value as the program would spell it: `-5` for `(- 5)`,
-/// `Shape::Circle(3)` for `(|Shape::Circle| 3)`, `Point::{ x: 1, y: 2 }` for
-/// a struct (its fields named from `fields`), and `[-1, 38]` for an
-/// `Array[Int]`, whose elements are read out of the array term z3 gives
-/// (`(as const ..)`, `store`, or a `lambda` over the index). A term this
-/// cannot read is shown as z3 gave it -- a counterexample is never dropped.
-fn smt_value_text(v: String, fields: Array[(String, Array[String])]) -> String {
+/// `Shape::Circle(3)` for `(|Shape::Circle| 3)`, `Point::{ 1, 2 }` for a
+/// struct (fields in declaration order). Anything else is shown as z3 gave it.
+fn smt_value_text(_ v: String) -> String {
   let toks = smt_tokens(v)
   let pos = [0]
-  let tree = sx_parse(toks = toks, pos = pos)
+  let out = smt_render(toks = toks, pos = pos, fields = no_struct_fields())
   if Array::get(pos, at = 0) == Array::length(toks) {
-    sx_render(e = tree, fields = fields)
+    out
   } else {
     v
   }
@@ -143,376 +235,105 @@ export fn smt_unquote(_ t: String) -> String {
   }
 }
 
-//# Model terms
-
-/// An s-expression of the solver's model.
-enum Sx {
-  SxAtom(String);
-  SxList(Array[Sx])
-}
-
-fn sx_parse(toks: Array[String], pos: Array[Int]) -> Sx {
+fn smt_render(toks: Array[String], pos: Array[Int], fields: Array[(String, Array[String])]) -> String {
   let i = Array::get(pos, at = 0)
   if i >= Array::length(toks) {
-    SxAtom("")
+    ""
   } else {
     let t = Array::get(toks, at = i)
     Array::set(pos, at = 0, value = i + 1)
     if t != "(" {
-      SxAtom(t)
+      smt_unquote(t)
     } else {
-      let items: Array[Sx] = []
-      while Array::get(pos, at = 0) < Array::length(toks) && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
-        Array::push(items, value = sx_parse(toks = toks, pos = pos))
+      let head = if Array::get(pos, at = 0) < Array::length(toks) {
+        Array::get(toks, at = Array::get(pos, at = 0))
+      } else {
+        ""
       }
       Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
-      SxList(items)
-    }
-  }
-}
-
-/// The term as z3 printed it (up to spacing).
-fn sx_text(_ e: Sx) -> String {
-  match e {
-    SxAtom(t) => t,
-    SxList(items) => {
-      let parts: Array[String] = for it in items {
-        sx_text(it)
+      let args: Array[String] = []
+      while Array::get(pos, at = 0) < Array::length(toks) && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
+        Array::push(args, value = smt_render(toks = toks, pos = pos, fields = fields))
       }
-      "(\{String::join(parts, sep = " ")})"
-    }
-  }
-}
-
-fn sx_head(_ items: Array[Sx]) -> String {
-  if Array::length(items) == 0 {
-    ""
-  } else {
-    match Array::get(items, at = 0) {
-      SxAtom(t) => t,
-      SxList(_) => ""
-    }
-  }
-}
-
-/// The longest array shown element by element. A longer one keeps z3's term:
-/// it is still a counterexample, only not one to paste.
-let sx_max_shown_length: Int = 64
-
-fn sx_render(e: Sx, fields: Array[(String, Array[String])]) -> String {
-  match e {
-    SxAtom(t) => smt_unquote(t),
-    SxList(items) => {
-      let head = sx_head(items)
+      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
       let name = smt_unquote(head)
-      let args: Array[Sx] = Array::slice(items, start = 1, end = Array::length(items))
       if head == "-" && Array::length(args) == 1 {
-        "-\{sx_render(e = Array::get(args, at = 0), fields = fields)}"
-      } else if head == "|Array[Int]::mk|" && Array::length(args) == 2 {
-        match sx_array_elems(data = Array::get(args, at = 0), len = Array::get(args, at = 1)) {
-          Some(elems) => {
-            let parts: Array[String] = for x in elems {
-              "\{x}"
-            }
-            "[\{String::join(parts, sep = ", ")}]"
-          },
-          None => sx_text(e)
-        }
+        "-\{Array::get(args, at = 0)}"
       } else if String::ends_with(name, suffix = "::{}") {
         let sname = String::substring(name, start = 0, end = String::length(name) - 4)
-        let shown: Array[String] = for a in args {
-          sx_render(e = a, fields = fields)
-        }
         let names = struct_field_names(fields = fields, name = sname)
-        if Array::length(names) == Array::length(shown) {
+        if Array::length(names) == Array::length(args) && Array::length(args) > 0 {
           let named: Array[String] = []
           let mut k = 0
-          while k < Array::length(shown) {
-            Array::push(named, value = "\{Array::get(names, at = k)}: \{Array::get(shown, at = k)}")
+          while k < Array::length(args) {
+            Array::push(named, value = "\{Array::get(names, at = k)}: \{Array::get(args, at = k)}")
             k = k + 1
           }
           "\{sname}::{ \{String::join(named, sep = ", ")} }"
         } else {
-          "\{sname}::{ \{String::join(shown, sep = ", ")} }"
-        }
-      } else if String::starts_with(head, prefix = "|") {
-        let shown: Array[String] = for a in args {
-          sx_render(e = a, fields = fields)
-        }
-        "\{name}(\{String::join(shown, sep = ", ")})"
-      } else {
-        sx_text(e)
-      }
-    }
-  }
-}
-
-/// The elements of an `Array[Int]` whose data term is `data` and length term
-/// `len`, or `None` when either cannot be read or the array is longer than
-/// `sx_max_shown_length`.
-fn sx_array_elems(data: Sx, len: Sx) -> Option[Array[Int]] {
-  let no_env: Array[(String, Int)] = []
-  match sx_int(e = len, env = no_env) {
-    Some(n) => if n < 0 || n > sx_max_shown_length {
-      None
-    } else {
-      let out: Array[Int] = []
-      let mut ok = true
-      let mut i = 0
-      while ok && i < n {
-        match sx_select(data = data, at = i) {
-          Some(x) => Array::push(out, value = x),
-          None => {
-            ok = false
-          }
-        }
-        i = i + 1
-      }
-      if ok {
-        Some(out)
-      } else {
-        None
-      }
-    },
-    None => None
-  }
-}
-
-/// The element at index `at` of an SMT array term.
-fn sx_select(data: Sx, at: Int) -> Option[Int] {
-  match data {
-    SxAtom(_) => None,
-    SxList(items) => {
-      let head = sx_head(items)
-      if Array::length(items) == 2 && sx_is_const_array(Array::get(items, at = 0)) {
-        let no_env: Array[(String, Int)] = []
-        sx_int(e = Array::get(items, at = 1), env = no_env)
-      } else if head == "store" && Array::length(items) == 4 {
-        let no_env: Array[(String, Int)] = []
-        match sx_int(e = Array::get(items, at = 2), env = no_env) {
-          Some(k) => if k == at {
-            sx_int(e = Array::get(items, at = 3), env = no_env)
-          } else {
-            sx_select(data = Array::get(items, at = 1), at = at)
-          },
-          None => None
-        }
-      } else if head == "lambda" && Array::length(items) == 3 {
-        match Array::get(items, at = 1) {
-          SxList(binders) => if Array::length(binders) == 1 {
-            match Array::get(binders, at = 0) {
-              SxList(b) => if Array::length(b) == 2 {
-                match Array::get(b, at = 0) {
-                  SxAtom(var) => sx_int(e = Array::get(items, at = 2), env = [
-                    (var, at)
-                  ]),
-                  SxList(_) => None
-                }
-              } else {
-                None
-              },
-              SxAtom(_) => None
-            }
-          } else {
-            None
-          },
-          SxAtom(_) => None
+          "\{sname}::{ \{String::join(args, sep = ", ")} }"
         }
       } else {
-        None
+        "\{name}(\{String::join(args, sep = ", ")})"
       }
     }
   }
 }
 
-/// `(as const (Array Int Int))`.
-fn sx_is_const_array(_ e: Sx) -> Bool {
-  match e {
-    SxList(items) => Array::length(items) == 3 && sx_head(items) == "as" && sx_atom_is(e = Array::get(items, at = 1), t = "const"),
-    SxAtom(_) => false
-  }
+//# `Array[Int]` (#3717)
+
+/// An `Array[Int]` is one SMT datatype: its contents as an SMT array and its
+/// length. An array stays a value: `Array::set`, an index write and
+/// `Array::push` are admitted only on a local no other name holds
+/// (`writable_arrays`), where a write replaces that binding's value, and a
+/// parameter is never written, so no call changes an array a caller holds.
+/// The contents past the length are unconstrained, so `==` on arrays is not
+/// encoded (SMT `=` would compare them too).
+export fn arr_sort() -> String {
+  "|Array[Int]|"
 }
 
-fn sx_atom_is(e: Sx, t: String) -> Bool {
-  match e {
-    SxAtom(a) => a == t,
-    SxList(_) => false
-  }
+export fn arr_len(_ t: String) -> String {
+  "(|Array[Int].len| \{t})"
 }
 
-/// An integer term of a model: a numeral, a bound index, `-` / `+` / `*`,
-/// or an `ite` on a comparison.
-fn sx_int(e: Sx, env: Array[(String, Int)]) -> Option[Int] {
-  match e {
-    SxAtom(t) => {
-      let mut hit = None
-      for b in env {
-        let (name, value) = b
-        if name == t {
-          hit = Some(value)
-        } else {
-          ()
-        }
-      }
-      match hit {
-        Some(v) => Some(v),
-        None => Int::parse(t)
-      }
-    },
-    SxList(items) => {
-      let head = sx_head(items)
-      let n = Array::length(items)
-      if head == "ite" && n == 4 {
-        match sx_bool(e = Array::get(items, at = 1), env = env) {
-          Some(c) => if c {
-            sx_int(e = Array::get(items, at = 2), env = env)
-          } else {
-            sx_int(e = Array::get(items, at = 3), env = env)
-          },
-          None => None
-        }
-      } else if head == "-" && n == 2 {
-        match sx_int(e = Array::get(items, at = 1), env = env) {
-          Some(v) => sx_checked(op = "-", a = 0, b = v),
-          None => None
-        }
-      } else if (head == "-" || head == "+" || head == "*") && n >= 3 {
-        match sx_int(e = Array::get(items, at = 1), env = env) {
-          Some(first) => {
-            let mut acc = first
-            let mut ok = true
-            let mut k = 2
-            while ok && k < n {
-              match sx_int(e = Array::get(items, at = k), env = env) {
-                Some(v) => match sx_checked(op = head, a = acc, b = v) {
-                  Some(r) => {
-                    acc = r
-                  },
-                  None => {
-                    ok = false
-                  }
-                },
-                None => {
-                  ok = false
-                }
-              }
-              k = k + 1
-            }
-            if ok {
-              Some(acc)
-            } else {
-              None
-            }
-          },
-          None => None
-        }
-      } else {
-        None
-      }
-    }
-  }
+export fn arr_data(_ t: String) -> String {
+  "(|Array[Int].data| \{t})"
 }
 
-/// The least `Int`. It has no literal: its magnitude is one past the bound.
-let sx_int_min: Int = -4611686018427387903 - 1
+export fn arr_datatype_decl() -> String {
+  "(declare-datatypes ((|Array[Int]| 0)) (((|Array[Int]::mk| (|Array[Int].data| (Array Int Int)) (|Array[Int].len| Int)))))"
+}
 
-/// `a op b` for `op` in `+ - *`, or `None` when the exact result is outside
-/// the `Int` range. SMT integers are unbounded and an `Int` wraps (#1877), so
-/// a wrapped step would read the model as other values than the solver chose;
-/// `None` keeps the term as z3 gave it instead.
-fn sx_checked(op: String, a: Int, b: Int) -> Option[Int] {
-  if op == "+" {
-    let r = a + b
-    if (a >= 0 && b >= 0 && r < 0) || (a < 0 && b < 0 && r >= 0) {
-      None
-    } else {
-      Some(r)
+/// How many leading elements of an `Array[Int]` a counterexample shows.
+fn model_array_prefix() -> Int {
+  8
+}
+
+/// The terms `get-value` asks for to show the constant `name` of `sort`:
+/// the constant itself, or for an `Array[Int]` its length and first
+/// `model_array_prefix()` elements. z3 answers those as numbers, where the
+/// array's own value is a `store` chain or a `lambda` nobody can read.
+export fn model_terms(name: String, sort: String) -> Array[String] {
+  if sort == arr_sort() {
+    let out = [arr_len(name)]
+    let mut k = 0
+    while k < model_array_prefix() {
+      Array::push(out, value = "(select \{arr_data(name)} \{k})")
+      k = k + 1
     }
-  } else if op == "-" {
-    let r = a - b
-    if (a >= 0 && b < 0 && r < 0) || (a < 0 && b >= 0 && r >= 0) {
-      None
-    } else {
-      Some(r)
-    }
-  } else if a == 0 || b == 0 {
-    Some(0)
-  } else if (a == -1 && b == sx_int_min) || (b == -1 && a == sx_int_min) {
-    None
+    out
   } else {
-    let r = a * b
-    if r / a != b || r % a != 0 {
-      None
-    } else {
-      Some(r)
-    }
-  }
-}
-
-fn sx_bool(e: Sx, env: Array[(String, Int)]) -> Option[Bool] {
-  match e {
-    SxAtom(t) => if t == "true" {
-      Some(true)
-    } else if t == "false" {
-      Some(false)
-    } else {
-      None
-    },
-    SxList(items) => {
-      let head = sx_head(items)
-      let n = Array::length(items)
-      if head == "not" && n == 2 {
-        match sx_bool(e = Array::get(items, at = 1), env = env) {
-          Some(b) => Some(!b),
-          None => None
-        }
-      } else if (head == "and" || head == "or") && n >= 2 {
-        let mut acc = head == "and"
-        let mut ok = true
-        let mut k = 1
-        while ok && k < n {
-          match sx_bool(e = Array::get(items, at = k), env = env) {
-            Some(b) => {
-              acc = if head == "and" {
-                acc && b
-              } else {
-                acc || b
-              }
-            },
-            None => {
-              ok = false
-            }
-          }
-          k = k + 1
-        }
-        if ok {
-          Some(acc)
-        } else {
-          None
-        }
-      } else if (head == "<=" || head == "<" || head == ">=" || head == ">" || head == "=") && n == 3 {
-        match (sx_int(e = Array::get(items, at = 1), env = env), sx_int(e = Array::get(items, at = 2), env = env)) {
-          (Some(a), Some(b)) => Some(if head == "<=" {
-            a <= b
-          } else if head == "<" {
-            a < b
-          } else if head == ">=" {
-            a >= b
-          } else if head == ">" {
-            a > b
-          } else {
-            a == b
-          }),
-          _ => None
-        }
-      } else {
-        None
-      }
-    }
+    [name]
   }
 }
 
 //# Struct fields
+
+/// No field names known: a struct is shown with its values in order.
+fn no_struct_fields() -> Array[(String, Array[String])] {
+  []
+}
 
 /// Each struct's field names, in declaration order, from the query's
 /// `declare-datatypes`: a constructor `|P::{}|` with selectors `|P.x|`.
@@ -521,47 +342,54 @@ fn struct_fields(_ query: String) -> Array[(String, Array[String])] {
   for line in String::split(query, sep = "\n") {
     if String::starts_with(line, prefix = "(declare-datatypes") {
       let toks = smt_tokens(line)
-      let pos = [0]
-      struct_fields_in(e = sx_parse(toks = toks, pos = pos), out = out)
+      let mut i = 0
+      while i + 1 < Array::length(toks) {
+        let t = Array::get(toks, at = i + 1)
+        if Array::get(toks, at = i) == "(" && String::ends_with(t, suffix = "::{}|") && String::length(t) > 6 {
+          let sname = String::substring(t, start = 1, end = String::length(t) - 5)
+          let prefix = "|\{sname}."
+          let names: Array[String] = []
+          // `(|P::{}| (|P.x| Int) (|P.y| Int))`: the selectors are the heads of
+          // the constructor's own sub-lists, up to its closing parenthesis.
+          let mut j = i + 2
+          let mut depth = 0
+          let mut done = false
+          while j < Array::length(toks) && !done {
+            let u = Array::get(toks, at = j)
+            if u == "(" {
+              if depth == 0 && j + 1 < Array::length(toks) {
+                let sel = Array::get(toks, at = j + 1)
+                if String::starts_with(sel, prefix = prefix) && String::ends_with(sel, suffix = "|") {
+                  Array::push(names, value = String::substring(sel, start = String::length(prefix), end = String::length(sel) - 1))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+              depth = depth + 1
+            } else if u == ")" {
+              if depth == 0 {
+                done = true
+              } else {
+                depth = depth - 1
+              }
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+          Array::push(out, value = (sname, names))
+          i = j
+        } else {
+          i = i + 1
+        }
+      }
     } else {
       ()
     }
   }
   out
-}
-
-fn struct_fields_in(e: Sx, out: Array[(String, Array[String])]) -> Unit {
-  match e {
-    SxAtom(_) => (),
-    SxList(items) => {
-      let name = smt_unquote(sx_head(items))
-      if String::ends_with(name, suffix = "::{}") && String::length(name) > 4 {
-        let sname = String::substring(name, start = 0, end = String::length(name) - 4)
-        let prefix = "\{sname}."
-        let names: Array[String] = []
-        let mut k = 1
-        while k < Array::length(items) {
-          match Array::get(items, at = k) {
-            SxList(sel) => {
-              let sel_name = smt_unquote(sx_head(sel))
-              if String::starts_with(sel_name, prefix = prefix) {
-                Array::push(names, value = String::substring(sel_name, start = String::length(prefix), end = String::length(sel_name)))
-              } else {
-                ()
-              }
-            },
-            SxAtom(_) => ()
-          }
-          k = k + 1
-        }
-        Array::push(out, value = (sname, names))
-      } else {
-        for it in items {
-          struct_fields_in(e = it, out = out)
-        }
-      }
-    }
-  }
 }
 
 fn struct_field_names(fields: Array[(String, Array[String])], name: String) -> Array[String] {

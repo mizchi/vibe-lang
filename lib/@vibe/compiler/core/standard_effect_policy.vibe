@@ -8,9 +8,18 @@
 // Each private owner below records one concern only. WIT declaration-versus-
 // provider behavior, resource lowering, and handler semantics intentionally
 // remain unchanged in this behavior-preserving slice.
+//
+// #3143 (ADR-0084 step 1): the same owners also publish their decisions as
+// class metadata (`standard_effect_catalog`) over `OperationRef`s
+// (`operation_ref.vibe`), and entry admission is decided by classifying the
+// lowered operation rather than by provider-name membership.
 
 import ./exception_effect.vibe {
-  is_exception_label
+  canonical_exception_effect_name, exception_effect_kind, is_exception_effect_name, is_exception_label
+}
+
+import ./operation_ref.vibe {
+  EffectArgument, EffectClass, EffectRequirement, OperationRef, classify_operation
 }
 
 import @vibe/core {
@@ -152,8 +161,181 @@ export fn is_entry_runtime_managed_effect(_ label: String) -> Bool {
 /// effects are supplied by the process host; runtime-managed effects are
 /// discharged by the entry wrapper. Ordinary user effects have neither owner
 /// and must be handled before `main` / `_start` returns.
+///
+/// #3143 (ADR-0084): decided by CLASS, not by provider membership. The label
+/// is lowered to an `OperationRef` (`standard_operation_ref`) and classified
+/// against `standard_effect_catalog`: a capability (one resource of its
+/// kind), the core exception effect and the runtime effect are admitted; an
+/// effect without metadata, and a label that does not lower, are not.
 export fn is_entry_admitted_effect(_ label: String) -> Bool {
-  has_standard_host_provider(label) || is_entry_runtime_managed_effect(label)
+  match standard_operation_ref(label) {
+    Some(operation) => match classify_operation(catalog = standard_effect_catalog(), operation = operation) {
+      Some(requirement) => match requirement {
+        AlgebraicRequirement(_) => false,
+        _ => true
+      },
+      None => false
+    },
+    None => false
+  }
+}
+
+//# OperationRef metadata (ADR-0084 step 1, #3143)
+
+/// The effect classes the standard policy knows, keyed by effect definition.
+/// Every standard host provider is a capability of its default resource kind
+/// (`Process::Root` for all of them today), the exception effect is the core
+/// ambient effect, and `Async` is the runtime effect. An ordinary user effect
+/// has no entry: its class will come from its own declaration (ADR-0094).
+export fn standard_effect_catalog() -> Array[(String, EffectClass)] {
+  let out: Array[(String, EffectClass)] = []
+  let mut i = 0
+  while i < Array::length(standard_host_provider_resource_defaults) {
+    let (name, resource_kind) = Array::get(standard_host_provider_resource_defaults, at = i)
+    Array::push(out, value = (name, CapabilityClass(resource_kind)))
+    i = i + 1
+  }
+  Array::push(out, value = (canonical_exception_effect_name("Error"), CoreExceptionClass))
+  Array::push(out, value = ("Async", RuntimeClass))
+  out
+}
+
+/// Byte offset of the first `::` outside brackets, or -1: the operation
+/// separator of `Exception[pkg::Err]::Throw` is the second `::`, not the one
+/// inside the kind.
+fn label_operation_separator(_ label: String) -> Int {
+  let n = String::length(label)
+  let mut depth = 0
+  let mut found = 0 - 1
+  let mut i = 0
+  while found < 0 && i + 1 < n {
+    let c = String::byte_at(label, at = i)
+    if c == 91 {
+      depth = depth + 1
+    } else if c == 93 {
+      depth = depth - 1
+    } else if c == 58 && depth == 0 && String::byte_at(label, at = i + 1) == 58 {
+      found = i
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The comma-separated arguments of `Name[a, b]`'s bracket text, split at
+/// depth 0 and trimmed, or `None` when one is empty.
+fn label_bracket_arguments(_ text: String) -> Option[Array[String]] {
+  let out: Array[String] = []
+  let n = String::length(text)
+  let mut depth = 0
+  let mut start = 0
+  let mut ok = true
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::byte_at(text, at = i)
+    } else {
+      44
+    }
+    if c == 91 {
+      depth = depth + 1
+    } else if c == 93 {
+      depth = depth - 1
+    } else if c == 44 && depth == 0 {
+      let item = String::trim(String::substring(text, start = start, end = i))
+      if String::length(item) == 0 {
+        ok = false
+      } else {
+        Array::push(out, value = item)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if ok && depth == 0 {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+/// Lower a row label to an `OperationRef`, or `None` when it is malformed
+/// (an unclosed or empty bracket).
+///
+/// - `Fs`, `Fs::read_file`: a standard provider's operations act on its one
+///   implicit resource, so the omitted argument is the default singleton
+///   (ADR-0084: `with Fs` means `Fs[Process::Root]`). A written argument
+///   (`Fs[SrcTree]`) is that resource.
+/// - `Exception`, `Error`, `Exception[K]`, and their `::Throw`: the exception
+///   effect with exactly one kind argument, `""` for the erased spellings, as
+///   `exception_effect_kind` reports it. The Lean model has no erased kind;
+///   here it is the kind every other kind is compatible with.
+/// - anything else: every bracket argument is a TYPE. That holds because an
+///   effect declaration cannot take a resource parameter yet (ADR-0094 step
+///   3); once `TDEffect` carries `param_kinds`, this is where they are read.
+export fn standard_operation_ref(_ label: String) -> Option[OperationRef] {
+  let sep = label_operation_separator(label)
+  let head = if sep >= 0 {
+    String::substring(label, start = 0, end = sep)
+  } else {
+    label
+  }
+  let operation = if sep >= 0 {
+    String::substring(label, start = sep + 2, end = String::length(label))
+  } else {
+    ""
+  }
+  if is_exception_effect_name(head) {
+    Some(OperationRef::{
+      effect_def: canonical_exception_effect_name("Error"),
+      operation: operation,
+      arguments: [TypeArgument(exception_effect_kind(head))]
+    })
+  } else {
+    let open_at = String::index_of(head, needle = "[")
+    let base = if open_at >= 0 {
+      String::substring(head, start = 0, end = open_at)
+    } else {
+      head
+    }
+    let written = if open_at < 0 {
+      Some([])
+    } else if String::ends_with(head, suffix = "]") {
+      label_bracket_arguments(String::substring(head, start = open_at + 1, end = String::length(head) - 1))
+    } else {
+      None
+    }
+    match written {
+      Some(texts) => if String::length(base) == 0 {
+        None
+      } else {
+        let provider = standard_host_provider_index(base) >= 0
+        let arguments: Array[EffectArgument] = []
+        let mut i = 0
+        while i < Array::length(texts) {
+          let text = Array::get(texts, at = i)
+          if provider {
+            Array::push(arguments, value = ResourceArgument(text))
+          } else {
+            Array::push(arguments, value = TypeArgument(text))
+          }
+          i = i + 1
+        }
+        if provider && Array::length(arguments) == 0 {
+          match singleton_resource_of_kind(standard_provider_default_resource_kind(base)) {
+            Some(resource) => Array::push(arguments, value = ResourceArgument(resource)),
+            None => ()
+          }
+        }
+        Some(OperationRef::{
+          effect_def: base,
+          operation: operation,
+          arguments: arguments
+        })
+      },
+      None => None
+    }
+  }
 }
 
 //# Resource kinds (ADR-0075 Phase 2 / ADR-0094)
@@ -174,6 +356,22 @@ export fn predeclared_resources() -> Array[(String, String)] {
   let out = array_empty()
   Array::push(out, value = (process_root_resource_kind(), process_root_resource_kind()))
   out
+}
+
+/// The one predeclared resource of a singleton `kind` -- the resource an
+/// omitted resource argument means -- or `None` for any other kind.
+export fn singleton_resource_of_kind(_ kind: String) -> Option[String] {
+  let resources = predeclared_resources()
+  let mut found: Option[String] = None
+  let mut i = 0
+  while i < Array::length(resources) {
+    let (name, resource_kind) = Array::get(resources, at = i)
+    if resource_kind == kind && is_singleton_resource_kind(kind) {
+      found = Some(name)
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// The standard host provider labels, in the established provider order.

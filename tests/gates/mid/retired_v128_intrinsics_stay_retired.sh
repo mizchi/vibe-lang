@@ -1656,6 +1656,38 @@ done
 rm -rf "$ppdir"
 echo "[compiler-gate] parameter path release guard ok (49000 on bump/rc/shadow/gc, rc heap_used=$pp_used B)"
 
+# 40f0q. #2827: the same parameter, when another path hands back a field of
+#        it. The guarded epilogue drop does not retain an escaping interior
+#        read, so the planner declined any body that may return a view of the
+#        parameter, and every field read counted -- `ctx.n` of an `Int` field
+#        too. A function declared to return an Int, a Bool or Unit hands back
+#        no pointer, so its parameters now take the drop. Unfixed, the bounded
+#        fixture grew __heap_ptr by 512,548 B; fixed, 548 B. Its control,
+#        `items_of`, returns an `Array` field and must keep its answer (the
+#        plan test pins that it keeps declining); the shadow lane traps on
+#        the drop of a freed block, which is what releasing a parameter on a
+#        path that already moved it out would hit.
+echo "[compiler-gate] 40f0q/40 a parameter consumed on some paths only is released past a scalar field read (#2827)"
+gate_workdir psdir "_build/_gate_rc_param_scalar_result"
+for ps_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ps_lane" "fixtures/rc_param_scalar_result_release_bounded_test.vibe" "$psdir/ps.wasm" main
+  gate_require_artifact "$psdir/ps.wasm" "rc_param_scalar_result_release_bounded fixture did not compile on the $ps_lane lane (#2827)"
+  gate_run ps_out last "$psdir/ps.wasm"
+  gate_require_eq "$ps_out" "3009552" "rc_param_scalar_result_release_bounded got '$ps_out' on the $ps_lane lane (want 3009552). A trap means a parameter's path drop released it on a path that had moved it out (#2827)."
+  if [ "$ps_lane" = rc ]; then
+    ps_json="$(node scripts/measure_heap.mjs "$psdir/ps.wasm" main 2>/dev/null)"
+    ps_used="$(printf '%s' "$ps_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ps_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_param_scalar_result_release_bounded heap ($ps_json)" >&2; exit 1
+    fi
+    if [ "$ps_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_param_scalar_result_release_bounded heap_used=$ps_used >= 20000 (#2827 regressed: a parameter of an Int/Bool/Unit function whose other path reads a field of it is left unreleased again; unfixed, this fixture measured 512,548 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$psdir"
+echo "[compiler-gate] scalar-result parameter path release guard ok (3009552 on bump/rc/shadow/gc, rc heap_used=$ps_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"

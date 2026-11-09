@@ -33,6 +33,8 @@ cp lib/@vibe/compiler/codegen/gc/*.vibe "$BASE/lib/@vibe/compiler/codegen/gc/"
 cp lib/@vibe/compiler/core/builtin_name.vibe "$BASE/lib/@vibe/compiler/core/"
 cp runtime/viberun/src/*.rs "$BASE/runtime/viberun/src/"
 cp scripts/wasm_vibe_host_*.js "$BASE/scripts/"
+# The runner requires the RC census module (#2509), so it is in its source group.
+cp scripts/wasm_rc_census.js "$BASE/scripts/"
 
 tree() { # <name>: a fresh copy of the base tree
   rm -rf "${WORK:?}/$1"

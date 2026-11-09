@@ -1,9 +1,12 @@
 # ADR-0084: Effect classification and the `.vibex` entry-row admission rule
 
-Status: proposed. The entry-admission rule is implemented against the
-standard policy registry (#1683); the resource-qualified classifier the
-Decision describes is not. It becomes accepted when operations carry their
-resource kind and the standard policies classify by it (#3143).
+Status: proposed. The entry-admission rule is implemented (#1683), and it
+decides by classifying an `OperationRef` against class metadata (#3143,
+implementation step 1). The resource kinds in that metadata still come from
+the standard provider table, not from declarations: a user effect cannot
+declare a resource parameter yet (ADR-0094 step 3). It becomes accepted when
+operations carry the resource kind their effect declares and the standard
+policies classify by it (#3143).
 
 Date: 2026-07-30
 
@@ -60,16 +63,27 @@ ambient effects, and runtime effects. A program whose row still carries an
 algebraic effect is a type error before WIT generation or host preflight.
 This does not restrict the rows of ordinary functions.
 
-**How the compiler applies it today** (#1496, #1683). The four classes are
-the admission model; the compiler does not yet classify by resource kind.
-Instead `lib/@vibe/compiler/core/standard_effect_policy.vibe` is the
-executable boundary: a label is admitted on `main` / `_start` when a standard
-host provider owns it (`has_standard_host_provider`) or the entry and runtime
-manage it (`is_entry_runtime_managed_effect`: the exception effect and
-`Async`), and every other source effect must be handled before the entry
-(`is_entry_admitted_effect`). Checker row filtering and WIT import filtering
-use the same predicates. Moving from this label-keyed registry to
-resource-kind metadata on the operation is #3143.
+**How the compiler applies it today** (#1496, #1683, #3143). The classifier
+is `lib/@vibe/compiler/core/operation_ref.vibe`, a port of
+`Effect/TaxonomyClassifier.lean` (below): an `OperationRef` names its effect
+definition, its operation and its normalized arguments (type, region or
+resource), and `classify_operation` / `classify_row` look the effect's class
+up in a catalog and fail closed exactly where the Lean model does. The
+`runtime` class (`Async`) is the one addition; the model has no such class.
+`standard_effect_policy.vibe` supplies the catalog (`standard_effect_catalog`:
+each standard host provider is a capability of its default resource kind,
+the exception effect is core ambient, `Async` is runtime) and lowers a row
+label to an `OperationRef` (`standard_operation_ref`: an omitted provider
+resource is the `Process::Root` singleton, an erased exception spelling has
+the erased kind `""`). `is_entry_admitted_effect` admits a label on `main` /
+`_start` when its operation classifies as anything but algebraic; an effect
+without metadata (every user effect) and a malformed label are refused, and
+must be handled before the entry. Checker row filtering and WIT import
+filtering still use the narrower predicates (`has_standard_host_provider`,
+`is_entry_runtime_managed_effect`) of the same owner. What is still
+name-keyed is the catalog itself: a user effect's class, and any resource
+kind but `Process::Root`, need ADR-0094's declaration-side `param_kinds`
+(#3143).
 
 Source compatibility for existing builtins is preserved: once operations
 carry a resource kind (implementation step 1), `with Fs` and
@@ -106,7 +120,11 @@ declaration syntax for resource kinds is ADR-0094's subject, not this ADR's.
 
 1. Introduce resource kind and effect class into `OperationRef` / builtin
    metadata, lowering builtins to the implicit `Process::Root`. Confirm the
-   existing fixtures pass unchanged.
+   existing fixtures pass unchanged. **Landed in #3143**: `operation_ref.vibe`
+   and `standard_effect_catalog`; every effectful registry builtin lowers to a
+   `Process::Root` capability or to the exception / runtime effect
+   (`lib/@vibe/compiler/core/operation_ref_test.vibe`), and entry admission
+   decides through it.
 2. Let the checker distinguish capabilities with an explicit resource kind
    from algebraic effects without one.
 3. Classify the row remaining on a `.vibex` `main` / `_start` under the
@@ -162,9 +180,14 @@ machine-readable Oracle in
 metadata, resolved operation rows, accept/reject verdicts, and the normalized
 requirement rows are generated from the Lean model by
 [`TaxonomyOracleMain.lean`](../../../formal/TaxonomyOracleMain.lean), and
-`formal-check` rejects a stale snapshot. For now this is a contract-level
-Oracle; once the selfhost checker exposes declaration metadata, the same
-corpus connects as a differential fixture.
+`formal-check` rejects a stale snapshot. The same corpus is a differential
+fixture for the selfhost classifier:
+`lib/@vibe/compiler/core/operation_ref_test.vibe` reads the TSV, classifies
+each case's operations against its catalog with `classify_row`, renders the
+outcome as `TaxonomyOracle.lean` does, and compares it with the recorded
+verdict and result (#3143). The corpus's `duplicate-metadata` case records
+two different classes, so a lookup that keeps the first or last match also
+rejects it; the vibe test adds two equal entries, which must reject too.
 
 The connection from the taxonomy check to the ADR-0075 contract is defined in
 [`Capability/TaxonomyBridge.lean`](../../../formal/VibeFormal/Capability/TaxonomyBridge.lean),
@@ -208,11 +231,12 @@ necessary.
 | implementation observation | effects are still string labels, but no production compiler site decides a standard policy from a label's spelling: `Async` scheduling, the entry `Exception` boundary, the legacy console providers, host providers and their `--allow-*` flags, test/bench defaults and entry-cache safety are answered by `core/standard_effect_policy.vibe` and `core/exception_effect.vibe` (#1963). `scripts/review_lint.vibex` refuses a label compared to `Async` / `Exception` / `Stdin` / `Stdout` / `Stderr` outside those two owners, and no site carries its suppression marker | the standard policy is explicit label-keyed metadata; resource-kind metadata on `OperationRef` is still the prerequisite for the resource-qualified classifier |
 | regression guard | a user effect granted on `main` / `_start` (`allows Ask`) is rejected; host providers, `Exception` and `Async` are admitted | pinned in `lib/@vibe/compiler/tests/checker_entry_effect_test.vibe` (#1683) |
 | formal model | taxonomy-level requirements, entry/host/spawn judgements, and handler discharge are defined in Lean | the ADR's semantics are machine-checked; checker correspondence is unproven |
-| metadata classifier | classifies a complete row from exactly-one metadata lookups and argument shapes, failing closed on unknown/duplicate/malformed | the implementation metadata is to be brought into correspondence with this contract |
-| Oracle corpus | 15 positive/negative cases generated from Lean into TSV, with `formal-check` rejecting stale snapshots | contract regression guarding is automated; the selfhost differential waits on the metadata API |
+| metadata classifier | classifies a complete row from exactly-one metadata lookups and argument shapes, failing closed on unknown/duplicate/malformed | ported to `core/operation_ref.vibe` (#3143); entry admission classifies through it, with the standard catalog as its metadata |
+| Oracle corpus | 15 positive/negative cases generated from Lean into TSV, with `formal-check` rejecting stale snapshots | the selfhost classifier agrees on all 15 (`core/operation_ref_test.vibe` reads the TSV, #3143) |
 | contract refinement | exact capabilities project onto operations/claims/bindings, and the implication from taxonomy admission to the ADR-0075 preflight is proven in Lean | the taxonomy check is mandatory before WIT/host projection |
 | path-scope policy | overlap of restricted globs is equivalent to the existence of a common path, with sound diagnostic witnesses and authority uniqueness proven | overlaps under different authorities reject exactly, across the logical/physical layers, reporting the common path |
 
-Step 3's current-policy slice is pinned by #1683's checker tests. Full
-correspondence between the resource-qualified classifier and the Lean
-contract follows the metadata work of #3143.
+Step 3's current-policy slice is pinned by #1683's checker tests. The
+classifier's correspondence with the Lean contract is pinned by the oracle
+differential; what remains for #3143 is metadata that comes from declarations
+(ADR-0094's `param_kinds`) rather than from the standard provider table.
