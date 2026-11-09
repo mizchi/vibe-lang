@@ -415,9 +415,9 @@ The stable symbols listed under "Key Builtins" in the
   is the type's, not a second operation family. Neither needs an import.
   `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`, `Map::size`, `Map::new`, and `Map::from_pairs` cannot be frozen as first-class values -- they are call-only builtin operations (`Map::get(m, k)`, not `let g = Map::get`; #2274 / #2275).
   **`Map[K, V]` beyond `String` keys is deliberately NOT frozen** (#2263):
-  `Int`, `Char` and `Bool` keys compile and run on the default backend since
-  #2334, but the wasm-gc backend and a generic function keyed by its type
-  parameter still refuse them, so the surface may still grow. Any other
+  `Int`, `Char` and `Bool` keys compile and run on the default and the
+  wasm-gc backends since #2334, but a generic function keyed by its type
+  parameter still refuses them, so the surface may still grow. Any other
   concrete key is rejected, whether written or inferred. A function keyed by
   its type parameter compiles for `String` instantiations when it is called
   directly inside its own module; exporting it, or passing it as a value, is

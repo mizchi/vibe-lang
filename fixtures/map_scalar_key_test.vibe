@@ -1,6 +1,7 @@
 // #2334: the builtin map takes `Int`, `Char` and `Bool` keys. The checker
 // types each keyed call's key, and a scalar key is compared as an exact i64
-// value -- never hashed or compared as a String pointer.
+// value -- never hashed or compared as a String pointer. The same file runs on
+// the linear and the wasm-gc lanes (tests/gates/mid/6b_40, step 40h8s).
 
 fn int_map(_ n: Int) -> Map[Int, Int] {
   let mut m: Map[Int, Int] = Map::new()
@@ -50,6 +51,30 @@ test "Int keys that agree in their low 32 bits are distinct" {
   inspect(Map::size(m), content = "2")
   inspect(Map::get(m, key = a), content = "low")
   inspect(Map::get(m, key = b), content = "high")
+}
+
+test "Int keys whose low 32 bits are zero are distinct" {
+  // Read as packed String refs, `1 << 32` and `2 << 32` are two empty
+  // Strings, which the String-aware `eq` calls equal.
+  let a = 1 << 32
+  let b = 2 << 32
+  let m = Map::set(Map::set(Map::new(), key = a, value = "first"), key = b, value = "second")
+  let d = Map::delete(m, key = a)
+  inspect("\{Map::size(m)} \{Map::size(d)}", content = "2 1")
+  inspect(Map::get(m, key = a), content = "first")
+  inspect(Map::get(m, key = b), content = "second")
+  inspect("\{Map::has_key(d, key = a)} \{Map::has_key(d, key = b)}", content = "false true")
+}
+
+test "a lambda that captures an Int-keyed map" {
+  let m = Map::set(Map::set(Map::new(), key = 3, value = "c"), key = 4, value = "d")
+  let look = (k: Int) -> Map::get(m, key = k)
+  let has = (k: Int) -> Map::has_key(m, key = k)
+  let put = (k: Int) -> Map::set(m, key = k, value = "z")
+  let del = (k: Int) -> Map::delete(m, key = k)
+  inspect(look(4), content = "d")
+  inspect("\{has(3)} \{has(5)}", content = "true false")
+  inspect("\{Map::size(put(9))} \{Map::size(del(3))}", content = "3 1")
 }
 
 test "keys are returned as Ints" {

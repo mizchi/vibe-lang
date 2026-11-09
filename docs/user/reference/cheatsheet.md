@@ -3123,9 +3123,9 @@ written, and points at `MutMap[K, V]` from `@vibe/core`.
 `keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`;
 `m[k]`, `for k in m` and `==` work for every key type.
 An `Int` / `Char` / `Bool` key is compared as an exact value, with a linear
-lookup (no hash index yet). Three places do not take one yet, and each says so
-at build time: the wasm-gc backend; a linked build with no type check of its
-text; and a generic function whose type parameter is a map's key, called at
+lookup (no hash index yet), on the default backend and on wasm-gc alike. Two
+places do not take one yet, and each says so at build time: a linked build
+with no type check of its text; and a generic function whose type parameter is a map's key, called at
 that key (its one lowered body compares keys as Strings) -- write the function
 for `Map[Int, V]`, or key the map by `String`. Such a function is also refused
 when it is exported or passed as a value, where its calls cannot be checked;

@@ -54,6 +54,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_heap_memory_grow_check,
   emit_i32_add,
   emit_i32_const,
+  emit_i32_eq,
   emit_i32_load,
   emit_i32_store,
   emit_i32_wrap_i64,
@@ -176,6 +177,55 @@ fn gc_map_get_miss_trap(buf: Bytes, ctx: CompileCtxGc) -> Unit {
     ()
   }
   bytebuf_push(buf = buf, byte = 0)
+}
+
+/// #2334: compare the stored key (below) with the probe key (on top), leaving
+/// a 0/1 i64. A String-keyed operation calls the content-aware `eq` at
+/// `eq_fi`; a scalar-keyed one compares the two keys as exact i64 values --
+/// an `Int`, `Char` or `Bool` is an untagged i64 on this lane, and `eq`'s
+/// String guard would read two Ints that look like packed String refs as
+/// bytes in memory.
+fn gc_map_emit_key_eq(buf: Bytes, ctx: CompileCtxGc, scalar: Bool, eq_fi: Int) -> Unit {
+  if scalar {
+    emit_i64_eq(buf)
+    emit_i64_extend_i32_u(buf)
+  } else {
+    emit_call_resolved(buf = buf, ctx = ctx, fidx = eq_fi)
+  }
+}
+
+/// #2334: the i32 at +4 of a gc Map block (the literal's capacity, read by no
+/// operation) holds this marker on a scalar-keyed map, as the index slot does
+/// on the linear lane. Every producer writes +4 -- a literal its capacity (32
+/// or more), `freeze` / `set` / `delete` 0 or this marker -- so a String-keyed
+/// map never holds it, even in a reused region block.
+let gc_map_scalar_marker: Int = 1
+
+/// #2334: trap when the map at `map_l` is scalar-keyed. Every String-keyed
+/// operation runs this first: a call the checker filed no scalar row for
+/// would otherwise compare an `Int` key through the String-aware `eq`.
+fn gc_map_trap_if_scalar(buf: Bytes, map_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  emit_i32_const(buf = buf, value = gc_map_scalar_marker)
+  emit_i32_eq(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf = buf, byte = 0)
+  emit_end(buf)
+}
+
+/// #2334: write the key class of the fresh map block at `map_l`: the scalar
+/// marker for a scalar-keyed result, 0 otherwise.
+fn gc_map_write_key_class(buf: Bytes, map_l: Int, scalar: Bool) -> Unit {
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = if scalar {
+    gc_map_scalar_marker
+  } else {
+    0
+  })
+  emit_i32_store(buf = buf, align = 2, offset = 4)
 }
 
 /// #3068: gc mirror of the linear lane's `ts_offset_refuses_render`
@@ -690,6 +740,8 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf = buf, idx = fc_l)
     emit_i32_wrap_i64(buf)
     emit_i32_store(buf = buf, align = 2, offset = 0)
+    // #2334: a builder's keys are Strings.
+    gc_map_write_key_class(buf = buf, map_l = fm_l, scalar = false)
     emit_local_get(buf = buf, idx = fm_l)
     emit_i32_wrap_i64(buf)
     emit_i32_const(buf = buf, value = 8)
@@ -848,7 +900,10 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf = buf, idx = res_l)
     nl2
   }
-  else if fname == "Map::set" {
+  else if fname == "Map::set" || fname == "Map::__scalar_set" {
+    // #2334: `Map::__scalar_set` is a `Map::set` whose key the checker typed
+    // `Int`, `Char` or `Bool`; it compares keys as exact i64 values.
+    let scalar_key = fname == "Map::__scalar_set"
     // #538: functional set -- copy the source map block, then
     // update-or-append on the copy (same loop as MapBuilder::set).
     // #723-family fix: the copy used to be a FIXED 520 bytes (32-entry
@@ -877,6 +932,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_set(buf = buf, idx = ms_v)
     emit_local_set(buf = buf, idx = ms_k)
     emit_local_set(buf = buf, idx = ms_m)
+    if scalar_key {
+      ()
+    } else {
+      gc_map_trap_if_scalar(buf = buf, map_l = ms_m)
+    }
     emit_local_get(buf = buf, idx = ms_m)
     emit_i32_wrap_i64(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
@@ -927,7 +987,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf = buf, align = 3, offset = 8)
     emit_local_get(buf = buf, idx = ms_k)
-    emit_call_resolved(buf = buf, ctx = ctx, fidx = eq_fi_ms)
+    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi_ms)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
     emit_local_get(buf = buf, idx = ms_new)
@@ -979,10 +1039,13 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_wrap_i64(buf)
     emit_i32_store(buf = buf, align = 2, offset = 0)
     emit_end(buf)
+    gc_map_write_key_class(buf = buf, map_l = ms_new, scalar = scalar_key)
     emit_local_get(buf = buf, idx = ms_new)
     nl + 7
   }
-  else if fname == "Map::delete" {
+  else if fname == "Map::delete" || fname == "Map::__scalar_delete" {
+    // #2334: see `Map::__scalar_set` above.
+    let scalar_key = fname == "Map::__scalar_delete"
     let (eq_fi_md, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
@@ -1000,6 +1063,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     Array::push(local_names, value = "[gc-temp]__md_out")
     emit_local_set(buf = buf, idx = md_k)
     emit_local_set(buf = buf, idx = md_m)
+    if scalar_key {
+      ()
+    } else {
+      gc_map_trap_if_scalar(buf = buf, map_l = md_m)
+    }
     emit_local_get(buf = buf, idx = md_m)
     emit_i32_wrap_i64(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
@@ -1037,7 +1105,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf = buf, align = 3, offset = 8)
     emit_local_get(buf = buf, idx = md_k)
-    emit_call_resolved(buf = buf, ctx = ctx, fidx = eq_fi_md)
+    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi_md)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
     emit_else(buf)
@@ -1090,10 +1158,13 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf = buf, idx = md_out)
     emit_i32_wrap_i64(buf)
     emit_i32_store(buf = buf, align = 2, offset = 0)
+    gc_map_write_key_class(buf = buf, map_l = md_new, scalar = scalar_key)
     emit_local_get(buf = buf, idx = md_new)
     nl + 6
   }
-  else if fname == "Map::get" {
+  else if fname == "Map::get" || fname == "Map::__scalar_get" {
+    // #2334: see `Map::__scalar_set` above.
+    let scalar_key = fname == "Map::__scalar_get"
     let (eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
@@ -1107,6 +1178,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     Array::push(local_names, value = "[gc-temp]__mg_i")
     emit_local_set(buf = buf, idx = key_l)
     emit_local_set(buf = buf, idx = map_l)
+    if scalar_key {
+      ()
+    } else {
+      gc_map_trap_if_scalar(buf = buf, map_l = map_l)
+    }
     // Load count
     emit_local_get(buf = buf, idx = map_l)
     emit_i32_wrap_i64(buf)
@@ -1134,7 +1210,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf = buf, align = 3, offset = 8)
     emit_local_get(buf = buf, idx = key_l)
-    emit_call_resolved(buf = buf, ctx = ctx, fidx = eq_fi)
+    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
     // Found: load value and break
@@ -1162,9 +1238,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_end(buf)
     nl + 4
   }
-  else if fname == "Map::has_key" || (fname == "map_has" && !gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname)) || fname == "Map::has" {
+  else if fname == "Map::has_key" || (fname == "map_has" && !gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname)) || fname == "Map::has" || fname == "Map::__scalar_has_key" {
     // #3565: a program binding spelled `map_has` (local or top-level) is
     // the program's value, as the print arm below already honours.
+    // #2334: see `Map::__scalar_set` above.
+    let scalar_key = fname == "Map::__scalar_has_key"
     let (eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
@@ -1178,6 +1256,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     Array::push(local_names, value = "[gc-temp]__hk_i")
     emit_local_set(buf = buf, idx = key_l)
     emit_local_set(buf = buf, idx = map_l)
+    if scalar_key {
+      ()
+    } else {
+      gc_map_trap_if_scalar(buf = buf, map_l = map_l)
+    }
     emit_local_get(buf = buf, idx = map_l)
     emit_i32_wrap_i64(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
@@ -1201,7 +1284,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf = buf, align = 3, offset = 8)
     emit_local_get(buf = buf, idx = key_l)
-    emit_call_resolved(buf = buf, ctx = ctx, fidx = eq_fi)
+    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
     emit_i64_const(buf = buf, value = 1)
