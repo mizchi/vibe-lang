@@ -11,7 +11,13 @@ import @vibe/compiler/core {
   bytebuf_push_opcode_u32_u32,
   bytebuf_push_section,
   bytebuf_push_vec_header,
-  leb128_encode_u32
+  leb128_encode_s_padded,
+  leb128_encode_s_slot,
+  leb128_encode_u32,
+  leb128_encode_u32_slot,
+  reloc_ctor_tag_width,
+  reloc_slot_width,
+  reloc_str_width
 }
 
 import ./sections.vibe {
@@ -44,8 +50,15 @@ let op_block = 2
 
 let op_br_if = 13
 
+/// The target is a relocatable slot (#3941): at the compile's slot width, so
+/// a callee's index magnitude does not decide the caller's length.
 export fn emit_call(buf: Bytes, func_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32(buf = buf, opcode = op_call, value = func_idx)
+  if reloc_slot_width() == 0 {
+    bytebuf_push_opcode_u32(buf = buf, opcode = op_call, value = func_idx)
+  } else {
+    bytebuf_push(buf = buf, byte = op_call)
+    leb128_encode_u32_slot(buf = buf, value = func_idx)
+  }
 }
 
 export fn emit_drop(_ buf: Bytes) -> Unit {
@@ -419,8 +432,15 @@ export fn emit_index_to_u32_saturating(buf: Bytes, scratch: Int) -> Unit {
   bytebuf_push(buf = buf, byte = 27)
 }
 
+/// A function index in a body, like a `call` target: at the compile's slot
+/// width (#3941). The relocator treats both as one reference kind.
 export fn emit_ref_func(buf: Bytes, func_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32(buf = buf, opcode = 210, value = func_idx)
+  if reloc_slot_width() == 0 {
+    bytebuf_push_opcode_u32(buf = buf, opcode = 210, value = func_idx)
+  } else {
+    bytebuf_push(buf = buf, byte = 210)
+    leb128_encode_u32_slot(buf = buf, value = func_idx)
+  }
 }
 
 export fn emit_ref_null(buf: Bytes, heap_type_byte: Int) -> Unit {
@@ -443,6 +463,49 @@ export fn emit_i64_store(buf: Bytes, align: Int, offset: Int) -> Unit {
 
 export fn emit_i64_const(buf: Bytes, value: Int) -> Unit {
   bytebuf_push_opcode_s64(buf = buf, opcode = op_i64_const, value = value)
+}
+
+/// An `i64.const` / `i32.const` whose operand is a funcref TABLE SLOT -- a
+/// function value or a closure header's slot -- at the compile's slot width
+/// (#3941), so the slot's magnitude does not decide the body's length. These
+/// are the blind relocation kinds 101 / 102; the relocator rewrites them with
+/// the same encoders.
+export fn emit_i64_const_slot(buf: Bytes, value: Int) -> Unit {
+  bytebuf_push(buf = buf, byte = op_i64_const)
+  leb128_encode_s_slot(buf = buf, value = value)
+}
+
+/// A pooled string's address as an `i64.const` (#3941): the bare offset of
+/// `blind_kind_str_ref`, or the `(offset << 32) | length` of
+/// `blind_kind_str_fat`, at the compile's string width (`reloc_str_width`),
+/// so a literal added anywhere in the program does not change the length of
+/// a body that embeds a later string. The relocator re-emits with these.
+export fn emit_i64_const_str(buf: Bytes, value: Int, fat: Bool) -> Unit {
+  bytebuf_push(buf = buf, byte = op_i64_const)
+  leb128_encode_s_padded(buf = buf, value = value, width = reloc_str_width(fat = fat))
+}
+
+/// A constructor tag as `i32.const`, at the compile's constructor-tag width
+/// (#3941), so a type declared ahead does not change the length of a body
+/// that constructs or matches a later type. Kind 105; the relocator re-emits
+/// with this.
+///
+/// A BUILT-IN tag (below `2 << 16`, the first user type) never moves -- the
+/// relocator leaves it alone (`lc_map_ctor_tag`) -- so it stays minimal: a
+/// variant of type 0 is one byte, and padding it would cost three for nothing.
+export fn emit_i32_const_ctor_tag(buf: Bytes, value: Int) -> Unit {
+  bytebuf_push(buf = buf, byte = 65)
+  let w = if value < 2<<16 {
+    0
+  } else {
+    reloc_ctor_tag_width()
+  }
+  leb128_encode_s_padded(buf = buf, value = value, width = w)
+}
+
+export fn emit_i32_const_slot(buf: Bytes, value: Int) -> Unit {
+  bytebuf_push(buf = buf, byte = 65)
+  leb128_encode_s_slot(buf = buf, value = value)
 }
 
 export fn emit_i64_div_s(_ buf: Bytes) -> Unit {
@@ -499,29 +562,38 @@ export fn emit_i32_store8(buf: Bytes, align: Int, offset: Int) -> Unit {
   bytebuf_push_opcode_u32_u32(buf = buf, opcode = op_i32_store8, a = align, b = offset)
 }
 
+/// `0xFB <sub> <typeidx>`: a GC instruction's type operand is a relocatable
+/// slot like a `call_indirect` type (#3941), so every site the relocation
+/// scanner records as `reloc_kind_type` carries the same width.
+fn emit_gc_type_op(buf: Bytes, sub: Int, type_idx: Int) -> Unit {
+  bytebuf_push(buf = buf, byte = 251)
+  leb128_encode_u32(buf = buf, value = sub)
+  leb128_encode_u32_slot(buf = buf, value = type_idx)
+}
+
 export fn emit_struct_get(buf: Bytes, type_idx: Int, field_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32_u32(buf = buf, opcode = 251, a = 2, b = type_idx)
+  emit_gc_type_op(buf = buf, sub = 2, type_idx = type_idx)
   leb128_encode_u32(buf = buf, value = field_idx)
 }
 
 export fn emit_struct_new(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32_u32(buf = buf, opcode = 251, a = 0, b = type_idx)
+  emit_gc_type_op(buf = buf, sub = 0, type_idx = type_idx)
 }
 
 export fn emit_array_new(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32_u32(buf = buf, opcode = 251, a = 6, b = type_idx)
+  emit_gc_type_op(buf = buf, sub = 6, type_idx = type_idx)
 }
 
 export fn emit_array_new_default(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32_u32(buf = buf, opcode = 251, a = 7, b = type_idx)
+  emit_gc_type_op(buf = buf, sub = 7, type_idx = type_idx)
 }
 
 export fn emit_array_get(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32_u32(buf = buf, opcode = 251, a = 11, b = type_idx)
+  emit_gc_type_op(buf = buf, sub = 11, type_idx = type_idx)
 }
 
 export fn emit_array_set(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32_u32(buf = buf, opcode = 251, a = 14, b = type_idx)
+  emit_gc_type_op(buf = buf, sub = 14, type_idx = type_idx)
 }
 
 export fn emit_array_len(_ buf: Bytes) -> Unit {
@@ -529,7 +601,7 @@ export fn emit_array_len(_ buf: Bytes) -> Unit {
 }
 
 export fn emit_struct_set(buf: Bytes, type_idx: Int, field_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32_u32(buf = buf, opcode = 251, a = 5, b = type_idx)
+  emit_gc_type_op(buf = buf, sub = 5, type_idx = type_idx)
   leb128_encode_u32(buf = buf, value = field_idx)
 }
 
@@ -545,8 +617,11 @@ export fn emit_i32_wrap_i64(_ buf: Bytes) -> Unit {
   bytebuf_push(buf = buf, byte = op_i32_wrap_i64)
 }
 
+/// The type index is a relocatable slot (#3941), at the compile's slot
+/// width; the table index (always 0 here) stays minimal.
 export fn emit_call_indirect(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push_opcode_u32(buf = buf, opcode = op_call_indirect, value = type_idx)
+  bytebuf_push(buf = buf, byte = op_call_indirect)
+  leb128_encode_u32_slot(buf = buf, value = type_idx)
   bytebuf_push(buf = buf, byte = 0)
 }
 

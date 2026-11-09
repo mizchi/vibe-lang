@@ -11,6 +11,7 @@
 
 import @vibe/compiler/codegen/reloc {
   rebuild_body_relocs,
+  rebuild_body_relocs_with_slot_width,
   reloc_kind_blocktype,
   reloc_kind_data,
   reloc_kind_elem,
@@ -296,6 +297,51 @@ test "segment and heap-type indices relocate" {
   assert_eq(bytes_to_ints(rebuild_body_relocs(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = [
     64
   ])), [0xFB, 0x14, 0xC0, 0x00, 0x0B])
+}
+
+test "#3941: a padded call slot keeps its length across the 127 -> 128 band" {
+  // The same move as the test above, emitted at slot width 3: `call 127` is
+  // `0x10 0xFF 0x80 0x00`. Rebuilt at width 3 the target becomes 128 without
+  // the body growing, so nothing after the site moves.
+  let codes = [0x10, 0xFF, 0x80, 0x00, 0x0B]
+  let b = body_of(codes)
+  let r = scan_body_relocs(body = b, start = 0, end_pos = Bytes::length(b))
+  assert_eq(Array::get(r.values, at = 0), 127)
+  assert_eq(Array::get(r.widths, at = 0), 3)
+  let same = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = r.values, slot_width = 3)
+  assert_eq(bytes_to_ints(same), codes)
+  let to_128 = [128]
+  let moved = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = to_128, slot_width = 3)
+  assert_eq(bytes_to_ints(moved), [0x10, 0x80, 0x81, 0x00, 0x0B])
+}
+
+test "#3941: the width is a floor, not a cap, and minimal rebuild still shrinks" {
+  // An index past the slot capacity (2^21 at width 3) still encodes, wider.
+  let codes = [0x10, 0x85, 0x80, 0x00, 0x0B]
+  let b = body_of(codes)
+  let r = scan_body_relocs(body = b, start = 0, end_pos = Bytes::length(b))
+  assert_eq(Array::get(r.values, at = 0), 5)
+  let past_capacity = [2097152]
+  let wide = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = past_capacity, slot_width = 3)
+  assert_eq(bytes_to_ints(wide), [0x10, 0x80, 0x80, 0x80, 0x01, 0x0B])
+  // Width 0 is the old rebuild: the padded slot is re-encoded minimally,
+  // which is exactly why a padded module must be rebuilt with its width.
+  let minimal = rebuild_body_relocs(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = r.values)
+  assert_eq(bytes_to_ints(minimal), [0x10, 0x05, 0x0B])
+}
+
+test "#3941: function, tag, global and type indices are padded; a table index is not" {
+  // global.get 5 ; call 5 ; throw 1 ; call_indirect (type 2) (table 0) ; end
+  let codes = [0x23, 0x05, 0x10, 0x05, 0x08, 0x01, 0x11, 0x02, 0x00, 0x0B]
+  let b = body_of(codes)
+  let r = scan_body_relocs(body = b, start = 0, end_pos = Bytes::length(b))
+  let padded = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = r.values, slot_width = 3)
+  let global_get = [0x23, 0x85, 0x80, 0x00]
+  let call = [0x10, 0x85, 0x80, 0x00]
+  let throw_tag = [0x08, 0x81, 0x80, 0x00]
+  let indirect = [0x11, 0x82, 0x80, 0x00, 0x00, 0x0B]
+  let want = Array::concat(Array::concat(global_get, call), Array::concat(throw_tag, indirect))
+  assert_eq(bytes_to_ints(padded), want)
 }
 
 fn refusal(_ codes: Array[Int]) -> String {

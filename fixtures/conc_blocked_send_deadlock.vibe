@@ -1,0 +1,25 @@
+// #3200, the send side of conc_blocked_recv_deadlock.vibe. The body's
+// rendezvous `send` resumes the parked receiver, which first waits on `rx2`,
+// a channel nobody sends to. That is a deadlock, and it must trap with the
+// message rather than spin. Executed by
+// tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle, Channel, Sender, Receiver
+}
+
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 0)
+    let (_tx2, rx2) = Channel::bounded(n = g, capacity = 0)
+    let h = TaskGroup::spawn_suspend(g, f = () -> {
+      let _first = Receiver::recv_wait(rx2)
+      let got = Receiver::recv_wait(rx)
+      match got {
+        Some(v) => v,
+        None => 0
+      }
+    })
+    Sender::send(tx, v = 1)
+    TaskHandle::join(h)
+  })
+}
