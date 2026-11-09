@@ -1,0 +1,68 @@
+//# A slice in a function whose row carries a handled effect lowers (#3707)
+
+// `x[a:b]` is `__slice(x, a, b)`, `x[a:]` adds `__len(x)`, and a
+// `record { .. }` pattern reads its fields with `__rec_field`. None of the
+// three was on the pure-builtin table both effect lowerings read, so each
+// read the call as one it could not see through:
+//
+// - the evidence pass declined to migrate the effect of any function that
+//   sliced, and the handle was refused at build time ("every `perform Src`
+//   this handle covers has to be visible to it");
+// - the suspend driver, which takes a handle whose arm may throw past an
+//   exception handler (#3540), refused the same function "(here: the call to
+//   '__slice')".
+//
+// The compiler's own loader met the first one: no `Source`-row function could
+// slice (#3705 routed one through a helper instead). Both handles below were
+// refused before; each answer is the value, not merely "it compiled".
+
+effect Src {
+  Read(String) -> String
+  Exists(String) -> Bool
+}
+
+fn look(_ path: String) -> String with Src {
+  let stem = path[0: 3]
+  let rest = path[3:]
+  let first = path[: 1]
+  let xs = [1, 2, 3]
+  let tail = xs[1:]
+  let record {
+    a,
+    b
+  } = record {
+    a: Array::length(tail),
+    b: 2
+  }
+  if perform Src::Exists(stem) {
+    perform Src::Read(stem + "|" + rest + "|" + first + "|" + Int::to_string(a + b))
+  } else {
+    ""
+  }
+}
+
+/// An exception handler between the perform and the outer handle: with an
+/// arm that may throw, that handle runs through the suspend driver (#3540).
+fn guarded(_ path: String) -> String with Src {
+  handle {
+    look(path)
+  } with { Exception::Throw(m) => m }
+}
+
+test "a slicing Src function under an evidence-passed handle" {
+  let r = handle {
+    look("abcdef")
+  } with { Src::Read(p) => resume(p + "!"); Src::Exists(_) => resume(true) }
+  inspect(r, content = "abc|def|a|4!")
+}
+
+test "a slicing Src function under a suspend-driver handle" {
+  let r = handle {
+    guarded("abcdef")
+  } with { Src::Read(p) => if p == "" {
+    throw("empty")
+  } else {
+    resume(p + "?")
+  }; Src::Exists(p) => resume(p == "abc") }
+  inspect(r, content = "abc|def|a|4?")
+}
