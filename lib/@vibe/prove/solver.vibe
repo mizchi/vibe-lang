@@ -373,7 +373,7 @@ fn sx_int(e: Sx, env: Array[(String, Int)]) -> Option[Int] {
         }
       } else if head == "-" && n == 2 {
         match sx_int(e = Array::get(items, at = 1), env = env) {
-          Some(v) => Some(0 - v),
+          Some(v) => sx_checked(op = "-", a = 0, b = v),
           None => None
         }
       } else if (head == "-" || head == "+" || head == "*") && n >= 3 {
@@ -384,13 +384,12 @@ fn sx_int(e: Sx, env: Array[(String, Int)]) -> Option[Int] {
             let mut k = 2
             while ok && k < n {
               match sx_int(e = Array::get(items, at = k), env = env) {
-                Some(v) => {
-                  acc = if head == "-" {
-                    acc - v
-                  } else if head == "+" {
-                    acc + v
-                  } else {
-                    acc * v
+                Some(v) => match sx_checked(op = head, a = acc, b = v) {
+                  Some(r) => {
+                    acc = r
+                  },
+                  None => {
+                    ok = false
                   }
                 },
                 None => {
@@ -410,6 +409,42 @@ fn sx_int(e: Sx, env: Array[(String, Int)]) -> Option[Int] {
       } else {
         None
       }
+    }
+  }
+}
+
+/// The least `Int`. It has no literal: its magnitude is one past the bound.
+let sx_int_min: Int = -4611686018427387903 - 1
+
+/// `a op b` for `op` in `+ - *`, or `None` when the exact result is outside
+/// the `Int` range. SMT integers are unbounded and an `Int` wraps (#1877), so
+/// a wrapped step would read the model as other values than the solver chose;
+/// `None` keeps the term as z3 gave it instead.
+fn sx_checked(op: String, a: Int, b: Int) -> Option[Int] {
+  if op == "+" {
+    let r = a + b
+    if (a >= 0 && b >= 0 && r < 0) || (a < 0 && b < 0 && r >= 0) {
+      None
+    } else {
+      Some(r)
+    }
+  } else if op == "-" {
+    let r = a - b
+    if (a >= 0 && b < 0 && r < 0) || (a < 0 && b >= 0 && r >= 0) {
+      None
+    } else {
+      Some(r)
+    }
+  } else if a == 0 || b == 0 {
+    Some(0)
+  } else if (a == -1 && b == sx_int_min) || (b == -1 && a == sx_int_min) {
+    None
+  } else {
+    let r = a * b
+    if r / a != b || r % a != 0 {
+      None
+    } else {
+      Some(r)
     }
   }
 }
