@@ -1372,46 +1372,31 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
 /// `Value[Map[String, T]]` (Codex on #3956). A bare trait name is kept as
 /// written.
 ///
-/// A key whose arguments resolve to more than `canonical_trait_key_node_budget`
-/// type nodes is kept as written: a branching alias (`type A1 = (A0, A0)` ..
-/// `A30`) is a few lines that resolve to a shared graph and would be written
-/// back as a billion-node tree. The checker's alias preflight
-/// (`alias_expansion_node_limit`) reports such an alias with the edit.
+/// The size of what this writes back is bounded where `defs` are built
+/// (`canonical_key_defs_with`): an alias that would expand past the checker's
+/// alias preflight is left out of them, so a key through it stays as written
+/// and the preflight refuses the source. No budget is applied here, because a
+/// key the checker accepts must be spelled the same way on the impl side and
+/// on the bound side (Codex on #3995).
 export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[TypeDef]) -> String {
   if !trait_ref_is_applied(key) {
     key
   } else {
     match trait_ref_from_key(key) {
       Some(TyApp(head, args)) => {
-        let resolved = for arg in args {
-          resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)
-        }
-        let budget = [canonical_trait_key_node_budget]
-        for ty in resolved {
-          canonical_type_spend_nodes(ty = ty, budget = budget)
-        }
         let mut changed = false
-        let mut i = 0
-        let mapped: Array[TypeExpr] = []
-        while i < Array::length(args) {
-          let arg = Array::get(args, at = i)
-          let next = if Array::get(budget, at = 0) <= 0 {
-            None
-          } else {
-            canonical_trait_arg_type_expr(Array::get(resolved, at = i))
-          }
-          match next {
-            Some(spelled) => {
-              if spelled != arg {
+        let mapped = for arg in args {
+          match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)) {
+            Some(next) => {
+              if next != arg {
                 changed = true
               } else {
                 ()
               }
-              Array::push(mapped, value = spelled)
+              next
             },
-            None => Array::push(mapped, value = arg)
+            None => arg
           }
-          i = i + 1
         }
         if changed {
           trait_ref_key(TyApp(head, mapped))
@@ -1421,50 +1406,6 @@ export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[T
       },
       _ => key
     }
-  }
-}
-
-/// The most type nodes one key's arguments may resolve to before
-/// `canonical_trait_key` keeps the key as written (see there).
-let canonical_trait_key_node_budget = 4096
-
-/// Spend one node of `budget` for each node of `ty`, stopping once it is gone.
-/// A resolved alias shares its subgraphs, so the walk counts what writing the
-/// type back would spell, and stops early on a graph that would blow up.
-fn canonical_type_spend_nodes(ty: Type, budget: Array[Int]) -> Unit {
-  let left = Array::get(budget, at = 0)
-  if left > 0 {
-    Array::set(budget, at = 0, value = left - 1)
-    match ty {
-      CtTuple(items) => for item in items {
-        canonical_type_spend_nodes(ty = item, budget = budget)
-      },
-      CtArray(item) => canonical_type_spend_nodes(ty = item, budget = budget),
-      CtOption(item) => canonical_type_spend_nodes(ty = item, budget = budget),
-      CtFn(params, ret, _) => {
-        for param in params {
-          canonical_type_spend_nodes(ty = param, budget = budget)
-        }
-        canonical_type_spend_nodes(ty = ret, budget = budget)
-      },
-      CtNamed(_, items) => for item in items {
-        canonical_type_spend_nodes(ty = item, budget = budget)
-      },
-      CtApplied(head, items) => {
-        canonical_type_spend_nodes(ty = head, budget = budget)
-        for item in items {
-          canonical_type_spend_nodes(ty = item, budget = budget)
-        }
-      },
-      CtForAll(_, _, body) => canonical_type_spend_nodes(ty = body, budget = budget),
-      CtRecord(fields) => for field in fields {
-        let (_, fty) = field
-        canonical_type_spend_nodes(ty = fty, budget = budget)
-      },
-      _ => ()
-    }
-  } else {
-    ()
   }
 }
 
