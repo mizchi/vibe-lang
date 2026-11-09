@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_key, type_param_key
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, resource_param_key, trait_ref_key, type_param_key
 }
 
 import ./intern.vibe {
@@ -2457,16 +2457,78 @@ fn parse_impl_stmt_with_binder_context(tokens: Array[Token], pos: Int, context: 
 }
 
 /// Parse effect declaration: effect Name[T] { Op(Args) -> Ret; ... }
+/// An effect's binder (ADR-0094): ordinary type parameters as any binder
+/// spells them, and RESOURCE parameters, `R: Store::Bucket`, whose bound is
+/// the qualified resource kind the parameter ranges over. `_` names a
+/// resource parameter the operations never refer to (`_: Process::Root`).
+/// A resource parameter is keyed with its kind (`resource_param_key`).
+fn parse_effect_type_params(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Int) with Exception {
+  let names = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens = tokens, pos = p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        if name != "_" {
+          binder_capture_source(context = context, name = name, first_token = p, last_token = p)
+        } else {
+          ()
+        }
+        let (param_key, after_kind) = parse_type_param_kind(tokens = tokens, pos = p + 1, name = name)
+        p = after_kind
+        match peek(tokens = tokens, pos = p) {
+          TColon => {
+            if param_key != name {
+              throw("effect parameter '\{name}' takes a constructor and a resource kind at once -- a resource parameter names one resource, so write `\{name}: Owner::Kind` without the brackets")
+            } else {
+              ()
+            }
+            let (kind, next) = parse_binding_name(tokens = tokens, pos = p + 1)
+            if !String::contains(kind, needle = "::") {
+              throw("the bound of effect parameter '\{name}' is a resource KIND, written qualified as `Owner::Kind` (`\{name}: Process::Root`); an effect parameter takes no trait bound, and '\{kind}' is not qualified")
+            } else {
+              ()
+            }
+            match peek(tokens = tokens, pos = next) {
+              TPlus => throw("effect parameter '\{name}' names one resource kind; write a single `Owner::Kind` bound, not a sum"),
+              _ => ()
+            }
+            ArrayBuilder::push(names, value = resource_param_key(name = name, kind = kind))
+            p = next
+          },
+          _ => if name == "_" {
+            throw("`_` names an unnamed RESOURCE parameter, so it needs its kind: `_: Process::Root`")
+          } else {
+            ArrayBuilder::push(names, value = param_key)
+          }
+        }
+        match peek(tokens = tokens, pos = p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(names), p)
+}
+
 export fn parse_effect_stmt_with_binder_context(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   binder_capture_mark_ineligible(context)
   match peek(tokens = tokens, pos = pos) {
     TIdent(name) => {
       binder_capture_source(context = context, name = name, first_token = pos, last_token = pos)
       let (type_params, after_params) = match peek(tokens = tokens, pos = pos + 1) {
-        TLBracket => {
-          let (names, _, next) = parse_bounded_type_params_with_binder_context(tokens = tokens, pos = pos + 2, allow_bounds = false, separator_error = "expected ',' or ']' in type params", context = context)
-          (names, next)
-        },
+        TLBracket => parse_effect_type_params(tokens = tokens, pos = pos + 2, context = context),
         _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos + 1)
       }
       let br = expect_tk(tokens = tokens, pos = after_params, expected = "{")

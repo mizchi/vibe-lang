@@ -2413,7 +2413,7 @@ fn normalized_type_def_bytes(def: TypeDef, depth: Int) -> Option[String] {
       },
       None => None
     },
-    TDEffect(name, operations, params) => {
+    TDEffect(name, operations, params, kinds) => {
       let out = StringBuilder::new(); StringBuilder::push(out, value = "f"); body_push_piece(out = out, value = name); StringBuilder::push(out, value = __to_string(Array::length(operations))); StringBuilder::push(out, value = "[")
       let mut i = 0; let mut valid = true
       while i < Array::length(operations) && valid {
@@ -2426,7 +2426,13 @@ fn normalized_type_def_bytes(def: TypeDef, depth: Int) -> Option[String] {
           }
         }; i = i + 1
       }
-      StringBuilder::push(out, value = "]"); body_push_piece(out = out, value = normalized_string_array_bytes(params)); if valid {
+      StringBuilder::push(out, value = "]"); body_push_piece(out = out, value = normalized_string_array_bytes(params)); if body_any_resource_kind(kinds) {
+        // ADR-0094: only an effect with a resource parameter carries its
+        // kinds, so every other effect keeps its earlier bytes.
+        body_push_piece(out = out, value = normalized_string_array_bytes(kinds))
+      } else {
+        ()
+      }; if valid {
         Some(StringBuilder::freeze(out))
       } else {
         None
@@ -2523,7 +2529,18 @@ fn normalized_type_def_valid(text: String, depth: Int) -> Bool {
       match body_piece(text = text, pos = 1) {
         Some((name, p1)) => match normalized_piece_array_end(text = text, pos = p1, validator = normalized_effect_operation_valid, depth = depth) {
           Some(p2) => match body_piece(text = text, pos = p2) {
-            Some((params, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(text = params, depth = depth + 1),
+            Some((params, end)) => if String::length(name) > 0 && normalized_string_array_payload_valid(text = params, depth = depth + 1) {
+              if end == String::length(text) {
+                true
+              } else {
+                match body_piece(text = text, pos = end) {
+                  Some((kinds, kinds_end)) => kinds_end == String::length(text) && normalized_string_array_payload_valid(text = kinds, depth = depth + 1),
+                  None => false
+                }
+              }
+            } else {
+              false
+            },
             None => false
           },
           None => false
@@ -2887,4 +2904,14 @@ export fn decode_normalized_value_type_env_artifact_v1(_ text: String) -> Option
     },
     None => None
   }
+}
+
+fn body_any_resource_kind(_ kinds: Array[String]) -> Bool {
+  let mut found = false
+  for k in kinds {
+    if k != "" {
+      found = true
+    }
+  }
+  found
 }
