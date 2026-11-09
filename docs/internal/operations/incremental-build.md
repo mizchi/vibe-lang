@@ -809,6 +809,232 @@ holding a stale tag routes a `perform` to the wrong handler with nothing
 failing at build time. Recording them raised stage2's site count from 141,380
 to 142,360 — 980 references that were silently going to be left behind.
 
+##### Fixed-width relocatable slots (#3941, opt-in)
+
+`VIBE_RELOC_SLOT_WIDTH=<1..5>` (W) pads every relocatable immediate a body
+embeds to a fixed minimum LEB128 width. Each one then keeps its byte count
+when the layout behind it moves.
+
+| reference | width | fixed while |
+|---|---:|---|
+| function index (`call`, `ref.func`) | W | index < 2^21 at W=3 |
+| exception tag (`throw`, `try_table` catch) | W | tag < 2^21 |
+| global (`global.get`, `global.set`) | W | global < 2^21 |
+| type index of `call_indirect` | W | type < 2^21 |
+| funcref table slot: `i64.const ((slot << 2) \| 2)` (kind 101), `i32.const slot` (kind 102) | W | slot < 2^18 |
+| string address, bare offset (`blind_kind_str_ref`) | W | offset < 2^20 |
+| string address, `(offset << 32) \| length` (`blind_kind_str_fat`) | W+5 | offset < 2^23 |
+| constructor tag `(type_index << 16) \| variant` (kind 105), user types only | W+1 | type index < 2048 |
+
+A non-minimal LEB128 is valid wasm. It is the slot shape that the
+tool-conventions object format, `wasm-ld` and wild reserve for this reason.
+Unset is minimal, and the output is byte-identical to a compiler without the
+switch. A built-in constructor tag (below `2 << 16`) never moves and stays
+minimal. So do the `call_indirect` table index (always 0) and the gc lane's
+type-index blocktypes and heap types.
+
+The width is read once, at the top of `cli_main`, so every compile in the
+process uses it. That covers the positional protocol and also the
+`vibe build` / `run` / `test` verbs, which reach `compile_file_fs_mode_cached`
+without a lane request.
+
+**Every writer of a padded reference goes through one encoder.**
+
+- `leb128_encode_u32_slot` writes function indices, tags, globals and type
+  indices:
+  - `emit_call`, `emit_ref_func`, `emit_global_get` and `emit_global_set`;
+  - the type index in `emit_call_indirect`;
+  - the inline-wat `call`;
+  - the hand-encoded `throw` / `try_table` sites (`common_base_return_frame`,
+    `compile_call_call_core`, `compile_call_named_1`, `compile_expr_tail6`);
+  - the body-cache relocator `lc_move_body`;
+  - late-DCE renumbering (`lc_pf_emit_code` and its linemap delta).
+- `emit_i64_const_slot` and `emit_i32_const_slot` write table slots, at the
+  four sites that record kinds 101 / 102 and in `lc_move_body`.
+- `emit_i64_const_str` writes string addresses:
+  - in `emit_str_ref_slot` / `emit_str_fat_slot`;
+  - in the string relocator `lc_relocate_body`;
+  - for the `(offset << 32) | length` message constants the generated runtime
+    helpers embed. These are the `*_fat` operands in `builtin_bodies/` (OOB
+    prefixes, capacity errors, the `__rt_oob_abort` / `__rt_div_zero_abort`
+    fragments) and the shadow lane's use-after-free prefix.
+- `emit_i32_const_ctor_tag` writes constructor tags, in `emit_ctor_tag` (the
+  only emitter of kind 105) and `lc_move_body`.
+
+That is what keeps a replayed or pruned body equal to a fresh one. The
+persisted `codegen-body-cache` slot, the file-compile artifact
+(`persistent_artifact_kind_for_mode`) and the linked-output memo are all keyed
+on the width, so the two encodings never replay into each other. One build
+directory used for `vibe build` at W=0, then 3, then 0 gives 1830, 1907 and
+1830 bytes.
+
+**Coverage is checked, not assumed.** `scripts/reloc_roundtrip.sh` with
+`RELOC_ROUNDTRIP_SLOT_WIDTH=W` rebuilds every function, tag, global and type
+site at width W and requires the bytes back unchanged. An emitter that wrote one of
+them narrower fails it by name. On the corpus below at W=3 it is clean over
+200,348 function, 740 tag, 3266 global and 1121 type sites. The build before
+type indices were padded fails the same check in 222 bodies. The same module rebuilt at
+width 0 is the red control and reports 6979 mismatches.
+
+Measured with `scripts/wasm_index_stability.mjs`, corpus
+`codegen_lexer_test.vibe` (7221 functions, 1027 globals, 7 tags, `__no_entry__`).
+Each W=3 column adds one class to the column before it. "Length changed"
+counts bodies whose byte length differs. At W=0 every build is byte-identical
+to main.
+
+| edit | W=0 | function indices | + table slots | + strings | + tags, globals | + ctor tags | + type indices |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| body only (`hex_encode`) | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| +1 fn above the 127/128 band (`hex.vibe`) | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| +1 fn below the band (`base64.vibe`) | 6 | **1** | 1 | 1 | 1 | 1 | 1 |
+| module reorder (`base64` imports `hex`) | 15 | **0** | 0 | 0 | 0 | 0 | 0 |
+| +400 fn (a function value moves 1667 → 2068) | 16 | 3 | **1** | 1 | 1 | 1 | 1 |
+| +300-byte literal (strings cross 8192 / 2^15) | 109 | 109 | 109 | **3** | 3 | 3 | 3 |
+| +1 top-level thunk (+2 memo globals; two cross 127 → 128) | 8 | 3 | 3 | 3 | **1** | 1 | 1 |
+| +1 effect (every tag 1 higher) | 6 | **1** | 1 | 1 | 1 | 1 | 1 |
+| +1 unused enum (6301 ctor tags +1 type; `Deque` crosses 15 → 16) | 25 | — | — | — | 25 | **0** | 0 |
+| +1 used enum (the same, plus a function) | 31 | 26 | 26 | 26 | 26 | **1** | 1 |
+| +1 30-parameter function (types 35 → 41, four reordered) | 6 | — | — | — | — | 1 | 1 |
+
+The table was measured with main at `a497c68` as the base. It was re-run
+whole after merging main at `616d2e2`. W=0 is still byte-identical to that
+main on all twelve builds, and the fully padded column answers the same in
+every row. The W=0 counts moved with main's own codegen changes:
+
+| edit | W=0 at `616d2e2` |
+|---|---:|
+| below band | 8 |
+| reorder | 11 |
+| literal | 105 |
+| +400 fn | 12 |
+| thunk | 10 |
+| effect | 8 |
+| used enum | 33 |
+| unused enum | 25 |
+| arity | 8 |
+
+The total cost at `616d2e2` is +5.94% (6,726,147 → 7,125,553).
+
+The runtime helpers' message constants were padded last, measured at
+`616d2e2`. The literal edit drops from 3 to **1**, and every other row
+answers as before. The cost is +7 bytes (7,125,560). `vibe run` at W=3 prints
+the same OOB and division-by-zero lines as at W=0.
+
+In every row the 1 is the edited body. A dash was not measured. Five rows
+need a note:
+
+- **Strings.** In this table the 3 left are the edited body, `__rt_oob_abort`
+  and `__rt_div_zero_abort`. Those runtime helpers embed their message's
+  address outside the recorded emitters; they are generated builtins, not
+  cached bodies. Padding those constants as well removes both (above).
+- **Thunk.** The two bodies only global padding removes are
+  `rad_to_deg_lo` / `deg_to_rad_hi`, which read the memo globals that crossed
+  127 → 128.
+- **Effect.** It moves every tag, but with 7 tags no value leaves one byte. A
+  tag crossing needs more than 120 declared effects, so tag padding is paid
+  for and, here, unused.
+- **Enum.** A constructor tag is `(type_index << 16) | variant`, so a user
+  tag is three LEB bytes until type 16 and four until type 2048. The slot
+  width alone does not change it; it takes W+1. Built-in tags are left minimal
+  because they never move. Padding them too (an earlier variant) cost 35,679
+  bytes instead of 16,579, for the same table.
+- **Type indices.** The linear lane's type section is identical across every
+  other edit here. A new signature does move it: four old types reorder (9→3,
+  10→4, 11→8, 34→40). But with 35–41 types every index is one byte, so no
+  length moves. Type padding is paid for and, at this size, unused. A type
+  crossing needs more than 127 distinct signatures.
+
+- **Cost.** W=0 is 6,636,149 bytes. Each class adds:
+
+  | class | module size | added |
+  |---|---:|---:|
+  | function indices | 6,995,692 | +5.42% |
+  | table slots | 6,995,732 | +40 B |
+  | strings | 7,004,443 | +8,711 B |
+  | tags and globals | 7,010,864 | +6,421 B |
+  | constructor tags (user types) | 7,027,443 | +16,579 B |
+  | type indices | 7,029,688 | +2,245 B |
+  | **total** | | **+5.93%** |
+
+  Function indices are almost all of it: 200,348 sites, most of them one or
+  two bytes.
+- **Body-cache replay** (`VIBE_CODEGEN_BODY_CACHE=on`, one cache, replay
+  compared with a fresh compile). The output was byte-identical at W=3 and at
+  W=0 for every edit that exercises a relocation class:
+
+  | edit | offered | recompiled |
+  |---|---:|---:|
+  | below-band and reorder | 7039 | 347 |
+  | function value ahead of every slot | 7044 | 342 |
+  | +300-byte literal | 7046 | 340 |
+  | thunk, effect | 7045 | 341 |
+  | 30-parameter function (types reorder) | 7047 | 339 |
+
+  Inserting a type is different. The cache declines the whole build (7387
+  recompiled, at W=0 as well), so the constructor-tag relocator is not reached
+  end to end on this corpus. It is reached by
+  `tests/body_cache_insert_function_test.vibe`, whose 14 rows include "a type
+  added in a middle file relocates the tags it moves" and "moved indices that
+  cross a LEB width band are rebuilt".
+
+**Every body-cache relocation row runs at both widths.** This covers six
+files: `body_cache_{insert_function,changed_type,changed_struct,changed_row,downstream_edit,edit_classes}_test.vibe`.
+
+- **Layout.** Each test body is a row function. The file runs it once as the
+  original test and once as `<name>, at slot width 3 (#3941)`, against one
+  expected literal, so the two widths must give the same answer.
+- **Cache slot.** The rows clear the cache slot through
+  `codegen_body_cache_artifact_key`, so they clear the slot the compile will
+  actually read. Before this, each probe built the key from
+  `"self-describing-"` by hand. At width 3 that cleared the width-0 slot, and
+  a "cold" build replayed the previous row's artifact.
+- **Coverage.** 26 rows, 52 tests.
+- **The check can fail.** With the relocator writing a moved `call` target
+  minimal again, the width-0 rows pass and "a thunk added ahead of a cached
+  one moves its memo globals with it, at slot width 3" fails with
+  `equal=false`.
+
+`verify` does not reach this path. A function-set edit changes the guards, so
+its second compile is skipped (the counted lane reports `-1`).
+
+**The compiler itself as the corpus** (measured at `616d2e2`). The root is
+`cli_adapter_cli_main_with_lanes.vibe` with entry `cli_main`: 719 modules,
+12,649 functions after DCE. All padding classes are on.
+
+Five of the edits above touch only `base64.vibe`, which `cli_main` does not
+reach, so they come out byte-identical to the unedited build. Those were
+dropped as vacuous rather than counted as zeros. They were rebuilt in
+`lib/@vibe/ast/ast.vibe`, ahead of `trait_ref_name` (index 124), and called
+from it. The module reorder has no counterpart there, because `ast.vibe`
+imports nothing.
+
+| edit | W=0 | W=3 |
+|---|---:|---:|
+| body only (`hex_encode`) | 1 | 1 |
+| +1 fn after the band (`hex.vibe`) | 1 | 1 |
+| +1 fn ahead of the band (`ast.vibe`; `impl_method_owner` 127 → 128) | 24 | **1** |
+| +400 fn (`ast.vibe`) | 100 | **1** |
+| +300-byte literal (`ast.vibe`) | 7 | **1** |
+| +1 30-parameter fn (`ast.vibe`) | 24 | **1** |
+| thunk, effect, used / unused enum (`base64.vibe`; bytes change, no length) | 0 | 0 |
+
+- **Parity.** W=0 is byte-identical to main's stage2 on every build.
+- **Cost.** The compiler grows from 10,826,109 to 11,508,692 bytes (+6.31%).
+- **The padded compiler works.**
+  - Compiling the `codegen_lexer_test.vibe` corpus, the W=3-built compiler
+    and the W=0-built one give byte-identical output, equal to main's
+    stage2.
+  - Their wall times overlap (22.2–24.3 s against 22.4–22.6 s, N=3), so
+    decoding non-minimal LEB128 costs nothing measurable here.
+  - Each compiles the compiler itself to the same bytes, and that output
+    equals the W=0 compiler, so the fixpoint holds.
+- **Body-cache replay.** On this corpus, with the `ast.vibe` +1-fn edit,
+  14,045 of 14,394 bodies are offered and 349 recompiled. The result is
+  byte-identical to a fresh compile at W=3 and at W=0.
+
+Not done: a default, and an in-place output patcher. The patcher is what the
+fixed widths make possible, and its value is what to weigh against the size.
+
 ##### Does a body actually relocate? (#2669, slice 1b)
 
 The round-trip above proves the walk does not desynchronise. The cross-build
