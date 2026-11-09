@@ -161,7 +161,11 @@ import ./checker_call_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
-  bind_generic_value_effect_instantiations, bind_struct_field_effect_instantiations, label_row_only_formals, struct_field_effect_inst_check
+  assignment_effect_inst_check,
+  bind_generic_value_effect_instantiations,
+  bind_struct_field_effect_instantiations,
+  label_row_only_formals,
+  struct_field_effect_inst_check
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -1118,8 +1122,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EAssign(name, val, body, target_off) => {
       let (vt, s1, c1) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       let assigned_ty = subst_apply(s = s1, ty = vt)
-      // #3343 (Codex on #3359): a value whose type may hide the region is
-      // asked by what it reads, too (`retention_assign_hidden_region`).
+      // #3343: a value whose type may hide the region is asked by what it reads, too.
       let predates_region = binding_predates_active_region(name = name, env = env)
       let hidden_region = if predates_region && !assignment_crosses_region(name = name, ty = assigned_ty, env = env) {
         retention_assign_hidden_region(name = name, val = val, val_ty = assigned_ty, env = env, defs = defs, s = s1)
@@ -1134,12 +1137,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         Array::push(errors, value = String::concat(region_write_escape_message(ty = shown_ty, env = env, region_message = "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
       }
-      // The assigned value must be assignable to the variable's type
-      // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
+      // The assigned value must be assignable to the variable's type (`y = "s"`
+      // for `let mut y = 1` was accepted), generic-effect payloads included.
       let s1b = match env_lookup(env = env, name = name) {
-        Some(var_ty) => check_assignable_for(expected = var_ty, actual = int32_assigned_type(e = val, expected = var_ty, actual = subst_apply(s = s1, ty = vt), s = s1, errors = errors, off = tail_expr_off(val)), s = s1, errors = errors, what_head = "assignment type mismatch for ", what_tail = name, off = tail_expr_off(val)),
-        // The mutability pass only knows which bindings are mutable. Letting
-        // an absent target reach it reports the misleading `let mut` edit.
+        Some(var_ty) => assignment_effect_inst_check(env = env, name = name, value = val, value_ty = assigned_ty, var_ty = var_ty, s = check_assignable_for(expected = var_ty, actual = int32_assigned_type(e = val, expected = var_ty, actual = subst_apply(s = s1, ty = vt), s = s1, errors = errors, off = tail_expr_off(val)), s = s1, errors = errors, what_head = "assignment type mismatch for ", what_tail = name, off = tail_expr_off(val)), defs = defs, errors = errors),
+        // An absent target would reach the mutability pass's misleading `let mut` edit.
         None => {
           Array::push(errors, value = String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
           s1
