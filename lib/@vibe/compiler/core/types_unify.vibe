@@ -9,7 +9,7 @@ import ./expr_children.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_from_key, trait_ref_name, type_param_name
+  trait_ref_from_key, trait_ref_is_applied, trait_ref_key, trait_ref_name, type_param_name
 }
 
 import ./exception_effect.vibe {
@@ -31,6 +31,7 @@ import @vibe/core {
 import ./types_env_cache.vibe {
   Subst,
   Type,
+  TypeDef,
   TypeEnv,
   apply_type_constructor,
   bound_flat_self_add,
@@ -59,6 +60,7 @@ import ./types_types_equal.vibe {
   resolve_builtin,
   resolve_effect_opt_preserving_open,
   resolve_row_type_arg,
+  resolve_type_expr_core_shadowed,
   row_var_type_arg,
   subst_apply,
   trait_is_subtrait,
@@ -1360,6 +1362,246 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
 
 /// Constructor/head name of a type. Returns "" for types with no nominal
 /// constructor (tuples, primitives, vars) so they never match a generic impl.
+/// #3947: the key a trait reference is matched under, with each type argument
+/// resolved over `defs` and written back (`canonical_trait_arg_type_expr`).
+/// The checker's impl registration, the linked program's coherence check and
+/// the lowering all canonicalize through this, so `Value[Alias]`
+/// (`type Alias = Int`) and `Value[Int]` are one key to each of them. A name
+/// in `binders` is kept as written, even beside `type T = Int`, while the
+/// structure around it is canonical: `Value[StringMap[T]]` is
+/// `Value[Map[String, T]]` (Codex on #3956). A bare trait name is kept as
+/// written.
+export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[TypeDef]) -> String {
+  if !trait_ref_is_applied(key) {
+    key
+  } else {
+    match trait_ref_from_key(key) {
+      Some(TyApp(head, args)) => {
+        let mut changed = false
+        let mapped = for arg in args {
+          match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)) {
+            Some(next) => {
+              if next != arg {
+                changed = true
+              } else {
+                ()
+              }
+              next
+            },
+            None => arg
+          }
+        }
+        if changed {
+          trait_ref_key(TyApp(head, mapped))
+        } else {
+          key
+        }
+      },
+      _ => key
+    }
+  }
+}
+
+fn canonical_key_arg_names(ty: TypeExpr, binders: Array[String]) -> Bool {
+  match ty {
+    TyName(n) => {
+      let mut found = false
+      for b in binders {
+        if !found && type_param_name(b) == n {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyApp(n, args) => canonical_key_arg_names(ty = TyName(n), binders = binders) || canonical_key_args_name(tys = args, binders = binders),
+    TyTuple(items) => canonical_key_args_name(tys = items, binders = binders),
+    TyFn(params, ret, _) => canonical_key_arg_names(ty = ret, binders = binders) || canonical_key_args_name(tys = params, binders = binders),
+    TyUnit => false
+  }
+}
+
+fn canonical_key_args_name(tys: Array[TypeExpr], binders: Array[String]) -> Bool {
+  let mut found = false
+  for t in tys {
+    if !found && canonical_key_arg_names(ty = t, binders = binders) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3947: the type declarations of `stmts` as `canonical_trait_key` resolves
+/// against them. A struct, enum or suberror is entered by name and parameters
+/// (the resolver keeps a declared name as written, so a program's own
+/// `struct StringMap[T]` is that type, not the builtin map); an alias by its
+/// resolved body, one round per alias when an alias names another.
+export fn canonical_key_defs(_ stmts: Array[Stmt]) -> Array[TypeDef] {
+  let nominal: Array[TypeDef] = []
+  let aliases: Array[(String, Array[String], TypeExpr)] = []
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, name, _, _, _, tparams) => Array::push(nominal, value = TDStruct(name, [
+      ], [], tparams)),
+      SEnum(_, name, params, _, _) => Array::push(nominal, value = TDEnum(name, params, [
+      ])),
+      SSuberror(_, name, _) => Array::push(nominal, value = TDEnum(name, [], [])),
+      STypeAlias(_, name, params, target) => Array::push(aliases, value = (name, params, target)),
+      _ => ()
+    }
+  }
+  let alias_names: Array[String] = []
+  for row in aliases {
+    let (name, _, _) = row
+    Array::push(alias_names, value = name)
+  }
+  let mut chained = false
+  for row in aliases {
+    let (_, _, target) = row
+    if !chained && canonical_key_arg_names(ty = target, binders = alias_names) {
+      chained = true
+    } else {
+      ()
+    }
+  }
+  let rounds = if chained {
+    Array::length(aliases)
+  } else if Array::length(aliases) > 0 {
+    1
+  } else {
+    0
+  }
+  let mut defs: Array[TypeDef] = []
+  for d in nominal {
+    Array::push(defs, value = d)
+  }
+  let mut r = 0
+  while r < rounds {
+    let next: Array[TypeDef] = []
+    for d in nominal {
+      Array::push(next, value = d)
+    }
+    for row in aliases {
+      let (name, params, target) = row
+      Array::push(next, value = TDAlias(name, params, resolve_type_expr_core_shadowed(te = target, defs = defs, shadow = params)))
+    }
+    defs = next
+    r = r + 1
+  }
+  defs
+}
+
+/// #3947: a resolved type written back as the `TypeExpr` a trait key spells,
+/// or None for a type no key can spell (an unsolved variable). The checker's
+/// bound keys and impl keys, and the lowering's expansion of both, all use
+/// this one writer, so a key the checker accepts is a key the lowering finds:
+/// `Unit` is `()`, `StringMap[V]` is `Map[String, V]`, the float widths are
+/// `Float64` / `Float32`.
+export fn canonical_trait_arg_type_expr(_ ty: Type) -> Option[TypeExpr] {
+  match ty {
+    CtInt => Some(TyName("Int")),
+    // #3730: a bound is judged by the checker, which keeps the nominal type.
+    CtInt32 => Some(TyName("Int32")),
+    CtUInt32 => Some(TyName("UInt32")),
+    CtDouble => Some(TyName("Float64")),
+    CtFloat => Some(TyName("Float32")),
+    CtBool => Some(TyName("Bool")),
+    CtString => Some(TyName("String")),
+    CtChar => Some(TyName("Char")),
+    CtBytes => Some(TyName("Bytes")),
+    CtUnit => Some(TyUnit),
+    CtArray(elem) => match canonical_trait_arg_type_expr(elem) {
+      Some(arg) => Some(TyApp("Array", [arg])),
+      None => None
+    },
+    CtOption(elem) => match canonical_trait_arg_type_expr(elem) {
+      Some(arg) => Some(TyApp("Option", [arg])),
+      None => None
+    },
+    CtTuple(items) => {
+      let out = array_empty()
+      let mut ok = true
+      for item in items {
+        match canonical_trait_arg_type_expr(item) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        Some(TyTuple(out))
+      } else {
+        None
+      }
+    },
+    CtFn(params, ret, effect) => {
+      let out = array_empty()
+      let mut ok = true
+      for param in params {
+        match canonical_trait_arg_type_expr(param) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      match canonical_trait_arg_type_expr(ret) {
+        Some(mapped_ret) => if ok {
+          Some(TyFn(out, mapped_ret, effect))
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    CtNamed(name, args) => {
+      let out = array_empty()
+      let mut ok = true
+      for arg in args {
+        match canonical_trait_arg_type_expr(arg) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if !ok {
+        None
+      } else if Array::length(out) == 0 {
+        Some(TyName(name))
+      } else {
+        Some(TyApp(name, out))
+      }
+    },
+    CtConstructor(name, _) => Some(TyName(name)),
+    CtApplied(head, args) => {
+      let name = type_constructor_name(head)
+      let out = array_empty()
+      let mut ok = name != ""
+      for arg in args {
+        match canonical_trait_arg_type_expr(arg) {
+          Some(mapped) => Array::push(out, value = mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        Some(TyApp(name, out))
+      } else {
+        None
+      }
+    },
+    CtEnum(name) => Some(TyName(name)),
+    CtStruct(name) => Some(TyName(name)),
+    _ => None
+  }
+}
+
 export fn type_constructor_name(_ ty: Type) -> String {
   match ty {
     CtArray(_) => "Array",
