@@ -8,6 +8,13 @@
 /// model's parameter values on `sat`; `unknown` with the reason otherwise
 /// (`unknown`, a timeout, or a solver error). Only `unsat` proves.
 export fn prove_verdict(_ z3_out: String) -> (String, String) {
+  prove_verdict_in(z3_out, query = "")
+}
+
+/// `prove_verdict` for the answer to `query`, whose `declare-datatypes`
+/// names each struct's fields, so a struct in the model is shown with them
+/// (`Point::{ x: 1, y: 2 }`) -- the spelling a call to the function takes.
+export fn prove_verdict_in(_ z3_out: String, query: String) -> (String, String) {
   let lines = String::split(z3_out, sep = "\n")
   let first = if Array::length(lines) > 0 {
     String::trim(Array::get(lines, at = 0))
@@ -20,7 +27,7 @@ export fn prove_verdict(_ z3_out: String) -> (String, String) {
     let rest = String::join(Array::slice(lines, start = 1, end = Array::length(lines)), sep = " ")
     // A function without parameters has no input to show: the obligation
     // fails on every run.
-    let model = model_text(rest)
+    let model = model_text(text = rest, fields = struct_fields(query))
     ("unproved", if model == "" {
       "none needed, the function has no inputs and fails on every run"
     } else {
@@ -36,7 +43,7 @@ export fn prove_verdict(_ z3_out: String) -> (String, String) {
 }
 
 /// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`.
-fn model_text(_ text: String) -> String {
+fn model_text(text: String, fields: Array[(String, Array[String])]) -> String {
   let parts: Array[String] = []
   let mut i = 0
   let n = String::length(text)
@@ -67,7 +74,7 @@ fn model_text(_ text: String) -> String {
           ()
         }
       }
-      Array::push(parts, value = "\{name} = \{smt_value_text(String::trim(String::substring(text, start = start, end = j)))}")
+      Array::push(parts, value = "\{name} = \{smt_value_text(v = String::trim(String::substring(text, start = start, end = j)), fields = fields)}")
       i = j
     } else {
       i = i + 1
@@ -85,14 +92,17 @@ fn find_byte(text: String, byte: Int, from: Int) -> Int {
 }
 
 /// A model value as the program would spell it: `-5` for `(- 5)`,
-/// `Shape::Circle(3)` for `(|Shape::Circle| 3)`, `Point::{ 1, 2 }` for a
-/// struct (fields in declaration order). Anything else is shown as z3 gave it.
-fn smt_value_text(_ v: String) -> String {
+/// `Shape::Circle(3)` for `(|Shape::Circle| 3)`, `Point::{ x: 1, y: 2 }` for
+/// a struct (its fields named from `fields`), and `[-1, 38]` for an
+/// `Array[Int]`, whose elements are read out of the array term z3 gives
+/// (`(as const ..)`, `store`, or a `lambda` over the index). A term this
+/// cannot read is shown as z3 gave it -- a counterexample is never dropped.
+fn smt_value_text(v: String, fields: Array[(String, Array[String])]) -> String {
   let toks = smt_tokens(v)
   let pos = [0]
-  let out = smt_render(toks = toks, pos = pos)
+  let tree = sx_parse(toks = toks, pos = pos)
   if Array::get(pos, at = 0) == Array::length(toks) {
-    out
+    sx_render(e = tree, fields = fields)
   } else {
     v
   }
@@ -133,35 +143,401 @@ export fn smt_unquote(_ t: String) -> String {
   }
 }
 
-fn smt_render(toks: Array[String], pos: Array[Int]) -> String {
+//# Model terms
+
+/// An s-expression of the solver's model.
+enum Sx {
+  SxAtom(String);
+  SxList(Array[Sx])
+}
+
+fn sx_parse(toks: Array[String], pos: Array[Int]) -> Sx {
   let i = Array::get(pos, at = 0)
   if i >= Array::length(toks) {
-    ""
+    SxAtom("")
   } else {
     let t = Array::get(toks, at = i)
     Array::set(pos, at = 0, value = i + 1)
     if t != "(" {
-      smt_unquote(t)
+      SxAtom(t)
     } else {
-      let head = if Array::get(pos, at = 0) < Array::length(toks) {
-        Array::get(toks, at = Array::get(pos, at = 0))
-      } else {
-        ""
-      }
-      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
-      let args: Array[String] = []
+      let items: Array[Sx] = []
       while Array::get(pos, at = 0) < Array::length(toks) && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
-        Array::push(args, value = smt_render(toks = toks, pos = pos))
+        Array::push(items, value = sx_parse(toks = toks, pos = pos))
       }
       Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+      SxList(items)
+    }
+  }
+}
+
+/// The term as z3 printed it (up to spacing).
+fn sx_text(_ e: Sx) -> String {
+  match e {
+    SxAtom(t) => t,
+    SxList(items) => {
+      let parts: Array[String] = for it in items {
+        sx_text(it)
+      }
+      "(\{String::join(parts, sep = " ")})"
+    }
+  }
+}
+
+fn sx_head(_ items: Array[Sx]) -> String {
+  if Array::length(items) == 0 {
+    ""
+  } else {
+    match Array::get(items, at = 0) {
+      SxAtom(t) => t,
+      SxList(_) => ""
+    }
+  }
+}
+
+/// The longest array shown element by element. A longer one keeps z3's term:
+/// it is still a counterexample, only not one to paste.
+let sx_max_shown_length: Int = 64
+
+fn sx_render(e: Sx, fields: Array[(String, Array[String])]) -> String {
+  match e {
+    SxAtom(t) => smt_unquote(t),
+    SxList(items) => {
+      let head = sx_head(items)
       let name = smt_unquote(head)
+      let args: Array[Sx] = Array::slice(items, start = 1, end = Array::length(items))
       if head == "-" && Array::length(args) == 1 {
-        "-\{Array::get(args, at = 0)}"
+        "-\{sx_render(e = Array::get(args, at = 0), fields = fields)}"
+      } else if head == "|Array[Int]::mk|" && Array::length(args) == 2 {
+        match sx_array_elems(data = Array::get(args, at = 0), len = Array::get(args, at = 1)) {
+          Some(elems) => {
+            let parts: Array[String] = for x in elems {
+              "\{x}"
+            }
+            "[\{String::join(parts, sep = ", ")}]"
+          },
+          None => sx_text(e)
+        }
       } else if String::ends_with(name, suffix = "::{}") {
-        "\{String::substring(name, start = 0, end = String::length(name) - 4)}::{ \{String::join(args, sep = ", ")} }"
+        let sname = String::substring(name, start = 0, end = String::length(name) - 4)
+        let shown: Array[String] = for a in args {
+          sx_render(e = a, fields = fields)
+        }
+        let names = struct_field_names(fields = fields, name = sname)
+        if Array::length(names) == Array::length(shown) {
+          let named: Array[String] = []
+          let mut k = 0
+          while k < Array::length(shown) {
+            Array::push(named, value = "\{Array::get(names, at = k)}: \{Array::get(shown, at = k)}")
+            k = k + 1
+          }
+          "\{sname}::{ \{String::join(named, sep = ", ")} }"
+        } else {
+          "\{sname}::{ \{String::join(shown, sep = ", ")} }"
+        }
+      } else if String::starts_with(head, prefix = "|") {
+        let shown: Array[String] = for a in args {
+          sx_render(e = a, fields = fields)
+        }
+        "\{name}(\{String::join(shown, sep = ", ")})"
       } else {
-        "\{name}(\{String::join(args, sep = ", ")})"
+        sx_text(e)
       }
     }
   }
+}
+
+/// The elements of an `Array[Int]` whose data term is `data` and length term
+/// `len`, or `None` when either cannot be read or the array is longer than
+/// `sx_max_shown_length`.
+fn sx_array_elems(data: Sx, len: Sx) -> Option[Array[Int]] {
+  let no_env: Array[(String, Int)] = []
+  match sx_int(e = len, env = no_env) {
+    Some(n) => if n < 0 || n > sx_max_shown_length {
+      None
+    } else {
+      let out: Array[Int] = []
+      let mut ok = true
+      let mut i = 0
+      while ok && i < n {
+        match sx_select(data = data, at = i) {
+          Some(x) => Array::push(out, value = x),
+          None => {
+            ok = false
+          }
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(out)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+/// The element at index `at` of an SMT array term.
+fn sx_select(data: Sx, at: Int) -> Option[Int] {
+  match data {
+    SxAtom(_) => None,
+    SxList(items) => {
+      let head = sx_head(items)
+      if Array::length(items) == 2 && sx_is_const_array(Array::get(items, at = 0)) {
+        let no_env: Array[(String, Int)] = []
+        sx_int(e = Array::get(items, at = 1), env = no_env)
+      } else if head == "store" && Array::length(items) == 4 {
+        let no_env: Array[(String, Int)] = []
+        match sx_int(e = Array::get(items, at = 2), env = no_env) {
+          Some(k) => if k == at {
+            sx_int(e = Array::get(items, at = 3), env = no_env)
+          } else {
+            sx_select(data = Array::get(items, at = 1), at = at)
+          },
+          None => None
+        }
+      } else if head == "lambda" && Array::length(items) == 3 {
+        match Array::get(items, at = 1) {
+          SxList(binders) => if Array::length(binders) == 1 {
+            match Array::get(binders, at = 0) {
+              SxList(b) => if Array::length(b) == 2 {
+                match Array::get(b, at = 0) {
+                  SxAtom(var) => sx_int(e = Array::get(items, at = 2), env = [
+                    (var, at)
+                  ]),
+                  SxList(_) => None
+                }
+              } else {
+                None
+              },
+              SxAtom(_) => None
+            }
+          } else {
+            None
+          },
+          SxAtom(_) => None
+        }
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// `(as const (Array Int Int))`.
+fn sx_is_const_array(_ e: Sx) -> Bool {
+  match e {
+    SxList(items) => Array::length(items) == 3 && sx_head(items) == "as" && sx_atom_is(e = Array::get(items, at = 1), t = "const"),
+    SxAtom(_) => false
+  }
+}
+
+fn sx_atom_is(e: Sx, t: String) -> Bool {
+  match e {
+    SxAtom(a) => a == t,
+    SxList(_) => false
+  }
+}
+
+/// An integer term of a model: a numeral, a bound index, `-` / `+` / `*`,
+/// or an `ite` on a comparison.
+fn sx_int(e: Sx, env: Array[(String, Int)]) -> Option[Int] {
+  match e {
+    SxAtom(t) => {
+      let mut hit = None
+      for b in env {
+        let (name, value) = b
+        if name == t {
+          hit = Some(value)
+        } else {
+          ()
+        }
+      }
+      match hit {
+        Some(v) => Some(v),
+        None => Int::parse(t)
+      }
+    },
+    SxList(items) => {
+      let head = sx_head(items)
+      let n = Array::length(items)
+      if head == "ite" && n == 4 {
+        match sx_bool(e = Array::get(items, at = 1), env = env) {
+          Some(c) => if c {
+            sx_int(e = Array::get(items, at = 2), env = env)
+          } else {
+            sx_int(e = Array::get(items, at = 3), env = env)
+          },
+          None => None
+        }
+      } else if head == "-" && n == 2 {
+        match sx_int(e = Array::get(items, at = 1), env = env) {
+          Some(v) => Some(0 - v),
+          None => None
+        }
+      } else if (head == "-" || head == "+" || head == "*") && n >= 3 {
+        match sx_int(e = Array::get(items, at = 1), env = env) {
+          Some(first) => {
+            let mut acc = first
+            let mut ok = true
+            let mut k = 2
+            while ok && k < n {
+              match sx_int(e = Array::get(items, at = k), env = env) {
+                Some(v) => {
+                  acc = if head == "-" {
+                    acc - v
+                  } else if head == "+" {
+                    acc + v
+                  } else {
+                    acc * v
+                  }
+                },
+                None => {
+                  ok = false
+                }
+              }
+              k = k + 1
+            }
+            if ok {
+              Some(acc)
+            } else {
+              None
+            }
+          },
+          None => None
+        }
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn sx_bool(e: Sx, env: Array[(String, Int)]) -> Option[Bool] {
+  match e {
+    SxAtom(t) => if t == "true" {
+      Some(true)
+    } else if t == "false" {
+      Some(false)
+    } else {
+      None
+    },
+    SxList(items) => {
+      let head = sx_head(items)
+      let n = Array::length(items)
+      if head == "not" && n == 2 {
+        match sx_bool(e = Array::get(items, at = 1), env = env) {
+          Some(b) => Some(!b),
+          None => None
+        }
+      } else if (head == "and" || head == "or") && n >= 2 {
+        let mut acc = head == "and"
+        let mut ok = true
+        let mut k = 1
+        while ok && k < n {
+          match sx_bool(e = Array::get(items, at = k), env = env) {
+            Some(b) => {
+              acc = if head == "and" {
+                acc && b
+              } else {
+                acc || b
+              }
+            },
+            None => {
+              ok = false
+            }
+          }
+          k = k + 1
+        }
+        if ok {
+          Some(acc)
+        } else {
+          None
+        }
+      } else if (head == "<=" || head == "<" || head == ">=" || head == ">" || head == "=") && n == 3 {
+        match (sx_int(e = Array::get(items, at = 1), env = env), sx_int(e = Array::get(items, at = 2), env = env)) {
+          (Some(a), Some(b)) => Some(if head == "<=" {
+            a <= b
+          } else if head == "<" {
+            a < b
+          } else if head == ">=" {
+            a >= b
+          } else if head == ">" {
+            a > b
+          } else {
+            a == b
+          }),
+          _ => None
+        }
+      } else {
+        None
+      }
+    }
+  }
+}
+
+//# Struct fields
+
+/// Each struct's field names, in declaration order, from the query's
+/// `declare-datatypes`: a constructor `|P::{}|` with selectors `|P.x|`.
+fn struct_fields(_ query: String) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  for line in String::split(query, sep = "\n") {
+    if String::starts_with(line, prefix = "(declare-datatypes") {
+      let toks = smt_tokens(line)
+      let pos = [0]
+      struct_fields_in(e = sx_parse(toks = toks, pos = pos), out = out)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+fn struct_fields_in(e: Sx, out: Array[(String, Array[String])]) -> Unit {
+  match e {
+    SxAtom(_) => (),
+    SxList(items) => {
+      let name = smt_unquote(sx_head(items))
+      if String::ends_with(name, suffix = "::{}") && String::length(name) > 4 {
+        let sname = String::substring(name, start = 0, end = String::length(name) - 4)
+        let prefix = "\{sname}."
+        let names: Array[String] = []
+        let mut k = 1
+        while k < Array::length(items) {
+          match Array::get(items, at = k) {
+            SxList(sel) => {
+              let sel_name = smt_unquote(sx_head(sel))
+              if String::starts_with(sel_name, prefix = prefix) {
+                Array::push(names, value = String::substring(sel_name, start = String::length(prefix), end = String::length(sel_name)))
+              } else {
+                ()
+              }
+            },
+            SxAtom(_) => ()
+          }
+          k = k + 1
+        }
+        Array::push(out, value = (sname, names))
+      } else {
+        for it in items {
+          struct_fields_in(e = it, out = out)
+        }
+      }
+    }
+  }
+}
+
+fn struct_field_names(fields: Array[(String, Array[String])], name: String) -> Array[String] {
+  let mut hit: Array[String] = []
+  for f in fields {
+    let (n, names) = f
+    if n == name {
+      hit = names
+    } else {
+      ()
+    }
+  }
+  hit
 }

@@ -118,7 +118,8 @@ $dir/unproved.vibe:282:58: unproved: ensures result of \`word_unsigned_low\` -- 
 $dir/unproved.vibe:288:72: unproved: ensures result of \`word_join\` -- counterexample: <model>
 $dir/unproved.vibe:298:58: unproved: ensures Array::all(xs, f=(x) -> { (x >= 0) }) of \`claims_nonneg\` -- counterexample: <model>
 $dir/unproved.vibe:305:12: unproved: ensures (result >= 0) of \`any_is_not_first\` -- counterexample: <model>
-$dir/unproved.vibe:312:31: unproved: overflow in (x + 1) in \`succ_any\` -- counterexample: <model>"
+$dir/unproved.vibe:312:31: unproved: overflow in (x + 1) in \`succ_any\` -- counterexample: <model>
+$dir/unproved.vibe:317:53: unproved: ensures (result > 0) of \`boxed_positive\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
@@ -139,6 +140,34 @@ $dir/unsupported.vibe:147:3: unsupported: \`Array::all\`'s predicate must be a l
 $dir/unsupported.vibe:152:3: unsupported: a call inside \`Array::all\`'s predicate: its result would be one value for every element (in \`called_pred\`)
 $dir/unsupported.vibe:158:11: unsupported: \`Array::all\`'s predicate assigns \`n\` (in \`counting_pred\`)"
 run_case unknown 1 "$dir/unknown.vibe:9:12: unknown: ensures result of \`fermat3\` -- $unknown_detail"
+
+# A counterexample is spelled as the program would write the arguments: an
+# `Array[Int]` as a literal and a struct with its field names, never the
+# solver's own terms (`(|Array[Int]::mk| ((as const ..)) ..)`), so it can be
+# pasted into a call. The values are the solver's choice; the spelling is not.
+spelled_case() {
+  local name="$1"
+  local out
+  set +e
+  out="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --solver="$solver" "$dir/$name.vibe" 2>&1)"
+  set -e
+  local raw
+  raw="$(printf '%s\n' "$out" | sed -n 's/.*-- counterexample: //p' | grep -E '[|]|\(as |lambda|store' || true)"
+  if [ -n "$raw" ]; then
+    echo "[prove] FAIL ($solver): $name.vibe: a counterexample keeps the solver's terms:" >&2
+    printf '%s\n' "$raw" >&2
+    fail=1
+  fi
+  local want
+  for want in '`second` -- counterexample: xs = [' '`boxed_positive` -- counterexample: b = Boxed::{ n: '; do
+    if ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+      echo "[prove] FAIL ($solver): $name.vibe: no counterexample spelled '$want...'" >&2
+      fail=1
+    fi
+  done
+}
+
+spelled_case unproved
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per
 # line, at that line's position, with that line's message, and `[]` for a
@@ -188,4 +217,4 @@ refusal_case "is not a solver; use \`--solver=z3\`" --prove --solver=cvc5 "$dir/
 refusal_case "\`--solver\` chooses the solver of \`--prove\`" --solver="$solver" "$dir/proved.vibe"
 
 [ "$fail" = 0 ] || exit 1
-echo "[prove] ok ($solver: proved silent, unproved with counterexamples, unsupported reported, an unknown answer fails, --json carries the same diagnostics, a bad --solver is refused)"
+echo "[prove] ok ($solver: proved silent, unproved with counterexamples in program spelling, unsupported reported, an unknown answer fails, --json carries the same diagnostics, a bad --solver is refused)"

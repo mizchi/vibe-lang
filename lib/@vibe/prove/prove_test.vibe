@@ -1,7 +1,7 @@
 //# Imports
 
 import .{
-  Obligation, Obligation::report_line, prove_line_col, prove_obligations, prove_verdict
+  Obligation, Obligation::report_line, prove_line_col, prove_obligations, prove_verdict, prove_verdict_in
 }
 
 //# Helpers
@@ -124,4 +124,22 @@ test "#3717: a contracted while owes its invariants and measure on entry and aft
 test "#3717: an array read owes its index inside the length" {
   let src = "fn g(xs: Array[Int], i: Int) -> Int where { requires: i >= 0 && i < Array::length(xs), ensures: true } {\n  xs[i] + Array::get(xs, at = i) - Array::length([1, 2])\n}\n"
   inspect(kinds(src), content = "g:index:xs[i] | g:index:Array::get(xs, at=i) | g:overflow:(Array::get(xs, i) + Array::get(xs, at=i)) | g:overflow:((Array::get(xs, i) + Array::get(xs, at=i)) - Array::length([1, 2])) | g:ensures:true")
+}
+
+test "#3717: an array counterexample is the literal a call would pass" {
+  inspect(prove_verdict("sat\n((|xs| (|Array[Int]::mk| ((as const (Array Int Int)) (- 1)) 2)))\n"), content = "(unproved, xs = [-1, -1])")
+  inspect(prove_verdict("sat\n((|xs| (|Array[Int]::mk| ((as const (Array Int Int)) 0) 0)) (|i| 0))\n"), content = "(unproved, xs = [], i = 0)")
+  inspect(prove_verdict("sat\n((|xs| (|Array[Int]::mk| (lambda ((x!1 Int)) (ite (<= 1 x!1) 38 (- 1))) 2)))\n"), content = "(unproved, xs = [-1, 38])")
+  inspect(prove_verdict("sat\n((|xs| (|Array[Int]::mk| (store (store ((as const (Array Int Int)) 7) 0 (- 2)) 2 5) 3)))\n"), content = "(unproved, xs = [-2, 7, 5])")
+  inspect(prove_verdict("sat\n((|xs| (|Array[Int]::mk| (lambda ((x!1 Int)) (ite (and (<= 0 x!1) (not (= x!1 1))) (+ x!1 (* 2 3)) 0)) 3)))\n"), content = "(unproved, xs = [6, 0, 8])")
+}
+
+test "#3717: an array term the renderer cannot read is kept as z3 gave it" {
+  inspect(prove_verdict("sat\n((|xs| (|Array[Int]::mk| (_ as-array k!0) 2)))\n"), content = "(unproved, xs = (|Array[Int]::mk| (_ as-array k!0) 2))")
+  inspect(prove_verdict("sat\n((|xs| (|Array[Int]::mk| ((as const (Array Int Int)) 0) 65)))\n"), content = "(unproved, xs = (|Array[Int]::mk| ((as const (Array Int Int)) 0) 65))")
+}
+
+test "#3717: a struct counterexample names its fields from the query" {
+  let query = "(set-option :produce-models true)\n(declare-datatypes ((|Point| 0) (|Shape| 0)) (((|Point::{}| (|Point.x| Int) (|Point.y| Int))) ((|Shape::Circle| (|Shape::Circle.r| Int)) (|Shape::Empty|))))\n(check-sat)\n"
+  inspect(prove_verdict_in("sat\n((|p| (|Point::{}| 1 (- 2))) (|s| (|Shape::Circle| 3)))\n", query = query), content = "(unproved, p = Point::{ x: 1, y: -2 }, s = Shape::Circle(3))")
 }
