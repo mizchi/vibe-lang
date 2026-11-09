@@ -597,7 +597,9 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
           }
           if is_es {
             Array::push(errors, value = String::concat("effect row item `", String::concat(label, String::concat("`: `", String::concat(base, "` is an effectset — effectset instantiation in a row is not supported yet (ADR-0071)")))))
-          } else if resource_row_arg_checked(label = label, base = base, inner = inner, res = res, errors = errors) {
+          } else if resource_ctx_kind(names = res.effects, kinds = res.effect_kinds, name = base) != "" {
+            // A resource argument, not a type: `resource_rows_in_stmts`
+            // checks it, on every row of the module.
             ()
           } else if String::length(inner) == 0 {
             Array::push(errors, value = String::concat("effect row item `", String::concat(label, "` needs a type argument between the brackets")))
@@ -759,7 +761,104 @@ fn resource_row_arg_checked(label: String, base: String, inner: String, res: Res
   }
 }
 
-fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+/// Every row in the module, at any depth: a top-level annotation, and the
+/// row, parameter and result types of every function literal in a body --
+/// nested closures and annotation wrappers included. A resource argument is
+/// checked wherever it is written, so moving a function into a local binding
+/// does not skip the check (Codex review on #4020).
+fn resource_rows_in_stmts(stmts: Array[Stmt], res: ResourceRowCtx, errors: Array[String]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, ty, body) => {
+        resource_rows_in_opt_texpr(te = ty, res = res, errors = errors)
+        resource_rows_in_expr(e = body, res = res, errors = errors)
+      },
+      SLetMut(_, ty, body) => {
+        resource_rows_in_opt_texpr(te = ty, res = res, errors = errors)
+        resource_rows_in_expr(e = body, res = res, errors = errors)
+      },
+      STest(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
+      SBench(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
+      SExample(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn resource_rows_in_expr(e: Expr, res: ResourceRowCtx, errors: Array[String]) -> Unit {
+  let stack = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
+    match expr {
+      EFn(_, _, params, ret, eff, _) => {
+        resource_rows_in_row(row = eff, res = res, errors = errors)
+        for param in params {
+          resource_rows_in_opt_texpr(te = param.1, res = res, errors = errors)
+        }
+        resource_rows_in_opt_texpr(te = ret, res = res, errors = errors)
+      },
+      _ => ()
+    }
+    expr_children_into(expr = expr, out = stack)
+  }
+}
+
+fn resource_rows_in_opt_texpr(te: Option[TypeExpr], res: ResourceRowCtx, errors: Array[String]) -> Unit {
+  match te {
+    Some(t) => resource_rows_in_texpr(te = t, res = res, errors = errors),
+    None => ()
+  }
+}
+
+fn resource_rows_in_texpr(te: TypeExpr, res: ResourceRowCtx, errors: Array[String]) -> Unit {
+  match te {
+    TyFn(params, ret, eff) => {
+      resource_rows_in_row(row = eff, res = res, errors = errors)
+      for p in params {
+        resource_rows_in_texpr(te = p, res = res, errors = errors)
+      }
+      resource_rows_in_texpr(te = ret, res = res, errors = errors)
+    },
+    TyApp(_, args) => {
+      for a in args {
+        resource_rows_in_texpr(te = a, res = res, errors = errors)
+      }
+      ()
+    },
+    TyTuple(items) => {
+      for item in items {
+        resource_rows_in_texpr(te = item, res = res, errors = errors)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+fn resource_rows_in_row(row: Option[String], res: ResourceRowCtx, errors: Array[String]) -> Unit {
+  match row {
+    Some(r) => {
+      for raw in String::split(r, sep = ",") {
+        let label = String::trim(raw)
+        let bi = String::index_of(label, needle = "[")
+        if bi > 0 && String::ends_with(label, suffix = "]") {
+          let base = label[0: bi]
+          let inner = String::trim(label[bi + 1: String::length(label) - 1])
+          let _ = resource_row_arg_checked(label = label, base = base, inner = inner, res = res, errors = errors)
+        } else {
+          ()
+        }
+      }
+      ()
+    },
+    None => ()
+  }
+}
+
+fn geff_validate_row_targs(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
   let res = ResourceRowCtx::{
     effects: [],
     effect_kinds: [],
@@ -773,6 +872,22 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   for provider in standard_host_provider_names() {
     Array::push(res.effects, value = provider)
     Array::push(res.effect_kinds, value = standard_provider_default_resource_kind(provider))
+  }
+  // The resolved declarations, so an IMPORTED resource-parameterized effect
+  // (under its local name) is checked like a local one.
+  for def in defs {
+    match def {
+      TDEffect(dname, _, _, dkinds) => {
+        for k in dkinds {
+          if k != "" {
+            Array::push(res.effects, value = dname)
+            Array::push(res.effect_kinds, value = k)
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
   }
   let ed_names = array_empty()
   let ed_tpcounts = array_empty()
@@ -847,6 +962,7 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
     }
     j = j + 1
   }
+  resource_rows_in_stmts(stmts = stmts, res = res, errors = errors)
 }
 
 /// Canonicalize only the imported `StdinStream as S` type head before the
@@ -2633,7 +2749,7 @@ export fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, defs: Ar
       // #1340 (ADR-0071): generic-instantiation row items are validated
       // against the effect declarations before the containment pass sees
       // them (which compares instantiation-insensitively by base name).
-      geff_validate_row_targs(stmts = stmts, errors = frozen_errors)
+      geff_validate_row_targs(stmts = stmts, defs = defs, errors = frozen_errors)
     }
     if Array::length(frozen_errors) == 0 {
       // ADR-0071 step 3 (#755): expand any effectset-name token in a
