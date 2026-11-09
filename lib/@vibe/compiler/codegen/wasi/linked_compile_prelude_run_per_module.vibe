@@ -41,10 +41,12 @@ import @vibe/compiler/normalize {
   desugar_module_reports_begin,
   desugar_module_reports_flush,
   desugar_module_reports_pending,
+  desugar_stmts_spell_int32,
   desugar_trait_dicts_module,
   desugar_trait_dicts_module_deferring,
   desugar_trait_dicts_module_with_facts,
   desugar_trait_dicts_with_typed_eq,
+  desugar_typed_rows,
   eq_deferred_requests_list,
   eq_deferred_reset,
   eq_invisible_nominals_list,
@@ -871,6 +873,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   }
   let ifaces: Array[Array[Stmt]] = []
   let iface_keys: Array[Array[String]] = []
+  let iface_spells_int32: Array[Bool] = []
   let mut pf = 0
   while pf < file_count {
     let src = Array::get(parts, at = pf)
@@ -893,6 +896,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     Array::push(ifaces, value = dst)
     Array::push(iface_keys, value = keys)
+    // #3976: asked once per interface. Every module that imports this one
+    // used to scan these statements again for `Int32` / `UInt32`.
+    Array::push(iface_spells_int32, value = desugar_stmts_spell_int32(dst))
     pf = pf + 1
   }
   // #2633: which module each mangle tag belongs to, so an unresolved name can
@@ -978,6 +984,10 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // The batch and executor routes above lower a module elsewhere and still
   // report per module.
   desugar_module_reports_begin()
+  // #3976: every module is lowered against the same typed rows, and sorting
+  // them by kind reads nothing else, so they are sorted once here instead of
+  // once per module.
+  let shared_rows = desugar_typed_rows(typed_eq_offsets = checker_eq_offsets, typed_eq_keys = checker_eq_type_keys)
   fi = 0
   while fi < file_count && !execute_batch {
     let part_entry = if fi == entry_fid {
@@ -1041,12 +1051,19 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     let visible = Array::get(import_closure, at = fi)
     let ctx: Array[Stmt] = []
+    // Whether an interface this context is drawn from spells `Int32` /
+    // `UInt32`. The context holds a subset of those statements, so false
+    // vouches for every one of them.
+    let mut ctx_spells_int32 = false
     let mut vj = 0
     while vj < Array::length(visible) {
       let cj = Array::get(visible, at = vj)
       if cj == fi || cj < 0 || cj >= file_count {
         ()
       } else {
+        if Array::get(iface_spells_int32, at = cj) {
+          ctx_spells_int32 = true
+        } else ()
         let other = Array::get(ifaces, at = cj)
         // Interface names are fixed before any module is lowered. Reuse
         // their keys while keeping this importer's own-key filter intact.
@@ -1080,7 +1097,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     if execute_module {
       Array::get(prelude_module_executors, at = 0)(part, ctx, fi, file_count, part_entry, checker_eq_offsets, checker_eq_type_keys, env, synth_keys, link.tail, link.diags)
     } else {
-      let synthesized = desugar_trait_dicts_module_deferring(own = part, ctx = ctx, module_tag = "f\{fi}", typed_eq_offsets = checker_eq_offsets, typed_eq_keys = checker_eq_type_keys, facts = env.trait_facts)
+      let synthesized = desugar_trait_dicts_module_deferring(own = part, ctx = ctx, module_tag = "f\{fi}", rows = shared_rows, ctx_int32_free = !ctx_spells_int32, facts = env.trait_facts)
       match observations {
         Some(st) => {
           lc_union_into(dst = st.requests, src = eq_synthesis_requests_list())

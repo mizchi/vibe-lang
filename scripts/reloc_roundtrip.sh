@@ -28,7 +28,15 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/scripts/resolve_stage2.sh"
 STAGE2="$(resolve_stage2 reloc-roundtrip "${RELOC_ROUNDTRIP_STAGE2:-}")"
 
+# #3941: a module is rebuilt at the slot width it was EMITTED with, which the
+# bytes cannot tell (a padded `call 5` and a minimal `call 20000` look alike).
+# Named modules and the probes built here take RELOC_ROUNDTRIP_SLOT_WIDTH; the
+# existing stage2 appended below was built by the generation at width 0, so it
+# keeps width 0 whatever the probes use.
+slot_width="${RELOC_ROUNDTRIP_SLOT_WIDTH:-0}"
 targets=("$@")
+widths=()
+for _t in ${targets[@]+"${targets[@]}"}; do widths+=("$slot_width"); done
 if [ "${#targets[@]}" -eq 0 ]; then
   probe_dir="_build/_reloc_probe"
   mkdir -p "$probe_dir"
@@ -39,9 +47,20 @@ if [ "${#targets[@]}" -eq 0 ]; then
   # fixed byte per group reported SUCCESS on this module while scanning from
   # one byte early -- classifying a type site as a blocktype site and still
   # round-tripping. A probe that cannot reach a construct is not coverage of
-  # it.
+  # it. `risky` / the `handle` give both lanes a `throw` and a `try_table`
+  # catch, so exception TAG sites are scanned on the gc lane too: at a slot
+  # width (#3941) the gc lane's hand-encoded tags were left minimal while the
+  # rebuild padded them, and the earlier probe had no tag site to show it.
   cat > "$probe_dir/gcprobe.vibe" <<'PROBE'
 struct Pt { x: Int; y: Int }
+
+fn risky(n: Int) -> Int with Exception {
+  if n > 3 {
+    throw("big")
+  } else {
+    n
+  }
+}
 
 fn build() -> Array[Int] {
   let xs = [1, 2, 3, 4]
@@ -56,7 +75,10 @@ fn main() -> Int {
   let xs = build()
   let p = Pt::{ x: Array::get(xs, at = 0), y: Array::get(xs, at = 3) }
   let ys = [mid(p = p), mid(p = p)]
-  Array::get(ys, at = 0) + Array::get(ys, at = 1) + Array::length(xs)
+  let caught = handle {
+    risky(n = Array::length(xs) + 1)
+  } with { Exception::Throw(_) => 0 }
+  Array::get(ys, at = 0) + Array::get(ys, at = 1) + Array::length(xs) + caught
 }
 PROBE
   for backend in linear gc; do
@@ -74,12 +96,12 @@ PROBE
     # probes and an oracle reporting success without ever scanning the linear
     # lane it promised (#2252: a gate must not assume its environment).
     if [ "$backend" = gc ]; then
-      env -u VIBE_RC VIBE_BACKEND=gc VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+      env -u VIBE_RC VIBE_BACKEND=gc VIBE_WASM_NAMES=1 VIBE_RELOC_SLOT_WIDTH="$slot_width" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
         bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
         "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
     else
-      env -u VIBE_RC -u VIBE_BACKEND VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+      env -u VIBE_RC -u VIBE_BACKEND VIBE_WASM_NAMES=1 VIBE_RELOC_SLOT_WIDTH="$slot_width" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
         bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
         "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
@@ -89,6 +111,7 @@ PROBE
       exit 1
     fi
     targets+=("$out")
+    widths+=("$slot_width")
   done
   # And CHECK the property rather than trusting the env that was meant to
   # produce it: same source, same compiler, so if the two lanes really ran
@@ -100,11 +123,13 @@ PROBE
     exit 1
   fi
   targets+=("$STAGE2")
+  widths+=(0)
 fi
 
 rc=0
-for t in "${targets[@]}"; do
-  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_roundtrip.vibex -- "$t" 2>&1 \
+for i in "${!targets[@]}"; do
+  t="${targets[$i]}"
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_roundtrip.vibex -- "$t" "${widths[$i]}" 2>&1 \
     | grep -E 'reloc-roundtrip|unknown opcode|unknown 0x|uncaught'; then
     rc=1
   fi

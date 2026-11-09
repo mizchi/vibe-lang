@@ -20,7 +20,11 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
-  emit_i32_const, emit_i64_const
+  emit_i32_const_ctor_tag, emit_i32_const_slot, emit_i64_const_slot
+}
+
+import @vibe/compiler/core {
+  leb128_encode_u32_slot
 }
 
 import ./linked_body_cache_edit.vibe {
@@ -214,21 +218,6 @@ fn lc_map_ctor_tag(m: LcIndexMap, t: Int) -> Int {
   }
 }
 
-fn lc_push_uleb(out: Bytes, value: Int) -> Unit {
-  let mut v = value
-  let mut more = true
-  while more {
-    let b = v&127
-    v = v>>7
-    if v == 0 {
-      Bytes::push(out, value = b)
-      more = false
-    } else {
-      Bytes::push(out, value = b|128)
-    }
-  }
-}
-
 fn lc_sleb_end(body: Bytes, p: Int) -> Int {
   let mut i = p
   let mut done = false
@@ -318,7 +307,10 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
             ok = false
           } else if n != v {
             let b = Bytes::new()
-            lc_push_uleb(out = b, value = n)
+            // A function index, tag or global is written at the compile's
+            // slot width, exactly as its emitter wrote it, so a moved body
+            // stays byte-identical to a fresh compile (#3941).
+            leb128_encode_u32_slot(buf = b, value = n)
             lc_edit_insert(edits = edits, e = LcEdit::{
               off: Array::get(r.offsets, at = i),
               width: Array::get(r.widths, at = i),
@@ -353,10 +345,14 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
         ok = false
       } else if n != s {
         let b = Bytes::new()
+        // A table slot or constructor tag is written at the compile's width
+        // for it, exactly as the emitter wrote it (#3941).
         if kind == blind_kind_fn_value {
-          emit_i64_const(buf = b, value = (n<<2)|2)
+          emit_i64_const_slot(buf = b, value = (n<<2)|2)
+        } else if kind == blind_kind_table_slot_i32 {
+          emit_i32_const_slot(buf = b, value = n)
         } else {
-          emit_i32_const(buf = b, value = n)
+          emit_i32_const_ctor_tag(buf = b, value = n)
         }
         lc_edit_insert(edits = edits, e = LcEdit::{
           off: off,

@@ -24,7 +24,7 @@ fi
 
 # multi-file (FS import resolution)
 printf 'export let dbl = (x: Int) -> Int { x * 2 }\n' > "$WORK/lib.vibe"
-printf 'import ./lib.vibe { dbl }\nfn main allows Stdout { Stdout::write_stream("\\{dbl(21)}\\n") }\n' > "$WORK/m2.vibex"
+printf 'import ./lib.vibe { dbl }\nfn main allows Stdout { Stdout::write_stream("\\{dbl(x = 21)}\\n") }\n' > "$WORK/m2.vibex"
 out2="$(bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/m2.vibex" | tr -dc '0-9\n' | grep -E '.' | head -1)"
 if [ "$out2" != "42" ]; then
   echo "[vibe-run-smoke] FAIL multi-file: expected 42, got '$out2'" >&2; exit 1

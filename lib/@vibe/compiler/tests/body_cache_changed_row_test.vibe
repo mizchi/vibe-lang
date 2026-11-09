@@ -17,11 +17,15 @@
 //# compile.
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+  codegen_body_cache_artifact_key, compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
 }
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, persistent_artifact_cache_path
+  persistent_artifact_cache_path
+}
+
+import @vibe/compiler/core {
+  set_reloc_slot_width
 }
 
 fn bcr_bytes(_ s: String) -> Bytes {
@@ -75,8 +79,25 @@ fn bcr_main() -> String {
   ], sep = "\n")
 }
 
-test "a folded constant changed recompiles exactly its callers" {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
+//# #3941: every row runs at slot width 0 and at slot width 3. A relocation
+//# that wrote a padded slot back minimal, or a cache slot shared between the
+//# widths, answers differently at 3 than the same row at 0.
+
+/// Run `row` at relocatable-slot width `width`, restoring width 0 after it.
+fn bcr_at_slot_width(width: Int, row: () -> Unit with Console + Env + Exception + Fs) -> Unit with Console + Env + Exception + Fs {
+  set_reloc_slot_width(width)
+  handle {
+    row()
+    set_reloc_slot_width(0)
+  } with { Exception::Throw(m) => {
+    set_reloc_slot_width(0)
+    throw(m)
+  } }
+}
+
+/// The row behind the test "a folded constant changed recompiles exactly its callers"; run at slot widths 0 and 3.
+fn bcr_row_1() -> Unit with Console + Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bcr_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -91,6 +112,14 @@ test "a folded constant changed recompiles exactly its callers" {
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcr_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bcr_main_path, entry_name = "run")
   inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bcr_bytes_eq(a = warm, b = fresh)}", content = "saved=3 equal=true")
+}
+
+test "a folded constant changed recompiles exactly its callers" {
+  bcr_row_1()
+}
+
+test "a folded constant changed recompiles exactly its callers, at slot width 3 (#3941)" {
+  bcr_at_slot_width(width = 3, row = bcr_row_1)
 }
 
 /// The middle file for the return-class row: `bcr_s` returns `ret`, built by
@@ -117,8 +146,9 @@ fn bcr_main_ret() -> String {
 // A return class that changes also changes the set of builtins the program
 // uses (here the string runtime), and that guard declines the lane first:
 // the row is recorded, not reached. Kept so the case stays byte-exact.
-test "a return class changed declines and compiles byte-exact" {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
+/// The row behind the test "a return class changed declines and compiles byte-exact"; run at slot widths 0 and 3.
+fn bcr_row_2() -> Unit with Console + Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bcr_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -133,4 +163,12 @@ test "a return class changed declines and compiles byte-exact" {
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcr_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bcr_main_path, entry_name = "run")
   inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bcr_bytes_eq(a = warm, b = fresh)}", content = "saved=0 equal=true")
+}
+
+test "a return class changed declines and compiles byte-exact" {
+  bcr_row_2()
+}
+
+test "a return class changed declines and compiles byte-exact, at slot width 3 (#3941)" {
+  bcr_at_slot_width(width = 3, row = bcr_row_2)
 }
