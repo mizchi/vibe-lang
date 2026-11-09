@@ -1,0 +1,43 @@
+# Compile-only size budget (#2506), read by scripts/check_compile_only_size.sh.
+#
+# WHAT IS BUDGETED. The compile-only artifact (scripts/build_compile_only.sh,
+# DCE-rooted at main_compile_only) may be at most
+#     CLI stage2 bytes - separation_bytes * (100 - tolerance_pct) / 100
+# where the CLI stage2 is the one built from the same source, and both sizes
+# are taken with the name section removed. Equivalently: what the
+# compile-only entry leaves out of the full CLI must not shrink by more than
+# tolerance_pct.
+#
+# WHY NOT AN ABSOLUTE CAP. The compiler grows legitimately: stage1 built from
+# main be778cd15 is 5,752,094 B against 5,593,114 B for the seed built from
+# c3272d19, +2.8% across ~100 commits in four days. Capping the compile-only
+# bytes would fight that the way #1109-4 records for the CLI. Compiler growth
+# lands in both artifacts and cancels out of the separation; growth only the
+# CLI carries widens it. So the full CLI stays observation-only, and what
+# fails is code the CLI carries becoming reachable from main_compile_only.
+# The absolute numbers are printed on every run and tracked, not capped.
+#
+# NOT YET OMITTED, so not credited here: compiler_fmt (~43 KB) and lsp
+# (~24 KB) are still reachable from main_compile_only (#2499 / #2504). When
+# their exclusion lands the separation grows and the gate says to ratchet up.
+#
+# Rebaseline -- down when the CLI itself shrank on purpose, up after an
+# exclusion lands -- with a generation built from the commit:
+#   bash scripts/generations.sh build --out-dir /tmp/size_gen
+#   VIBE_STAGE2_WASM=/tmp/size_gen/stage2.wasm bash scripts/check_compile_only_size.sh --print
+# then copy the `separation_bytes` line below and the `#` provenance lines
+# into the history, noting old -> new and why.
+#
+# 2026-11-09 initial baseline, main be778cd15 (clean tree):
+#   CLI stage2           5,753,034 B  sha256 6c72bc231670863d0f884560d8d5b95ee55d88587452b50947bbb53b6a8378a2
+#                        code section 5,437,093 B, 12,545 functions
+#   compile-only         5,112,143 B  sha256 b035662e8721ba096a082c985447fb6f7bac19b1e55b74bf23ef8650ed3ac3d2
+#                        code section 4,842,237 B, 11,466 functions
+#   generated sources    ensure_generated fingerprint 53b5bb0f9d2f0fba6b5f1549807b9ba300a3d81102db673d6fbebdd10bdb22f0
+#   separation             640,891 B (11.1% of the CLI); floor at 5%: 608,846 B
+#   The plain build and the named build with its name section removed are
+#   byte-identical, and two builds gave the same bytes.
+#
+# Format: comments/blank lines ignored; remaining lines are "<key> <integer>".
+separation_bytes 640891
+tolerance_pct 5
