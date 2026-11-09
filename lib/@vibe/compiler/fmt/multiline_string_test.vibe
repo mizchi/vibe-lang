@@ -5,7 +5,7 @@ import @vibe/compiler/core {
   Expr, Stmt
 }
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, parse_program, token_to_string
 }
 
 fn string_and_next(_ source: String) -> (String, Int) with Exception {
@@ -19,6 +19,21 @@ fn string_and_next(_ source: String) -> (String, Int) with Exception {
     _ => throw("expected a following integer binding")
   }
   (value, next)
+}
+
+/// The string literals `source` lexes to, one rendering per token, so a test
+/// can see two `#|` blocks merge into one literal (or a misaligned pair stop
+/// lexing at all).
+fn string_tokens(_ source: String) -> String with Exception {
+  let out = StringBuilder::new()
+  for tok in lex(source) {
+    let text = token_to_string(tok)
+    if String::starts_with(text, prefix = "TString(") {
+      StringBuilder::push(out, value = text)
+      StringBuilder::push(out, value = ";")
+    }
+  }
+  StringBuilder::freeze(out)
 }
 
 test "formatter preserves multiline string content and the following statement" {
@@ -53,4 +68,51 @@ test "formatter keeps the #| spelling of a multiline string" {
   let formatted = format_script(in_call)
   inspect(formatted, content = "fn f() -> Int {\n  String::length(#|abc\n  )\n}\n")
   assert_eq(format_script(formatted), formatted)
+}
+
+// #2503 review: two DISTINCT `#|` blocks are only distinct because something
+// sits between them -- a blank line, a comment, or other tokens -- since a
+// `#|` line right under a block is either its continuation (same column) or a
+// lex error (any other column). Inside braces the layout caps blank lines at
+// one newline, which put the second block directly under the first: at the
+// same column the lexer joined them into ONE literal, so a body returning
+// "returned" returned "ignored\nreturned"; at another column the output no
+// longer lexed. Every shape below must keep its string tokens apart.
+test "formatter keeps distinct #| blocks apart: blank line in a block" {
+  let src = "fn f() -> String {\n  #|ignored\n\n  #|returned\n}\n"
+  let formatted = format_script(src)
+  inspect(string_tokens(formatted), content = "TString(\"ignored\");TString(\"returned\");")
+  assert_eq(format_script(formatted), formatted)
+}
+
+test "formatter keeps distinct #| blocks apart: blank line after a binding" {
+  let src = "fn f() -> String {\n  let s = #|bound\n\n  #|last\n}\n"
+  let formatted = format_script(src)
+  inspect(string_tokens(formatted), content = "TString(\"bound\");TString(\"last\");")
+  assert_eq(format_script(formatted), formatted)
+}
+
+test "formatter keeps distinct #| blocks apart: dropped semicolon" {
+  let src = "fn f() -> String {\n  #|one\n  ;\n  #|two\n}\n"
+  inspect(string_tokens(format_script(src)), content = "TString(\"one\");TString(\"two\");")
+}
+
+test "formatter keeps distinct #| blocks apart: comment line" {
+  let src = "fn f() -> String {\n  #|before\n  // between\n  #|after\n}\n"
+  inspect(string_tokens(format_script(src)), content = "TString(\"before\");TString(\"after\");")
+}
+
+test "formatter keeps distinct #| blocks apart: call arguments" {
+  let src = "fn f() -> String {\n  String::concat(\n    #|left\n    ,\n    #|right\n  )\n}\n"
+  inspect(string_tokens(format_script(src)), content = "TString(\"left\");TString(\"right\");")
+}
+
+test "formatter keeps distinct #| blocks apart: array elements" {
+  let src = "fn f() -> Array[String] {\n  [\n    #|first\n    ,\n    #|second\n  ]\n}\n"
+  inspect(string_tokens(format_script(src)), content = "TString(\"first\");TString(\"second\");")
+}
+
+test "formatter keeps distinct #| blocks apart: match arms" {
+  let src = "fn f(n: Int) -> String {\n  match n {\n    0 => #|zero\n    _ => #|other\n  }\n}\n"
+  inspect(string_tokens(format_script(src)), content = "TString(\"zero\");TString(\"other\");")
 }
