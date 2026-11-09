@@ -92,6 +92,7 @@ import @vibe/compiler/core {
   typed_index_map_verdict,
   typed_index_open_verdict,
   typed_index_row_head,
+  typed_index_seq_verdict,
   typed_int32_row_head,
   typed_lowering_arg_offset,
   typed_lowering_float_key,
@@ -1286,9 +1287,11 @@ fn add32_call_rows(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapt
 /// substitution: `typed_index_map_verdict()` for a Map (directly or through a
 /// type alias), `typed_index_open_verdict()` for a type that is still a
 /// variable -- an unresolved inference variable or an erased type parameter,
-/// either of which may be a Map at run time -- and "" for anything else, which
-/// is array indexing whatever it turns out to be. Follows the variable chain
-/// only (the `subst_resolves_to_double` cost contract): the head decides.
+/// either of which may be a Map at run time -- `typed_index_seq_verdict()` for
+/// any other settled type, which is array indexing whatever it turns out to
+/// be (#2501), and "" for a bare `CtUnknown` that is not open. Follows the
+/// variable chain only (the `subst_resolves_to_double` cost contract): the
+/// head decides.
 fn index_receiver_verdict(checked: CheckedProgram, ty: Type, unknown_is_open: Bool) -> String {
   let mut cur = ty
   let seen: Array[Int] = []
@@ -1326,7 +1329,7 @@ fn index_receiver_verdict(checked: CheckedProgram, ty: Type, unknown_is_open: Bo
           verdict = typed_index_map_verdict()
           done = true
         } else {
-          verdict = ""
+          verdict = typed_index_seq_verdict()
           done = true
         },
         _ => {
@@ -1349,13 +1352,13 @@ fn index_receiver_verdict(checked: CheckedProgram, ty: Type, unknown_is_open: Bo
             done = true
           },
           None => {
-            verdict = ""
+            verdict = typed_index_seq_verdict()
             done = true
           }
         }
       },
       _ => {
-        verdict = ""
+        verdict = typed_index_seq_verdict()
         done = true
       }
     }
@@ -1412,11 +1415,16 @@ fn index_receiver_alias_body(defs: Array[TypeDef], name: String) -> Option[Type]
 }
 
 /// #3133: the index rows for the typed-`==` channel -- `(bracket offset,
-/// impl_target_key(#index[<verdict>]))` for every recorded index receiver
-/// whose verdict is Map or open. A receiver the checker typed as anything
-/// else files nothing: the index is array indexing and the pass leaves it.
+/// impl_target_key(#index[<verdict>]))` for every recorded index receiver.
+/// A receiver the checker settled as anything but a Map files
+/// `typed_index_seq_verdict()` (#2501): the index is array indexing, and the
+/// row is what tells the pass so, where the receiver's spelling would name an
+/// outer Map binding a `match` arm binder shadows. An Array reader (kind 5)
+/// files only Map or open; nothing reads its settled answer.
 /// An offset claimed by checks that disagree (one shared generic body seen at
 /// two types) is OPEN, because the body is lowered once and cannot be both.
+/// A settled answer and a check that recorded none ("") agree: neither is a
+/// Map, and neither is open.
 /// Rows are kept sorted by offset; the capture visits sites in source order,
 /// so the insertion is an append in the common case.
 export fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
@@ -1575,7 +1583,12 @@ fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceR
           _ => typed_index_open_verdict()
         }
       } else {
-        index_receiver_verdict(checked = checked, ty = Array::get(capture.binop_types, at = i), unknown_is_open = kind == 4)
+        let rv = index_receiver_verdict(checked = checked, ty = Array::get(capture.binop_types, at = i), unknown_is_open = kind == 4)
+        if kind == 5 && rv == typed_index_seq_verdict() {
+          ""
+        } else {
+          rv
+        }
       }
       let mut lo = 0
       let mut hi = Array::length(offs)
@@ -1588,10 +1601,13 @@ fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceR
         }
       }
       if lo < Array::length(offs) && Array::get(offs, at = lo) == off {
-        if Array::get(verdicts, at = lo) != v {
-          Array::set(verdicts, at = lo, value = typed_index_open_verdict())
-        } else {
+        let prev = Array::get(verdicts, at = lo)
+        if prev == v || (prev == typed_index_seq_verdict() && v == "") {
           ()
+        } else if prev == "" && v == typed_index_seq_verdict() {
+          Array::set(verdicts, at = lo, value = v)
+        } else {
+          Array::set(verdicts, at = lo, value = typed_index_open_verdict())
         }
       } else {
         Array::push(offs, value = off)

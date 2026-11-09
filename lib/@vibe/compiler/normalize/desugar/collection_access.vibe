@@ -55,16 +55,23 @@ import ./utilities.vibe {
 /// counted 0). The checker binds the loop variable to the Map's KEY type, so
 /// the loop is the loop over `Map::keys(m)`, and it is lowered to exactly
 /// that. A Map known from the checker's row, or from the iterand's own
-/// spelling on a lane with no rows, is rewritten; an iterand whose type
+/// spelling where no row was filed, is rewritten; an iterand whose type
 /// never resolved (an erased formal, a generalised lambda's parameter) is
-/// refused -- it may be a Map at run time. Returns the rewritten iterand, or
-/// None to keep the loop as it is.
+/// refused -- it may be a Map at run time. A row that settled the iterand as
+/// something else (`typed_index_seq_verdict`) keeps the loop, whatever the
+/// spelling says: the spelling is read from a syntactic scope, and a `match`
+/// arm binder that shadows an outer Map binding iterated as that Map's keys
+/// (#2501). Returns the rewritten iterand, or None to keep the loop as it is.
 export fn dtd_forin_map_iterand(iter: Expr, riter: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] {
   let off = typed_lowering_arg_offset(iter)
   let verdict = dtd_typed_row_verdict_for(dtd_typed_index_offs = dtd_typed_forin_offs, dtd_typed_index_verdicts = dtd_typed_forin_verdicts, off = off)
-  let spelled = match infer_arg_type_name(arg = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
-    Some(t) => t,
-    None => ""
+  let spelled = if String::length(verdict) == 0 {
+    match infer_arg_type_name(arg = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+      Some(t) => t,
+      None => ""
+    }
+  } else {
+    ""
   }
   if verdict == typed_index_map_verdict() || spelled == "Map" || spelled == "StringMap" {
     Some(ECall(builtin_ref("Map::keys"), [riter], -1, []))
@@ -238,14 +245,20 @@ export fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr]
       } else {
         ""
       }
-      let spelled = match infer_arg_type_name(arg = Array::get(args, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
-        Some(t) => t,
-        None => ""
+      // Every verdict is authoritative, and the spelling is read only where
+      // the checker filed none: it comes from a syntactic scope, so a lambda
+      // parameter shadowing an outer Map binding (#3133 review), or a `match`
+      // arm binder settled as an Array (`typed_index_seq_verdict`, #2501),
+      // would otherwise be rewritten to `Map::get`.
+      let spelled = if String::length(verdict) == 0 {
+        match infer_arg_type_name(arg = Array::get(args, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+          Some(t) => t,
+          None => ""
+        }
+      } else {
+        ""
       }
-      // An open verdict is authoritative: the spelling fallback reads a
-      // syntactic scope, so a lambda parameter shadowing an outer Map binding
-      // would otherwise be rewritten to `Map::get` (#3133 review).
-      let recv_map = verdict == typed_index_map_verdict() || (verdict != typed_index_open_verdict() && (spelled == "Map" || spelled == "StringMap"))
+      let recv_map = verdict == typed_index_map_verdict() || spelled == "Map" || spelled == "StringMap"
       if recv_map {
         // #2334: the lookup is located at the index -- its own offset, or
         // the bracket's when the parser left the call unlocated. The railway
