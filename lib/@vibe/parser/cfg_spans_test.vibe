@@ -47,6 +47,24 @@ test "ambient flags select too, including a guarded impl" {
   assert_eq(Array::get(got, at = 4), "let d = 4")
 }
 
+test "a negative guard keeps or drops a whole impl and excludes the directive from its span" {
+  let source = "#cfg(not(telemetry))\nimpl Show for Foo {\n  show(self) -> String { \"quiet\" }\n}\nlet tail = 3\n"
+  set_cfg_ambient_flags([])
+  let off = slices(source)
+  assert_eq(Array::length(off), 2)
+  assert_eq(Array::get(off, at = 0), "impl Show for Foo {\n  show(self) -> String { \"quiet\" }\n}")
+  set_cfg_ambient_flags(["telemetry"])
+  handle {
+    let on = slices(source)
+    assert_eq(Array::length(on), 1)
+    assert_eq(Array::get(on, at = 0), "let tail = 3")
+    set_cfg_ambient_flags([])
+  } with { Exception::Throw(msg) => {
+    set_cfg_ambient_flags([])
+    throw(msg)
+  } }
+}
+
 test "an inactive guarded statement must still parse" {
   set_cfg_ambient_flags([])
   let bad = "#cfg(never)\nlet = \nlet d = 4\n"
