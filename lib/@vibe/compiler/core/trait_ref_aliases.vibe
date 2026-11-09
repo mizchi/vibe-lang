@@ -77,13 +77,29 @@ export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Arra
 /// linked overlap check could not tell `Value[Alias]` was `Value[Int]`. An
 /// exported alias keeps its name through the merge, the linked check resolves
 /// it there, and its key keeps the spelling the author wrote.
+///
+/// A private alias's BODY is expanded under every alias the module declares,
+/// exported ones included, in the body's own scope: `type B = A` beside
+/// `export type A = Int` is `Int`, not `A`. Rewriting a key to `A` would let a
+/// declaration's own type parameter `A` capture it (`[A, V: Value[B]]`), and
+/// the merged program's later pass could not repair that (Codex on #3970). A
+/// body whose expansion exceeds the node budget is not used at all, so its
+/// keys keep their spelling as before.
 export fn canonicalize_trait_ref_private_aliases(_ stmts: Array[Stmt]) -> Unit {
   let listed = trait_ref_export_listed_names(stmts)
+  let all = trait_ref_local_aliases(stmts)
   let aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
   for stmt in stmts {
     match stmt {
       STypeAlias(exported, name, params, target) => if !exported && !trait_ref_names_contain(names = listed, name = name) {
-        Array::push(aliases, value = (name, params, target))
+        let budget = [trait_ref_alias_node_budget]
+        let body = trait_ref_alias_expand(te = target, aliases = all, shadow = trait_ref_param_names(params), fuel = 64, budget = budget)
+        trait_ref_count_nodes(te = body, budget = budget)
+        if Array::get(budget, at = 0) > 0 {
+          Array::push(aliases, value = (name, params, body))
+        } else {
+          ()
+        }
       } else {
         ()
       },
