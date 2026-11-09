@@ -13,7 +13,7 @@ import ./parser_base.vibe {
 }
 
 import ./parser_binder_context.vibe {
-  ParserBinderContext
+  ParserBinderContext, SourceBinder, binder_capture_append, binder_capture_mark, binder_capture_synthetic, binder_capture_take_from
 }
 
 //# Functions
@@ -23,9 +23,16 @@ import ./parser_binder_context.vibe {
 /// the `invariant` conditions, the `decreases` measures (at most one) and the
 /// position of the loop body's `{`. With no `where` it returns two empty
 /// arrays and `pos` unchanged.
-fn parse_loop_where(tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[Expr], Array[Expr], Int) with Exception {
+///
+/// #3789: each clause's binder rows are taken out of `context` as the clause
+/// is read and returned apart, in the order the lowering binds them -- the
+/// invariants', then the measure's -- because the lowering moves the clauses
+/// ahead of the loop head and the body (`contract_rows`).
+fn parse_loop_where(tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[Expr], Array[Expr], Array[Array[SourceBinder]], Int) with Exception {
   let invariants: Array[Expr] = []
   let decreases: Array[Expr] = []
+  let invariant_rows: Array[Array[SourceBinder]] = []
+  let decreases_rows: Array[Array[SourceBinder]] = []
   match peek(tokens = tokens, pos = pos) {
     TIdent(w) => if w == "where" {
       let mut wp = expect_tk(tokens = tokens, pos = pos + 1, expected = "{")
@@ -45,13 +52,17 @@ fn parse_loop_where(tokens: Array[Token], pos: Int, parse_recur: (Array[Token], 
               ()
             }
             let cp = expect_tk(tokens = tokens, pos = wp + 1, expected = ":")
+            let clause_mark = binder_capture_mark(context)
             let (cond, cnext) = parse_recur(tokens, cp, 0, context)
+            let rows = binder_capture_take_from(context = context, mark = clause_mark)
             if kind == "invariant" {
               Array::push(invariants, value = cond)
+              Array::push(invariant_rows, value = rows)
             } else if Array::length(decreases) > 0 {
               throw("a loop's where clause takes one `decreases` measure; combine them into one Int expression")
             } else {
               Array::push(decreases, value = cond)
+              Array::push(decreases_rows, value = rows)
             }
             wp = match peek(tokens = tokens, pos = cnext) {
               TComma => cnext + 1,
@@ -61,11 +72,14 @@ fn parse_loop_where(tokens: Array[Token], pos: Int, parse_recur: (Array[Token], 
           _ => throw("expected 'invariant', 'decreases', or '}' in a loop's where clause")
         }
       }
-      (invariants, decreases, wp)
+      for rows in decreases_rows {
+        Array::push(invariant_rows, value = rows)
+      }
+      (invariants, decreases, invariant_rows, wp)
     } else {
-      (invariants, decreases, pos)
+      (invariants, decreases, invariant_rows, pos)
     },
-    _ => (invariants, decreases, pos)
+    _ => (invariants, decreases, invariant_rows, pos)
   }
 }
 
@@ -334,6 +348,49 @@ fn names_use_prefix(names: Array[String], prefix: String) -> Bool {
   found
 }
 
+/// #3789: the binder rows of a contracted loop, put in its lowered order so
+/// the source-owning parse entry can still publish binder authority. The
+/// parse captured the loop head's rows (`[head_mark, body_mark)`: a `while`
+/// condition, or a `for`'s variables and iterand) and then the body's;
+/// `parse_loop_where` held each clause's rows aside (`clause_rows`, the
+/// invariants' then the measure's). The lowering binds, outermost first: the
+/// measure cells, the `for` checkpoint closure, every clause's
+/// `typed_clause` parameter followed by the clause (the measure's after its
+/// `<stem>_dec_now`), then the head, the `for` body value and the body.
+fn contract_rows(context: Option[ParserBinderContext], head_mark: Int, body_mark: Int, clause_rows: Array[Array[SourceBinder]], invariant_count: Int, has_measure: Bool, stem: String, is_for: Bool) -> Unit {
+  let body_rows = binder_capture_take_from(context = context, mark = body_mark)
+  let head_rows = binder_capture_take_from(context = context, mark = head_mark)
+  if has_measure {
+    binder_capture_synthetic(context = context, name = "\{stem}_dec_prev")
+    binder_capture_synthetic(context = context, name = "\{stem}_dec_seen")
+  } else {
+    ()
+  }
+  if is_for {
+    binder_capture_synthetic(context = context, name = "\{stem}_check")
+  } else {
+    ()
+  }
+  let mut i = 0
+  for rows in clause_rows {
+    if i == invariant_count {
+      binder_capture_synthetic(context = context, name = "\{stem}_dec_now")
+    } else {
+      ()
+    }
+    binder_capture_synthetic(context = context, name = "__vibe_clause")
+    binder_capture_append(context = context, rows = rows)
+    i = i + 1
+  }
+  binder_capture_append(context = context, rows = head_rows)
+  if is_for {
+    binder_capture_synthetic(context = context, name = "\{stem}_body")
+  } else {
+    ()
+  }
+  binder_capture_append(context = context, rows = body_rows)
+}
+
 /// The cells a `decreases` measure needs, around `inner`. The previous
 /// measure starts at 0 only so the cell is an `Int`; `seen` says it was never
 /// read before the first checkpoint stores one.
@@ -350,11 +407,15 @@ fn with_measure_cells(inner: Expr, decreases: Array[Expr], stem: String) -> Expr
 /// evaluated on entry and after every iteration -- one ended by `continue`
 /// included -- and always in the loop's own scope, so a clause never reads a
 /// binding the body shadows. The clause expressions appear once.
-fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
+///
+/// `head_mark` / `body_mark` are the binder-row marks taken before the
+/// condition and before the body (`contract_rows`).
+fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int, clause_rows: Array[Array[SourceBinder]], head_mark: Int, body_mark: Int, context: Option[ParserBinderContext]) -> Expr {
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
     EWhile(cond, body)
   } else {
     let stem = loop_stem(exprs = [cond, body], names = [], invariants = invariants, decreases = decreases, tag = tag)
+    contract_rows(context = context, head_mark = head_mark, body_mark = body_mark, clause_rows = clause_rows, invariant_count = Array::length(invariants), has_measure = Array::length(decreases) > 0, stem = stem, is_for = false)
     with_measure_cells(inner = EWhile(ESeq(contract_checkpoint(invariants = invariants, decreases = decreases, stem = stem), cond), body), decreases = decreases, stem = stem)
   }
 }
@@ -366,7 +427,10 @@ fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decrea
 /// end of the body, and before each `continue` that targets this loop. The
 /// loop ends up the tail of that wrapper, which the checker treats as a
 /// statement where the wrapper stands as one (`check_seq_spine`).
-fn attach_for_contract(value_name: String, index_name: Option[String], iterable: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
+///
+/// `head_mark` / `body_mark` are the binder-row marks taken before the loop
+/// variables and before the body (`contract_rows`).
+fn attach_for_contract(value_name: String, index_name: Option[String], iterable: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int, clause_rows: Array[Array[SourceBinder]], head_mark: Int, body_mark: Int, context: Option[ParserBinderContext]) -> Expr {
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
     EForIn(value_name, index_name, iterable, body)
   } else {
@@ -375,6 +439,7 @@ fn attach_for_contract(value_name: String, index_name: Option[String], iterable:
       None => [value_name]
     }
     let stem = loop_stem(exprs = [iterable, body], names = names, invariants = invariants, decreases = decreases, tag = tag)
+    contract_rows(context = context, head_mark = head_mark, body_mark = body_mark, clause_rows = clause_rows, invariant_count = Array::length(invariants), has_measure = Array::length(decreases) > 0, stem = stem, is_for = true)
     let check = "\{stem}_check"
     let call = () -> ECall(EIdent(check, 0 - 1), [], 0 - 1, [])
     let lam = EFn(_no_tp(), _no_tb(), [], None, None, contract_checkpoint(invariants = invariants, decreases = decreases, stem = stem))

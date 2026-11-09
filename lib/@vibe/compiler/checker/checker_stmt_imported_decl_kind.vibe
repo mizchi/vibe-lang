@@ -5,7 +5,7 @@ import @vibe/compiler/checker/traits {
 }
 
 import @vibe/parser {
-  retired_sized_int_name
+  print_type_expr, retired_sized_int_name
 }
 
 import @vibe/core {
@@ -55,7 +55,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  impl_target_key
+  impl_method_owner, impl_target_head, impl_target_key, trait_ref_from_key, trait_ref_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -91,24 +91,236 @@ import ./checker_stmt_push_source_scope_names.vibe {
 export fn duplicate_value_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
   let let_seen = array_empty()
   let import_seen = array_empty()
+  // #3962: each qualified binding (`P::m`, `P$impl$..::m`) seen so far, and
+  // the `SImpl` whose block wrote it (-1 for one written as `fn P::m`).
+  let qualified_names: Array[String] = array_empty()
+  let qualified_impls: Array[Int] = array_empty()
+  // `parse_impl_methods` lowers an impl block to its `SImpl` followed by one
+  // binding per method, so a qualified binding belongs to the block whose
+  // `SImpl` it follows (as `collect_impl_method_origins` reads it).
+  let mut impl_at = 0 - 1
+  let mut impl_prefix = ""
   let mut i = from_idx
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
-      SLet(_, _, n, _, _) => duplicate_declared_value_note(seen = let_seen, dname = n, errors = errors),
-      SLetMut(n, _, _) => duplicate_declared_value_note(seen = let_seen, dname = n, errors = errors),
-      SExternLet(n, _) => duplicate_declared_value_note(seen = let_seen, dname = n, errors = errors),
+      SImpl(tparams, _, trait_name, target) => {
+        impl_at = i
+        impl_prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_name, target = target), "::")
+      },
+      SLet(_, _, n, _, _) => if qualified_binding_name(n) {
+        let origin = if impl_at >= 0 && String::starts_with(n, prefix = impl_prefix) {
+          impl_at
+        } else {
+          0 - 1
+        }
+        duplicate_qualified_value_note(stmts = stmts, from_idx = from_idx, names = qualified_names, impls = qualified_impls, dname = n, origin = origin, errors = errors)
+      } else {
+        duplicate_declared_value_note(seen = let_seen, dname = n, errors = errors)
+      },
+      SLetMut(n, _, _) => {
+        impl_at = 0 - 1
+        duplicate_declared_value_note(seen = let_seen, dname = n, errors = errors)
+      },
+      SExternLet(n, _) => {
+        impl_at = 0 - 1
+        duplicate_declared_value_note(seen = let_seen, dname = n, errors = errors)
+      },
       SImport(_, items) => {
+        impl_at = 0 - 1
         let mut j = 0
         while j < Array::length(items) {
           duplicate_import_value_note(seen = import_seen, item = Array::get(items, at = j), errors = errors)
           j = j + 1
         }
       },
-      _ => ()
+      _ => {
+        impl_at = 0 - 1
+      }
     }
     i = i + 1
   }
   import_declaration_clash_errors(stmts = stmts, from_idx = from_idx, errors = errors)
+}
+
+fn qualified_binding_name(_ n: String) -> Bool {
+  String::contains(n, needle = "::") || String::contains(n, needle = "$")
+}
+
+/// #3962: a repeated qualified binding. Two written as `fn P::m` (or
+/// synthesized, like a derived `P::equals`) keep the plain note. When an impl
+/// block wrote either one, the encoded binding name (`Note$impl$..::value`)
+/// is not something the program spells, so the note names the impl as
+/// written and is located at its header instead:
+///
+/// - two impls of one trait for one target are left to the overlap check,
+///   which reports the second impl itself (`remove this impl, ..`);
+/// - one block that writes a method twice, two impls of different traits
+///   whose methods share a name, and an impl method beside a `fn P::m` of
+///   the same name each get their own message.
+fn duplicate_qualified_value_note(stmts: Array[Stmt], from_idx: Int, names: Array[String], impls: Array[Int], dname: String, origin: Int, errors: Array[String]) -> Unit {
+  let mut prev = 0 - 1
+  let mut k = 0
+  while k < Array::length(names) && prev < 0 {
+    if Array::get(names, at = k) == dname {
+      prev = k
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  if prev < 0 {
+    Array::push(names, value = dname)
+    Array::push(impls, value = origin)
+  } else {
+    let first = Array::get(impls, at = prev)
+    if first < 0 && origin < 0 {
+      Array::push(errors, value = String::concat("duplicate declaration: ", dname))
+    } else if first >= 0 && origin >= 0 && first != origin && same_impl_head(a = Array::get(stmts, at = first), b = Array::get(stmts, at = origin)) {
+      ()
+    } else {
+      let at = if origin >= 0 {
+        origin
+      } else {
+        first
+      }
+      let impl_stmt = Array::get(stmts, at = at)
+      let method = qualified_method_name(stmt = impl_stmt, dname = dname)
+      let shown = impl_head_display(impl_stmt)
+      let marker = impl_head_marker(stmts = stmts, from_idx = from_idx, at = at)
+      let message = if first == origin {
+        String::join([
+          "remove one of the two `",
+          method,
+          "` bodies: `",
+          shown,
+          "` defines `",
+          method,
+          "` more than once"
+        ], sep = "")
+      } else if first >= 0 && origin >= 0 {
+        String::join([
+          "rename `",
+          method,
+          "` in one of the two impls: `",
+          impl_head_display(Array::get(stmts, at = first)),
+          "` and `",
+          shown,
+          "` both define `",
+          method,
+          "`, and a call to it could not tell them apart"
+        ], sep = "")
+      } else {
+        String::join([
+          "rename or remove one of the two: `",
+          shown,
+          "` defines `",
+          method,
+          "`, and a function of the same name `",
+          impl_head_owner_display(impl_stmt),
+          "::",
+          method,
+          "` is declared at the top level, so every use would silently take the last one"
+        ], sep = "")
+      }
+      Array::push(errors, value = String::concat(message, marker))
+    }
+  }
+}
+
+/// Do two `SImpl`s name one trait key for one target? Such a pair is an
+/// overlap, which the impl check reports at the second header.
+fn same_impl_head(a: Stmt, b: Stmt) -> Bool {
+  match (a, b) {
+    (SImpl(_, _, ta, xa), SImpl(_, _, tb, xb)) => ta == tb && impl_target_key(xa) == impl_target_key(xb),
+    _ => false
+  }
+}
+
+/// The method part of `dname`, the binding the `SImpl` `stmt` gives it.
+fn qualified_method_name(stmt: Stmt, dname: String) -> String {
+  match stmt {
+    SImpl(tparams, _, trait_name, target) => {
+      let prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_name, target = target), "::")
+      if String::starts_with(dname, prefix = prefix) {
+        String::substring(dname, start = String::length(prefix), end = String::length(dname))
+      } else {
+        dname
+      }
+    },
+    _ => dname
+  }
+}
+
+fn impl_head_owner_display(_ stmt: Stmt) -> String {
+  match stmt {
+    SImpl(_, _, _, target) => impl_target_head(target),
+    _ => ""
+  }
+}
+
+/// `impl [T] Trait[Arg] for Target`, as the program writes the header.
+fn impl_head_display(_ stmt: Stmt) -> String {
+  match stmt {
+    SImpl(tparams, _, trait_name, target) => {
+      let binder = if Array::length(tparams) > 0 {
+        String::concat("[", String::concat(String::join(tparams, sep = ", "), "] "))
+      } else {
+        ""
+      }
+      let trait_shown = match trait_ref_from_key(trait_name) {
+        Some(reference) => print_type_expr(reference),
+        None => trait_name
+      }
+      String::join([
+        "impl ",
+        binder,
+        trait_shown,
+        " for ",
+        print_type_expr(target)
+      ], sep = "")
+    },
+    _ => ""
+  }
+}
+
+/// The locator marker for the header of the `SImpl` at `at`: the k-th
+/// `impl TRAIT for OWNER` of this list, which is how the overlap check's
+/// `note_impl_head` names one (that one also records it, so it is not
+/// called here).
+fn impl_head_marker(stmts: Array[Stmt], from_idx: Int, at: Int) -> String {
+  match Array::get(stmts, at = at) {
+    SImpl(_, _, trait_name, target) => {
+      let trait_head = trait_ref_name(trait_name)
+      let owner = impl_target_head(target)
+      if trait_head == "" || owner == "" {
+        ""
+      } else {
+        let mut nth = 0
+        let mut j = from_idx
+        while j <= at {
+          match Array::get(stmts, at = j) {
+            SImpl(_, _, tn, tg) => if trait_ref_name(tn) == trait_head && impl_target_head(tg) == owner {
+              nth = nth + 1
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          j = j + 1
+        }
+        String::join([
+          " [@impl-method=",
+          trait_head,
+          "|",
+          owner,
+          "||head|",
+          Int::to_string(nth),
+          "]"
+        ], sep = "")
+      }
+    },
+    _ => ""
+  }
 }
 
 /// ADR-0071 step 3 (#755) row expansion: recursively expand `name` into leaf
