@@ -2351,6 +2351,8 @@ function exitAfterDrain(code) {
 }
 
 let instanceRefGlobal = null;
+// #2509: set by the runner when VIBE_WASM_RC_CENSUS applies (wasm_rc_census.js).
+let rcCensusReader = null;
 let covWasmBytesGlobal = null;
 // #1007 review (Codex P2): exposes the REAL positional output arg (argv[1]
 // as the compiled program sees it via Env::args_get) to the top-level catch
@@ -2526,6 +2528,9 @@ function emitProfileMemoryMark(label) {
   console.error(
     `[profile-memory] mark=${profileMemoryMarkIndex} pages=${memoryPages} bytes=${memoryBytes} heap_ptr=${heapPtr ?? "missing"} host_alloc_ptr=${hostAllocPtr} rss=${rss}${nameSuffix}`,
   );
+  if (rcCensusReader) {
+    rcCensusReader(`mark=${profileMemoryMarkIndex}${nameSuffix}`);
+  }
   profileMemoryMarkIndex += 1;
 }
 
@@ -2655,6 +2660,8 @@ function writeProfileRequest(req, elapsedUs) {
     httpWorkerCall,
     get instanceRefGlobal() { return instanceRefGlobal; },
     set instanceRefGlobal(value) { instanceRefGlobal = value; },
+    get rcCensusReader() { return rcCensusReader; },
+    set rcCensusReader(value) { rcCensusReader = value; },
     isPersistentArtifactCacheDisabled,
     isUnimplementedAsyncImport,
     maybeEmitEnvMemoryMark,
