@@ -1574,22 +1574,52 @@ meaning while leaving that dependency's public `TypeEnv` text identical: the
 consumer's key is unchanged, the hit happens, and the open question is whether
 the compile-only state it republishes (the typed-lowering offsets, #2391) is
 still right. The public env being equal is what makes the hit happen, and is
-exactly why the public env cannot detect the problem. So the oracle does four
+exactly why the public env cannot detect the problem. So the oracle does five
 things:
 
-- it makes that edit, with a consumer whose `==` resolves only through its
-  typed-lowering row;
+- it makes that edit three ways -- an exported body, a non-exported helper's
+  body, and a non-exported helper that starts performing an optional
+  capability (`perform? Env::get`) -- with a consumer whose `==` resolves only
+  through its typed-lowering row;
 - it requires the unchanged consumers to record a dependency-transport hit,
   because without one the oracle is vacuous: a cold compile has no hit to get
   wrong, and an edit that keeps the program's meaning (a comment) answers the
   same through a stale reuse as through a fresh check;
-- it requires the program to have changed;
-- it compares the module against a fresh compile with reuse off.
+- it requires the module AND its executed result to have changed;
+- it compares the module, the diagnostics (status, stdout, stderr, `.diag`)
+  and the executed result against a fresh compile with reuse off in its own
+  cache;
+- it requires the executed result to equal the value it derives from the
+  fixture state itself. The result subtracts, so swapped arguments show; equal
+  declarations alone would not show that the edit landed (#3796).
 
-It also requires corrupted reuse records and an interface edit to miss, and to
-compile to the fresh bytes. Its self-test strips the typed-equality rows from
-the reused records, keeping every binding consistent so the reuse is still
-taken, and requires the build to be refused at the comparison. The per-file AST cache was built before it was
+The rest of the oracle is about refusal (#3796). A body error behind an
+unchanged public env gives the fresh diagnostics, and the next good edit
+recovers. From a snapshot of the cold cache, the alias, witness and target
+records are corrupted **independently**, each once malformed and once spliced
+from another valid binding (a stale but well-formed record); each must miss
+and compile to the fresh module, and the uncorrupted snapshot must hit first,
+or a miss would prove nothing about the corruption. The `#cfg` flag set, the
+checked-error-row mode and the resolution authority are reuse authority, so
+the same edit under a different one misses; the backend (`VIBE_RC`) is not
+typing authority, so it hits, and must still equal a fresh compile under that
+backend. `--allow-*` / `--deny-*` reach only `vibe run`'s artifact, so a
+full-grant run then a `--deny-env` run through one reuse-on cache must execute
+exactly like a fresh `--deny-env` run. That lane publishes no transport
+records today, and the oracle fails when it starts to, because the case would
+then need hit evidence. Interface edits and every record overwritten with
+garbage miss, as before.
+
+Every build's source digests, configuration, artifact digest, diagnostics,
+executed result and telemetry are in the oracle's JSON. Its self-test replays
+that recording through a scripted runner and perturbs one cell per case, then
+drives the real compiler behind wrappers: a flipped module byte; the
+typed-equality rows stripped from the reused records, with every binding kept
+consistent so the reuse is still taken (the build must be refused at the
+comparison); each corruption undone before its build and each
+authority-changing configuration reset, so the real compiler hits and the
+oracle's "must miss" fails; and `--deny-env` dropped from a run. Compile-lane
+reuse stays opt-in: this is the correctness half, not the cost decision. The per-file AST cache was built before it was
 measured and came back at exactly zero (#2668); this is the same mistake one
 step later, caught by measuring first (#2728).
 

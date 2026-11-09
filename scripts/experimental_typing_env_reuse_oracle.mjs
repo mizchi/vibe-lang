@@ -205,10 +205,14 @@ function parseSegment(text, start) {
   return [text.slice(colon + 1, end), end];
 }
 
+// The record parsers and renderers below are exported for
+// compile_typing_env_reuse_oracle.mjs, so both lanes' oracles read and forge
+// TDRE records one way.
+//
 // The alias (TDRE11A) names only the target fingerprint; its path is a hash
 // of the input key. The input key and target text live in the witness
 // (TDRE10W), keyed by the target fingerprint.
-function parseAlias(text) {
+export function parseAlias(text) {
   const tag = "TDRE11A";
   if (!text.startsWith(tag)) fail(`invalid ${tag} alias marker`);
   const [target, end] = parseSegment(text, tag.length);
@@ -216,7 +220,7 @@ function parseAlias(text) {
   return target;
 }
 
-function parseBinding(text, tag) {
+export function parseBinding(text, tag) {
   if (!text.startsWith(tag)) fail(`invalid ${tag} binding marker`);
   const [input, afterInput] = parseSegment(text, tag.length);
   const [target, afterTarget] = parseSegment(text, afterInput);
@@ -225,7 +229,7 @@ function parseBinding(text, tag) {
   return { input, target, targetText };
 }
 
-function bindingFiles(cache, namespace) {
+export function bindingFiles(cache, namespace) {
   return readdirSync(cache)
     .filter((name) => name.startsWith(`vibe_${namespace}_`))
     .map((name) => join(cache, name));
@@ -272,11 +276,11 @@ function targetWitness(cache, target) {
   fail(`bound TDRE10 witness missing for ${target}`);
 }
 
-function aliasText(target) {
+export function aliasText(target) {
   return `TDRE11A${segment(target)}`;
 }
 
-function witnessText(input, target, targetText) {
+export function witnessText(input, target, targetText) {
   return `TDRE10W${segment(input)}${segment(target)}${segment(targetText)}`;
 }
 
