@@ -37,10 +37,19 @@ wasm="_build/vibe_test/$(printf '%s' "${probe%.vibe}" | tr '/' '_').wasm"
 rm -f "$wasm"
 VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$probe" >/dev/null 2>&1 || true
 [ -s "$wasm" ] || { echo "reuse_census: probe wasm not produced: $wasm" >&2; exit 1; }
-# The raised node stack needs an OS thread stack at least as large
-# (`ulimit -s unlimited`); see scripts/run_wasm_vibe_host_runner.sh.
-VIBE_NODE_STACK_SIZE="${VIBE_NODE_STACK_SIZE:-500000}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$wasm" > "$out_dir/rows.tsv"
+# The raised node stack needs an OS thread stack at least as large: V8
+# trusts --stack-size, so a budget above the real limit segfaults instead of
+# raising RangeError (scripts/run_wasm_vibe_host_runner.sh bounds its own
+# default by `ulimit -s`, but not an explicit VIBE_NODE_STACK_SIZE). Raise the
+# limit in the subshell that runs the probe, and refuse when it cannot be.
+(
+  ulimit -s unlimited 2>/dev/null || {
+    echo "reuse_census: cannot raise the OS stack limit (ulimit -s unlimited), which the raised node stack needs; run from a shell that allows it" >&2
+    exit 1
+  }
+  VIBE_NODE_STACK_SIZE="${VIBE_NODE_STACK_SIZE:-500000}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$wasm"
+) > "$out_dir/rows.tsv"
 
 echo "[reuse-census] input=$input arms=$(wc -l < "$out_dir/rows.tsv") rows=$out_dir/rows.tsv"
 echo "[reuse-census] verdicts:"
