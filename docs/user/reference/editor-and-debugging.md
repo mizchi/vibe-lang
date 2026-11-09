@@ -40,6 +40,12 @@ fallback has no diagnostics path). `install/install.sh` builds that fresh
 compiler by default; if you only have the committed seed, hover/diagnostics
 degrade gracefully to empty rather than erroring.
 
+The embedded server (`vibe lsp --selfhost`) keeps the typing of the buffer it
+last hovered, for that exact text (#1960). Further hovers and signature help on
+the same text reuse it instead of re-checking the whole buffer per request. The
+answer is the same as a fresh hover: hover is single-file there, so the text is
+everything it depends on, and any edit is a new text that gets a fresh check.
+
 ### Extract a function
 
 ```bash

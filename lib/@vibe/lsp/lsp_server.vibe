@@ -75,7 +75,14 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/compiler/query {
-  binding_occurrences, doc_at_source, symbol_spans, type_at_source
+  TypeAtMemo,
+  binding_occurrences,
+  doc_at_source,
+  symbol_spans,
+  type_at_memo_checks,
+  type_at_memo_new,
+  type_at_memo_source,
+  type_at_source_memo
 }
 
 import @vibe/parser {
@@ -799,8 +806,75 @@ fn lsp_diag_fallback(_ msg: String) -> Json {
 //# `vibe binding-at` / `vibe symbols` / `vibe diagnostics` today; imports
 //# are not resolved, same limitation those CLI subcommands already have).
 
+//# Hover typing reuse (#1960)
+
+/// The typing of the buffer this session last hovered, kept for its exact
+/// text. One slot: an editor hovers the document it is in, and a second
+/// document only costs the cold check it costs today.
+///
+/// The identity is the buffer text alone, and that is the whole of what the
+/// answer depends on here: hover is single-file (it resolves no imports, so
+/// no dependency can change it), the compiler is fixed for the process, and
+/// no configuration reaches `type_at` (the ADR-0068 opt-in is diagnostics'
+/// alone). A `didChange` is therefore not an invalidation event to get right
+/// -- a different text simply misses, and `type_at_source_memo` itself
+/// answers cold rather than from a memo of other text.
+let lsp_hover_memo: Array[Option[TypeAtMemo]] = [None]
+
+/// How many revisions this session has typed for hover: the first hover of a
+/// text types it, every later position of the same text reuses it.
+let lsp_hover_memo_builds: Array[Int] = [0]
+
+fn lsp_hover_memo_for(_ source: String) -> TypeAtMemo {
+  let kept = match Array::get(lsp_hover_memo, at = 0) {
+    Some(m) => if type_at_memo_source(m) == source {
+      Some(m)
+    } else {
+      None
+    },
+    None => None
+  }
+  match kept {
+    Some(m) => m,
+    None => {
+      let m = type_at_memo_new(source)
+      Array::set(lsp_hover_memo, at = 0, value = Some(m))
+      Array::set(lsp_hover_memo_builds, at = 0, value = Array::get(lsp_hover_memo_builds, at = 0) + 1)
+      m
+    }
+  }
+}
+
+fn lsp_type_at(source: String, line: Int, col: Int) -> String {
+  type_at_source_memo(source = source, line = line, col = col, memo = lsp_hover_memo_for(source))
+}
+
+/// Drop the kept typing when the document it was built for closes, so a closed
+/// buffer's checks are not held for the rest of the session.
+fn lsp_hover_memo_release(_ source: String) -> Unit {
+  match Array::get(lsp_hover_memo, at = 0) {
+    Some(m) => if type_at_memo_source(m) == source {
+      Array::set(lsp_hover_memo, at = 0, value = None)
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+/// `(revisions typed, checker runs of the kept revision)` for this session --
+/// the deterministic work counters `lsp_session_test.vibe` reads. The second
+/// is 0 when no typing is kept.
+export fn lsp_hover_reuse_counters() -> (Int, Int) {
+  let checks = match Array::get(lsp_hover_memo, at = 0) {
+    Some(m) => type_at_memo_checks(m),
+    None => 0
+  }
+  (Array::get(lsp_hover_memo_builds, at = 0), checks)
+}
+
 fn lsp_handle_hover(source: String, line0: Int, char0: Int) -> Json {
-  let ty = type_at_source(source = source, line = line0 + 1, col = char0 + 1)
+  let ty = lsp_type_at(source = source, line = line0 + 1, col = char0 + 1)
   let doc = doc_at_source(source = source, line = line0 + 1, col = char0 + 1)
   if String::length(ty) == 0 && String::length(doc) == 0 {
     JNull
@@ -1262,7 +1336,7 @@ fn lsp_handle_signature_help(source: String, line0: Int, byte_col: Int) -> Json 
       } else {
         (l1, c1)
       }
-      let ty = type_at_source(source = source, line = tl, col = tc)
+      let ty = lsp_type_at(source = source, line = tl, col = tc)
       if String::length(ty) == 0 {
         JNull
       } else {
@@ -1540,6 +1614,27 @@ fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String])
   }
 }
 
+/// One request against a document store, exactly as the session loop dispatches
+/// it -- the seam a session test drives without a JSON-RPC transport.
+export fn lsp_request(method: String, params: Json, docs: Map[String, String]) -> Json {
+  lsp_dispatch_request(method = method, params = params, docs = docs)
+}
+
+/// The store after one `textDocument/didOpen` / `didChange` / `didClose`
+/// notification, as the session loop applies it (the diagnostics it would
+/// publish are not computed here). Any other method leaves the store as it is.
+export fn lsp_notify(method: String, params: Json, docs: Map[String, String]) -> Map[String, String] {
+  if method == "textDocument/didOpen" {
+    lsp_apply_did_open(docs = docs, params = params)
+  } else if method == "textDocument/didChange" {
+    lsp_apply_did_change(docs = docs, params = params)
+  } else if method == "textDocument/didClose" {
+    lsp_apply_did_close(docs = docs, params = params)
+  } else {
+    docs
+  }
+}
+
 fn lsp_diagnostics_for(uri: String, docs: Map[String, String]) -> Json {
   lsp_run_with_handler(op = lsp_op_diagnostics(), uri = uri, l = 0, c = 0, new_name = "", docs = docs)
 }
@@ -1569,6 +1664,7 @@ fn lsp_apply_did_change(docs: Map[String, String], params: Json) -> Map[String, 
 
 fn lsp_apply_did_close(docs: Map[String, String], params: Json) -> Map[String, String] {
   let uri = jparam_uri(params)
+  lsp_hover_memo_release(lsp_doc_text(docs = docs, uri = uri))
   Map::delete(docs, key = uri)
 }
 

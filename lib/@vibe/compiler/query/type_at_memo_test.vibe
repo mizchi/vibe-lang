@@ -1,0 +1,160 @@
+// #1960: a hover answered from a kept `TypeAtMemo` must equal the cold
+// `type_at_source` answer for the same text, at every position, and must not
+// read any other revision's state.
+//
+// The equivalence rows walk EVERY byte position of each source, not a chosen
+// few: the memo replaces each of the three checks a cold hover can make (the
+// per-node table with its local `let` rows, the env of a fresh parse, the env
+// of the table's own statements), and which one a position reaches depends on
+// whether it is a callee, a local binder, or a name with no row of its own.
+// The sources cover each route plus a file with a type error (the table is
+// partial and the env check throws) and one that does not parse.
+
+//# Imports
+
+import ./type_at.vibe {
+  type_at_memo_checks, type_at_memo_new, type_at_memo_source, type_at_source, type_at_source_memo
+}
+
+//# Functions
+
+/// Every position (1-based line, 1-based byte column, one past each line's
+/// end included) at which the memo's answer differs from the cold one, as
+/// `L:C cold|memo` rows; "" when they agree everywhere.
+fn memo_disagreements(_ source: String) -> String {
+  let memo = type_at_memo_new(source)
+  let mut out = ""
+  let mut line = 1
+  let mut col = 1
+  let mut i = 0
+  let n = String::length(source)
+  while i <= n {
+    let cold = type_at_source(source = source, line = line, col = col)
+    let kept = type_at_source_memo(source = source, line = line, col = col, memo = memo)
+    if cold != kept {
+      out = String::concat(out, "\{line}:\{col} \{cold}|\{kept}\n")
+    } else {
+      ()
+    }
+    if i < n && String::byte_at(source, at = i) == 10 {
+      line = line + 1
+      col = 1
+    } else {
+      col = col + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The checker runs a memo needs to answer every position of `source`.
+fn memo_checks_for_all_positions(_ source: String) -> Int {
+  let memo = type_at_memo_new(source)
+  let mut line = 1
+  let mut col = 1
+  let mut i = 0
+  let n = String::length(source)
+  while i <= n {
+    let _ = type_at_source_memo(source = source, line = line, col = col, memo = memo)
+    if i < n && String::byte_at(source, at = i) == 10 {
+      line = line + 1
+      col = 1
+    } else {
+      col = col + 1
+    }
+    i = i + 1
+  }
+  type_at_memo_checks(memo)
+}
+
+fn top_level_src() -> String {
+  "fn add(_ a: Int, _ b: Int) -> Int {\n  a - b\n}\n\nlet base = 40\n\nfn twice(_ f: (Int) -> Int, _ x: Int) -> Int {\n  f(f(x))\n}\n\nfn main() -> Int {\n  let add1 = (n: Int) -> add(n, 1)\n  let s = \"\\{base}\"\n  twice(add1, base) + String::length(s)\n}\n"
+}
+
+fn local_binder_src() -> String {
+  "fn main() -> Int {\n  let g = (x: Int) -> x + 1\n  let rec go = (n: Int) -> Int { if n == 0 { 0 } else { go(n - 1) } }\n  let pair = (g(1), go(2))\n  let (a, b) = pair\n  match Some(a) {\n    Some(v) => v + b,\n    None => 0\n  }\n}\n"
+}
+
+fn shadow_src() -> String {
+  "fn f(_ s: String) -> String {\n  s\n}\n\nfn main() -> Int {\n  let f = (n: Int) -> n * 2\n  for i in [1, 2] {\n    let _ = f(i)\n  }\n  f(3)\n}\n"
+}
+
+fn handler_src() -> String {
+  "effect Name {\n  A(Int) -> String\n  B(Int) -> String\n}\n\nfn resume(x: Int) -> Int {\n  x * 1000\n}\n\nfn work() -> String with Name {\n  String::concat(perform Name::A(1), perform Name::B(2))\n}\n\nfn run() -> String {\n  handle {\n    work()\n  } with {\n    Name::A(_)|Name::B(_) => {\n      let k = resume\n      k(\"x\")\n    }\n  }\n}\n"
+}
+
+fn type_error_src() -> String {
+  "fn ok(_ n: Int) -> Int {\n  n + 1\n}\n\nfn bad() -> Int {\n  let early = ok(1)\n  let wrong: String = early\n  0\n}\n"
+}
+
+fn parse_error_src() -> String {
+  "fn main() -> Int {\n  let x = (1 +\n}\n"
+}
+
+//# Tests
+
+test "#1960: the well-typed sources reach the env a hover falls back to" {
+  // A top-level name with no row of its own answers from the checked env; an
+  // ill-typed file has none, so these rows only mean something while the
+  // sources below check clean.
+  inspect(type_at_source(source = top_level_src(), line = 1, col = 4), content = "(Int, Int) -> Int")
+  inspect(type_at_source(source = top_level_src(), line = 7, col = 5), content = "((Int) -> Int, Int) -> Int")
+  inspect(type_at_source(source = shadow_src(), line = 10, col = 3), content = "(Int) -> Int")
+}
+
+test "#1960: a memo answers every position exactly as a cold hover (top level)" {
+  assert_eq(memo_disagreements(top_level_src()), "")
+}
+
+test "#1960: a memo answers every position exactly as a cold hover (local binders)" {
+  assert_eq(memo_disagreements(local_binder_src()), "")
+}
+
+test "#1960: a memo answers every position exactly as a cold hover (shadowed callee)" {
+  assert_eq(memo_disagreements(shadow_src()), "")
+}
+
+test "#1960: a memo answers every position exactly as a cold hover (or-pattern arm)" {
+  assert_eq(memo_disagreements(handler_src()), "")
+}
+
+test "#1960: a memo answers a file with a type error exactly as a cold hover" {
+  assert_eq(memo_disagreements(type_error_src()), "")
+}
+
+test "#1960: a memo answers a file that does not parse exactly as a cold hover" {
+  assert_eq(memo_disagreements(parse_error_src()), "")
+}
+
+test "#1960: every position of one revision costs at most three checks" {
+  // A cold hover runs one or two checks per position; the memo runs each of
+  // the three a position can need once for the whole text.
+  assert(memo_checks_for_all_positions(top_level_src()) <= 3)
+  assert(memo_checks_for_all_positions(local_binder_src()) <= 3)
+  assert(memo_checks_for_all_positions(handler_src()) <= 3)
+}
+
+test "#1960: a memo for one text answers another text cold, not from itself" {
+  let before = "fn main() -> Int {\n  let v = 1\n  v\n}\n"
+  let after = "fn main() -> Int {\n  let v = \"one\"\n  String::length(v)\n}\n"
+  let memo = type_at_memo_new(before)
+  inspect(type_at_source_memo(source = before, line = 3, col = 3, memo = memo), content = "Int")
+  // The buffer was edited; the caller still holds the old memo.
+  inspect(type_at_source_memo(source = after, line = 3, col = 18, memo = memo), content = "String")
+  assert_eq(type_at_memo_source(memo), before)
+}
+
+test "#1960: a kept memo does not read the local let rows of a later check" {
+  // `g` is used only as a callee, so its declaration answers from the local
+  // `let` row the table check recorded (#3050). The checker keeps those rows
+  // in a global table that the next check of ANY source overwrites; both
+  // sources put their `let` at the same offset, so a memo reading the global
+  // table after `other` was checked would answer `(String) -> Int` for `mine`.
+  let mine = "fn f() -> Int {\n  let g = (x: Int) -> x + 1\n  g(1)\n}\n"
+  let other = "fn f() -> Int {\n  let g = (x: String) -> 1\n  g(\"a\")\n}\n"
+  let memo = type_at_memo_new(mine)
+  inspect(type_at_source_memo(source = mine, line = 2, col = 7, memo = memo), content = "(Int) -> Int")
+  inspect(type_at_source(source = other, line = 2, col = 7), content = "(String) -> Int")
+  assert_eq(type_at_source_memo(source = mine, line = 2, col = 7, memo = memo), "(Int) -> Int")
+  assert_eq(type_at_source_memo(source = mine, line = 3, col = 3, memo = memo), type_at_source(source = mine, line = 3, col = 3))
+}

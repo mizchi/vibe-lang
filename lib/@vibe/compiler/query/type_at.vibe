@@ -59,6 +59,223 @@ export fn type_at_typed(table: Array[(Int, Type)], subst: Subst, env: TypeEnv) -
   }
 }
 
+enum TypeAtEnvCell {
+  EnvReady(TypeEnv);
+  EnvFailed(String)
+}
+
+/// The per-node table check, with the local `let` / `let rec` rows it
+/// recorded COPIED out of the checker's global side tables, and the env a
+/// name with no row of its own falls back to. A cold hover checks that env
+/// from the statements the table check just mutated, immediately after it;
+/// the memo does the same, in the same order, rather than later and after
+/// some other buffer's check. A failed check keeps its message so a later
+/// read fails the same way.
+enum TypeAtTableCell {
+  TableReady(Array[(Int, Type)], Subst, Array[(Int, Type)], Array[(Int, Type)], TypeAtEnvCell);
+  TableFailed(String)
+}
+
+enum TypeAtHitsCell {
+  HitsReady(Array[IdentHit]);
+  HitsFailed(String)
+}
+
+/// One exact source revision's single-file typing, computed on first use and
+/// kept (#1960). A cold `type_at_source` re-parses and re-checks the whole
+/// buffer for every hover; a resident editor session asks many positions of
+/// one revision, so this keeps each check the cold path would run -- the
+/// per-node table (with its local `let` rows), the env of a fresh parse, and
+/// the env of the table's own statements -- and answers every later position
+/// from them. Each cell is filled by exactly the calls the cold path makes,
+/// in the same order, so an answer equals `type_at_source` on the same text
+/// (pinned position by position in `type_at_memo_test.vibe`).
+///
+/// The identity is the source text and nothing else: the single-file lane
+/// resolves no imports, so no dependency can change an answer, and a buffer
+/// edit is a different text. A caller keeps a memo only while
+/// `type_at_memo_source` equals its current buffer. The local `let` rows are
+/// copied out of the checker's global tables, which the next check of ANY
+/// source overwrites -- reading them later from there would answer for
+/// whichever buffer was checked last.
+export struct TypeAtMemo {
+  source: String;
+  hits: Array[Option[TypeAtHitsCell]];
+  table: Array[Option[TypeAtTableCell]];
+  env_fresh: Array[Option[TypeAtEnvCell]];
+  checks: Array[Int]
+}
+
+export fn type_at_memo_new(_ source: String) -> TypeAtMemo {
+  TypeAtMemo::{
+    source: source,
+    hits: [None],
+    table: [None],
+    env_fresh: [None],
+    checks: [0]
+  }
+}
+
+/// The exact text this memo types.
+export fn type_at_memo_source(_ memo: TypeAtMemo) -> String {
+  memo.source
+}
+
+/// How many checker runs this memo has made: at most three per revision, however
+/// many positions are asked.
+export fn type_at_memo_checks(_ memo: TypeAtMemo) -> Int {
+  Array::get(memo.checks, at = 0)
+}
+
+fn type_at_memo_count_check(_ memo: TypeAtMemo) -> Unit {
+  Array::set(memo.checks, at = 0, value = Array::get(memo.checks, at = 0) + 1)
+}
+
+fn type_at_fresh_stmts(_ source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  parse_program_located(tokens = tokens, starts = starts, source = source)
+}
+
+fn type_at_memo_hits(_ memo: TypeAtMemo) -> Array[IdentHit] with Exception {
+  let cell = match Array::get(memo.hits, at = 0) {
+    Some(c) => c,
+    None => {
+      let c = handle {
+        let (_, hits) = type_at_collect(memo.source)
+        HitsReady(hits)
+      } with { Exception::Throw(message) => HitsFailed(message) }
+      Array::set(memo.hits, at = 0, value = Some(c))
+      c
+    }
+  }
+  match cell {
+    HitsReady(hits) => hits,
+    HitsFailed(message) => throw(message)
+  }
+}
+
+fn type_at_memo_table_cell(_ memo: TypeAtMemo) -> TypeAtTableCell {
+  match Array::get(memo.table, at = 0) {
+    Some(c) => c,
+    None => {
+      let c = handle {
+        let stmts = type_at_fresh_stmts(memo.source)
+        type_at_memo_count_check(memo)
+        let (table, subst) = check_program_type_table(stmts)
+        let lets = local_let_types()
+        let recs = local_let_rec_types()
+        let lets_copy = Array::slice(lets, start = 0, end = Array::length(lets))
+        let recs_copy = Array::slice(recs, start = 0, end = Array::length(recs))
+        let env_after = handle {
+          type_at_memo_count_check(memo)
+          EnvReady(check_program(stmts))
+        } with { Exception::Throw(message) => EnvFailed(message) }
+        TableReady(table, subst, lets_copy, recs_copy, env_after)
+      } with { Exception::Throw(message) => TableFailed(message) }
+      Array::set(memo.table, at = 0, value = Some(c))
+      c
+    }
+  }
+}
+
+fn type_at_memo_table(_ memo: TypeAtMemo) -> (Array[(Int, Type)], Subst) with Exception {
+  match type_at_memo_table_cell(memo) {
+    TableReady(table, subst, _, _, _) => (table, subst),
+    TableFailed(message) => throw(message)
+  }
+}
+
+fn type_at_memo_let_rows(memo: TypeAtMemo, recursive: Bool) -> Array[(Int, Type)] with Exception {
+  match type_at_memo_table_cell(memo) {
+    TableReady(_, _, lets, recs, _) => if recursive {
+      recs
+    } else {
+      lets
+    },
+    TableFailed(message) => throw(message)
+  }
+}
+
+fn type_at_env_cell_read(_ cell: TypeAtEnvCell) -> TypeEnv with Exception {
+  match cell {
+    EnvReady(env) => env,
+    EnvFailed(message) => throw(message)
+  }
+}
+
+/// The env a local callee with no `let` binder answers from: `check_program`
+/// of a fresh parse.
+fn type_at_memo_env_fresh(_ memo: TypeAtMemo) -> TypeEnv with Exception {
+  match Array::get(memo.env_fresh, at = 0) {
+    Some(c) => type_at_env_cell_read(c),
+    None => {
+      let c = handle {
+        let stmts = type_at_fresh_stmts(memo.source)
+        type_at_memo_count_check(memo)
+        EnvReady(check_program(stmts))
+      } with { Exception::Throw(message) => EnvFailed(message) }
+      Array::set(memo.env_fresh, at = 0, value = Some(c))
+      type_at_env_cell_read(c)
+    }
+  }
+}
+
+/// The env a name with no row of its own falls back to: `check_program` of the
+/// statements the per-node table was checked on, run right after that check.
+fn type_at_memo_env_after_table(_ memo: TypeAtMemo) -> TypeEnv with Exception {
+  match type_at_memo_table_cell(memo) {
+    TableReady(_, _, _, _, env_cell) => type_at_env_cell_read(env_cell),
+    TableFailed(message) => throw(message)
+  }
+}
+
+/// Where a hover's typing comes from: checked now (`TatCold`), handed in by the
+/// import-resolving lane (`TatFs`, #3834), or kept for this exact revision
+/// (`TatMemo`, #1960).
+enum TypeAtTyping {
+  TatCold;
+  TatFs(TypeAtTyped);
+  TatMemo(TypeAtMemo)
+}
+
+fn tat_table(typing: TypeAtTyping, stmts: Array[Stmt]) -> (Array[(Int, Type)], Subst) with Exception {
+  match typing {
+    TatCold => check_program_type_table(stmts),
+    TatFs(t) => (t.table, t.subst),
+    TatMemo(m) => type_at_memo_table(m)
+  }
+}
+
+fn tat_env_fresh(typing: TypeAtTyping, stmts: Array[Stmt]) -> TypeEnv with Exception {
+  match typing {
+    TatCold => check_program(stmts),
+    TatFs(t) => t.env,
+    TatMemo(m) => type_at_memo_env_fresh(m)
+  }
+}
+
+fn tat_env_after_table(typing: TypeAtTyping, stmts: Array[Stmt]) -> TypeEnv with Exception {
+  match typing {
+    TatCold => check_program(stmts),
+    TatFs(t) => t.env,
+    TatMemo(m) => type_at_memo_env_after_table(m)
+  }
+}
+
+/// The local `let` rows (`recursive = false`) or `let rec` rows (`recursive = true`) of
+/// the table check this hover read. Cold and import-resolved hovers read the
+/// checker's global tables right after that check; a memo reads its copy.
+fn tat_let_rows(typing: TypeAtTyping, recursive: Bool) -> Array[(Int, Type)] with Exception {
+  match typing {
+    TatMemo(m) => type_at_memo_let_rows(memo = m, recursive = recursive),
+    _ => if recursive {
+      local_let_rec_types()
+    } else {
+      local_let_types()
+    }
+  }
+}
+
 /// 1-based (line, col) -> 0-based char offset, the inverse of offset_to_line_col.
 /// `col` is the position WITHIN a line (col 1 = first char of the line, col
 /// length+1 = just past the last char — a valid cursor position). We count
@@ -638,10 +855,10 @@ fn type_at_local_binder_off(hits: Array[IdentHit], name: String, occ: Array[(Int
 /// A `let rec` (#3106) has no `let` offset in the AST, so its row is keyed by
 /// its value or continuation (`let_rec_binding_anchor`), and binding_at's walk
 /// says which binding at `boff` introduces that key.
-fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with Exception {
+fn type_at_local_let(source: String, boff: Int, final_s: Subst, typing: TypeAtTyping) -> String with Exception {
   let let_off = type_at_let_keyword_before(source = source, boff = boff)
   if let_off >= 0 {
-    match tytab_lookup(table = local_let_types(), off = let_off) {
+    match tytab_lookup(table = tat_let_rows(typing = typing, recursive = false), off = let_off) {
       Some(CtUnknown) => "",
       Some(t) => type_to_string(subst_apply(s = final_s, ty = t)),
       None => ""
@@ -651,7 +868,7 @@ fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with E
     if anchor < 0 {
       ""
     } else {
-      match tytab_lookup(table = local_let_rec_types(), off = anchor) {
+      match tytab_lookup(table = tat_let_rows(typing = typing, recursive = true), off = anchor) {
         Some(CtUnknown) => "",
         Some(t) => type_to_string(subst_apply(s = final_s, ty = t)),
         None => ""
@@ -669,7 +886,7 @@ fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with E
 /// A local `let` binder with no such use -- a closure that is only ever
 /// called, whose callee rows are call results -- answers with the value type
 /// the checker recorded for that `let` (#3050).
-fn type_at_use_or_env(source: String, table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool, typed_env: Option[TypeEnv]) -> String with Exception {
+fn type_at_use_or_env(source: String, table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool, typing: TypeAtTyping) -> String with Exception {
   let mut use_ty = ""
   let mut unknown_use = false
   let mut u = 0
@@ -695,12 +912,9 @@ fn type_at_use_or_env(source: String, table: Array[(Int, Type)], hits: Array[Ide
   } else if use_ty != "" {
     use_ty
   } else if local_binder {
-    type_at_local_let(source = source, boff = chosen_off, final_s = final_s)
+    type_at_local_let(source = source, boff = chosen_off, final_s = final_s, typing = typing)
   } else {
-    let env = match typed_env {
-      Some(e) => e,
-      None => check_program(stmts)
-    }
+    let env = tat_env_after_table(typing = typing, stmts = stmts)
     match env_lookup(env = env, name = name) {
       Some(t) => type_to_string(t),
       None => ""
@@ -763,12 +977,31 @@ fn type_at_collect(_ source: String) -> (Array[Stmt], Array[IdentHit]) with Exce
 }
 
 export fn type_at_source(source: String, line: Int, col: Int) -> String {
-  type_at_source_typed(source = source, line = line, col = col, typed = None)
+  type_at_answer(source = source, line = line, col = col, typing = TatCold)
 }
 
 /// `type_at_source` answered from `typed` when the caller already typed the
 /// file (with its imports, #3834); with `None` the source is typed alone.
 export fn type_at_source_typed(source: String, line: Int, col: Int, typed: Option[TypeAtTyped]) -> String {
+  match typed {
+    Some(t) => type_at_answer(source = source, line = line, col = col, typing = TatFs(t)),
+    None => type_at_answer(source = source, line = line, col = col, typing = TatCold)
+  }
+}
+
+/// `type_at_source` for `type_at_memo_source(memo)`, from the checks `memo`
+/// already ran for that text (#1960). `source` must be that same text -- a
+/// caller holding a memo for another revision gets a fresh answer instead
+/// of a stale one, at the cost of a cold check.
+export fn type_at_source_memo(source: String, line: Int, col: Int, memo: TypeAtMemo) -> String {
+  if memo.source == source {
+    type_at_answer(source = source, line = line, col = col, typing = TatMemo(memo))
+  } else {
+    type_at_answer(source = source, line = line, col = col, typing = TatCold)
+  }
+}
+
+fn type_at_answer(source: String, line: Int, col: Int, typing: TypeAtTyping) -> String {
   handle {
     let tgt = line_col_to_offset(source = source, line = line, col = col)
     if tgt < 0 {
@@ -778,7 +1011,10 @@ export fn type_at_source_typed(source: String, line: Int, col: Int, typed: Optio
       // identifier" empty-result convention below.
       ""
     } else {
-      let (stmts, hits) = type_at_collect(source)
+      let (stmts, hits) = match typing {
+        TatMemo(m) => (array_empty(), type_at_memo_hits(m)),
+        _ => type_at_collect(source)
+      }
       let name = pick_ident_at(hits = hits, tgt = tgt)
       if name == "" {
         ""
@@ -796,19 +1032,10 @@ export fn type_at_source_typed(source: String, line: Int, col: Int, typed: Optio
           // wrong answer.
           let callee_binder = type_at_local_binder_off(hits = hits, name = name, occ = binding_occurrences(source = source, line = line, col = col))
           if callee_binder >= 0 {
-            let callee_s = match typed {
-              Some(t) => t.subst,
-              None => {
-                let (_, s0) = check_program_type_table(stmts)
-                s0
-              }
-            }
-            type_at_local_let(source = source, boff = callee_binder, final_s = callee_s)
+            let (_, callee_s) = tat_table(typing = typing, stmts = stmts)
+            type_at_local_let(source = source, boff = callee_binder, final_s = callee_s, typing = typing)
           } else {
-            let env = match typed {
-              Some(t) => t.env,
-              None => check_program(stmts)
-            }
+            let env = tat_env_fresh(typing = typing, stmts = stmts)
             match env_lookup(env = env, name = name) {
               Some(t) => type_to_string(t),
               None => ""
@@ -816,10 +1043,7 @@ export fn type_at_source_typed(source: String, line: Int, col: Int, typed: Optio
           }
         } else {
           // 2. per-node type table (locals + parameters).
-          let (table, final_s) = match typed {
-            Some(t) => (t.table, t.subst),
-            None => check_program_type_table(stmts)
-          }
+          let (table, final_s) = tat_table(typing = typing, stmts = stmts)
           let table_hit = if chosen_off >= 0 {
             tytab_lookup(table = table, off = chosen_off)
           } else {
@@ -830,10 +1054,7 @@ export fn type_at_source_typed(source: String, line: Int, col: Int, typed: Optio
             // fall back to an outer binding with the same spelling.
             Some(CtUnknown) => "",
             Some(rec_ty) => type_to_string(subst_apply(s = final_s, ty = rec_ty)),
-            None => type_at_use_or_env(source = source, table = table, hits = hits, name = name, chosen_off = chosen_off, final_s = final_s, stmts = stmts, occ = binding_occurrences(source = source, line = line, col = col), local_binder = pick_ident_is_local_binder(hits = hits, tgt = tgt), typed_env = match typed {
-              Some(t) => Some(t.env),
-              None => None
-            })
+            None => type_at_use_or_env(source = source, table = table, hits = hits, name = name, chosen_off = chosen_off, final_s = final_s, stmts = stmts, occ = binding_occurrences(source = source, line = line, col = col), local_binder = pick_ident_is_local_binder(hits = hits, tgt = tgt), typing = typing)
           }
         }
       }
