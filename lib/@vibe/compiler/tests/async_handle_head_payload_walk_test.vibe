@@ -1,0 +1,99 @@
+// #3683: the head of a `handle` expression is read from its body and its
+// arms. An arm whose head already agrees with its binders masked must not
+// pay for the binders' heads: that walks the handled body and, through
+// `afe_perform_payload_head`, every callee it reaches -- once per call path,
+// so a call graph whose paths multiply cost the committed seed more than
+// 700 MB in bootstrap pass 3 and ran it out of wasm32 memory.
+//
+// `chain(depth)` builds `f0 .. f<depth>`, each performing `Carry::Yield`
+// and calling the next one twice: 2^depth call paths reach the last one.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
+}
+import @vibe/core {
+  array_empty
+}
+import @vibe/compiler/checker/effects {
+  afe_bind_local, afe_expr_head_name, afe_no_locals, check_async_effects_stmts
+}
+
+fn yield_rec(_ head: String) -> Expr {
+  ECall(EIdent("perform", -1), [
+    ECall(EIdent("Carry::Yield", -1), [
+      ERecord(head, array_empty(), array_empty())
+    ], -1, [])
+  ], -1, [])
+}
+
+fn call0(_ name: String) -> Expr {
+  ECall(EIdent(name, -1), array_empty(), -1, [])
+}
+
+fn link(i: Int, depth: Int) -> Stmt {
+  let name = String::concat("f", Int::to_string(i))
+  let next = String::concat("f", Int::to_string(i + 1))
+  let body = if i < depth {
+    ESeq(yield_rec("Left"), ESeq(call0(next), call0(next)))
+  } else {
+    yield_rec("Left")
+  }
+  SLet(false, false, name, None, EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Unit")), Some("Carry"), body))
+}
+
+fn chain(_ depth: Int) -> Array[Stmt] {
+  let out: Array[Stmt] = []
+  let mut i = 0
+  while i <= depth {
+    Array::push(out, value = link(i = i, depth = depth))
+    i = i + 1
+  }
+  out
+}
+
+// `handle { f0(); Left::{} } with { Carry::Yield(it) => <arm> }`
+fn handled(_ arm: Expr) -> Expr {
+  EHandle(ESeq(call0("f0"), ERecord("Left", array_empty(), array_empty())), [
+    (PCtor("Carry::Yield", [PBind("it")]), arm)
+  ])
+}
+
+fn head_of(stmts: Array[Stmt], arm: Expr) -> Option[String] {
+  head_in(stmts = stmts, arm = arm, env = EnvEmpty)
+}
+
+fn head_in(stmts: Array[Stmt], arm: Expr, env: TypeEnv) -> Option[String] {
+  let _ = check_async_effects_stmts(stmts = stmts, env = env)
+  afe_expr_head_name(e = handled(arm), env = env, locals = afe_no_locals())
+}
+
+// An outer `it` of another type, which the arm's binder shadows.
+fn outer_it() -> TypeEnv {
+  env_bind(env = EnvEmpty, name = "it", ty = CtNamed("Other", []))
+}
+
+test "an arm that agrees with its binders masked does not walk the call graph" {
+  // 2^40 paths: the per-path walk never finishes.
+  inspect(head_of(stmts = chain(40), arm = ERecord("Left", array_empty(), array_empty())), content = "Some(Left)")
+}
+
+test "an arm that disagrees is still read with its binders masked" {
+  inspect(head_of(stmts = chain(40), arm = ERecord("Right", array_empty(), array_empty())), content = "None")
+}
+
+test "an arm whose head needs its binder still reads the performed payload" {
+  // Small enough for the walk: the binder's head comes from what the
+  // handled body performs, so `it` is `Left` and the arm agrees.
+  inspect(head_of(stmts = chain(3), arm = EIdent("it", -1)), content = "Some(Left)")
+}
+
+test "a binder that shadows an outer name still reads the performed payload" {
+  // Codex on #3985: the masked read must not answer with the outer `it`'s
+  // head, or the arm would look known (`Other`) and the handle lose its own.
+  inspect(head_in(stmts = chain(3), arm = EIdent("it", -1), env = outer_it()), content = "Some(Left)")
+}
+
+test "a masked local has no head, whatever an outer binding of its name says" {
+  inspect(afe_expr_head_name(e = EIdent("it", -1), env = outer_it(), locals = afe_bind_local(locals = afe_no_locals(), name = "it", head = None)), content = "None")
+  inspect(afe_expr_head_name(e = EIdent("it", -1), env = outer_it(), locals = afe_no_locals()), content = "Some(Other)")
+}

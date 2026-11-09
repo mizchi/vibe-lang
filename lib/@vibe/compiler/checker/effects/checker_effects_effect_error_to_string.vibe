@@ -2030,8 +2030,23 @@ fn afe_handle_head(body: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: A
       let mut agrees = true
       while i < Array::length(arms) && agrees {
         let (pat, arm_body) = Array::get(arms, at = i)
-        let arm_locals = afe_handler_arm_locals(body = body, pat = pat, env = env, locals = locals)
-        match afe_handler_arm_head(arm_body = arm_body, expected = expected, env = env, locals = arm_locals) {
+        // #3683: first read the arm with its binders masked. A masked name
+        // has no head, and every head rule answers None for a None input
+        // (`afe_heads_agree` included), so knowing the binders' heads can
+        // only turn an unknown arm head into a known one, never change a
+        // known one. When the masked arm already has a head, its binders'
+        // heads -- which `afe_handler_arm_locals` finds by walking the
+        // handled body and every callee it reaches, once per call path --
+        // cannot change the answer. Measured: `let answer = handle { <calls
+        // into the checker> } with { Exception::Throw(message) => .. }` in
+        // the compiler's own source made that walk cost the committed seed
+        // over 700 MB in bootstrap pass 3 and ran it out of wasm32 memory.
+        let masked_head = afe_handler_arm_head(arm_body = arm_body, expected = expected, env = env, locals = afe_mask_pat_binders(locals = locals, pat = pat))
+        let arm_head = match masked_head {
+          Some(_) => masked_head,
+          None => afe_handler_arm_head(arm_body = arm_body, expected = expected, env = env, locals = afe_handler_arm_locals(body = body, pat = pat, env = env, locals = locals))
+        }
+        match arm_head {
           Some(actual) => {
             let same = actual == expected
             if !same {
@@ -2202,7 +2217,13 @@ export fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: AfeLocals) -> Option
   match e {
     EIdent(n, _) => match afe_lookup_local(locals = locals, name = n) {
       Some(h) => Some(h),
-      None => match env_lookup(env = env, name = n) {
+      // #3683 (Codex on #3985): a local the walk binds without a head -- a
+      // masked pattern binder, a `for` variable -- shadows any outer
+      // binding of that name, so it has no head; reading the outer one's
+      // answered for a different value.
+      None => if afe_binds_local(locals = locals, name = n) {
+        None
+      } else match env_lookup(env = env, name = n) {
         Some(t) => match afe_type_head_name(t) {
           Some(head) => Some(afe_tag_async_iter_head(head = head, provenanced = afe_callee_is_builtin_async_iter(env = env, name = n) || afe_type_binding_is_builtin_async_iter(env))),
           None => None
