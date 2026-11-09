@@ -72,12 +72,10 @@ import ./perceus_pctx.vibe {
   pe_flag_or,
   pe_int_array_has,
   pe_push_for,
+  pe_split_release_ok,
   pf_exit_owner,
   pf_let,
-  pf_mark_bad,
   pf_param,
-  pf_split,
-  pf_used_after,
   pr_push_reuse
 }
 
@@ -1044,7 +1042,8 @@ export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[Ty
 
 /// #2389 per-path release: turn the recorded initial-reference occurrences of
 /// every binding that a branch merge left split into `PaConsumeMark` rows plus
-/// one `PaPathDrop`. A binding qualifies only when it is a plain `let`, a
+/// one `PaPathDrop`. A binding qualifies only when it is a plain `let` or a
+/// parameter (`pe_split_release_ok` has what more a parameter needs), a
 /// merge actually zeroed its count against a sibling branch that kept it, no
 /// occurrence spending its initial reference lacked a source offset, and
 /// nothing used it after the split -- every one of those is a shape codegen
@@ -1062,10 +1061,25 @@ export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[Ty
 fn pe_emit_path_release(_ ctx: PCtx) -> Unit {
   let done: Array[Int] = []
   let done_names: Array[String] = []
+  // A parameter's verdict walks its body (`pe_split_release_ok`), so it is
+  // asked once per binding, not once per mark.
+  let split_ok: Array[Int] = []
+  let split_bad: Array[Int] = []
   let mut mi = 0
   while mi < Array::length(ctx.mark_ids) {
     let id = Array::get(ctx.mark_ids, at = mi)
-    if pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) {
+    let ok = if pe_int_array_has(xs = split_ok, v = id) {
+      true
+    } else if pe_int_array_has(xs = split_bad, v = id) {
+      false
+    } else if pe_split_release_ok(ctx = ctx, id = id) {
+      Array::push(split_ok, value = id)
+      true
+    } else {
+      Array::push(split_bad, value = id)
+      false
+    }
+    if ok {
       let nm = Array::get(ctx.mark_names, at = mi)
       let _ = pe_push_for(ctx = ctx, kind = PaConsumeMark, name = nm, binding_id = id, use_offset = Array::get(ctx.mark_offs, at = mi))
       if pe_int_array_has(xs = done, v = id) {

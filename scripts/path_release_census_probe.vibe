@@ -36,7 +36,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children, is_borrow_ret_builtin
+  Expr, Pat, Stmt, TypeExpr, call_placement_checked_rows, expr_children, is_borrow_ret_builtin, restore_call_placements
+}
+
+import @vibe/compiler/checker {
+  check_program
 }
 
 import @vibe/compiler/syntax {
@@ -56,7 +60,12 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/perceus {
-  build_perceus_plan_with_params, compute_borrow_returning_names, compute_heap_returning, compute_scalar_returning_names, pa_is_path_drop
+  build_perceus_plan_with_params,
+  compute_borrow_returning_names,
+  compute_heap_returning,
+  compute_scalar_returning_names,
+  pa_is_path_drop,
+  type_expr_is_heap
 }
 
 fn name_in(arr: Array[String], s: String) -> Bool {
@@ -447,6 +456,21 @@ fn report(fname: String, name: String, value: Expr, ctors: Array[String], row_sc
   println(StringBuilder::freeze(line))
 }
 
+fn param_annotation(params: Array[(String, Option[TypeExpr])], name: String) -> Option[Option[TypeExpr]] {
+  let mut i = 0
+  let mut found: Option[Option[TypeExpr]] = None
+  while i < Array::length(params) {
+    let (pn, pt) = Array::get(params, at = i)
+    if pn == name {
+      found = Some(pt)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn collect_ctor_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -478,6 +502,10 @@ fn collect_ctor_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
 fn census(source: String) -> Unit with Exception + Console {
   let (toks, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens = toks, starts = starts, source = source)
+  // The lowering prelude requires the checker's argument placement on every
+  // labeled call (ADR-0120); `vibe rc-plan` restores it the same way.
+  let _ = check_program(stmts)
+  restore_call_placements(stmts = stmts, rows = call_placement_checked_rows())
   let linked: Array[(String, String, Int, Int)] = []
   let iw_names: Array[String] = []
   let iw_wats: Array[String] = []
@@ -536,9 +564,18 @@ fn census(source: String) -> Unit with Exception + Console {
                   if Array::length(found) == 1 {
                     report(fname = name, name = a.name, value = Array::get(found, at = 0), ctors = ctors, row_scope = row_scope, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret)
                   } else {
-                    // Not a `let` in this body (a pattern bind or a parameter),
-                    // or -- never observed -- an ambiguous name.
-                    println(String::concat(String::concat(String::concat(name, "\t"), a.name), "\ttop=-\tflat=n\tspine=n\tnleaves=0\tkinds=\tverdict=not_a_let"))
+                    // Not a `let` in this body: a parameter (split by whether
+                    // its annotation is heap, the codegen's own test), or a
+                    // pattern bind / an ambiguous name.
+                    let verdict = match param_annotation(params = nparams, name = a.name) {
+                      Some(ot) => if type_expr_is_heap(ot) {
+                        "param_heap"
+                      } else {
+                        "param_scalar"
+                      },
+                      None => "not_a_let"
+                    }
+                    println(String::concat(String::concat(String::concat(String::concat(name, "\t"), a.name), "\ttop=-\tflat=n\tspine=n\tnleaves=0\tkinds=\tverdict="), verdict))
                   }
                 } else {
                   ()

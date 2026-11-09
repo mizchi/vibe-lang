@@ -65,6 +65,7 @@ import ./perceus_pctx.vibe {
   pf_dsplit_bad,
   pf_exit_owner,
   pf_let,
+  pf_mark_bad,
   pf_mut_assigned,
   pf_param,
   pf_split,
@@ -93,8 +94,10 @@ fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
     // (a retain at each call site, an epilogue drop for the loop sites, #725
     // and #1085) that a branch merge's budget does not model, so its merges
     // keep today's rows: a leak, where an unmodelled release would free.
+    // The same goes for its #2389 split (#2827).
     if id < ctx.loop_floor && pe_flag_has(ctx = ctx, id = id, bit = pf_param) {
       pe_flag_or(ctx = ctx, id = id, bit = pf_dsplit_bad)
+      pe_flag_or(ctx = ctx, id = id, bit = pf_mark_bad)
     } else {
       ()
     }
@@ -1313,7 +1316,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
           // not, so the min below plans the scope-end drop away and the
           // non-consuming path never releases it. Record the split; the
           // guarded drop is emitted once the whole body is walked.
-          if pe_flag_has(ctx = ctx, id = i, bit = pf_let) {
+          if pe_flag_has(ctx = ctx, id = i, bit = pf_let) || pe_flag_has(ctx = ctx, id = i, bit = pf_param) {
             if (tv == 0 && ev > 0) || (ev == 0 && tv > 0) {
               pe_flag_or(ctx = ctx, id = i, bit = pf_split)
             } else {
@@ -1536,7 +1539,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         let cmark = Array::length(pc_scratch)
         let mut cs = 0
         while cs < n {
-          if pe_flag_has(ctx = ctx, id = cs, bit = pf_let) && Array::get(ctx.remaining, at = cs) > 0 {
+          if (pe_flag_has(ctx = ctx, id = cs, bit = pf_let) || pe_flag_has(ctx = ctx, id = cs, bit = pf_param)) && Array::get(ctx.remaining, at = cs) > 0 {
             Array::push(pc_scratch, value = cs)
           } else {
             ()

@@ -30,10 +30,17 @@ cp "$input" "$out_dir/input.vibe"
 probe="scripts/reuse_census_probe.vibe"
 # vibe_test.sh compiles the probe to _build/vibe_test/<path with / as _>.wasm
 # and runs it, but discards the run's stdout; rerun the wasm to collect it.
-VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$probe" >/dev/null
+# Its own run is allowed to fail: checking the flat source (the lowering needs
+# the checker's argument placement, ADR-0120) recurses deeper than the default
+# host stack, so only the rerun below, with a raised stack, is the census.
 wasm="_build/vibe_test/$(printf '%s' "${probe%.vibe}" | tr '/' '_').wasm"
+rm -f "$wasm"
+VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$probe" >/dev/null 2>&1 || true
 [ -s "$wasm" ] || { echo "reuse_census: probe wasm not produced: $wasm" >&2; exit 1; }
-VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$wasm" > "$out_dir/rows.tsv"
+# The raised node stack needs an OS thread stack at least as large
+# (`ulimit -s unlimited`); see scripts/run_wasm_vibe_host_runner.sh.
+VIBE_NODE_STACK_SIZE="${VIBE_NODE_STACK_SIZE:-500000}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$wasm" > "$out_dir/rows.tsv"
 
 echo "[reuse-census] input=$input arms=$(wc -l < "$out_dir/rows.tsv") rows=$out_dir/rows.tsv"
 echo "[reuse-census] verdicts:"

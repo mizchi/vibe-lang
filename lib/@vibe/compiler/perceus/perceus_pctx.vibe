@@ -335,6 +335,28 @@ fn pe_dup_upfront(ctx: PCtx, id: Int) -> Bool {
   pe_flag_has(ctx = ctx, id = id, bit = pf_let) || pe_flag_has(ctx = ctx, id = id, bit = pf_param)
 }
 
+/// #2389 / #2827: may a split binding `id` take its guarded path drop? A
+/// plain `let` may whenever no marked occurrence was lost. A parameter's drop
+/// is the function epilogue's (`linked_compile_function_bodies`,
+/// `compile_lambda`), so it qualifies only where that epilogue is the one
+/// release on every path: no early exit (codegen releases a parameter at an
+/// exit from a table that reads no path flag), no other binding of its name
+/// (codegen's path-drop rows are name-keyed), and a body that cannot hand
+/// back a view into it (the guarded drop does not retain an escaping
+/// interior read).
+export fn pe_split_release_ok(ctx: PCtx, id: Int) -> Bool {
+  if pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) {
+    if pe_flag_has(ctx = ctx, id = id, bit = pf_param) {
+      ctx.exit_ord == 0 && pe_name_unique(ctx = ctx, id = id) && !pe_tail_may_view(ctx = ctx, e = Array::get(ctx.decl_bodies, at = id), views = [
+      ])
+    } else {
+      true
+    }
+  } else {
+    false
+  }
+}
+
 export fn pe_flag_or(ctx: PCtx, id: Int, bit: Int) -> Unit {
   if id >= 0 && id < Array::length(ctx.decl_flags) {
     Array::set(ctx.decl_flags, at = id, value = Array::get(ctx.decl_flags, at = id)|bit)
@@ -387,7 +409,7 @@ export fn pr_push_reuse(actions: Array[PerceusAction], kind: PerceusActionKind, 
 /// and freed a value the alias had moved out -- measured as a silent wrong
 /// answer (36,000 became 26,000, no trap; `perceus_path_release_e2e_test`).
 export fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offset: Int, spends: Bool) -> Unit {
-  if pe_flag_has(ctx = ctx, id = sid, bit = pf_let) {
+  if pe_dup_upfront(ctx = ctx, id = sid) {
     if spends {
       if use_offset < 0 {
         pe_flag_or(ctx = ctx, id = sid, bit = pf_mark_bad)
@@ -1641,5 +1663,5 @@ export fn pe_int_array_has(xs: Array[Int], v: Int) -> Bool {
 /// #3175: does `pe_emit_path_release` give binding `id` its guarded path drop?
 /// The same test it applies, for the exit rows that mirror that drop.
 fn pe_path_dropped(ctx: PCtx, id: Int) -> Bool {
-  pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) && pe_int_array_has(xs = ctx.mark_ids, v = id)
+  pe_split_release_ok(ctx = ctx, id = id) && pe_int_array_has(xs = ctx.mark_ids, v = id)
 }

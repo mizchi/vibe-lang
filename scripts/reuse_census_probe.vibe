@@ -23,11 +23,15 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children
+  Expr, Pat, Stmt, TypeExpr, call_placement_checked_rows, expr_children, restore_call_placements
+}
+
+import @vibe/compiler/checker {
+  check_program
 }
 
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex_with_offsets, parse_program_located
 }
 
 import @vibe/compiler/normalize {
@@ -345,7 +349,12 @@ fn walk(fname: String, e: Expr, drop_names: Array[String], alias_names: Array[St
 }
 
 fn census(source: String) -> Unit with Exception + Console {
-  let stmts = parse_program(lex(source))
+  let (toks, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens = toks, starts = starts, source = source)
+  // The lowering prelude requires the checker's argument placement on every
+  // labeled call (ADR-0120); `vibe rc-plan` restores it the same way.
+  let _ = check_program(stmts)
+  restore_call_placements(stmts = stmts, rows = call_placement_checked_rows())
   let linked: Array[(String, String, Int, Int)] = []
   let iw_names: Array[String] = []
   let iw_wats: Array[String] = []
