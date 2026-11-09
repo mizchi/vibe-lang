@@ -996,16 +996,19 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
           _ => throw("expected loop parameter name or ')'")
         }
       }
-      let (invariants, decreases, wn) = parse_loop_where(tokens = tokens, pos = cur, parse_recur = parse_recur, context = context)
+      let (invariants, decreases, clause_rows, wn) = parse_loop_where(tokens = tokens, pos = cur, parse_recur = parse_recur, context = context)
       let body_pos = expect_tk(tokens = tokens, pos = wn, expected = "{")
       let body_mark = binder_capture_mark(context)
       let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
-      binder_capture_insert_synthetic_at(context = context, mark = body_mark, name = "__loop_result")
       // Desugar ELoop into ELetMut + EWhile
       let pnames = ArrayBuilder::freeze(param_names_b)
       let pinits = ArrayBuilder::freeze(param_inits_b)
       let transformed_body = desugar_loop_body(expr = body, param_names = pnames, context = context)
-      let while_expr = attach_while_contract(cond = EBool(true), body = transformed_body, invariants = invariants, decreases = decreases, tag = pos)
+      // The contract's rows (#3789) go between `__loop_result` and the body,
+      // so they are placed first and `__loop_result` is inserted ahead of
+      // them: the loop parameters' rows, before `body_mark`, stay in place.
+      let while_expr = attach_while_contract(cond = EBool(true), body = transformed_body, invariants = invariants, decreases = decreases, tag = pos, clause_rows = clause_rows, head_mark = body_mark, body_mark = body_mark, context = context)
+      binder_capture_insert_synthetic_at(context = context, mark = body_mark, name = "__loop_result")
       let result = ELetMut("__loop_result", EInt(0), ESeq(while_expr, EIdent("__loop_result", -1)), -1)
       let mut wrapped = result
       let mut wi = Array::length(pnames) - 1
@@ -1016,10 +1019,11 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
       (wrapped, end_pos)
     },
     _ => {
-      let (invariants, decreases, wn) = parse_loop_where(tokens = tokens, pos = pos + 1, parse_recur = parse_recur, context = context)
+      let (invariants, decreases, clause_rows, wn) = parse_loop_where(tokens = tokens, pos = pos + 1, parse_recur = parse_recur, context = context)
       let body_pos = expect_tk(tokens = tokens, pos = wn, expected = "{")
+      let body_mark = binder_capture_mark(context)
       let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
-      (attach_while_contract(cond = EBool(true), body = body, invariants = invariants, decreases = decreases, tag = pos), end_pos)
+      (attach_while_contract(cond = EBool(true), body = body, invariants = invariants, decreases = decreases, tag = pos, clause_rows = clause_rows, head_mark = body_mark, body_mark = body_mark, context = context), end_pos)
     }
   }
 }
