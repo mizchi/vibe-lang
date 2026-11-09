@@ -1,0 +1,124 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_counted, compile_file_fs_mode_rc_body_cached_split
+}
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+import @vibe/builtin {
+  String::replace_all
+}
+
+//# #2826: an edit that changes ONLY whether a callee returns a view
+//#
+//# A caller planned against `row_of` returning an interior view of its
+//# argument does not release the result; planned against `row_of` returning a
+//# fresh array, it does. The caller's text is the same either way, so its file
+//# is unchanged and the widened body cache (#2669) offers its body for replay
+//# after an edit to the callee's file alone. Replaying it across the change is
+//# a silent wrong answer: the caller frees a row its array still holds, or
+//# leaks one.
+//#
+//# What declines it is the callee's per-function guard row
+//# (`lc_src_rows`, codegen/wasi/linked_emission_layout.vibe): it records the
+//# function's membership in the borrow-returning set and in the view-result
+//# set, a changed row marks the name touched, and a body that spells a touched
+//# name is not replayed. The rows come from the new build's whole-program
+//# tables, so a forwarding function in an unchanged file (`peek` below) gets a
+//# changed row of its own, and its callers are declined too.
+//#
+//# Red, measured: with both of those row slots removed, `fresh -> view`
+//# replays the stale caller and the warm module answers 12464 where a cold
+//# build answers 13464, and the other three edits replay bodies whose bytes
+//# differ from the cold build's. Either slot alone suffices on these programs,
+//# because `row_of` is in both sets.
+//#
+//# Each row compiles the program, edits the callee's file only, compiles it
+//# again warm through the production body-cached lane, and compares the warm
+//# module with a cold compile of the edited program: bytes, and what each
+//# prints under wasmtime. `replayed` counts the bodies the warm build took
+//# from the cache, so the comment control shows that replay happens at all.
+
+/// What a module printed under wasmtime.
+fn ran(path: String, wasm: Bytes) -> String with Console + Exception + Fs + Process {
+  Fs::write_bytes(path, bytes = wasm)
+  let lines = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0 2>&1 | grep -v '^warning:' | head -n 1")
+  String::join(lines, sep = ",")
+}
+
+/// Compiles `main` over `leaf_before`, edits the leaf to `leaf_after`, and
+/// renders `<tag> replayed=<n> same=<warm bytes == cold bytes> warm=<out>
+/// cold=<out>`.
+fn edit_leaf(tag: String, leaf_before: String, leaf_after: String, mid: String, main: String) -> String with Console + Env + Exception + Fs + Process {
+  let stem = "/tmp/vibe_bcv_" + tag
+  let entry = stem + "_main.vibe"
+  let artifact = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "main", fingerprint = String::concat("self-describing-", compact_string_fingerprint(entry)))
+  if Fs::exists(artifact) {
+    Fs::remove(artifact)
+  } else ()
+  Fs::write_file(stem + "_leaf.vibe", contents = leaf_before)
+  Fs::write_file(stem + "_mid.vibe", contents = String::replace_all(mid, pattern = "TAG", replacement = tag))
+  Fs::write_file(entry, contents = String::replace_all(main, pattern = "TAG", replacement = tag))
+  let first: Array[Int] = []
+  let _ = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = first)
+  // A first build that was offered anything is not a baseline.
+  if Array::get(first, at = 0) != 0 {
+    throw("view-status fixture: the first build of \{tag} was offered \{Array::get(first, at = 0)} bodies")
+  } else ()
+  Fs::write_file(stem + "_leaf.vibe", contents = leaf_after)
+  let second: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = second)
+  let cold = compile_file_fs_mode_rc_body_cached_split(entry_path = entry, entry_name = "main", cache_mode = "off", use_split = false)
+  let replayed = Array::get(first, at = 1) - Array::get(second, at = 1)
+  let same = if warm == cold {
+    "true"
+  } else {
+    "false"
+  }
+  tag + " replayed=" + Int::to_string(replayed) + " same=" + same + " warm=" + ran(path = stem + "_warm.wasm", wasm = warm) + " cold=" + ran(path = stem + "_cold.wasm", wasm = cold)
+}
+
+/// `row_of` returning a fresh two-element array.
+fn fresh_leaf() -> String {
+  "export fn row_of(rows: Array[Array[Int]], i: Int) -> Array[Int] {\n  let r = Array::get(rows, at = i)\n  [Array::get(r, at = 0), Array::length(r)]\n}\n"
+}
+
+/// `row_of` returning the row itself: a view of `rows`, with the same
+/// signature.
+fn view_leaf() -> String {
+  "export fn row_of(rows: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(rows, at = i)\n}\n"
+}
+
+/// The `[1, 2] == [1, 2]` makes the compile emit a derived comparator, which
+/// is what records the body cache's guards at all.
+fn guard_trigger() -> String {
+  "  let same = if [1, 2] == [1, 2] {\n    10000\n  } else {\n    0\n  }\n"
+}
+
+test "a caller in an unchanged file is recompiled when its callee's view status changes" {
+  // `row_len` in `mid` spells `row_of`; `main` does not.
+  let mid = "import ./vibe_bcv_TAG_leaf.vibe {\n  row_of\n}\n\nexport fn row_len(rows: Array[Array[Int]], i: Int) -> Int {\n  let r = row_of(rows = rows, i = i)\n  Array::length(r) + Array::get(r, at = 0)\n}\n"
+  let main = "import ./vibe_bcv_TAG_mid.vibe {\n  row_len\n}\n\nfn main() -> Int {\n  let rows: Array[Array[Int]] = [[1, 2, 3], [4, 5]]\n  let a = row_len(rows = rows, i = 0)\n  let b = row_len(rows = rows, i = 1)\n  let c = row_len(rows = rows, i = 0)\n" + guard_trigger() + "  a * 100 + b * 10 + c + Array::length(Array::get(rows, at = 0)) * 1000 + same\n}\n"
+  let rows = [
+    edit_leaf(tag = "dcomment", leaf_before = fresh_leaf(), leaf_after = fresh_leaf() + "\n// touched", mid = mid, main = main),
+    edit_leaf(tag = "dtoview", leaf_before = fresh_leaf(), leaf_after = view_leaf(), mid = mid, main = main),
+    edit_leaf(tag = "dtofresh", leaf_before = view_leaf(), leaf_after = fresh_leaf(), mid = mid, main = main)
+  ]
+  // The control replays `row_len` and `main`; the two real edits replay
+  // `main` alone.
+  inspect(String::join(rows, sep = " / "), content = "dcomment replayed=2 same=true warm=13363 cold=13363 / dtoview replayed=1 same=true warm=13464 cold=13464 / dtofresh replayed=1 same=true warm=13363 cold=13363")
+}
+
+test "a caller that spells only a forwarding function is recompiled too" {
+  // `main` spells `peek` and `other`, both in `mid`; `peek` forwards
+  // `row_of`, so its own view status follows the edit.
+  let mid = "import ./vibe_bcv_TAG_leaf.vibe {\n  row_of\n}\n\nexport fn peek(rows: Array[Array[Int]], i: Int) -> Array[Int] {\n  row_of(rows = rows, i = i)\n}\n\nexport fn other(_ n: Int) -> Int {\n  n + 1\n}\n"
+  let main = "import ./vibe_bcv_TAG_mid.vibe {\n  other, peek\n}\n\nfn main() -> Int {\n  let rows: Array[Array[Int]] = [[1, 2, 3], [4, 5]]\n  let r = peek(rows = rows, i = 0)\n  let n = Array::length(r) + Array::get(r, at = 0)\n  let r2 = peek(rows = rows, i = 1)\n" + guard_trigger() + "  n * 100 + Array::length(r2) * 10 + Array::length(Array::get(rows, at = 0)) * 1000 + same + other(1)\n}\n"
+  let rows = [
+    edit_leaf(tag = "tcomment", leaf_before = fresh_leaf(), leaf_after = fresh_leaf() + "\n// touched", mid = mid, main = main),
+    edit_leaf(tag = "ttoview", leaf_before = fresh_leaf(), leaf_after = view_leaf(), mid = mid, main = main),
+    edit_leaf(tag = "ttofresh", leaf_before = view_leaf(), leaf_after = fresh_leaf(), mid = mid, main = main)
+  ]
+  // The control replays `peek`, `other` and `main`; the real edits replay
+  // `other` alone.
+  inspect(String::join(rows, sep = " / "), content = "tcomment replayed=3 same=true warm=13322 cold=13322 / ttoview replayed=1 same=true warm=13422 cold=13422 / ttofresh replayed=1 same=true warm=13322 cold=13322")
+}
