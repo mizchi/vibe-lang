@@ -282,9 +282,12 @@ replay_case() {
     sed "s|^|[prove] FAIL ($solver): $name.vibe: |" "$work/judge.err" >&2
     fail=1
   fi
-  if [ -s "$work/partial.txt" ]; then
-    echo "[prove] note ($solver): $name.vibe: not replayed, an array longer than the model shows: $(cat "$work/partial.txt")" >&2
-  fi
+  # One note per function, so a reader (and the self-test) can match a name
+  # whatever else the solver's models happened to truncate.
+  local skipped
+  for skipped in $(cat "$work/partial.txt"); do
+    echo "[prove] note ($solver): $name.vibe: not replayed, an array longer than the model shows: $skipped" >&2
+  done
   rm -rf "$work"
 }
 

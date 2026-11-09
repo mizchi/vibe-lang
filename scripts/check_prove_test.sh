@@ -132,7 +132,7 @@ fn ninth(xs: Array[Int]) -> Int where { requires: Array::length(xs) >= 9, ensure
 }
 VIBE
 VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" > "$work/partial.log" 2>&1 || true
-if ! grep -qF 'not replayed, an array longer than the model shows: ninth' "$work/partial.log"; then
+if ! grep -qxF "[prove] note (${VIBE_PROVE_SOLVER:-z3}): unproved.vibe: not replayed, an array longer than the model shows: ninth" "$work/partial.log"; then
   echo "[prove-selftest] FAIL: a truncated array counterexample was not named as not replayed:" >&2
   cat "$work/partial.log" >&2
   exit 1
