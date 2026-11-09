@@ -31,6 +31,7 @@ import @vibe/compiler/core {
   collect_import_value_renames,
   colliding_type_alias_names,
   colliding_type_alias_renames_enabled,
+  declared_nominal_type_names,
   dir_of_path,
   export_plan_renames_for,
   exported_type_alias_names,
@@ -243,7 +244,7 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   // standard module. Desugaring consumes this source-local marker before
   // codegen; it is not part of the runtime program.
   let import_renames = if stmts_have_import_deep(stmts) {
-    collect_import_value_renames(plan = plan, path = path, stmts = stmts)
+    drop_shadowed_alias_import_renames(renames = collect_import_value_renames(plan = plan, path = path, stmts = stmts), stmts = stmts)
   } else {
     array_empty()
   }
@@ -303,6 +304,47 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
   // #3544: this file's share of the linked program, for the impl-overlap check.
   Array::push(units, value = linked_unit_in(sources = sources, path = path, start = unit_start, end = Array::length(merged)))
+}
+
+/// #3964: the import renames without those that would point a name this file
+/// declares itself (`struct Alias`) at an imported colliding alias. The local
+/// declaration is what the file's spelling names, so its uses keep it.
+fn drop_shadowed_alias_import_renames(renames: Array[(String, String)], stmts: Array[Stmt]) -> Array[(String, String)] {
+  if !colliding_type_alias_renames_enabled() || Array::length(renames) == 0 {
+    renames
+  } else {
+    let declared = declared_nominal_type_names(stmts)
+    if Array::length(declared) == 0 {
+      renames
+    } else {
+      let alias_targets = imported_type_alias_renames(renames)
+      let out: Array[(String, String)] = []
+      for row in renames {
+        let (local, target) = row
+        let mut drop = false
+        for name in declared {
+          if name == local {
+            for alias_row in alias_targets {
+              let (_, alias_target) = alias_row
+              if alias_target == target {
+                drop = true
+              } else {
+                ()
+              }
+            }
+          } else {
+            ()
+          }
+        }
+        if drop {
+          ()
+        } else {
+          Array::push(out, value = row)
+        }
+      }
+      out
+    }
+  }
 }
 
 /// The import renames whose target is a renamed colliding alias
