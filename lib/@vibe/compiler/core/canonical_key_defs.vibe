@@ -7,7 +7,7 @@ import ./ast.vibe {
 }
 
 import ./types_env_cache.vibe {
-  TypeDef
+  Type, TypeDef
 }
 
 import ./types_types_equal.vibe {
@@ -56,7 +56,29 @@ export fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) 
   // and the checker's alias preflight refuses the source with the edit. The
   // estimate is memoized per alias, so it never expands anything itself; it is
   // exact for an alias without parameters and an upper bound for one with.
-  let sized = canonical_key_alias_sizes(aliases)
+  // An imported alias counts with the size of its (resolved) body: a local
+  // chain that doubles through `import { Dup }` (`type Dup[T] = (T, T)`)
+  // expands as much as one that doubles locally (Codex on #3995).
+  let declared: Array[String] = []
+  for row in aliases {
+    let (name, _, _) = row
+    Array::push(declared, value = name)
+  }
+  for d in nominal {
+    Array::push(declared, value = canonical_key_def_name(d))
+  }
+  let imported_sizes: Array[(String, Int)] = []
+  for d in imported {
+    match d {
+      TDAlias(name, _, body) => if !canonical_key_names_contain(names = declared, name = name) {
+        Array::push(imported_sizes, value = (name, canonical_key_resolved_size(body)))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  let sized = canonical_key_alias_sizes(aliases = aliases, imported = imported_sizes)
   let kept: Array[(String, Array[String], TypeExpr)] = []
   let mut ai = 0
   while ai < Array::length(aliases) {
@@ -81,7 +103,13 @@ export fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) 
     Array::push(local_names, value = canonical_key_def_name(d))
   }
   for d in imported {
-    if !canonical_key_names_contain(names = local_names, name = canonical_key_def_name(d)) {
+    let name = canonical_key_def_name(d)
+    // An imported alias past the limit is left out like a local one.
+    let oversized = match canonical_key_imported_size(imported = imported_sizes, name = name) {
+      Some(size) => size > canonical_key_alias_node_limit,
+      None => false
+    }
+    if !canonical_key_names_contain(names = local_names, name = name) && !oversized {
       Array::push(nominal, value = d)
     } else {
       ()
@@ -134,7 +162,7 @@ let canonical_key_alias_node_limit = 262144
 let canonical_key_alias_size_cap = 262145
 
 /// An upper bound on the size each of `aliases` expands to, in their order.
-fn canonical_key_alias_sizes(_ aliases: Array[(String, Array[String], TypeExpr)]) -> Array[Int] {
+fn canonical_key_alias_sizes(aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Int)]) -> Array[Int] {
   // 0 = not visited, -1 = in progress, else size. A cycle saturates: a
   // recursive alias (`type A[T] = (A[T], A[T])`) names no type, and resolving
   // it once per round doubled it each time (Codex on #3995). It is left out,
@@ -145,13 +173,13 @@ fn canonical_key_alias_sizes(_ aliases: Array[(String, Array[String], TypeExpr)]
   }
   let mut i = 0
   while i < Array::length(aliases) {
-    let _ = canonical_key_alias_size(aliases = aliases, memo = memo, at = i)
+    let _ = canonical_key_alias_size(aliases = aliases, imported = imported, memo = memo, at = i)
     i = i + 1
   }
   memo
 }
 
-fn canonical_key_alias_size(aliases: Array[(String, Array[String], TypeExpr)], memo: Array[Int], at: Int) -> Int {
+fn canonical_key_alias_size(aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Int)], memo: Array[Int], at: Int) -> Int {
   let known = Array::get(memo, at = at)
   if known > 0 {
     known
@@ -160,7 +188,7 @@ fn canonical_key_alias_size(aliases: Array[(String, Array[String], TypeExpr)], m
   } else {
     Array::set(memo, at = at, value = 0 - 1)
     let (_, _, target) = Array::get(aliases, at = at)
-    let size = canonical_key_type_size(te = target, aliases = aliases, memo = memo)
+    let size = canonical_key_type_size(te = target, aliases = aliases, imported = imported, memo = memo)
     Array::set(memo, at = at, value = size)
     size
   }
@@ -181,6 +209,65 @@ fn canonical_key_alias_index(aliases: Array[(String, Array[String], TypeExpr)], 
   found
 }
 
+fn canonical_key_imported_size(imported: Array[(String, Int)], name: String) -> Option[Int] {
+  let mut found: Option[Int] = None
+  for row in imported {
+    let (n, size) = row
+    if (found is None) && n == name {
+      found = Some(size)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// The node count of an imported alias's resolved body, saturating at the cap:
+/// the body can be a shared graph, so the walk stops as soon as it would pass
+/// the cap rather than spelling the graph out.
+fn canonical_key_resolved_size(_ ty: Type) -> Int {
+  let budget = [canonical_key_alias_size_cap]
+  canonical_key_spend(ty = ty, budget = budget)
+  canonical_key_alias_size_cap - Array::get(budget, at = 0)
+}
+
+fn canonical_key_spend(ty: Type, budget: Array[Int]) -> Unit {
+  let left = Array::get(budget, at = 0)
+  if left > 0 {
+    Array::set(budget, at = 0, value = left - 1)
+    match ty {
+      CtTuple(items) => for item in items {
+        canonical_key_spend(ty = item, budget = budget)
+      },
+      CtArray(item) => canonical_key_spend(ty = item, budget = budget),
+      CtOption(item) => canonical_key_spend(ty = item, budget = budget),
+      CtFn(params, ret, _) => {
+        for param in params {
+          canonical_key_spend(ty = param, budget = budget)
+        }
+        canonical_key_spend(ty = ret, budget = budget)
+      },
+      CtNamed(_, items) => for item in items {
+        canonical_key_spend(ty = item, budget = budget)
+      },
+      CtApplied(head, items) => {
+        canonical_key_spend(ty = head, budget = budget)
+        for item in items {
+          canonical_key_spend(ty = item, budget = budget)
+        }
+      },
+      CtForAll(_, _, body) => canonical_key_spend(ty = body, budget = budget),
+      CtRecord(fields) => for field in fields {
+        let (_, fty) = field
+        canonical_key_spend(ty = fty, budget = budget)
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn canonical_key_saturating_add(a: Int, b: Int) -> Int {
   if a + b > canonical_key_alias_size_cap {
     canonical_key_alias_size_cap
@@ -192,24 +279,35 @@ fn canonical_key_saturating_add(a: Int, b: Int) -> Int {
 /// `te`'s size with each alias it names expanded: an application of an alias
 /// counts the alias's own size once per node of its arguments, which bounds
 /// a body that repeats its parameter.
-fn canonical_key_type_size(te: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], memo: Array[Int]) -> Int {
+fn canonical_key_type_size(te: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Int)], memo: Array[Int]) -> Int {
   match te {
     TyName(n) => {
       let at = canonical_key_alias_index(aliases = aliases, name = n)
       if at >= 0 {
-        canonical_key_alias_size(aliases = aliases, memo = memo, at = at)
+        canonical_key_alias_size(aliases = aliases, imported = imported, memo = memo, at = at)
       } else {
-        1
+        match canonical_key_imported_size(imported = imported, name = n) {
+          Some(size) => size,
+          None => 1
+        }
       }
     },
     TyApp(n, args) => {
       let mut arg_size = 0
       for arg in args {
-        arg_size = canonical_key_saturating_add(a = arg_size, b = canonical_key_type_size(te = arg, aliases = aliases, memo = memo))
+        arg_size = canonical_key_saturating_add(a = arg_size, b = canonical_key_type_size(te = arg, aliases = aliases, imported = imported, memo = memo))
       }
       let at = canonical_key_alias_index(aliases = aliases, name = n)
-      if at >= 0 {
-        let body = canonical_key_alias_size(aliases = aliases, memo = memo, at = at)
+      let alias_body = if at >= 0 {
+        Some(canonical_key_alias_size(aliases = aliases, imported = imported, memo = memo, at = at))
+      } else {
+        canonical_key_imported_size(imported = imported, name = n)
+      }
+      if alias_body is Some(_) {
+        let body = match alias_body {
+          Some(size) => size,
+          None => 1
+        }
         let factor = if arg_size > 1 {
           arg_size
         } else {
@@ -227,14 +325,14 @@ fn canonical_key_type_size(te: TypeExpr, aliases: Array[(String, Array[String], 
     TyTuple(items) => {
       let mut total = 1
       for item in items {
-        total = canonical_key_saturating_add(a = total, b = canonical_key_type_size(te = item, aliases = aliases, memo = memo))
+        total = canonical_key_saturating_add(a = total, b = canonical_key_type_size(te = item, aliases = aliases, imported = imported, memo = memo))
       }
       total
     },
     TyFn(params, ret, _) => {
-      let mut total = canonical_key_saturating_add(a = 1, b = canonical_key_type_size(te = ret, aliases = aliases, memo = memo))
+      let mut total = canonical_key_saturating_add(a = 1, b = canonical_key_type_size(te = ret, aliases = aliases, imported = imported, memo = memo))
       for param in params {
-        total = canonical_key_saturating_add(a = total, b = canonical_key_type_size(te = param, aliases = aliases, memo = memo))
+        total = canonical_key_saturating_add(a = total, b = canonical_key_type_size(te = param, aliases = aliases, imported = imported, memo = memo))
       }
       total
     },
