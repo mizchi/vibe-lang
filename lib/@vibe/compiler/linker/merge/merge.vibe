@@ -27,7 +27,6 @@ import @vibe/compiler/core {
   apply_export_renames_stmts,
   build_export_rename_plan,
   builtin_iterator_serialized_boundary_markers,
-  canonicalize_trait_ref_private_aliases,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
   colliding_type_alias_names,
@@ -240,15 +239,6 @@ fn parse_sources_for_merge(_ sources: Array[(String, String)], cfg: TargetCfg, l
 /// rewriting and the collision-def fallback.
 fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], units: Array[LinkedUnit], shipped_default_paths: Array[String], lowering_inputs: Option[CheckedLoweringInputs]) -> Unit with Exception {
   let unit_start = Array::length(merged)
-  // #3958: expand this file's PRIVATE type aliases in its applied trait keys
-  // BEFORE the private namespacing renames them. The merged
-  // program's own pass (`canonicalize_trait_ref_aliases` in the desugar
-  // pipeline) runs too late for a private alias: by then `type Alias = Int`
-  // is `Alias_dep_<path>` while `impl Value[Alias]` still names `Alias`, which
-  // nothing declares. The linked overlap check then saw `Value[Alias]` and a
-  // sibling's `Value[Int]` as two traits, and the dispatch of
-  // `Value::value(note)` landed on one impl for both callers.
-  let stmts = merge_canonical_trait_keys(stmts)
   // Preserve the proof that an optimized trait namespace came from the
   // standard module. Desugaring consumes this source-local marker before
   // codegen; it is not part of the runtime program.
@@ -343,28 +333,6 @@ fn imported_type_alias_renames(_ renames: Array[(String, String)]) -> Array[(Str
 /// owns its methods under a binding name that encodes both
 /// (`impl_method_owner`), so each method binding of the old owner is renamed
 /// to the new one, references included (Codex on #3942).
-/// #3958: `stmts` with every applied trait key spelled through the file's own
-/// PRIVATE type aliases expanded, and the impl methods renamed with their keys
-/// (`canonicalize_trait_ref_private_aliases`), on a copy: the caller's array is
-/// read again by the import-collision fallback. A file declaring no type alias
-/// is returned as it is.
-fn merge_canonical_trait_keys(_ stmts: Array[Stmt]) -> Array[Stmt] {
-  let mut has_alias = false
-  for stmt in stmts {
-    match stmt {
-      STypeAlias(_, _, _, _) => has_alias = true,
-      _ => ()
-    }
-  }
-  if has_alias {
-    let out = Array::slice(stmts, start = 0, end = Array::length(stmts))
-    canonicalize_trait_ref_private_aliases(out)
-    out
-  } else {
-    stmts
-  }
-}
-
 fn impl_owner_renames(before: Array[Stmt], after: Array[Stmt]) -> Array[(String, String)] {
   let owners: Array[(String, String)] = []
   let mut i = 0

@@ -2288,8 +2288,13 @@ fn collect_private_type_renames(path: String, stmts: Array[Stmt], namespace_suff
         record_namespace_rename_original(original = name, mangled = mangled)
         Array::push(renames, value = (name, mangled))
       },
+      // #3958: recorded like the other private types, so a diagnostic that
+      // names a trait key spelled through the alias (`impl Value[Alias]`)
+      // shows the alias as written, not `Alias_dep_<path>`.
       STypeAlias(false, name, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
-        Array::push(renames, value = (name, namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
+        record_namespace_rename_original(original = name, mangled = mangled)
+        Array::push(renames, value = (name, mangled))
       },
       SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
         let mangled = namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
@@ -2808,7 +2813,19 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
       }
       (qualifier, variant)
     }),
-    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_private_type_expr(ty = target, renames = alias_map_without_names(aliases = type_renames, names = tparams))),
+    // #3958: the trait key and the impl's bounds name private types too
+    // (`impl Value[Alias] for Note` beside a private `type Alias = Int`).
+    // `collect_impl_method_owner_aliases` already renamed the impl's method
+    // bindings with the key rewritten, so a key left as written named an
+    // alias nothing declared any longer: the linked overlap check could not
+    // resolve a sibling's `Value[Alias]` to `Value[Int]` and linked both, and
+    // a lone impl's methods no longer matched its key ("add a body for
+    // `value`"). The key is rewritten exactly as the owner was, and expanded
+    // later by the merged program's pass, which sees every alias.
+    SImpl(tparams, bounds, trait_name, target) => {
+      let am = aliasidx_without_names(am = aliasidx_build(type_renames), names = tparams)
+      SImpl(tparams, rewrite_alias_bounds(bounds = bounds, am = am), rewrite_alias_trait_ref(trait_ref = trait_name, am = am), rewrite_private_type_expr(ty = target, renames = alias_map_without_names(aliases = type_renames, names = tparams)))
+    },
     SExternLet(name, ty) => SExternLet(name, rewrite_private_type_expr(ty = ty, renames = type_renames)),
     STest(name, body) => STest(name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
     SBench(name, body) => SBench(name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
