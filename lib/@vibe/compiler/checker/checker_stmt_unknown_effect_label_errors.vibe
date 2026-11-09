@@ -69,8 +69,12 @@ import @vibe/compiler/core {
   has_standard_host_provider,
   impl_param_add32_marker,
   is_exception_effect_name,
+  is_singleton_resource_kind,
   lookup_registry_builtin,
+  predeclared_resources,
   rewrite_import_alias_stmt,
+  standard_host_provider_names,
+  standard_provider_default_resource_kind,
   subst_apply,
   subst_bounds_for,
   trait_defined,
@@ -107,7 +111,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_name, type_param_arity, type_param_name
+  resource_param_kind, trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -569,7 +573,7 @@ fn geff_names_has(names: Array[String], name: String) -> Bool {
   found
 }
 
-fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
+fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], res: ResourceRowCtx, errors: Array[String]) -> Unit {
   match row {
     None => (),
     Some(r) => {
@@ -593,6 +597,8 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
           }
           if is_es {
             Array::push(errors, value = String::concat("effect row item `", String::concat(label, String::concat("`: `", String::concat(base, "` is an effectset — effectset instantiation in a row is not supported yet (ADR-0071)")))))
+          } else if resource_row_arg_checked(label = label, base = base, inner = inner, res = res, errors = errors) {
+            ()
           } else if String::length(inner) == 0 {
             Array::push(errors, value = String::concat("effect row item `", String::concat(label, "` needs a type argument between the brackets")))
           } else {
@@ -639,28 +645,28 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
 /// in parameter/return position) and an EFn value's inline row + parameter
 /// annotations. Nested closure literals inside bodies are not walked (same
 /// coverage boundary as the effectset expansion pass).
-fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], res: ResourceRowCtx, errors: Array[String]) -> Unit {
   match te {
     TyFn(params, ret, eff) => {
-      geff_row_targ_errors_into(row = eff, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
+      geff_row_targ_errors_into(row = eff, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, res = res, errors = errors)
       let mut i = 0
       while i < Array::length(params) {
-        geff_check_texpr_rows(te = Array::get(params, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
+        geff_check_texpr_rows(te = Array::get(params, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, res = res, errors = errors)
         i = i + 1
       }
-      geff_check_texpr_rows(te = ret, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
+      geff_check_texpr_rows(te = ret, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, res = res, errors = errors)
     },
     TyApp(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        geff_check_texpr_rows(te = Array::get(args, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
+        geff_check_texpr_rows(te = Array::get(args, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, res = res, errors = errors)
         i = i + 1
       }
     },
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        geff_check_texpr_rows(te = Array::get(elems, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
+        geff_check_texpr_rows(te = Array::get(elems, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, res = res, errors = errors)
         i = i + 1
       }
     },
@@ -668,9 +674,9 @@ fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Arr
   }
 }
 
-fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], res: ResourceRowCtx, errors: Array[String]) -> Unit {
   match te {
-    Some(t) => geff_check_texpr_rows(te = t, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors),
+    Some(t) => geff_check_texpr_rows(te = t, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, res = res, errors = errors),
     None => ()
   }
 }
@@ -682,23 +688,92 @@ fn geff_expr_formals(_ e: Expr) -> Array[String] {
   }
 }
 
-fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], res: ResourceRowCtx, errors: Array[String]) -> Unit {
   match e {
     EFn(tparams, _, params, ret, eff, _) => {
-      geff_row_targ_errors_into(row = eff, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, errors = errors)
+      geff_row_targ_errors_into(row = eff, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, res = res, errors = errors)
       let mut i = 0
       while i < Array::length(params) {
         let (_, pty) = Array::get(params, at = i)
-        geff_check_opt_texpr_rows(te = pty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, errors = errors)
+        geff_check_opt_texpr_rows(te = pty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, res = res, errors = errors)
         i = i + 1
       }
-      geff_check_opt_texpr_rows(te = ret, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, errors = errors)
+      geff_check_opt_texpr_rows(te = ret, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, res = res, errors = errors)
     },
     _ => ()
   }
 }
 
+/// ADR-0094 (#3143): what a row's resource argument is checked against --
+/// the effects that act on a resource (a standard provider, or a declared
+/// effect with a resource parameter) with that resource's kind, and the
+/// resources in scope (the predeclared process root and this module's
+/// `resource` declarations) with theirs.
+struct ResourceRowCtx {
+  effects: Array[String];
+  effect_kinds: Array[String];
+  resources: Array[String];
+  resource_kinds: Array[String]
+}
+
+fn resource_ctx_kind(names: Array[String], kinds: Array[String], name: String) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(names, at = i) == name {
+      found = Array::get(kinds, at = i)
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The resource argument of `label` (`Kv[Posts]`), checked when `base` acts
+/// on a resource: the argument must name a resource in scope whose kind is
+/// the effect's. True when `base` is such an effect, whatever the verdict,
+/// so the type-argument rules do not also read `Posts` as a type. Before
+/// this, `with Fs[Anything]` checked clean: the argument was never read.
+fn resource_row_arg_checked(label: String, base: String, inner: String, res: ResourceRowCtx, errors: Array[String]) -> Bool {
+  let want = resource_ctx_kind(names = res.effects, kinds = res.effect_kinds, name = base)
+  if want == "" {
+    false
+  } else {
+    let have = resource_ctx_kind(names = res.resources, kinds = res.resource_kinds, name = inner)
+    let omit = if is_singleton_resource_kind(want) {
+      "write `\{base}` alone: `\{want}` has one resource, which an omitted argument names"
+    } else {
+      "declare it at the root (`resource \{inner}: \{want}`), or write `\{base}` alone for any resource of that kind"
+    }
+    if String::length(inner) == 0 {
+      Array::push(errors, value = "effect row item `\{label}`: \{base} acts on a resource of kind `\{want}` -- name one between the brackets, or write `\{base}` alone")
+    } else if String::contains(inner, needle = ",") {
+      Array::push(errors, value = "effect row item `\{label}`: \{base} acts on one resource, of kind `\{want}` -- name one resource between the brackets")
+    } else if have == "" {
+      Array::push(errors, value = "effect row item `\{label}`: `\{inner}` is not a declared resource, and \{base} acts on a resource of kind `\{want}` -- \{omit}")
+    } else if have != want {
+      Array::push(errors, value = "effect row item `\{label}`: `\{inner}` is a resource of kind `\{have}`, but \{base} acts on kind `\{want}` -- name a `\{want}` resource")
+    } else {
+      ()
+    }
+    true
+  }
+}
+
 fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let res = ResourceRowCtx::{
+    effects: [],
+    effect_kinds: [],
+    resources: [],
+    resource_kinds: []
+  }
+  for entry in predeclared_resources() {
+    Array::push(res.resources, value = entry.0)
+    Array::push(res.resource_kinds, value = entry.1)
+  }
+  for provider in standard_host_provider_names() {
+    Array::push(res.effects, value = provider)
+    Array::push(res.effect_kinds, value = standard_provider_default_resource_kind(provider))
+  }
   let ed_names = array_empty()
   let ed_tpcounts = array_empty()
   let ed_tparities = array_empty()
@@ -710,6 +785,18 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
       SEffectDef(_, ename, eparams, _) => {
+        let mut ekind = ""
+        for key in eparams {
+          if resource_param_kind(key) != "" {
+            ekind = resource_param_kind(key)
+          }
+        }
+        if ekind != "" {
+          Array::push(res.effects, value = ename)
+          Array::push(res.effect_kinds, value = ekind)
+        } else {
+          ()
+        }
         Array::push(ed_names, value = ename)
         Array::push(ed_tpcounts, value = Array::length(eparams))
         let first_arity = if Array::length(eparams) > 0 {
@@ -720,6 +807,10 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
         Array::push(ed_tparities, value = first_arity)
       },
       SEffectSet(_, esname, _) => Array::push(es_names, value = esname),
+      SResource(rname, rkind) => {
+        Array::push(res.resources, value = rname)
+        Array::push(res.resource_kinds, value = rkind)
+      },
       SStruct(_, sname, _, _, _, tparams) => {
         Array::push(ctor_names, value = sname)
         Array::push(ctor_arities, value = Array::length(tparams))
@@ -744,13 +835,13 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
     match Array::get(stmts, at = j) {
       SLet(_, _, _, ty, body) => {
         let formals = geff_expr_formals(body)
-        geff_check_opt_texpr_rows(te = ty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formals, errors = errors)
-        geff_check_value_rows(e = body, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, errors = errors)
+        geff_check_opt_texpr_rows(te = ty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formals, res = res, errors = errors)
+        geff_check_value_rows(e = body, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, res = res, errors = errors)
       },
       SLetMut(_, ty, body) => {
         let formals = geff_expr_formals(body)
-        geff_check_opt_texpr_rows(te = ty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formals, errors = errors)
-        geff_check_value_rows(e = body, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, errors = errors)
+        geff_check_opt_texpr_rows(te = ty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formals, res = res, errors = errors)
+        geff_check_value_rows(e = body, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, res = res, errors = errors)
       },
       _ => ()
     }
