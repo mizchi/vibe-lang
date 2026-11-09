@@ -3368,7 +3368,7 @@ let run_mode = () -> Int { run() }
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
 - `vibe normalize` refuses a `#cfg` source (it prints the parsed program, and an inactive statement is no longer in it). `vibe fmt` is token-based and keeps every directive and both arms, so `#cfg` sources format and pass `check_vibe_fmt.sh` (measured on `fixtures/cfg_flag_test.vibe`).
 - The compiler's own sources may use it: the committed seed (seed/cfg-spans-emission-2026-09-04 and later) resolves `#cfg` in module-source emission, so the flattened self-build carries the active statements as themselves. Module-source emission and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) all resolve against the same active set (#2497 step 0, #2516).
-- The new `not(flag)` form requires a compiler built from current sources. Do not use it in the compiler's own declarations until the committed seed supports it; tests may pass it as source text to a rebuilt parser.
+- The pinned `seed/cfg-negation-2026-11-09` supports `not(flag)` in parsing and module-source emission. Compiler declarations can use both forms; subsequent seed updates must preserve that support (see docs/internal/operations/bootstrap.md).
 
 ## Allocation contract (`#zero_alloc`)
 
