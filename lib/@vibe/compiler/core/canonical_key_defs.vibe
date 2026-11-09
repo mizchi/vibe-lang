@@ -174,13 +174,25 @@ let canonical_key_alias_size_cap = 262145
 fn canonical_key_alias_sizes(aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])]) -> Array[Int] {
   // None = not visited; Some([]) = in progress; else the form.
   let memo: Array[Option[Array[Int]]] = []
+  // The largest argument each alias's resolution expands on the way: the
+  // resolver expands an argument before it substitutes it, so
+  // `Ignore[Dup[..]]` (`type Ignore[T] = Int`) builds its argument although
+  // the result is one node (Codex on #3995).
+  let peaks: Array[Int] = []
   for _ in aliases {
     Array::push(memo, value = None)
+    Array::push(peaks, value = 0)
   }
   let out: Array[Int] = []
   let mut i = 0
   while i < Array::length(aliases) {
-    Array::push(out, value = canonical_key_form_total(canonical_key_alias_form(aliases = aliases, imported = imported, memo = memo, at = i)))
+    let total = canonical_key_form_total(canonical_key_alias_form(aliases = aliases, imported = imported, memo = memo, peaks = peaks, at = i))
+    let peak = Array::get(peaks, at = i)
+    Array::push(out, value = if peak > total {
+      peak
+    } else {
+      total
+    })
     i = i + 1
   }
   out
@@ -205,7 +217,7 @@ fn canonical_key_saturated_form(_ arity: Int) -> Array[Int] {
   out
 }
 
-fn canonical_key_alias_form(aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])], memo: Array[Option[Array[Int]]], at: Int) -> Array[Int] {
+fn canonical_key_alias_form(aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])], memo: Array[Option[Array[Int]]], peaks: Array[Int], at: Int) -> Array[Int] {
   let (_, params, target) = Array::get(aliases, at = at)
   match Array::get(memo, at = at) {
     Some(form) => if Array::length(form) == 0 {
@@ -218,8 +230,10 @@ fn canonical_key_alias_form(aliases: Array[(String, Array[String], TypeExpr)], i
       let names = for p in params {
         type_param_name(p)
       }
-      let form = canonical_key_expr_form(te = target, params = names, aliases = aliases, imported = imported, memo = memo)
+      let peak = [0]
+      let form = canonical_key_expr_form(te = target, params = names, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak)
       Array::set(memo, at = at, value = Some(form))
+      Array::set(peaks, at = at, value = Array::get(peak, at = 0))
       form
     }
   }
@@ -338,6 +352,14 @@ fn canonical_key_param_slot(params: Array[String], name: String) -> Int {
   slot
 }
 
+fn canonical_key_raise_peak(peak: Array[Int], size: Int) -> Unit {
+  if size > Array::get(peak, at = 0) {
+    Array::set(peak, at = 0, value = size)
+  } else {
+    ()
+  }
+}
+
 fn canonical_key_saturating_add(a: Int, b: Int) -> Int {
   if a + b > canonical_key_alias_size_cap {
     canonical_key_alias_size_cap
@@ -366,7 +388,7 @@ fn canonical_key_form_add_scaled(acc: Array[Int], form: Array[Int], k: Int) -> U
 }
 
 /// `te`'s size as a form over `params` (the enclosing alias's parameters).
-fn canonical_key_expr_form(te: TypeExpr, params: Array[String], aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])], memo: Array[Option[Array[Int]]]) -> Array[Int] {
+fn canonical_key_expr_form(te: TypeExpr, params: Array[String], aliases: Array[(String, Array[String], TypeExpr)], imported: Array[(String, Array[Int])], memo: Array[Option[Array[Int]]], peaks: Array[Int], peak: Array[Int]) -> Array[Int] {
   let out: Array[Int] = [0]
   for _ in params {
     Array::push(out, value = 0)
@@ -377,7 +399,10 @@ fn canonical_key_expr_form(te: TypeExpr, params: Array[String], aliases: Array[(
     _ => (None, [])
   }
   let arg_forms = for arg in args {
-    canonical_key_expr_form(te = arg, params = params, aliases = aliases, imported = imported, memo = memo)
+    canonical_key_expr_form(te = arg, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak)
+  }
+  for form in arg_forms {
+    canonical_key_raise_peak(peak = peak, size = canonical_key_form_total(form))
   }
   let callee: Option[Array[Int]] = match head {
     Some(n) => {
@@ -388,7 +413,9 @@ fn canonical_key_expr_form(te: TypeExpr, params: Array[String], aliases: Array[(
       } else {
         let at = canonical_key_alias_index(aliases = aliases, name = n)
         if at >= 0 {
-          Some(canonical_key_alias_form(aliases = aliases, imported = imported, memo = memo, at = at))
+          let form = canonical_key_alias_form(aliases = aliases, imported = imported, memo = memo, peaks = peaks, at = at)
+          canonical_key_raise_peak(peak = peak, size = Array::get(peaks, at = at))
+          Some(form)
         } else {
           canonical_key_imported_form(imported = imported, name = n)
         }
@@ -423,14 +450,14 @@ fn canonical_key_expr_form(te: TypeExpr, params: Array[String], aliases: Array[(
       TyTuple(items) => {
         Array::set(out, at = 0, value = 1)
         for item in items {
-          canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = item, params = params, aliases = aliases, imported = imported, memo = memo), k = 1)
+          canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = item, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak), k = 1)
         }
       },
       TyFn(fparams, ret, _) => {
         Array::set(out, at = 0, value = 1)
-        canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = ret, params = params, aliases = aliases, imported = imported, memo = memo), k = 1)
+        canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = ret, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak), k = 1)
         for param in fparams {
-          canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = param, params = params, aliases = aliases, imported = imported, memo = memo), k = 1)
+          canonical_key_form_add_scaled(acc = out, form = canonical_key_expr_form(te = param, params = params, aliases = aliases, imported = imported, memo = memo, peaks = peaks, peak = peak), k = 1)
         }
       },
       // A non-alias head (`Array[..]`, a struct) or a builtin name: one node
