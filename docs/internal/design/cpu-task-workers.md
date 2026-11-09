@@ -111,20 +111,32 @@ reference behaviour is always one setting away.
   context" lesson of function-cpu-workers.md item 4: a missing source-location
   table was a read-only instance global that the job silently lacked.
 
-### 4. Ordered consumption with three bounds
+### 4. Admission under three bounds, led by what the parent awaits
 
-`Parallel::map` returns results in input order, and a `TaskGroup` joins
-children by handle, so the parent consumes results in a canonical order. The
-executor admits jobs against three separate bounds:
+`Parallel::map` consumes results in input order. A `TaskGroup` joins children
+by handle, in whatever order the program writes: joining the last child
+first is supported, and `concurrent_test.vibe` does it. So the executor
+cannot assume one consumption order. It admits jobs against three separate
+bounds:
 
 - at most **N active** jobs;
 - at most **Q queued input bytes**, for jobs encoded and waiting for a thread;
 - at most **R completed-but-unconsumed output bytes**.
 
-A job that finishes before an earlier one is consumed keeps its result buffer
-and counts against R. When R is full, no new job starts until the parent
-consumes. A slow first job therefore stalls admission instead of letting every
-later result accumulate. These bounds limit wire bytes, and the decoded heap
+A job that finishes before the parent consumes it keeps its result buffer and
+counts against R. Speculative admission (starting a job nobody is waiting on
+yet, in spawn order) stops while R is full, so a slow job the parent awaits
+stalls admission instead of letting every other result accumulate.
+
+**The job the parent awaits is never held back by R.** A join on a job that
+has not started moves it to the front of the queue, and it starts as soon as
+one of the N threads is free, whatever R holds. Every running job is a
+bounded CPU computation with no host wait (decision 1), so a thread always
+frees. A join therefore always makes progress. Without this rule, joining
+the last handle first could deadlock: R is full of earlier results that the
+blocked parent cannot consume, and the awaited job never starts. R can be
+exceeded by at most the N results that were running when it filled, plus the
+awaited job's own result. These bounds limit wire bytes, and the decoded heap
 of each worker is its own Store's. Neither is a proof of whole-process RSS,
 which decision 7 requires measuring.
 
@@ -175,6 +187,7 @@ All of the following are true at once:
 - **Equivalence.** N = 1 (cooperative), N = 2 and N = 4 agree on results, on
   publication order and on failure observations. The tests are:
   - slow-first-job backpressure, with R held at its bound;
+  - handles joined in reverse spawn order with R full, which must complete;
   - Q pressure;
   - cancellation of a running job;
   - a worker trap aborting the program;
