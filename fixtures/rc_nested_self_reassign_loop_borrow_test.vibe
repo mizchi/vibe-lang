@@ -1,0 +1,88 @@
+// #4023: on the RC lane, `x = f(x)` (a self-reassignment that MOVES `x`)
+// inside a nested loop or inside a borrow-bound `let` body dropped the outer
+// loop's `x` from the codegen's loop-borrow stack. The mask that hides `x`
+// while the right-hand side compiles compacted the stack and pushed `x` back
+// on top, where the enclosing scope's truncate cut it off. Every later owning
+// call on the loop-carried `x` in that iteration then went without its
+// retain and released the binding's only reference.
+//
+// `consume` owns its parameter: one call site in each test passes a literal,
+// so the position cannot be borrowed, and the callee releases it on return.
+fn consume(e: Array[Int], out: Array[Int]) -> Unit {
+  Array::push(out, value = Array::length(e))
+}
+
+// Returns its argument, so it consumes it: `cur = step(e = cur, ..)` moves.
+fn step(e: Array[Int], n: Int) -> Array[Int] {
+  Array::push(e, value = n)
+  e
+}
+
+// The silent shape: after the two releases the block is reused by `[7, ..]`,
+// and reading `cur` answered that array's length (5), not 2.
+fn nested_loop_then_read(steps: Array[Int], out: Array[Int], keep: Array[Array[Int]]) -> Int {
+  let mut cur: Array[Int] = []
+  let mut idx = 0
+  while idx < 1 {
+    let mut j = 0
+    while j < Array::length(steps) {
+      cur = step(e = cur, n = Array::get(steps, at = j))
+      j = j + 1
+    }
+    consume(e = cur, out = out)
+    consume(e = cur, out = out)
+    Array::push(keep, value = [7, 7, 7, 7, 7])
+    Array::push(out, value = Array::length(cur))
+    idx = idx + 1
+  }
+  Array::length(cur)
+}
+
+// The same move inside the body of a borrow-bound `let` (`p` views into
+// `steps`), with no nested loop.
+fn let_body_then_consume(steps: Array[Int], out: Array[Int], rounds: Int) -> Int {
+  let mut cur: Array[Int] = []
+  let mut idx = 0
+  while idx < rounds {
+    if idx >= 0 {
+      let p = Array::get(steps, at = 0)
+      cur = step(e = cur, n = p)
+    } else {
+      ()
+    }
+    consume(e = cur, out = out)
+    consume(e = cur, out = out)
+    idx = idx + 1
+  }
+  Array::length(cur)
+}
+
+test "a loop-carried value keeps its contents after a self-reassignment in a nested loop" {
+  let out = []
+  consume(e = [], out = out)
+  let keep = []
+  inspect(nested_loop_then_read(steps = [1, 2], out = out, keep = keep), content = "2")
+  inspect(out, content = "[0, 2, 2, 2]")
+}
+
+test "a loop-carried value survives many rounds of nested self-reassignment" {
+  let out = []
+  consume(e = [], out = out)
+  let keep = []
+  let mut r = 0
+  let mut total = 0
+  while r < 20 {
+    total = total + nested_loop_then_read(steps = [1, 2, 3], out = out, keep = keep)
+    r = r + 1
+  }
+  inspect(total, content = "60")
+  inspect(Array::length(out), content = "61")
+}
+
+test "a loop-carried value survives a self-reassignment in a borrow-bound let body" {
+  let out = []
+  consume(e = [], out = out)
+  inspect(let_body_then_consume(steps = [4], out = out, rounds = 30), content = "30")
+  inspect(Array::length(out), content = "61")
+  inspect(Array::get(out, at = 60), content = "30")
+}
