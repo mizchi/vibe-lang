@@ -89,34 +89,39 @@ expect_fail blind "names only" --scan-only "$STRIPPED"
 # 2. leak: a named user build whose function names include a dropped lane's.
 # Enough functions that the runtime's unnamed helpers stay under the 10% the
 # scan tolerates; the mutation is verified by reading the names back first.
-LEAK_SRC="$TMP/leak.vibe"
-{
-  echo 'fn compile_file_fs_mode_gc() -> Int { 1 }'
-  i=0
-  while [ "$i" -lt 60 ]; do
-    echo "fn helper_$i(x: Int) -> Int { x + $i }"
-    i=$((i + 1))
-  done
-  printf 'fn main() -> Int {\n  let mut acc = compile_file_fs_mode_gc()\n'
-  i=0
-  while [ "$i" -lt 60 ]; do
-    echo "  acc = helper_$i(x = acc)"
-    i=$((i + 1))
-  done
-  printf '  acc\n}\n'
-} > "$LEAK_SRC"
-LEAK="$TMP/leak.wasm"
-_selector_order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
-[ -n "$_selector_order" ] || { echo "check_compile_only_lanes_test: FAIL: adapter_selector_order.sh printed nothing" >&2; exit 1; }
-echo "$_selector_order" | tr ' ' '\n' | grep -qx VIBE_FS_COMPILE \
-  || { echo "check_compile_only_lanes_test: FAIL: adapter_selector_order.sh omitted VIBE_FS_COMPILE" >&2; exit 1; }
-env $(printf '%s\n' $_selector_order | sed 's/^/-u /' | tr '\n' ' ') \
-  -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$LEAK_SRC" "$LEAK" main >"$TMP/leak.build.log" 2>&1 || true
-[ -s "$LEAK" ] || { echo "check_compile_only_lanes_test: FAIL (leak): probe did not compile" >&2; cat "$LEAK.diag" >&2 2>/dev/null; exit 1; }
-node scripts/wasm_func_sizes.mjs "$LEAK" --top 1000000 | grep -q 'compile_file_fs_mode_gc' \
-  || { echo "check_compile_only_lanes_test: FAIL (leak): the probe's name section lacks compile_file_fs_mode_gc, so the mutation did not hit" >&2; exit 1; }
-expect_fail leak "still defines functions of a dropped lane" --scan-only "$LEAK"
+check_leak() { # <source-level name of a forbidden family>
+  local witness="$1"
+  local LEAK_SRC="$TMP/$witness.vibe"
+  {
+    echo "fn $witness() -> Int { 1 }"
+    i=0
+    while [ "$i" -lt 60 ]; do
+      echo "fn helper_$i(x: Int) -> Int { x + $i }"
+      i=$((i + 1))
+    done
+    printf 'fn main() -> Int {\n  let mut acc = %s()\n' "$witness"
+    i=0
+    while [ "$i" -lt 60 ]; do
+      echo "  acc = helper_$i(x = acc)"
+      i=$((i + 1))
+    done
+    printf '  acc\n}\n'
+  } > "$LEAK_SRC"
+  local LEAK="$TMP/$witness.wasm"
+  _selector_order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
+  [ -n "$_selector_order" ] || { echo "check_compile_only_lanes_test: FAIL: adapter_selector_order.sh printed nothing" >&2; exit 1; }
+  echo "$_selector_order" | tr ' ' '\n' | grep -qx VIBE_FS_COMPILE \
+    || { echo "check_compile_only_lanes_test: FAIL: adapter_selector_order.sh omitted VIBE_FS_COMPILE" >&2; exit 1; }
+  env $(printf '%s\n' $_selector_order | sed 's/^/-u /' | tr '\n' ' ') \
+    -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$LEAK_SRC" "$LEAK" main >"$TMP/leak.build.log" 2>&1 || true
+  [ -s "$LEAK" ] || { echo "check_compile_only_lanes_test: FAIL (leak): probe did not compile" >&2; cat "$LEAK.diag" >&2 2>/dev/null; exit 1; }
+  node scripts/wasm_func_sizes.mjs "$LEAK" --top 1000000 | grep -qF "$witness" \
+    || { echo "check_compile_only_lanes_test: FAIL (leak): the probe's name section lacks $witness, so the mutation did not hit" >&2; exit 1; }
+  expect_fail "$witness" "$witness" --scan-only "$LEAK"
+}
+check_leak compile_file_fs_mode_gc
+check_leak codegen_body_cache_replay
 
 # 3. accepted: the full CLI serves the gc lane, so the refusal check fails on
 # the first switch.
