@@ -19,7 +19,7 @@ import @vibe/compiler/config {
   target_cfg_ambient
 }
 import @vibe/compiler/cache {
-  cache_read_source_fs
+  cache_read_source_fs, cache_source_memo_token
 }
 
 // These caches are keyed by dependency path, never by the current entry.
@@ -89,6 +89,7 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
   }
   let mut rdb = state.rdb
   let mut entry_source = current
+  let closure_tokens: Array[(String, Int)] = []
   let mut gi = 0
   while gi < Array::length(groups) {
     let (_, sources) = Array::get(groups, at = gi)
@@ -99,13 +100,13 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
       if p == path {
         entry_source = text
       } else {
-        ()
+        Array::push(closure_tokens, value = (p, query_project_source_token(p)))
       }
       si = si + 1
     }
     gi = gi + 1
   }
-  let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path, cfg = cfg)
+  let (entry_fingerprint, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path, cfg = cfg)
   let deps = match ripple_get_deps(db = walked, path = path) {
     Some(d) => d,
     None => array_empty()
@@ -113,6 +114,8 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
   let import_env = projected_import_env_for_test(source = entry_source, path = path, deps = deps, full_cache = query_project_fill_dep_envs(rdb = walked, env_cache = env_cache, deps = deps))
   QueryProjectContext::{
     entry_source: entry_source,
+    entry_fingerprint: entry_fingerprint,
+    closure_tokens: closure_tokens,
     import_env: import_env,
     state: QueryProjectState::{
       env_cache: env_cache,
@@ -120,6 +123,35 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
       dep_sources: dep_sources
     }
   }
+}
+
+/// The stat token `path`'s text was read under: the one the loader's source
+/// memo stored before reading it, or the current one when the memo holds no
+/// text for `path` (a module this walk did not read through the memo).
+fn query_project_source_token(_ path: String) -> Int with Fs {
+  let token = cache_source_memo_token(path)
+  if token >= 0 {
+    token
+  } else {
+    Fs::stat_token(path)
+  }
+}
+
+/// Whether every module of a context's closure still has the stat token it
+/// was read under -- the test the loader's own source memo applies before it
+/// trusts a text it holds (#3577). False as soon as one module was written,
+/// replaced or removed.
+export fn query_project_tokens_unchanged(_ tokens: Array[(String, Int)]) -> Bool with Fs {
+  let mut same = true
+  let mut i = 0
+  while same && i < Array::length(tokens) {
+    let (p, token) = Array::get(tokens, at = i)
+    if Fs::stat_token(p) != token {
+      same = false
+    } else ()
+    i = i + 1
+  }
+  same
 }
 
 /// Persistent hits need hydration only when this exact module has no env row.
