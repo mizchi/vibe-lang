@@ -144,7 +144,7 @@ import ./rewrite.vibe {
 }
 
 import ./add32_rows.vibe {
-  dtd_add32_insert, dtd_add32_report, dtd_add32_reset
+  dtd_add32_insert, dtd_add32_report, dtd_add32_reset, dtd_add32_split_collect, dtd_add32_split_report, dtd_add32_split_reset
 }
 
 import ./state.vibe {
@@ -159,6 +159,7 @@ import ./state.vibe {
   dtd_own_growth,
   dtd_own_limit,
   dtd_rowless_build,
+  dtd_show_refusals,
   dtd_synth_dict_fields,
   dtd_typed_eq_keys,
   dtd_typed_eq_offs,
@@ -190,7 +191,8 @@ import ./utilities.vibe {
   dict_struct_name,
   dtd_synth_dict_reset,
   inject_trait_method_generics_with,
-  lookup_trait_type_params
+  lookup_trait_type_params,
+  str_array_contains
 }
 
 import ./witness_targets.vibe {
@@ -268,7 +270,7 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
   // wants the union across the modules of one split run, and resets once at
   // that boundary (#2642 review, Codex P2).
   eq_deferred_reset()
-  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys)
+  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, report = true)
   // #3144 round 4: a witness field is named by COMPUTING `<Type>::<method>`,
   // which for an impl method at a listed name (`impl Measured for String {
   // length(..) }`) is the source spelling of a definition renamed above.
@@ -307,6 +309,27 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_
 /// above passes none, which is right for a MEASUREMENT and wrong for a
 /// production driver -- a caller that means to compile passes real ones.
 export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
+  desugar_trait_dicts_module_impl(own = own, ctx = ctx, module_tag = module_tag, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, facts = facts, report = true)
+}
+
+/// #2826: the same entry for a driver that lowers EVERY module of one program
+/// and reports once. This module's refusals are filed with the program's
+/// (`desugar_module_reports_begin` / `_flush`) instead of thrown here. A
+/// refusal the pass throws while it runs still throws at once, as it does on
+/// the whole program.
+///
+/// Thrown per module, the refusals were a different answer from the whole
+/// program's whenever a second module had one: the first module's report ended
+/// the compile, so a later module's `==` refusal went missing, a later
+/// module's refusal of an earlier-reported family lost to an earlier module's
+/// refusal of a later one, and a 32-bit `Add` row -- filed for the whole
+/// program, consumed only by the module holding the call -- refused a valid
+/// program from every other module's run.
+export fn desugar_trait_dicts_module_deferring(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
+  desugar_trait_dicts_module_impl(own = own, ctx = ctx, module_tag = module_tag, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, facts = facts, report = false)
+}
+
+fn desugar_trait_dicts_module_impl(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts, report: Bool) -> Array[Stmt] with Exception {
   Array::set(dtd_rowless_build, at = 0, value = false)
   dtd_facts_set(facts)
   let stmts: Array[Stmt] = []
@@ -324,7 +347,7 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
   Array::set(dtd_ctx_len, at = 0, value = Array::length(ctx))
   Array::set(dtd_own_growth, at = 0, value = 0)
   Array::set(dlh_module_tag, at = 0, value = module_tag)
-  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys)
+  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, report = report)
   // #3144 round 4: as in the whole-program entry. The module's own
   // definitions and its context's are both in `stmts`, so a witness naming
   // either is pointed at the renamed definition.
@@ -476,7 +499,7 @@ fn dtd_stmts_derive_ord(_ stmts: Array[Stmt]) -> Bool {
   found
 }
 
-fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], report: Bool) -> Unit with Exception {
   // #2441: (re)populate the typed-`==` table for THIS program before any
   // rewrite can read it.
   Array::truncate(dtd_typed_eq_offs, length = 0)
@@ -894,10 +917,14 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
       ti = ti + 1
     }
   }
-  eq_refusals_report()
-  show_refusals_report()
-  index_refusals_report()
-  dtd_add32_report()
+  if report {
+    eq_refusals_report()
+    show_refusals_report()
+    index_refusals_report()
+    dtd_add32_report()
+  } else {
+    dtd_module_reports_collect()
+  }
 }
 
 /// #3825: which `#add32[..]` row `key` is, or -1.
@@ -938,25 +965,96 @@ fn add32_key_index(keys: Array[String], key: String) -> Int {
 /// locates only the FIRST marker of a message, at its start, so a marker on a
 /// later line is stripped rather than shown raw or used to place the first.
 fn eq_refusals_report() -> Unit with Exception {
-  if Array::length(dtd_eq_refusals) == 0 {
+  let out = eq_refusals_text(dtd_eq_refusals)
+  if out == "" {
     ()
   } else {
-    let mut out = ""
-    let mut i = 0
-    while i < Array::length(dtd_eq_refusals) {
-      let reason = if i == 0 {
-        Array::get(dtd_eq_refusals, at = i)
-      } else {
-        eq_strip_off_marker(Array::get(dtd_eq_refusals, at = i))
-      }
-      out = String::concat(out, String::concat(if i == 0 {
-        ""
-      } else {
-        "\n"
-      }, String::concat("structural `==` cannot be decided here: ", reason)))
-      i = i + 1
-    }
     throw(out)
+  }
+}
+
+/// The one diagnostic `refusals` make, or "" when there are none.
+fn eq_refusals_text(_ refusals: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(refusals) {
+    let reason = if i == 0 {
+      Array::get(refusals, at = i)
+    } else {
+      eq_strip_off_marker(Array::get(refusals, at = i))
+    }
+    out = String::concat(out, String::concat(if i == 0 {
+      ""
+    } else {
+      "\n"
+    }, String::concat("structural `==` cannot be decided here: ", reason)))
+    i = i + 1
+  }
+  out
+}
+
+//# One report for a program lowered module by module (#2826)
+
+/// The refusals of the modules a `desugar_trait_dicts_module_deferring` driver
+/// has lowered so far, in module order, deduplicated as one run deduplicates
+/// them. The 32-bit `Add` rows are kept by `add32_rows.vibe`.
+let dtd_split_eq_refusals: Array[String] = []
+let dtd_split_show_refusals: Array[String] = []
+let dtd_split_index_refusals: Array[String] = []
+
+/// Start one program's reports. Called before its first module is lowered, so
+/// a previous program's refusals -- one that threw part-way, say -- are gone.
+export fn desugar_module_reports_begin() -> Unit {
+  Array::truncate(dtd_split_eq_refusals, length = 0)
+  Array::truncate(dtd_split_show_refusals, length = 0)
+  Array::truncate(dtd_split_index_refusals, length = 0)
+  dtd_add32_split_reset()
+}
+
+/// Has a module lowered so far been refused? Then the program is: the flush
+/// throws, and the passes the whole program runs after this one never run
+/// there. An unconsumed 32-bit row is not a refusal yet -- a later module may
+/// hold its call.
+export fn desugar_module_reports_pending() -> Bool {
+  Array::length(dtd_split_eq_refusals) > 0 || Array::length(dtd_split_show_refusals) > 0 || Array::length(dtd_split_index_refusals) > 0
+}
+
+/// Report the program's refusals exactly as one whole-program run reports
+/// them: every `==` refusal in one diagnostic, then the first renderer
+/// refusal, then the first index refusal, then the first 32-bit row no module
+/// consumed.
+export fn desugar_module_reports_flush() -> Unit with Exception {
+  let eq = eq_refusals_text(dtd_split_eq_refusals)
+  if eq != "" {
+    throw(eq)
+  } else if Array::length(dtd_split_show_refusals) > 0 {
+    throw(Array::get(dtd_split_show_refusals, at = 0))
+  } else if Array::length(dtd_split_index_refusals) > 0 {
+    throw(Array::get(dtd_split_index_refusals, at = 0))
+  } else {
+    dtd_add32_split_report()
+  }
+}
+
+/// File this module's refusals with the program's.
+fn dtd_module_reports_collect() -> Unit {
+  dtd_split_collect_into(dst = dtd_split_eq_refusals, src = dtd_eq_refusals)
+  dtd_split_collect_into(dst = dtd_split_show_refusals, src = dtd_show_refusals)
+  dtd_split_collect_into(dst = dtd_split_index_refusals, src = dtd_index_refusals)
+  dtd_add32_split_collect()
+}
+
+/// Append each of `src` that `dst` does not hold yet. A module's context
+/// carries bodies another module also lowers, so the same refusal, at the
+/// same offset, can come from both runs.
+fn dtd_split_collect_into(dst: Array[String], src: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    let r = Array::get(src, at = i)
+    if !str_array_contains(arr = dst, val = r) {
+      Array::push(dst, value = r)
+    } else ()
+    i = i + 1
   }
 }
 
