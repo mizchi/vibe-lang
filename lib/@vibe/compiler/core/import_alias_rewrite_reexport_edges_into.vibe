@@ -205,7 +205,27 @@ export fn exported_type_alias_names(_ stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-/// The exported type alias names two or more of the files publish.
+/// The nominal types `stmts` declares: struct, enum and suberror names.
+export fn declared_nominal_type_names(_ stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, name, _, _, _, _) => Array::push(out, value = name),
+      SEnum(_, name, _, _, _) => Array::push(out, value = name),
+      SSuberror(_, name, _) => Array::push(out, value = name),
+      _ => ()
+    }
+  }
+  out
+}
+
+/// The exported type alias names that collide in the merged program: two or
+/// more of the files publish the name, or (#3964) one publishes it and
+/// another declares a struct, enum or suberror of that name. In the second
+/// case the importer's own declaration is what its spelling names, as on
+/// linear and in `vibe check`, and the merged program kept both under one
+/// name, so `impl Value[Alias]` beside a local `struct Alias` read the
+/// imported `type Alias = Int`.
 export fn colliding_exported_type_alias_names(_ stmts_list: Array[Array[Stmt]]) -> Array[String] {
   let seen = empty_strings()
   let out = empty_strings()
@@ -217,6 +237,13 @@ export fn colliding_exported_type_alias_names(_ stmts_list: Array[Array[Stmt]]) 
         }
       } else {
         Array::push(seen, value = name)
+      }
+    }
+  }
+  for stmts in stmts_list {
+    for name in declared_nominal_type_names(stmts) {
+      if import_alias_rewrite_string_array_contains(items = seen, target = name) && !import_alias_rewrite_string_array_contains(items = out, target = name) {
+        Array::push(out, value = name)
       }
     }
   }
