@@ -1,14 +1,14 @@
 # ADR-0094: Resource-kind parameters — declaration syntax and internal representation
 
-Status: proposed. Steps 0–3 of the implementation order below have landed:
+Status: accepted. Steps 0–3 of the implementation order below have landed:
 operation-level authorization of builtins, the standard provider policy,
 `resource` declarations with the `Process::Root` singleton kind, and the
-bounded effect parameter with `TDEffect`'s `param_kinds` slot. What is left is
-the operation identity: a declared resource parameter does not yet reach the
-classifier through `OperationRef`, and resource-qualified authority is not
-enforced. [#3143](https://github.com/mizchi/vibe-lang/issues/3143) owns that
-work; this ADR is accepted when #3143's done criteria hold, or rewritten to
-what ships.
+bounded effect parameter with `TDEffect`'s `param_kinds` slot. A declared
+resource parameter reaches the classifier through `OperationRef`
+(`operation_ref_in`, #3143). Resource-qualified authority -- `Kv[Posts]` and
+`Kv[Logs]` as different grants -- is not enforced: row containment stays
+instantiation-insensitive until rows carry `OperationRef` identities
+(ADR-0071).
 
 Date: 2026-08-02
 
@@ -224,7 +224,7 @@ bump.
 | 0 | Builtin calls authorize by operation label too: `with Fs::read_file` / `with Http::request` admit the builtin, so `Http` no longer has to be granted whole | **landed** (#1343, #1359) |
 | 1 | Standard provider / entry-execution policy (`core/standard_effect_policy.vibe`) | **landed** (#1496) |
 | 2 | ADR-0075 Phase 2: `resource Name : Owner::Kind` declarations and the `Process::Root` singleton kind | **landed** (#1343, PR #1465) |
-| 3 | Bounded effect parameters and `_`; `TDEffect`'s `param_kinds` slot and its registration; the kind branch in the three consumers; resource arguments checked against declared resources | **landed** (#3143). The resource kind does not reach `OperationRef` yet: `standard_operation_ref` still reads a declared effect's bracket argument as a type |
+| 3 | Bounded effect parameters and `_`; `TDEffect`'s `param_kinds` slot and its registration; the kind branch in the three consumers; resource arguments checked against declared resources; the declared kind read by `OperationRef` | **landed** (#3143): `operation_ref_in` reads a declared effect's bracket argument as its resource, and `effect_catalog_in` classifies it by its declaration |
 | 4 | `wit_gen`'s declaration/provider classification (context item 5) | the entry/runtime filtering uses `is_entry_runtime_managed_effect`; the inversion itself is unchanged, and no open issue owns it |
 | 5 | The entry's closed-row check (ADR-0084 Phase 3) | the entry-row admission rule has landed (ADR-0084, #1683); the exact closed-row check has not — see [vibex-runtime-contract.md](vibex-runtime-contract.md) |
 | 6 | Enforcement, with `Entry.requires ⊆ ComposedHost.provides` as preflight | `vibe run` refuses a required capability its launcher flags withhold (#2828, ADR-0088 L3); resource-qualified requirements wait on step 3 and #3143 |
