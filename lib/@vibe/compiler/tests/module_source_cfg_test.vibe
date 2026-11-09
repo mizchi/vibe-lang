@@ -31,3 +31,19 @@ test "a helper referenced only from an impl method survives emission" {
   let flat = build_module_source_from_source(source = src2, entry_name = "main")
   assert_eq(flat, "let helper = () -> String { \"h\" }\nimpl Show for Foo {\n  show(self) -> String {\n    helper()\n  }\n}\nlet main = () -> Int { 1 }\n")
 }
+
+test "one flag selects a real implementation or its fallback before module-source emission" {
+  let source = "#cfg(telemetry)\nlet telemetry_encoder = () -> Int { 101 }\n#cfg(telemetry)\nlet observe = () -> Int { telemetry_encoder() }\n#cfg(not(telemetry))\nlet observe = () -> Int { 7 }\nlet main = () -> Int { observe() }\n"
+  set_cfg_ambient_flags([])
+  let off = build_module_source_from_source(source = source, entry_name = "main")
+  assert_eq(off, "let observe = () -> Int { 7 }\nlet main = () -> Int { observe() }\n")
+  set_cfg_ambient_flags(["telemetry"])
+  handle {
+    let on = build_module_source_from_source(source = source, entry_name = "main")
+    assert_eq(on, "let telemetry_encoder = () -> Int { 101 }\nlet observe = () -> Int { telemetry_encoder() }\nlet main = () -> Int { observe() }\n")
+    set_cfg_ambient_flags([])
+  } with { Exception::Throw(msg) => {
+    set_cfg_ambient_flags([])
+    throw(msg)
+  } }
+}
