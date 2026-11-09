@@ -19,7 +19,8 @@
 #      the switch. Silently compiling on another lane is the failure this
 #      guards against (policy: never silently wrong).
 #   3. ACCEPTANCE. The two production lanes still compile, and the default
-#      lane's output runs.
+#      lane's output runs. Cfg, unstable authorization and generated-source
+#      trust remain per-compilation inputs to this same artifact.
 #
 # Usage:
 #   bash scripts/check_compile_only_lanes.sh
@@ -60,6 +61,9 @@ fail() { echo "compile-only-lanes: FAIL: $*" >&2; exit 1; }
 # were present in the unit-1 artifact, which dropped lanes by reachability
 # only.
 ABSENT_PATTERNS='emit_shadow_mark_freed|emit_str_operand_guard|codegen_gc_backend|source_compile_gc_only|compile_file_fs_mode_gc|compile_file_fs_mode_break|compile_file_fs_mode_trace|compile_file_fs_mode_coverage|compile_file_fs_mode_rc_shadow|compile_file_fs_mode_rc_body_cached|compile_file_fs_mode_testmeta|heap_marked|artifact_input_trace|sources_coverage_impl|sources_trace_impl|sources_break_impl|rc_shadow_impl|gc_only_impl|wasi_only_coverage|wasi_only_rc_shadow'
+# #2497: measured replay, relocation and harvest code. Cache constructors and
+# layout fingerprints remain shared with production; they are not cache replay.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|codegen_body_cache_(replay|record|filter_fold_sigs|find_at|find_named|set_fold_table)|lc_src_edit_(of|reindex|replayable)|lc_relocate_replayed_strings|lc_string_remap|lc_(types|structs|effects)_agree"
 
 scan_names() { # <wasm>
   local wasm="$1" listing
@@ -123,18 +127,28 @@ fn main() -> Int {
 }
 VIBE
 
-compile_probe() { # <label> <env assignments...>; sets PROBE_OUT / PROBE_DIAG
-  local label="$1"; shift
+compile_input_mode() { # <FS 0/1> <source> <label> <env assignments...>
+  local fs_mode="$1" source="$2" label="$3"; shift 3
   PROBE_OUT="$WORK/$label.wasm"
   PROBE_DIAG=""
   rm -f "$PROBE_OUT" "$PROBE_OUT.diag"
-  env $CLEAR_ARGS -u VIBE_RC -u VIBE_CODEGEN_BODY_CACHE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  env $CLEAR_ARGS -u VIBE_RC -u VIBE_CODEGEN_BODY_CACHE -u VIBE_CFG -u VIBE_UNSTABLE -u VIBE_INTERNAL_TRUSTED_SOURCE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE="$fs_mode" VIBE_IMPORT_ABI=raw VIBE_SKIP_RUN_INIT=1 VIBE_RUNNER_EXIT_WITH_RESULT=1 \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke "$ENTRY" "$ARTIFACT" \
-    "$WORK/probe.vibe" "$PROBE_OUT" main >"$WORK/$label.log" 2>&1 || true
+    "$source" "$PROBE_OUT" main >"$WORK/$label.log" 2>&1 || true
   if [ -f "$PROBE_OUT.diag" ]; then
     PROBE_DIAG="$(cat "$PROBE_OUT.diag")"
   fi
   return 0
+}
+
+compile_input() { compile_input_mode 1 "$@"; }
+compile_probe() { compile_input "$WORK/probe.vibe" "$@"; }
+
+require_answer() { # <expected integer>
+  [ -s "$PROBE_OUT" ] || fail "the probe did not compile: ${PROBE_DIAG:-<no diag>}"
+  local answer
+  answer="$(bash scripts/run_wasm_vibe_host_runner.sh "$PROBE_OUT" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  [ "$answer" = "$1" ] || fail "the probe printed '$answer', expected '$1'"
 }
 
 # 2. refusal, one switch at a time, each on top of the cleared env above (so
@@ -166,6 +180,60 @@ cmp -s "$DEFAULT_OUT" "$PROBE_OUT" && fail "the default and VIBE_RC=0 outputs ar
 got="$(bash scripts/run_wasm_vibe_host_runner.sh "$DEFAULT_OUT" 2>/dev/null | tail -1 | tr -d '[:space:]')"
 [ "$got" = "42" ] || fail "the default lane's output printed '$got', expected 42"
 echo "compile-only-lanes: acceptance ok (RC and bump lanes compile, default runs)"
+
+# Specializing the compiler's cache policy must not bake the target program's
+# cfg or authorization into that compiler. Reuse one artifact and cache while
+# switching each input in both directions.
+cat > "$WORK/cfg.vibe" <<'VIBE'
+#cfg(alpha)
+fn choose() -> Int { 42 }
+#cfg(beta)
+fn choose() -> Int { 43 }
+fn main() -> Int { choose() }
+VIBE
+for flag in alpha beta alpha; do
+  compile_input "$WORK/cfg.vibe" cfg VIBE_CFG="$flag" VIBE_BUILD_CACHE_DIR="$WORK/cache"
+  if [ "$flag" = alpha ]; then require_answer 42; else require_answer 43; fi
+done
+cat > "$WORK/unstable.vibe" <<'VIBE'
+import @vibe/concurrent/experimental { TaskGroup }
+fn main() -> Int allows Exception {
+  TaskGroup::run((g) -> {
+    let _t = TaskGroup::spawn(g, f = () -> { 7 })
+    0
+  })
+}
+VIBE
+for optin in 0 1 0; do
+  compile_input "$WORK/unstable.vibe" unstable VIBE_UNSTABLE="$optin" VIBE_BUILD_CACHE_DIR="$WORK/cache"
+  if [ "$optin" = 1 ]; then
+    [ -s "$PROBE_OUT" ] || fail "VIBE_UNSTABLE=1 did not enable the experimental import: $PROBE_DIAG"
+  else
+    [ ! -s "$PROBE_OUT" ] || fail "the experimental import was accepted without VIBE_UNSTABLE=1"
+    case "$PROBE_DIAG" in *VIBE_UNSTABLE=1*) ;; *) fail "the unstable refusal did not name the opt-in: $PROBE_DIAG" ;; esac
+  fi
+done
+echo "compile-only-lanes: per-compilation cfg and unstable inputs ok"
+
+# This reserved import is a real serialized provenance carrier. Only the
+# single-source generated-input lane may accept it; source text cannot grant
+# itself that authority. The FS loader always validates user modules first.
+cat > "$WORK/trusted.vibe" <<'VIBE'
+import @vibe/compiler/internal/iterator_boundary { }
+fn main() -> Int { 42 }
+VIBE
+for allocator in 1 0; do
+  for trusted in 0 1 0; do
+    compile_input_mode 0 "$WORK/trusted.vibe" trusted VIBE_RC="$allocator" VIBE_INTERNAL_TRUSTED_SOURCE="$trusted"
+    if [ "$trusted" = 1 ]; then
+      require_answer 42
+    else
+      [ ! -s "$PROBE_OUT" ] || fail "reserved provenance was accepted without generated-source trust"
+      case "$PROBE_DIAG" in *'remove reserved compiler import'*) ;; *) fail "the untrusted refusal lost its diagnostic: $PROBE_DIAG" ;; esac
+    fi
+  done
+done
+echo "compile-only-lanes: per-compilation generated-source trust ok (RC and bump)"
 
 # 1. absence, last: it needs the name section and says so when it is missing.
 scan_names "$ARTIFACT"

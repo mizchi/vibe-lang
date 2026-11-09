@@ -249,6 +249,7 @@ import ./linked_body_cache_strings.vibe {
 }
 
 import ./linked_body_cache_edit.vibe {
+  LcCtorTagMap,
   lc_ctor_tag_map,
   lc_effects_agree,
   lc_layout_refuse,
@@ -301,9 +302,17 @@ export fn lc_build_function_bodies(input: LinkedBodyInputs, coverage: Bool, debu
 /// Execute a previously prepared canonical plan exactly once at the chosen boundary.
 /// Preparation does not invoke an executor or compile a throwaway module.
 export fn lc_execute_function_plan(plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
+  lc_execute_function_plan_with_cache_policy(plan = plan, input = input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow, body_cache_enabled = true)
+}
+
+/// Explicit cache policy stays a direct Bool so executable specialization can
+/// remove replay and harvest code without interpreting mutable cache records.
+export fn lc_execute_function_plan_with_cache_policy(plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool, body_cache_enabled: Bool) -> LinkedBodyPlan with Exception {
   if Array::length(function_executors) == 0 {
-    LinkedFunctionPlan::emit(plan, input = input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow)
+    LinkedFunctionPlan::emit_with_cache_policy(plan, input = input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow, body_cache_enabled = body_cache_enabled)
   } else {
+    // Registered executors own their cache/transport protocol. Keep their
+    // callback ABI unchanged; the direct Bool specializes the serial emitter.
     Array::get(function_executors, at = 0)(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
   }
 }
@@ -311,6 +320,12 @@ export fn lc_execute_function_plan(plan: LinkedFunctionPlan, input: LinkedBodyIn
 // Reuse one canonical plan across emission slices. Other shared codegen tables
 // still belong to the serial caller; this entry does not make them thread-safe.
 export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
+  LinkedFunctionPlan::emit_with_cache_policy(function_plan, input = input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow, body_cache_enabled = true)
+}
+
+/// Explicit cache policy stays a direct Bool so executable specialization can
+/// remove replay and harvest code without interpreting mutable cache records.
+export fn LinkedFunctionPlan::emit_with_cache_policy(_ function_plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool, body_cache_enabled: Bool) -> LinkedBodyPlan with Exception {
   if function_plan.enable_rc != enable_rc || Array::length(function_plan.bodies) != input.num_user_funcs || Array::length(function_plan.source_types) != input.num_user_funcs || Array::length(function_plan.lambda_bases) != input.num_user_funcs {
     throw("function plan: RC mode or function count does not match body inputs")
   } else {
@@ -479,7 +494,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   let capture_name_index_shared = emission_layout.capture_names
   let thunk_names_sorted_shared = emission_layout.thunk_names
   let guard_layout_now = emission_layout.guard_layout
-  if pin_region_capacity >= 0 {
+  if body_cache_enabled && pin_region_capacity >= 0 {
     // #2669: the halves a later source edit is compared on.
     for v in emission_layout.guard_layout_global {
       Array::push(body_cache_out.guard_layout_global, value = v)
@@ -560,11 +575,19 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // An added type and its constructors, for the mention check.
   let edit_type_touched: Array[String] = []
   // #3771: struct-layout reads are logged only into a harvest someone keeps.
-  let layout_log_on = Array::length(body_cache_out.collect) == 0 || Array::get(body_cache_out.collect, at = 0) != 0
+  let layout_log_on = body_cache_enabled && (Array::length(body_cache_out.collect) == 0 || Array::get(body_cache_out.collect, at = 0) != 0)
   // Harvest exception tag -> this build's.
-  let edit_tag_map = lc_tag_map(old_names = body_cache_in.guard_effect_names, new_names = emission_layout.effect_names)
+  let edit_tag_map = if body_cache_enabled {
+    lc_tag_map(old_names = body_cache_in.guard_effect_names, new_names = emission_layout.effect_names)
+  } else {
+    lc_fresh_int_array()
+  }
   // Harvest thunk position -> this build's (memo globals follow it).
-  let edit_thunk_map = lc_thunk_map(old_names = body_cache_in.guard_thunk_names, new_names = thunk_names_list)
+  let edit_thunk_map = if body_cache_enabled {
+    lc_thunk_map(old_names = body_cache_in.guard_thunk_names, new_names = thunk_names_list)
+  } else {
+    lc_fresh_int_array()
+  }
   // A changed type's constructors: their old tags map to nothing.
   let edit_ctor_withheld: Array[String] = []
   // #3771: the struct layouts that changed, came or went, as the names a
@@ -573,11 +596,19 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // Source functions whose row changed: their names join the mention check
   // and their own bodies recompile (`lc_src_rows_mark`).
   let edit_rows_changed: Array[Int] = []
-  let edit_on = !body_cache_strict || !bcc_int_lists_equal(a = body_cache_in.guard_layout, b = guard_layout_now)
-  let edit_lane = pin_region_capacity >= 0 && edit_on && lc_src_edit_ok(body_cache_edit) && Array::length(body_cache_in.guard_layout_global) > 0 && bcc_int_lists_equal(a = body_cache_in.guard_layout_global, b = emission_layout.guard_layout_global) && Array::length(body_cache_in.guard_src_lambdas) == body_cache_edit.old_src_n && lc_src_rows_mark(e = body_cache_edit, old_rows = body_cache_in.guard_src_rows, new_rows = emission_layout.src_rows, new_names = fn_names_list, changed = edit_rows_changed) && lc_types_agree(old_names = body_cache_in.guard_type_names, old_rows = body_cache_in.guard_type_rows, new_names = emission_layout.type_names, new_rows = emission_layout.type_rows, new_ctors = emission_layout.type_ctors, old_ctor_names = body_cache_in.guard_ctor_names, new_ctor_names = input.ctor_names_list, touched = edit_type_touched, withheld = edit_ctor_withheld) && lc_effects_agree(old_names = body_cache_in.guard_effect_names, old_rows = body_cache_in.guard_effect_rows, new_names = emission_layout.effect_names, new_rows = emission_layout.effect_rows, new_ops = emission_layout.effect_ops, touched = edit_type_touched) && Array::length(edit_tag_map) > 0 && lc_structs_agree(old_names = body_cache_in.guard_struct_names, old_fields = body_cache_in.guard_struct_fields, new_names = emission_layout.struct_names, new_fields = emission_layout.struct_fields, touched = edit_type_touched, layout = edit_layout)
+  let edit_on = body_cache_enabled && (!body_cache_strict || !bcc_int_lists_equal(a = body_cache_in.guard_layout, b = guard_layout_now))
+  let edit_lane = body_cache_enabled && pin_region_capacity >= 0 && edit_on && lc_src_edit_ok(body_cache_edit) && Array::length(body_cache_in.guard_layout_global) > 0 && bcc_int_lists_equal(a = body_cache_in.guard_layout_global, b = emission_layout.guard_layout_global) && Array::length(body_cache_in.guard_src_lambdas) == body_cache_edit.old_src_n && lc_src_rows_mark(e = body_cache_edit, old_rows = body_cache_in.guard_src_rows, new_rows = emission_layout.src_rows, new_names = fn_names_list, changed = edit_rows_changed) && lc_types_agree(old_names = body_cache_in.guard_type_names, old_rows = body_cache_in.guard_type_rows, new_names = emission_layout.type_names, new_rows = emission_layout.type_rows, new_ctors = emission_layout.type_ctors, old_ctor_names = body_cache_in.guard_ctor_names, new_ctor_names = input.ctor_names_list, touched = edit_type_touched, withheld = edit_ctor_withheld) && lc_effects_agree(old_names = body_cache_in.guard_effect_names, old_rows = body_cache_in.guard_effect_rows, new_names = emission_layout.effect_names, new_rows = emission_layout.effect_rows, new_ops = emission_layout.effect_ops, touched = edit_type_touched) && Array::length(edit_tag_map) > 0 && lc_structs_agree(old_names = body_cache_in.guard_struct_names, old_fields = body_cache_in.guard_struct_fields, new_names = emission_layout.struct_names, new_fields = emission_layout.struct_fields, touched = edit_type_touched, layout = edit_layout)
   // Harvest constructor tag -> this build's (a type declared ahead moves
   // it). Computed after `edit_lane`, which fills `edit_ctor_withheld`.
-  let edit_ctor_tags = lc_ctor_tag_map(old_names = body_cache_in.guard_ctor_names, old_tags = body_cache_in.guard_ctor_tags, new_names = input.ctor_names_list, new_tags = input.ctor_tags_list, withheld = edit_ctor_withheld)
+  let edit_ctor_tags = if body_cache_enabled {
+    lc_ctor_tag_map(old_names = body_cache_in.guard_ctor_names, old_tags = body_cache_in.guard_ctor_tags, new_names = input.ctor_names_list, new_tags = input.ctor_tags_list, withheld = edit_ctor_withheld)
+  } else {
+    LcCtorTagMap::{
+      old_tags: lc_fresh_int_array(),
+      new_tags: lc_fresh_int_array(),
+      identity: true
+    }
+  }
   let lc_wide_ok = if pin_region_capacity < 0 {
     true
   } else if edit_on {
@@ -597,7 +628,9 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // there. Measured on the compiler's own CLI closure: one string edited in
   // `cli/commands/pkg.vibe` gave a warm build 15 stale addresses, and
   // `tests/body_cache_downstream_edit_test.vibe` pins the same shape small.
-  let body_cache_wide = if !lc_wide_ok {
+  let body_cache_wide = if !body_cache_enabled {
+    body_cache_in
+  } else if !lc_wide_ok {
     codegen_body_cache_new()
   } else if edit_lane && Array::length(body_cache_in.fn_indices) > 0 {
     lc_src_edit_reindex(cache = body_cache_in, e = body_cache_edit, old_capacity = Array::get(body_cache_in.guard_meta, at = 1), old_lambda_slot_base = Array::get(body_cache_in.guard_meta, at = 2), capacity = pin_region_capacity, num_user_funcs = num_user_funcs, func_offset = func_offset, lambda_slot_base = lambda_slot_base, old_plan = lc_old_lambda_plan(old_counts = body_cache_in.guard_src_lambdas, old_capacity = Array::get(body_cache_in.guard_meta, at = 1), capacity = pin_region_capacity, num_user_funcs = num_user_funcs, new_bases = lambda_bases, new_count = lambda_base_acc), new_bases = lambda_bases, new_lambda_count = lambda_base_acc, tag_map = edit_tag_map, thunk_map = edit_thunk_map, thunk_base = if enable_rc {
@@ -613,7 +646,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // names is in this compile's pool, and not at all otherwise. The re-fed
   // compile (`pin_region_capacity < 0`) lowers the array an earlier compile
   // in this process already laid out, so its pool IS the harvest's.
-  let str_remap_opt = if pin_region_capacity < 0 || Array::length(body_cache_wide.fn_indices) == 0 {
+  let str_remap_opt = if !body_cache_enabled || pin_region_capacity < 0 || Array::length(body_cache_wide.fn_indices) == 0 {
     Some(lc_fresh_int_array())
   } else {
     lc_string_remap(old_pool = body_cache_wide.guard_str_pool, table = str_table_shared, src_str_base = src_str_base, kinds = body_cache_wide.blind_kinds, syms = body_cache_wide.blind_syms)
@@ -633,7 +666,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // consumed cache is not merged back and the refreshed artifact must hold
   // every replayed body itself.
   let insert_replaying = edit_lane && Array::length(body_cache_use.fn_indices) > 0
-  let insert_replayable = if insert_replaying {
+  let insert_replayable = if body_cache_enabled && insert_replaying {
     let flags = lc_src_edit_replayable(e = body_cache_edit, extra_touched = edit_type_touched, bodies = planned_bodies, num_user_funcs = num_user_funcs)
     // A changed enum's constructors are layouts too: a third net
     // under the mention check and the withheld tags.
@@ -659,8 +692,12 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // 4,214 questions the compiler's own closure asks (#2388's prefix-stability
   // probe counted the bodies), paid on the lane that exists to make a warm
   // compile cheap.
-  let body_cache_slot_index = codegen_body_cache_slot_index(cache = body_cache_use, key_count = num_user_funcs)
-  let body_cache_rows = if body_cache_in_ok && Array::length(body_cache_use.fn_indices) > 0 {
+  let body_cache_slot_index = if body_cache_enabled {
+    codegen_body_cache_slot_index(cache = body_cache_use, key_count = num_user_funcs)
+  } else {
+    lc_fresh_int_array()
+  }
+  let body_cache_rows = if body_cache_enabled && body_cache_in_ok && Array::length(body_cache_use.fn_indices) > 0 {
     Some(codegen_body_cache_replay_index(cache = body_cache_use, key_count = num_user_funcs))
   } else {
     None
@@ -668,7 +705,11 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // #2669 step 2a: the same table, keyed on the function's NAME. Built once
   // beside the index one and checked against it per function below; nothing
   // reads it as the answer yet.
-  let (body_cache_names_sorted, body_cache_names_pos) = codegen_body_cache_name_index(body_cache_use)
+  let (body_cache_names_sorted, body_cache_names_pos) = if body_cache_enabled {
+    codegen_body_cache_name_index(body_cache_use)
+  } else {
+    (lc_fresh_string_array(), lc_fresh_int_array())
+  }
   let mut bi = 0
   while bi < num_user_funcs {
     // Keep positional output/harvest tables aligned outside this slice.
@@ -711,7 +752,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
       // This is where a parallel body phase pays off: the whole per-function
       // pipeline below -- Perceus plan, locals analysis, ctx construction,
       // compile_expr -- is skipped, not merely discarded.
-      let __cache_hit = if body_cache_in_ok && (!insert_replaying || Array::get(insert_replayable, at = bi) == 1) {
+      let __cache_hit = if body_cache_enabled && body_cache_in_ok && (!insert_replaying || Array::get(insert_replayable, at = bi) == 1) {
         codegen_body_cache_find_at(slot_index = body_cache_slot_index, fn_index = bi)
       } else {
         0 - 1
@@ -736,7 +777,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
       // A function the edit lane withholds was never looked up by
       // index, so there is nothing for the name lookup to agree with.
       let __insert_withheld = insert_replaying && Array::get(insert_replayable, at = bi) == 0
-      if body_cache_in_ok && !__insert_withheld && Array::get(lc_name_unique, at = bi) == 1 {
+      if body_cache_enabled && body_cache_in_ok && !__insert_withheld && Array::get(lc_name_unique, at = bi) == 1 {
         let __named_hit = codegen_body_cache_find_named_at(sorted = body_cache_names_sorted, positions = body_cache_names_pos, name = Array::get(fn_names_list, at = bi))
         // -2 is AMBIGUOUS, which the name lookup documents as a miss, so it is
         // not a disagreement to report -- comparing a miss sentinel against a
@@ -775,7 +816,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         linemap_off
       }
       lc_function_linemap_begin(lm = fn_linemap, owner = bi)
-      if __cache_hit >= 0 {
+      if body_cache_enabled && __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
         let __r_blind_lo = Array::length(blind_owners)
         let __r_lm_lo = Array::length(fn_linemap.offsets)
@@ -1863,7 +1904,9 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         if coverage {
           lc_commit_function_cov(src = function_cov, dst = cov_state, start = cov_start, owner = bi)
         } else ()
-        codegen_body_cache_record(cache = body_cache_out, fn_index = bi, fn_name = Array::get(fn_names_list, at = bi), fn_file = lc_fn_origin_lookup(index = lc_fn_file_of, name = Array::get(fn_names_list, at = bi)), src_stmt = lc_fn_origin_lookup(index = lc_fn_stmt_of, name = Array::get(fn_names_list, at = bi)), bodies = bodies, meta_i32 = meta_i32, meta_i64 = meta_i64, meta_v128 = meta_v128, lt = lt_w, lam_lo = Array::get(lambda_bases, at = bi), lam_hi = lambda_planned_end, slots = table_slots_used, slot_lo = __slot_lo, slot_hi = Array::length(table_slots_used), blind_bodies = blind_owners, blind_offsets = blind_offsets, blind_kinds = blind_kinds, blind_syms = blind_syms, blind_lo = __blind_lo, blind_hi = Array::length(blind_owners), lm = fn_linemap, lm_lo = 0)
+        if body_cache_enabled {
+          codegen_body_cache_record(cache = body_cache_out, fn_index = bi, fn_name = Array::get(fn_names_list, at = bi), fn_file = lc_fn_origin_lookup(index = lc_fn_file_of, name = Array::get(fn_names_list, at = bi)), src_stmt = lc_fn_origin_lookup(index = lc_fn_stmt_of, name = Array::get(fn_names_list, at = bi)), bodies = bodies, meta_i32 = meta_i32, meta_i64 = meta_i64, meta_v128 = meta_v128, lt = lt_w, lam_lo = Array::get(lambda_bases, at = bi), lam_hi = lambda_planned_end, slots = table_slots_used, slot_lo = __slot_lo, slot_hi = Array::length(table_slots_used), blind_bodies = blind_owners, blind_offsets = blind_offsets, blind_kinds = blind_kinds, blind_syms = blind_syms, blind_lo = __blind_lo, blind_hi = Array::length(blind_owners), lm = fn_linemap, lm_lo = 0)
+        } else ()
       }
       // Cache harvest reads private rows before encoding empties the scratch.
       // Replay fills the same scratch and follows the same publication path.

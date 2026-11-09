@@ -1,9 +1,12 @@
 import @vibe/compiler/codegen/common_base {
-  DbgProv, codegen_body_cache_new, empty_dbg_prov
+  DbgProv, codegen_body_cache_new, empty_dbg_prov, module_split_none
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_rc_cached_impl_with_prov, compile_wasi_module_rc_cached_impl_with_typed_offsets
+  compile_wasi_module_linked_with_cache_policy,
+  compile_wasi_module_rc_cached_impl_with_prov,
+  compile_wasi_module_rc_cached_impl_with_typed_offsets,
+  compile_wasi_module_rc_impl_with_prov_grants
 }
 
 import @vibe/compiler/core {
@@ -11,7 +14,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, lex_with_offsets, parse_program, parse_program_located
 }
 
 // #2575 item 2: the ordinary lane now carries the merged program's
@@ -111,4 +114,89 @@ test "an empty map and a full one are the same compile" {
   let via_wrapper = rc_plain(stmts)
   let via_empty = rc_with_prov(stmts = program_stmts(src_two_modules()), prov = empty_dbg_prov())
   inspect(Bytes::length(via_empty) == Bytes::length(via_wrapper), content = "true")
+}
+
+fn policy_program_stmts(_ source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  parse_program_located(tokens = tokens, starts = starts, source = source)
+}
+
+fn policy_bytes_equal(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    return false
+  } else ()
+  let mut i = 0
+  while i < Bytes::length(a) {
+    if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
+      return false
+    } else ()
+    i = i + 1
+  }
+  true
+}
+
+fn policy_plain(stmts: Array[Stmt], prov: DbgProv) -> Bytes with Exception {
+  compile_wasi_module_rc_impl_with_prov_grants(stmts_in = stmts, entry_name = "main", prov = prov, checker_float_call_offsets = no_ints(), checker_int_render_offsets = no_ints(), checker_bool_render_offsets = no_ints(), checker_eq_offsets = no_ints(), checker_eq_type_keys = no_keys(), grants = [
+  ])
+}
+
+fn policy_live_prov(source: String, file: String, count: Int) -> DbgProv {
+  let newlines: Array[Int] = []
+  let mut i = 0
+  while i < String::length(source) {
+    if String::char_code_at(source, at = i) == 10 {
+      Array::push(newlines, value = i)
+    } else ()
+    i = i + 1
+  }
+  let ids: Array[Int] = []
+  let mut j = 0
+  while j < count {
+    Array::push(ids, value = 0); j = j + 1
+  }
+  DbgProv::{ files: [file], file_nls: [newlines], stmt_file_id: ids }
+}
+
+test "disabling body caching preserves RC production output" {
+  let source = src_two_modules()
+  let old = rc_with_prov(stmts = policy_program_stmts(source), prov = empty_dbg_prov())
+  let plain = policy_plain(stmts = policy_program_stmts(source), prov = empty_dbg_prov())
+  assert(Bytes::length(plain) > 0)
+  inspect(policy_bytes_equal(a = old, b = plain), content = "true")
+}
+
+test "disabling body caching retains live production line maps" {
+  let source = src_two_modules()
+  let count = Array::length(policy_program_stmts(source))
+  let old = rc_with_prov(stmts = policy_program_stmts(source), prov = policy_live_prov(source = source, file = "original.vibe", count = count))
+  let plain = policy_plain(stmts = policy_program_stmts(source), prov = policy_live_prov(source = source, file = "original.vibe", count = count))
+  let renamed = policy_plain(stmts = policy_program_stmts(source), prov = policy_live_prov(source = source, file = "renamed.vibe", count = count))
+  inspect(policy_bytes_equal(a = old, b = plain), content = "true")
+  inspect(!policy_bytes_equal(a = plain, b = renamed), content = "true")
+}
+
+test "disabled body cache ignores poisoned input and does not harvest output" {
+  let source = src_two_modules()
+  let harvested = codegen_body_cache_new()
+  let expected = compile_wasi_module_rc_cached_impl_with_prov(stmts_in = policy_program_stmts(source), entry_name = "main", body_cache_in = codegen_body_cache_new(), body_cache_out = harvested, prov = empty_dbg_prov(), checker_float_call_offsets = no_ints(), checker_int_render_offsets = no_ints(), checker_bool_render_offsets = no_ints(), checker_eq_offsets = no_ints(), checker_eq_type_keys = no_keys())
+  // Prove the input is populated, then poison every cached body. Replaying
+  // these bytes cannot produce the expected nonempty, valid module.
+  assert(Array::length(harvested.fn_indices) > 0)
+  let bodies: Array[Bytes] = harvested.fn_bodies
+  let mut i = 0
+  while i < Array::length(bodies) {
+    Array::set(bodies, at = i, value = Bytes::new())
+    i = i + 1
+  }
+  let output = codegen_body_cache_new()
+  let actual = compile_wasi_module_linked_with_cache_policy(stmts = policy_program_stmts(source), entry_name_in = "main", srcs = [
+  ], linked_imports = [], library_mode = false, enable_rc = true, coverage = false, debug_trace = false, debug_break = false, rc_shadow = false, enable_late_dce = true, prov = empty_dbg_prov(), body_cache_in = harvested, body_cache_out = output, slice_lo = 0, slice_hi = -1, checker_float_call_offsets = no_ints(), checker_int_render_offsets = no_ints(), checker_bool_render_offsets = no_ints(), checker_eq_offsets = no_ints(), checker_eq_type_keys = no_keys(), split = module_split_none(), render = (_stmt) -> {
+    ""
+  }, grants = [], body_cache_enabled = false)
+  inspect(policy_bytes_equal(a = actual, b = expected), content = "true")
+  inspect(Array::length(output.fn_indices), content = "0")
+  inspect(Array::length(output.fn_bodies), content = "0")
+  inspect(Array::length(output.guard_meta), content = "0")
+  inspect(Array::length(output.guard_layout), content = "0")
+  inspect(Array::length(output.guard_fold_names), content = "0")
 }

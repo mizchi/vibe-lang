@@ -8,7 +8,7 @@ import ./linked_function_plan.vibe {
   LinkedFunctionPlan
 }
 import ./linked_compile_function_bodies.vibe {
-  lc_execute_function_plan
+  lc_execute_function_plan_with_cache_policy
 }
 import ./linked_compile_module_sections.vibe {
   lc_emit_module_sections
@@ -20,6 +20,7 @@ import ./linked_compile_module_sections.vibe {
 /// project its data before the preparation invocation and Store can be released.
 export struct LinkedModulePreparation {
   functions: LinkedFunctionPlan;
+  body_cache_enabled: Bool;
   input: LinkedBodyInputs;
   sections: LinkedSectionPlan;
   coverage: Bool;
@@ -42,15 +43,21 @@ export fn lc_finish_linked_module(_ prepared: LinkedModulePreparation) -> Bytes 
 // cannot recover them from a preparation record. Deferred callers use the
 // wrapper above; both entrances consume the same canonical plan exactly once.
 export fn lc_finish_linked_module_with_flags(prepared: LinkedModulePreparation, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> Bytes with Exception {
+  lc_finish_linked_module_with_cache_policy(prepared = prepared, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow, body_cache_enabled = prepared.body_cache_enabled)
+}
+
+/// Explicit cache policy stays a direct Bool so executable specialization can
+/// remove replay and harvest code without interpreting mutable cache records.
+export fn lc_finish_linked_module_with_cache_policy(prepared: LinkedModulePreparation, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool, body_cache_enabled: Bool) -> Bytes with Exception {
   if prepared.used {
     throw("module preparation: already consumed")
   } else ()
-  if coverage != prepared.coverage || debug_break != prepared.debug_break || debug_trace != prepared.debug_trace || enable_rc != prepared.enable_rc || rc_shadow != prepared.rc_shadow {
+  if body_cache_enabled != prepared.body_cache_enabled || coverage != prepared.coverage || debug_break != prepared.debug_break || debug_trace != prepared.debug_trace || enable_rc != prepared.enable_rc || rc_shadow != prepared.rc_shadow {
     throw("module preparation: finish flags differ from preparation")
   } else ()
   prepared.used = true
   with_merged_offset_locations(locations = prepared.locations, action = () -> {
-    let body = lc_execute_function_plan(plan = prepared.functions, input = prepared.input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow)
+    let body = lc_execute_function_plan_with_cache_policy(plan = prepared.functions, input = prepared.input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow, body_cache_enabled = body_cache_enabled)
     lc_emit_module_sections(input = LinkedSectionInputs::{
       plan: prepared.sections,
       body: body
