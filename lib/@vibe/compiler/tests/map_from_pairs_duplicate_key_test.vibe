@@ -16,3 +16,31 @@ test "a repeated literal key is refused" {
 test "distinct keys are accepted" {
   assert(check_source_ok("fn f() -> Int { let m = Map::from_pairs([(\"a\", 1), (\"b\", 2)])\n Map::size(m) }\nfn main() -> Int { f() }"))
 }
+
+/// #2334: an `Int`, `Char` or `Bool` literal key is checked the same way. A
+/// scalar-keyed `Map::from_pairs` builds `Map::set` calls, which would keep the
+/// last value without a word, so the repeat is refused before that.
+test "a repeated scalar literal key is refused" {
+  assert(check_source_err_contains(source = "fn f() -> Int { let m = Map::from_pairs([(1, 1), (2, 2), (1, 3)])\n Map::size(m) }\nfn main() -> Int { f() }", needle = "lists one key in pairs 1 and 3"))
+  assert(check_source_err_contains(source = "fn f() -> Int { let m = Map::from_pairs([(-4, 1), (0, 2), (-4, 3)])\n Map::size(m) }\nfn main() -> Int { f() }", needle = "lists one key in pairs 1 and 3"))
+  assert(check_source_err_contains(source = "fn f() -> Int { let m = Map::from_pairs([('a', 1), ('a', 2)])\n Map::size(m) }\nfn main() -> Int { f() }", needle = "lists one key in pairs 1 and 2"))
+  assert(check_source_err_contains(source = "fn f() -> Int { let m = Map::from_pairs([(true, 1), (false, 2), (true, 3)])\n Map::size(m) }\nfn main() -> Int { f() }", needle = "lists one key in pairs 1 and 3"))
+}
+
+test "distinct scalar literal keys are accepted" {
+  assert(check_source_ok("fn f() -> Int { let m = Map::from_pairs([(1, 1), (-1, 2), (2, 3)])\n Map::size(m) }\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f() -> Int { let m = Map::from_pairs([(true, 1), (false, 2)])\n Map::size(m) }\nfn main() -> Int { f() }"))
+}
+
+/// A map has one key type, so pairs whose literal keys have different types
+/// are refused at the pair that differs.
+test "mixed key literal types are refused" {
+  assert(check_source_err_contains(source = "fn f() -> Int { let m = Map::from_pairs([(1, 1), (\"b\", 2)])\n Map::size(m) }\nfn main() -> Int { f() }", needle = "pair 1 has an Int or Char key and pair 2 a String key"))
+  assert(check_source_err_contains(source = "fn f() -> Int { let m = Map::from_pairs([(true, 1), (2, 2)])\n Map::size(m) }\nfn main() -> Int { f() }", needle = "pair 1 has a Bool key and pair 2 an Int or Char key"))
+}
+
+/// The values of a scalar-keyed `Map::from_pairs` are checked against each
+/// other like the values of the `Map::set` calls it builds.
+test "a scalar-keyed value of another type is refused" {
+  assert(check_source_err_contains(source = "fn f() -> Int { let m = Map::from_pairs([(1, 1), (2, \"two\")])\n Map::size(m) }\nfn main() -> Int { f() }", needle = "value type mismatch"))
+}

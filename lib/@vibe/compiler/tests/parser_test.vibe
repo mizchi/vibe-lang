@@ -410,6 +410,16 @@ test "Map::new and Map::from_pairs round-trip through the printer (#960)" {
     parse_print("Map::from_pairs([(\"a\", 1), (\"b\", 2)])")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
   assert(pairs == "Map::from_pairs([(\"a\", 1), (\"b\", 2)])")
+  // #2334: scalar keys desugar to `Map::set` calls, which print back as the
+  // `Map::from_pairs` that was written.
+  let int_pairs = handle {
+    parse_print("Map::from_pairs([(1, \"a\"), (2, \"b\")])")
+  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
+  assert(int_pairs == "Map::from_pairs([(1, \"a\"), (2, \"b\")])")
+  let bool_pairs = handle {
+    parse_print("Map::from_pairs([(true, 1), (false, 0)])")
+  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
+  assert(bool_pairs == "Map::from_pairs([(true, 1), (false, 0)])")
   // Stage 2 removed the literal: `map { ... }` is a located parse error that
   // names the replacement API.
   let lit = handle {
@@ -426,9 +436,9 @@ test "Map::new and Map::from_pairs round-trip through the printer (#960)" {
 }
 
 test "Map::from_pairs rejects non-literal arguments (#960)" {
-  // Only an array literal of (string literal, value) tuple literals is
-  // accepted for now — anything else must be a located parse error, never a
-  // silent miscompile.
+  // Only an array literal of (literal key, value) tuple literals is accepted
+  // for now — anything else must be a located parse error, never a silent
+  // miscompile. A key is a String, Int, Char or Bool literal (#2334).
   let non_literal = handle {
     parse_print("Map::from_pairs(pairs)")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
@@ -438,7 +448,7 @@ test "Map::from_pairs rejects non-literal arguments (#960)" {
     parse_print("Map::from_pairs([(k, 1)])")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
   assert(String::contains(bad_key, needle = "#960"))
-  assert(String::contains(bad_key, needle = "string literal"))
+  assert(String::contains(bad_key, needle = "is not a String, Int, Char or Bool literal"))
   let non_tuple = handle {
     parse_print("Map::from_pairs([1, 2])")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
