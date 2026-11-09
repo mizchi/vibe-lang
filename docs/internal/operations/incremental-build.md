@@ -982,6 +982,41 @@ need a note:
 `verify` does not reach this path. A function-set edit changes the guards, so
 its second compile is skipped (the counted lane reports `-1`).
 
+**The compiler itself as the corpus** (measured at `616d2e2`). The root is
+`cli_adapter_cli_main_with_lanes.vibe` with entry `cli_main`: 719 modules,
+12,649 functions after DCE. All padding classes are on.
+
+Five of the edits above touch only `base64.vibe`, which `cli_main` does not
+reach, so they come out byte-identical to the unedited build. Those were
+dropped as vacuous rather than counted as zeros. They were rebuilt in
+`lib/@vibe/ast/ast.vibe`, ahead of `trait_ref_name` (index 124), and called
+from it. The module reorder has no counterpart there, because `ast.vibe`
+imports nothing.
+
+| edit | W=0 | W=3 |
+|---|---:|---:|
+| body only (`hex_encode`) | 1 | 1 |
+| +1 fn after the band (`hex.vibe`) | 1 | 1 |
+| +1 fn ahead of the band (`ast.vibe`; `impl_method_owner` 127 → 128) | 24 | **1** |
+| +400 fn (`ast.vibe`) | 100 | **1** |
+| +300-byte literal (`ast.vibe`) | 7 | **1** |
+| +1 30-parameter fn (`ast.vibe`) | 24 | **1** |
+| thunk, effect, used / unused enum (`base64.vibe`; bytes change, no length) | 0 | 0 |
+
+- **Parity.** W=0 is byte-identical to main's stage2 on every build.
+- **Cost.** The compiler grows from 10,826,109 to 11,508,692 bytes (+6.31%).
+- **The padded compiler works.**
+  - Compiling the `codegen_lexer_test.vibe` corpus, the W=3-built compiler
+    and the W=0-built one give byte-identical output, equal to main's
+    stage2.
+  - Their wall times overlap (22.2–24.3 s against 22.4–22.6 s, N=3), so
+    decoding non-minimal LEB128 costs nothing measurable here.
+  - Each compiles the compiler itself to the same bytes, and that output
+    equals the W=0 compiler, so the fixpoint holds.
+- **Body-cache replay.** On this corpus, with the `ast.vibe` +1-fn edit,
+  14,045 of 14,394 bodies are offered and 349 recompiled. The result is
+  byte-identical to a fresh compile at W=3 and at W=0.
+
 Not done: a default, and an in-place output patcher. The patcher is what the
 fixed widths make possible, and its value is what to weigh against the size.
 
