@@ -2,6 +2,15 @@
 // What the checked-module cache COSTS and SAVES on a compiler-sized closure.
 //
 //   node scripts/checked_module_cache_cost.mjs <stage2.wasm> [--rounds N] [--out dir]
+//        [--cache checked-module|ast]
+//
+// `--cache ast` measures the other boundary #2507 names, the FRONTEND one: the
+// per-file AST cache (VIBE_EXPERIMENTAL_AST_CACHE), where a warm build loads
+// each module's binary AST instead of lexing and parsing it. The protocol is
+// the same; only the lane selector and the reuse evidence differ, and the
+// checked-module cache is held off so the two AST caches are not measured
+// together (they are not meant to run together, see
+// docs/internal/compiler/checked-body-transport.md).
 //
 // #1959 makes default-on promotion conditional on "oracle parity and measured
 // wall/heap benefit". The parity oracle answers the first half; this answers
@@ -33,14 +42,14 @@
 //   reproduced inside the tool built to catch it (#2836 §2).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus, totalmem } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { parseMemory, parsePeakRss } from "./compare_compiler_memory.mjs";
 import { parseIncrementalTelemetry } from "./edit_cycle_kpi.mjs";
-import { readModuleArtifacts } from "./cache_artifacts.mjs";
+import { countArtifacts, readModuleArtifacts } from "./cache_artifacts.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
@@ -58,6 +67,8 @@ const rounds = Number(flag("--rounds", "3"));
 const bodyCache = flag("--body-cache", "off");
 if (!["off", "on", "verify"].includes(bodyCache)) throw new Error("--body-cache must be off, on or verify");
 if (!Number.isSafeInteger(rounds) || rounds < 1) throw new Error("--rounds must be a positive integer");
+const cacheKind = flag("--cache", "checked-module");
+if (!["checked-module", "ast"].includes(cacheKind)) throw new Error("--cache must be checked-module or ast");
 const outDir = resolve(root, flag("--out", join("_build", "checked-module-cost")));
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const median = values => {
@@ -95,22 +106,43 @@ const lanes = ["off", "on"];
 // beat. So a warm `off` run that reused nothing disqualifies its sample just
 // as a warm `on` run that replayed no artifact does -- in both cases the pair
 // being compared is cold against cold.
-const laneContract = {
-  off: { schema: 4, class: "conservative fingerprint + dependency transport env",
-    reused: t => t.modules_reused_conservative_fingerprint + t.modules_reused_dependency_transport_env },
+const offContract = { schema: 4, class: "conservative fingerprint + dependency transport env",
+  reused: t => t.modules_reused_conservative_fingerprint + t.modules_reused_dependency_transport_env };
+const laneContract = cacheKind === "ast" ? {
+  off: offContract,
+  // A warm `on` build must have put stored ASTs into the parse memo
+  // (`ast_cache_prefetches`, #2767): before that counter existed the cache
+  // was written on every cold build and read on none.
+  on: { schema: 4, class: "stored AST prefetched into the parse memo",
+    reused: t => t.ast_cache_prefetches },
+} : {
+  off: offContract,
   on: { schema: 5, class: "checked-module artifact",
     reused: t => t.modules_reused_checked_module_artifact },
 };
+// Each lane's selectors. Only the measured cache varies between lanes.
+const laneEnv = lane => cacheKind === "ast"
+  ? { VIBE_CHECKED_MODULE_CACHE: "off", VIBE_EXPERIMENTAL_AST_CACHE: lane === "on" ? "1" : "0" }
+  : { VIBE_CHECKED_MODULE_CACHE: lane, VIBE_EXPERIMENTAL_AST_CACHE: "0" };
+// The artifacts the `on` lane's cold run must publish, by payload magic.
+const publishedKind = cacheKind === "ast" ? "ast" : "checked_module";
+// Everything the cache directory holds, so a lane's encode side is reported
+// in bytes and not only in time.
+const dirBytes = dir => readdirSync(dir).reduce((sum, name) => {
+  const st = statSync(join(dir, name));
+  return sum + (st.isFile() ? st.size : st.isDirectory() ? dirBytes(join(dir, name)) : 0);
+}, 0);
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("VIBE_") && !k.startsWith("NODE_")));
 Object.assign(env, {
   PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
   VIBE_PREOPEN_DIR: root, VIBE_LIB: join(root, "lib"), VIBE_IMPORT_ABI: "raw",
   VIBE_FS_COMPILE: "1", VIBE_BACKEND: "wasi", VIBE_RC: "1",
-  // Held fixed: the per-file AST cache stands down under this cache (see
-  // docs/internal/compiler/checked-body-transport.md), so leaving it on would measure that
-  // interaction instead of this lane.
-  VIBE_EXPERIMENTAL_AST_CACHE: "0", VIBE_CODEGEN_BODY_CACHE: bodyCache,
+  // The cache under measurement is set per lane (`laneEnv`); the other AST
+  // cache is held off, because the per-file one stands down under the
+  // checked-module cache (docs/internal/compiler/checked-body-transport.md)
+  // and leaving it on would measure that interaction instead of a lane.
+  VIBE_CODEGEN_BODY_CACHE: bodyCache,
   VIBE_WASM_NAMES: "0", VIBE_WASM_MEMORY_STATS: "1",
 });
 
@@ -147,7 +179,7 @@ for (let round = 0; round < rounds; round++) {
         const start = performance.now();
         const result = spawnSync(timeBinary ?? command[0],
           timeBinary ? [...timeArgs, ...command] : command.slice(1), {
-          cwd: root, env: { ...env, VIBE_CHECKED_MODULE_CACHE: lane, VIBE_BUILD_CACHE_DIR: cache,
+          cwd: root, env: { ...env, ...laneEnv(lane), VIBE_BUILD_CACHE_DIR: cache,
             VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryFile },
           encoding: "utf8", timeout: 900_000, maxBuffer: 64 * 1024 * 1024,
         });
@@ -173,8 +205,8 @@ for (let round = 0; round < rounds; round++) {
           // The directory was created empty a few lines up, so anything reused
           // here came from somewhere this protocol does not control.
           if (reused !== 0) throw new Error(`${name}: the cold run reused ${reused} module(s) (${contract.class}) from a cache directory this run created empty; it is not a cold sample: ${shape}`);
-          if (lane === "on" && readModuleArtifacts(cache).length === 0) {
-            throw new Error(`${name}: the cold run published no checked-module artifact, so nothing warm can consume one: ${shape}`);
+          if (lane === "on" && (cacheKind === "ast" ? countArtifacts(cache)[publishedKind] : readModuleArtifacts(cache).length) === 0) {
+            throw new Error(`${name}: the cold run published no ${cacheKind} artifact, so nothing warm can consume one: ${shape}`);
           }
         } else if (reused === 0) {
           throw new Error(`${name}: the warm run reused nothing (${contract.class}), so this pair is cold against cold and its ratio is not about the cache: ${shape}`);
@@ -183,7 +215,11 @@ for (let round = 0; round < rounds; round++) {
           heap_ptr_bytes: memory.heap_ptr_bytes, linear_memory_bytes: memory.linear_memory_bytes,
           peak_rss_bytes: timeBinary ? parsePeakRss(readFileSync(rssFile, "utf8"), process.platform) : null,
           modules_planned: telemetry.modules_planned, modules_rechecked: telemetry.modules_rechecked,
-          modules_reused_in_lane_class: reused });
+          modules_reused_in_lane_class: reused,
+          // The persistent cache as it stands after this compile: what the
+          // lane wrote (cold) or kept (warm), and how much of it is the
+          // measured cache's own artifacts.
+          cache_dir_bytes: dirBytes(cache), lane_artifacts: countArtifacts(cache)[publishedKind] });
         console.log(`[checked-module-cost] ${name} wall=${(wall_ms / 1000).toFixed(2)}s heap=${(memory.heap_ptr_bytes / 1e6).toFixed(0)}MB reused=${reused}/${telemetry.modules_planned}`);
       }
     }
@@ -198,7 +234,8 @@ for (const corpus of cases) {
       const picked = samples.filter(s => s.case === corpus.name && s.lane === lane && s.temperature === temperature);
       row[lane] = { wall_ms: median(picked.map(s => s.wall_ms)),
         heap_ptr_bytes: median(picked.map(s => s.heap_ptr_bytes)),
-        peak_rss_bytes: timeBinary ? median(picked.map(s => s.peak_rss_bytes)) : null };
+        peak_rss_bytes: timeBinary ? median(picked.map(s => s.peak_rss_bytes)) : null,
+        cache_dir_bytes: median(picked.map(s => s.cache_dir_bytes)) };
     }
     row.wall_ratio = row.on.wall_ms / row.off.wall_ms;
     row.heap_ratio = row.on.heap_ptr_bytes / row.off.heap_ptr_bytes;
@@ -207,8 +244,8 @@ for (const corpus of cases) {
   }
 }
 
-const report = { schema: "checked_module_cache_cost", version: 1, created_at: new Date().toISOString(),
-  stage2: resolve(stage2), stage2_sha256: hash(readFileSync(stage2)), rounds, body_cache: bodyCache,
+const report = { schema: "checked_module_cache_cost", version: 2, created_at: new Date().toISOString(),
+  stage2: resolve(stage2), stage2_sha256: hash(readFileSync(stage2)), rounds, cache_kind: cacheKind, body_cache: bodyCache,
   node: process.version, platform: process.platform, arch: process.arch,
   cpu: cpus()[0]?.model, host_memory_bytes: totalmem(),
   selectors: Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("VIBE_"))),
