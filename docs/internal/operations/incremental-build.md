@@ -973,11 +973,26 @@ need a note:
   Inserting a type is different. The cache declines the whole build (7387
   recompiled, at W=0 as well), so the constructor-tag relocator is not reached
   end to end on this corpus. It is reached by
-  `tests/body_cache_insert_function_test.vibe`. Its 14 rows include "a type
+  `tests/body_cache_insert_function_test.vibe`, whose 14 rows include "a type
   added in a middle file relocates the tags it moves" and "moved indices that
-  cross a LEB width band are rebuilt". Run with the width set to 3 (and the
-  artifact key it implies), every row gave the same `saved=` and
-  `equal=true` as at width 0.
+  cross a LEB width band are rebuilt".
+
+**Every body-cache relocation row runs at both widths.** This covers six
+files: `body_cache_{insert_function,changed_type,changed_struct,changed_row,downstream_edit,edit_classes}_test.vibe`.
+
+- **Layout.** Each test body is a row function. The file runs it once as the
+  original test and once as `<name>, at slot width 3 (#3941)`, against one
+  expected literal, so the two widths must give the same answer.
+- **Cache slot.** The rows clear the cache slot through
+  `codegen_body_cache_artifact_key`, so they clear the slot the compile will
+  actually read. Before this, each probe built the key from
+  `"self-describing-"` by hand. At width 3 that cleared the width-0 slot, and
+  a "cold" build replayed the previous row's artifact.
+- **Coverage.** 26 rows, 52 tests.
+- **The check can fail.** With the relocator writing a moved `call` target
+  minimal again, the width-0 rows pass and "a thunk added ahead of a cached
+  one moves its memo globals with it, at slot width 3" fails with
+  `equal=false`.
 
 `verify` does not reach this path. A function-set edit changes the guards, so
 its second compile is skipped (the counted lane reports `-1`).

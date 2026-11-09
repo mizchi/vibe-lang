@@ -23,11 +23,15 @@
 //# compile.
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+  codegen_body_cache_artifact_key, compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
 }
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, persistent_artifact_cache_path
+  persistent_artifact_cache_path
+}
+
+import @vibe/compiler/core {
+  set_reloc_slot_width
 }
 
 fn bct_bytes(_ s: String) -> Bytes {
@@ -98,7 +102,7 @@ fn bct_main() -> String {
 }
 
 fn bct_probe(decl: String, line: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bct_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bct_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -115,21 +119,73 @@ fn bct_probe(decl: String, line: String) -> String with Env + Exception + Fs {
   "saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bct_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "a variant added at the end keeps the bodies that never build or match the type" {
+//# #3941: every row runs at slot width 0 and at slot width 3. A relocation
+//# that wrote a padded slot back minimal, or a cache slot shared between the
+//# widths, answers differently at 3 than the same row at 0.
+
+/// Run `row` at relocatable-slot width `width`, restoring width 0 after it.
+fn bct_at_slot_width(width: Int, row: () -> Unit with Console + Env + Exception + Fs) -> Unit with Console + Env + Exception + Fs {
+  set_reloc_slot_width(width)
+  handle {
+    row()
+    set_reloc_slot_width(0)
+  } with { Exception::Throw(m) => {
+    set_reloc_slot_width(0)
+    throw(m)
+  } }
+}
+
+/// The row behind the test "a variant added at the end keeps the bodies that never build or match the type"; run at slot widths 0 and 3.
+fn bct_row_1() -> Unit with Console + Env + Exception + Fs {
   inspect(bct_probe(decl = "export enum BctShape { BctDot; BctLine(Int); BctNone; BctBox(Int, Int) } derive(Eq)", line = "BctLine(n)"), content = "saved=5 equal=true")
 }
 
-test "a variant added in the middle moves the later tags, and their bodies recompile" {
+test "a variant added at the end keeps the bodies that never build or match the type" {
+  bct_row_1()
+}
+
+test "a variant added at the end keeps the bodies that never build or match the type, at slot width 3 (#3941)" {
+  bct_at_slot_width(width = 3, row = bct_row_1)
+}
+
+/// The row behind the test "a variant added in the middle moves the later tags, and their bodies recompile"; run at slot widths 0 and 3.
+fn bct_row_2() -> Unit with Console + Env + Exception + Fs {
   inspect(bct_probe(decl = "export enum BctShape { BctDot; BctBox(Int, Int); BctLine(Int); BctNone } derive(Eq)", line = "BctLine(n)"), content = "saved=5 equal=true")
 }
 
-test "an unused variant removed keeps the bodies that never build or match the type" {
+test "a variant added in the middle moves the later tags, and their bodies recompile" {
+  bct_row_2()
+}
+
+test "a variant added in the middle moves the later tags, and their bodies recompile, at slot width 3 (#3941)" {
+  bct_at_slot_width(width = 3, row = bct_row_2)
+}
+
+/// The row behind the test "an unused variant removed keeps the bodies that never build or match the type"; run at slot widths 0 and 3.
+fn bct_row_3() -> Unit with Console + Env + Exception + Fs {
   inspect(bct_probe(decl = "export enum BctShape { BctDot; BctLine(Int) } derive(Eq)", line = "BctLine(n)"), content = "saved=5 equal=true")
 }
 
-test "a payload made Double recompiles the body that matches it" {
+test "an unused variant removed keeps the bodies that never build or match the type" {
+  bct_row_3()
+}
+
+test "an unused variant removed keeps the bodies that never build or match the type, at slot width 3 (#3941)" {
+  bct_at_slot_width(width = 3, row = bct_row_3)
+}
+
+/// The row behind the test "a payload made Double recompiles the body that matches it"; run at slot widths 0 and 3.
+fn bct_row_4() -> Unit with Console + Env + Exception + Fs {
   // `bct_text` binds the now-Double payload only through a pattern, and it
   // passes the binding to a generic, so no typed-lowering site of its file
   // changes and the edit lane stays open.
   inspect(bct_probe(decl = "export enum BctShape { BctDot; BctLine(Float64); BctNone } derive(Eq)", line = "BctLine(1.5)"), content = "saved=5 equal=true")
+}
+
+test "a payload made Double recompiles the body that matches it" {
+  bct_row_4()
+}
+
+test "a payload made Double recompiles the body that matches it, at slot width 3 (#3941)" {
+  bct_at_slot_width(width = 3, row = bct_row_4)
 }
