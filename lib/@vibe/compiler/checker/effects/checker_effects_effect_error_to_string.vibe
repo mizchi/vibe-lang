@@ -2217,7 +2217,13 @@ export fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: AfeLocals) -> Option
   match e {
     EIdent(n, _) => match afe_lookup_local(locals = locals, name = n) {
       Some(h) => Some(h),
-      None => match env_lookup(env = env, name = n) {
+      // #3683 (Codex on #3985): a local the walk binds without a head -- a
+      // masked pattern binder, a `for` variable -- shadows any outer
+      // binding of that name, so it has no head; reading the outer one's
+      // answered for a different value.
+      None => if afe_binds_local(locals = locals, name = n) {
+        None
+      } else match env_lookup(env = env, name = n) {
         Some(t) => match afe_type_head_name(t) {
           Some(head) => Some(afe_tag_async_iter_head(head = head, provenanced = afe_callee_is_builtin_async_iter(env = env, name = n) || afe_type_binding_is_builtin_async_iter(env))),
           None => None
