@@ -1625,6 +1625,37 @@ done
 rm -rf "$fnmdir"
 echo "[compiler-gate] block-name for iterable guard ok (-11913000 on bump/rc/shadow/gc, rc heap_used=$fnm_used B)"
 
+# 40f0p. #2827: a parameter consumed on some paths only was released on none.
+#        The branch merge keeps the minimum remaining count (#705), so the
+#        paths that did not move the parameter out leaked the caller's
+#        reference on every call; a plain `let` in that shape already took a
+#        guarded path drop (#2389). The parameter now takes the same one, in
+#        the function epilogue, under the flag its consuming occurrences set.
+#        Unfixed, the bounded fixture grew __heap_ptr by 815,996 B over its
+#        2000 rounds. The answer is checked on bump, rc, shadow and gc; the
+#        shadow lane traps on the drop of a freed block, which is what an
+#        epilogue release on a path that already consumed would hit.
+echo "[compiler-gate] 40f0p/40 a parameter consumed on some paths only is released on the others (#2827)"
+gate_workdir ppdir "_build/_gate_rc_param_path_release"
+for pp_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$pp_lane" "fixtures/rc_param_path_release_bounded_test.vibe" "$ppdir/pp.wasm" main
+  gate_require_artifact "$ppdir/pp.wasm" "rc_param_path_release_bounded fixture did not compile on the $pp_lane lane (#2827)"
+  gate_run pp_out last "$ppdir/pp.wasm"
+  gate_require_eq "$pp_out" "49000" "rc_param_path_release_bounded got '$pp_out' on the $pp_lane lane (want 49000). A trap means a parameter's path drop released it on a path that had moved it out (#2827)."
+  if [ "$pp_lane" = rc ]; then
+    pp_json="$(node scripts/measure_heap.mjs "$ppdir/pp.wasm" main 2>/dev/null)"
+    pp_used="$(printf '%s' "$pp_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$pp_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_param_path_release_bounded heap ($pp_json)" >&2; exit 1
+    fi
+    if [ "$pp_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_param_path_release_bounded heap_used=$pp_used >= 20000 (#2827 regressed: a parameter consumed on some paths only is left unreleased on the others again; unfixed, this fixture measured 815,996 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$ppdir"
+echo "[compiler-gate] parameter path release guard ok (49000 on bump/rc/shadow/gc, rc heap_used=$pp_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
