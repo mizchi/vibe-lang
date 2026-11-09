@@ -34,7 +34,7 @@ thread-backed executor, and no public `TaskGroup` workload runs on one.
 ### 1. Which children run on a worker
 
 A worker runs a **CPU job**. A child of `TaskGroup::spawn` or
-`Parallel::map` is a CPU job when both of the following hold:
+`Parallel::map` is a CPU job when all three of the following hold:
 
 1. **Its body is a call to a top-level function, written at the spawn site,
    with arguments the compiler can encode.** The arguments are the child's
@@ -46,6 +46,18 @@ A worker runs a **CPU job**. A child of `TaskGroup::spawn` or
    delegating a capability to one would need the delegation and provider rules
    that [vibex-runtime-contract.md](vibex-runtime-contract.md) has not yet
    implemented for workers.
+3. **Every module-level value its function reaches, transitively through
+   the calls it makes, is `Send`.** An effect row does not say this: a
+   top-level `let cell: Array[Int] = [0]` that one function `Array::set`s and
+   another reads carries no effect. The compiler's own
+   `lc_pf_refusal_cell` is such a cell. The `Spawnable` judgement treats a
+   top-level function as capturing nothing, which holds within one heap but
+   not across Stores. A child reading such a cell sees the parent's update
+   when it runs cooperatively, but the cell's initial value in a fresh worker
+   Store. Re-initializing a module-level value gives the same result only when
+   it is immutable. The check is a transitive walk over the job function's
+   call graph. Anything it cannot see through (a function value, a call it
+   cannot resolve) makes the child cooperative, never a CPU job.
 
 Every other child runs cooperatively, exactly as it does now. Being a CPU job
 is not an observable property: the result, the failure, the order of results
@@ -85,12 +97,19 @@ reference behaviour is always one setting away.
 - Reusing an instance across jobs is not part of this decision. It would need
   a complete reset proof and stale-state mutation tests, and #3484 asks for
   that to be measured, not assumed.
-- Instantiation runs the module's `_start` initialisation for the job's Store,
-  so a job sees the same initial cells as the parent did. Mutable state the
-  parent built after start-up is not visible to the job, by construction.
-  Anything the job needs is an argument. This is the "explicit task-local
-  context" lesson of function-cpu-workers.md item 4: the missing source-location
-  table was a read-only instance global the job silently lacked.
+- **A worker never runs `_start`.** For an ordinary program, `_start` runs the
+  entry after initializing module-level values, so running it per job would
+  re-run `main` and its effects. The compiler emits a separate init-only
+  export, `__vibe_cpu_init`, which evaluates the module-level values and
+  nothing else. A worker calls that export, then the job export. This is the
+  same separation the function-worker route gets by compiling a
+  `__no_entry__` image
+  ([function-cpu-workers.md](../compiler/function-cpu-workers.md), "Ownership
+  and transport"). A job therefore sees freshly initialized module-level
+  values, which decision 1 restricts to immutable ones.
+- Anything else the job needs is an argument. This is the "explicit task-local
+  context" lesson of function-cpu-workers.md item 4: a missing source-location
+  table was a read-only instance global that the job silently lacked.
 
 ### 4. Ordered consumption with three bounds
 
@@ -160,5 +179,8 @@ All of the following are true at once:
   buffer accounting, CPU and wall time, and show no regression on the
   ordinary (N = 1) route.
 - **Self-test.** The gate that checks this has a self-test that turns it red:
-  a job made to read a parent global, an executor that skips R, a trap turned
-  into a `TaskError`.
+  - a job made to read a mutable module-level cell, which must stay
+    cooperative;
+  - a worker that runs `_start`;
+  - an executor that skips R;
+  - a trap turned into a `TaskError`.
