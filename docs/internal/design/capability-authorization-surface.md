@@ -87,10 +87,11 @@ property of the declaration's position, not of the effect's class.
 
 - The AST printer prints the row back with the keyword its position
   dictates — `allows` on `main` / `_start` and on a `test` / `bench` /
-  `example` block, `with` elsewhere — and `vibe normalize` never drops a
-  block's row (the block rows travel in the parse's trailing
-  `STestEffectRows` marker, which `print_program` and the normalizer
-  register with the printer before printing; `register_block_rows`).
+  `example` block, `with` elsewhere. The block rows travel in the parse's
+  trailing `STestEffectRows` marker, which `print_program` registers with
+  the printer before printing (`register_block_rows`). `vibe normalize`
+  never drops a row either: it rewrites only dot calls in the source text
+  and keeps every other byte (#4027).
 
 ### 2. What an entry may grant
 

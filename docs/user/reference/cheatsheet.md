@@ -511,8 +511,8 @@ at entry; each `ensures` condition sees the returned value bound as
 `result` and asserts at every exit, the tail and each `return` alike (#3715,
 one nested in a loop or a `match` arm included); a violating call traps. The
 conditions read the function's parameters even where the body shadows one.
-`result` shadows any user binding of that name inside ensures conditions. `vibe normalize` and the AST printer
-round-trip fn declarations in fn + where form — fn sources are no longer
+`result` shadows any user binding of that name inside ensures conditions. The AST printer
+round-trips fn declarations in fn + where form — fn sources are no longer
 refused or rewritten to `let rec`.
 
 A loop takes the same block, with `invariant` and `decreases` (#3716,
@@ -540,9 +540,9 @@ asserted non-negative at the same points and strictly smaller than at the
 previous one. A violation traps, as a function contract does. The clauses
 read the variables in scope at the loop, never a binding the body declares,
 and a `for` clause cannot name the loop's own element. A `break` leaves
-without a check. Unlike a function's `where`, the printer and
-`vibe normalize` show the loop's clauses lowered to `assert`s, as they
-already show `loop` lowered to `while`.
+without a check. Unlike a function's `where`, the AST printer shows the
+loop's clauses lowered to `assert`s, as it already shows `loop` lowered to
+`while`.
 
 The entry is the one exception to "full annotations required", and it is
 deliberate (#3119). `fn main { .. }` and `fn main allows R { .. }` omit both
@@ -1171,10 +1171,20 @@ the callee's type from the qualified spelling but not from bare
 is what should land in git history/diffs/greps, while the terser dot
 spelling stays legal to type. This does **not** help positional-argument-order
 ambiguity between same-typed parameters — that's a separate problem no call
-notation solves (`eval/call-style/scenarios/02_arg_order`). Implementation:
-`normalize_dot_calls` in
+notation solves (`eval/call-style/scenarios/02_arg_order`). The receiver
+takes the label its parameter has: `fn Cart::push(c: Cart, item: Int)` makes
+`cart.push(item = 1)` into `Cart::push(c = cart, item = 1)`, because a
+qualified call must label every labeled parameter (`Cart::push(cart, item =
+1)` does not check); `fn Cart::size(_ c: Cart)` makes `cart.size()` into
+`Cart::size(cart)`. This respelling
+is the ONLY rewrite `vibe normalize` makes: it splices the qualified spelling
+into the source and keeps every other byte, comments and unexported code
+included, so an already-canonical file is left identical (#4027; it used to
+re-print a dead-code-eliminated program and emptied an export-less file).
+Implementation: `normalize_dot_calls` in
 [`lib/@vibe/compiler/normalize/normalize.vibe`](../../../lib/@vibe/compiler/normalize/normalize.vibe);
-tests in `lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe`.
+tests in `lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe` and
+`lib/@vibe/compiler/tests/normalize_preserves_source_test.vibe`.
 
 ### Function combinators (point-free)
 
@@ -3405,7 +3415,7 @@ let run_mode = () -> Int { run() }
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
 - `#cfg(not(flag))` keeps the declaration only when `flag` is inactive. It uses the same active set, including file-local `#cfg_enable(flag)`, so one flag can select an implementation and its fallback. Only a single negated flag is supported; nested conditions and expressions in `#cfg_enable` are rejected. `#cfg(not)` still selects the ordinary flag named `not`.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
-- `vibe normalize` refuses a `#cfg` source (it prints the parsed program, and an inactive statement is no longer in it). `vibe fmt` is token-based and keeps every directive and both arms, so `#cfg` sources format and pass `check_vibe_fmt.sh` (measured on `fixtures/cfg_flag_test.vibe`).
+- `vibe normalize` refuses a `#cfg` source (it proves each rewrite against the parsed program, and an inactive statement is no longer in it). `vibe fmt` is token-based and keeps every directive and both arms, so `#cfg` sources format and pass `check_vibe_fmt.sh` (measured on `fixtures/cfg_flag_test.vibe`).
 - The compiler's own sources may use it: the committed seed (seed/cfg-spans-emission-2026-09-04 and later) resolves `#cfg` in module-source emission, so the flattened self-build carries the active statements as themselves. Module-source emission and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) all resolve against the same active set (#2497 step 0, #2516).
 - The pinned `seed/cfg-negation-2026-11-09` supports `not(flag)` in parsing and module-source emission. Compiler declarations can use both forms; subsequent seed updates must preserve that support (see docs/internal/operations/bootstrap.md).
 
