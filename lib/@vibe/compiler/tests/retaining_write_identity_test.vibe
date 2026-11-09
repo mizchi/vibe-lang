@@ -1,0 +1,73 @@
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_report
+}
+
+import @vibe/compiler/checker {
+  retaining_write_argument_mask
+}
+
+import @vibe/compiler/core {
+  builtin_operation_arity, resolved_builtin_operation_from_source
+}
+
+// #3255: the region write check asks a builtin's retained arguments of the
+// operation the checker resolved for the call, not of its spelling. Before,
+// a program's own `fn Array::push` that keeps nothing was refused inside a
+// region as if it were the builtin, by name and by dot call alike.
+//
+// Each diagnostic snapshot here has a distinct expected text, so
+// `vibe test --update` can tell them apart; the `Array::set` refusal, which
+// reads like the `Array::push` one, is in
+// `retaining_write_identity_set_test.vibe`.
+
+let keep_nothing_push = "fn Array::push(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  let _ = xs\n  let _ = value\n  ()\n}\n"
+
+test "a program's own Array::push that keeps nothing is not judged as the builtin" {
+  let by_name = String::concat(keep_nothing_push, "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    Array::push(sink, value = cell)\n    MutList::length(cell)\n  }\n}\n")
+  assert(check_source_ok(by_name))
+  let by_dot = String::concat(keep_nothing_push, "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    sink.push(value = cell)\n    MutList::length(cell)\n  }\n}\n")
+  assert(check_source_ok(by_dot))
+}
+
+test "a program's own MutList::push that keeps its value is refused once, by its body" {
+  let src = "fn MutList::push(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  Array::push(xs, value = value)\n}\nfn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    MutList::push(sink, value = cell)\n    0\n  }\n}\n"
+  inspect(check_source_report(src), content = "region escapes its scope: this call to `MutList::push` stores a value that captures this region into an outer binding")
+}
+
+test "the builtin operations keep their retained arguments" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    Array::push(sink, value = cell)\n    0\n  }\n}\n"
+  inspect(check_source_report(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+  assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    MutList::length(cell)\n  }\n}\n"))
+}
+
+test "every builtin operation identity has a retained-argument answer" {
+  // (spelling, mask): the identity's answer must match what the spelling
+  // meant before the migration, and a program binding retains nothing here.
+  let expected = [
+    ("MutBytes::empty", 0),
+    ("MutBytes::push", 0),
+    ("MutBytes::append", 0),
+    ("MutBytes::length", 0),
+    ("MutBytes::to_bytes", 0),
+    ("MutList::empty", 0),
+    ("MutList::push", 1),
+    ("MutList::freeze", 0),
+    ("MutList::to_array", 0),
+    ("MutList::get", 0),
+    ("MutList::length", 0),
+    ("MutList::truncate", 1),
+    ("Array::with_capacity", 0),
+    ("Array::push", 1),
+    ("Array::set", 2)
+  ]
+  for row in expected {
+    let operation = resolved_builtin_operation_from_source(row.0)
+    assert(builtin_operation_arity(operation) >= 0)
+    inspect(retaining_write_argument_mask(source_name = "", operation = operation), content = "\{row.1}")
+    inspect(retaining_write_argument_mask(source_name = row.0, operation = 0 - 1), content = "0")
+  }
+  // Spellings without an identity are still read from the inventory.
+  inspect(retaining_write_argument_mask(source_name = "MutMap::set", operation = 0), content = "3")
+  inspect(retaining_write_argument_mask(source_name = "__set_field", operation = 0), content = "2")
+  inspect(retaining_write_argument_mask(source_name = "Deque::push_back", operation = 0), content = "1")
+}

@@ -824,8 +824,8 @@ fn parse_impl_methods(tokens: Array[Token], starts: Array[Int], pos: Int, simpl:
 }
 
 // Compile-time conditional compilation (#cfg). A top-level statement may be
-// prefixed with `#cfg(flag)`; the statement is KEPT only when `flag` is
-// active, and otherwise parsed (syntax must stay valid, like Rust's cfg) and
+// prefixed with `#cfg(flag)` or `#cfg(not(flag))`; the statement is KEPT when
+// the flag is active or inactive, respectively, and otherwise parsed and
 // DISCARDED before checking/codegen -- so disabled debug code adds zero bytes
 // to the output. Flags are activated by `#cfg_enable(flag)` directives, which
 // the CLI appends to the source when `VIBE_CFG=flag1,flag2` is set (appending
@@ -912,7 +912,7 @@ export fn cfg_ambient_flags_identity() -> String {
   Array::get(cfg_ambient_flags_csv_cell, at = 1)
 }
 
-/// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`,
+/// Parse the directive after a THash: `cfg(name)`, `cfg(not(name))`, `cfg_enable(name)`,
 /// `zero_alloc`, or `deprecated` (#1262 ADR-0101 migration marker; optional
 /// `("message")` argument). Returns (directive_kind, payload, next_pos).
 fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) with Exception {
@@ -930,6 +930,11 @@ fn parse_cfg_directive_tokens(tokens: Array[Token], pos: Int) -> (String, String
           TLParen => match peek(tokens = tokens, pos = pos + 2) {
             TIdent(flag) => match peek(tokens = tokens, pos = pos + 3) {
               TRParen => (dname, flag, pos + 4),
+              TLParen => if dname == "cfg" && flag == "not" {
+                parse_cfg_negated_flag(tokens = tokens, pos = pos + 4)
+              } else {
+                throw("expected ')' after #cfg flag name")
+              },
               _ => throw("expected ')' after #cfg flag name")
             },
             _ => throw("expected flag name in #cfg(...)")
@@ -967,6 +972,21 @@ fn parse_cfg_directive_tokens(tokens: Array[Token], pos: Int) -> (String, String
       }
     },
     _ => throw("expected directive name after '#'")
+  }
+}
+
+/// Only a single negated flag is supported. Keep `#cfg(not)` a positive
+/// flag named `not`, and keep cfg_enable's payload a plain flag name.
+fn parse_cfg_negated_flag(tokens: Array[Token], pos: Int) -> (String, String, Int) with Exception {
+  match peek(tokens = tokens, pos = pos) {
+    TIdent(flag) => match peek(tokens = tokens, pos = pos + 1) {
+      TRParen => match peek(tokens = tokens, pos = pos + 2) {
+        TRParen => ("cfg_not", flag, pos + 3),
+        _ => throw("expected ')' after #cfg(not(...))")
+      },
+      _ => throw("expected ')' after #cfg not flag name")
+    },
+    _ => throw("expected flag name in #cfg(not(...))")
   }
 }
 
@@ -1042,7 +1062,7 @@ fn cfg_scan_enabled_located(tokens: Array[Token], starts: Array[Int], source: St
 }
 
 #zero_alloc
-fn cfg_flag_active(active: Array[String], flag: String) -> Bool {
+fn cfg_flag_active(active: Array[String], flag: String, negated: Bool) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(active) {
@@ -1053,7 +1073,7 @@ fn cfg_flag_active(active: Array[String], flag: String) -> Bool {
     }
     i = i + 1
   }
-  found
+  found != negated
 }
 
 /// Canonical allocation contracts attach to exactly one declaration. Reject
@@ -1142,7 +1162,7 @@ export fn parse_program_preserving_with_cfg(_ tokens: Array[Token], cfg_flags: A
           require_zero_alloc_target(tokens = tokens, pos = dnext)
           ArrayBuilder::push(b, value = SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
           pos = dnext
-        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag) {
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag, negated = dname == "cfg_not") {
           // enable directive consumed, or active #cfg: keep the next stmt.
           pos = dnext
         } else {
@@ -1215,7 +1235,7 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
     require_zero_alloc_target(tokens = tokens, pos = dnext)
     ArrayBuilder::push(b, value = SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
     dnext
-  } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag) {
+  } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag, negated = dname == "cfg_not") {
     dnext
   } else {
     let ref_mark = pattern_ref_mark()
@@ -1491,7 +1511,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
             }
             ArrayBuilder::push(b, value = SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
             dnext
-          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag) {
+          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag, negated = dname == "cfg_not") {
             dnext
           } else {
             let capture_mark = binder_capture_mark(context)
@@ -1732,7 +1752,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             }
             ArrayBuilder::push(b, value = SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
             dnext
-          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag) {
+          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag, negated = dname == "cfg_not") {
             dnext
           } else {
             cfg_stmt_start = dnext
@@ -1751,9 +1771,15 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             restore_positional_params(slot_mark)
             dn
           }
-        } with { Exception::Throw(_) => {
+        } with { Exception::Throw(msg) => {
           restore_pattern_refs(ref_mark)
           restore_positional_params(slot_mark)
+          let fallback_pos = if cfg_stmt_start >= 0 {
+            cfg_stmt_start
+          } else {
+            pos
+          }
+          ArrayBuilder::push(diags, value = locate_parse_error(msg = msg, fallback_pos = fallback_pos, starts = starts, source = source))
           0 - 1
         } }
         if cfg_res >= 0 {
@@ -1903,7 +1929,7 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
           ArrayBuilder::push(span_start, value = st)
           ArrayBuilder::push(span_end, value = Array::get(ends, at = next - 1))
           pos = next
-        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag) {
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(active = cfg_active, flag = flag, negated = dname == "cfg_not") {
           // Resolved at this parse, the same way `parse_program` resolves
           // them: the directive itself owns no span, and the statement an
           // active `#cfg` / `#deprecated` guards is emitted by the next

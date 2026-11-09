@@ -140,10 +140,13 @@ node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3ac/3 experimental typing dependency-env reuse oracle"
 VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
 
-# 3acb. #2728: the same reuse on the COMPILE lane, on the one edit shape where
-# it hits -- a dependency-body edit that changes meaning but not the public
-# env. The reuse-on module must equal a fresh reuse-off compile, the hit must
-# be recorded (or the comparison is vacuous), and corrupted records must miss.
+# 3acb. #2728/#3796: the same reuse on the COMPILE lane, on the edit shapes
+# where it hits -- exported-body, private-helper and capability-helper edits
+# that change meaning but not the public env. Each reuse-on module must equal a
+# fresh reuse-off compile in bytes, diagnostics and EXECUTED result, the hit
+# must be recorded (or the comparison is vacuous), and independently corrupted
+# alias / witness / target records and authority-changing configurations must
+# miss.
 echo "[compiler-gate] 3acb/3 compile-lane typing dependency-env reuse oracle"
 node scripts/compile_typing_env_reuse_oracle.mjs "$stage2_wasm"
 

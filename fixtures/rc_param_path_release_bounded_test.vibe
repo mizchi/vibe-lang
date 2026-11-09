@@ -1,0 +1,135 @@
+// #2827: a parameter consumed on some paths only is released on the others.
+//
+// A branch merge keeps the minimum remaining count of every binding it
+// splits (#705), so a parameter one arm moves out and another arm leaves
+// alone got no release at all: the arm that did not consume it leaked the
+// caller's reference on every call. A plain `let` in that shape takes a
+// guarded path drop (#2389); a parameter now takes the same one, through the
+// flag the function epilogue already reads for a branch-dup merge (#1980).
+// Measured on a stage2 built from main at 9859014, this fixture grew
+// __heap_ptr by 815,996 B over its 2000 rounds (every odd round skips the
+// consume in all but two shapes); with the release, 284 B. The gate
+// compiles it under VIBE_RC=1 and bounds the growth (tests/gates/mid,
+// 40f0p); the same gate checks the answer on the bump, rc, shadow and gc
+// lanes, and the shadow lane traps on the drop of a freed block -- which is
+// what releasing a parameter on a path that already moved it out would hit.
+//
+// The shapes: an `if` (`one_arm`), a `match` arm (`by_arm`), a nested `if`
+// (`nested`), two split parameters at once (`both`), a borrowing read on the
+// other arm (`read_other`), a recursion that skips the consume
+// (`countdown`), a local lambda's parameter (`lam`) and a struct parameter
+// (`in_struct`). `moved_all` consumes on every arm, the control that must not
+// release anything.
+//
+// `main` sums, per round i, 3 + 3 + 3 + 6 + 3 + 3 + 3 + 3 + 3 = 30 for even
+// i and 1 + 2 + 1 + 4 + 3 + 3 + 1 + 1 + 3 = 19 for odd i, so
+// 1000 * 30 + 1000 * 19 = 49000.
+
+struct Rec {
+  xs: Array[Int]
+}
+
+fn keep(_ xs: Array[Int]) -> Array[Int] {
+  xs
+}
+
+fn keep_rec(_ r: Rec) -> Rec {
+  r
+}
+
+fn mk(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+fn one_arm(xs: Array[Int], c: Bool) -> Int {
+  if c {
+    Array::length(keep(xs))
+  } else {
+    1
+  }
+}
+
+fn by_arm(xs: Array[Int], k: Int) -> Int {
+  match k {
+    0 => Array::length(keep(xs)),
+    1 => 2,
+    _ => 4
+  }
+}
+
+fn nested(xs: Array[Int], a: Bool, b: Bool) -> Int {
+  if a {
+    if b {
+      Array::length(keep(xs))
+    } else {
+      5
+    }
+  } else {
+    1
+  }
+}
+
+fn both(xs: Array[Int], ys: Array[Int], c: Bool) -> Int {
+  if c {
+    Array::length(keep(xs)) + Array::length(keep(ys))
+  } else {
+    4
+  }
+}
+
+fn read_other(xs: Array[Int], c: Bool) -> Int {
+  if c {
+    Array::length(keep(xs))
+  } else {
+    Array::length(xs)
+  }
+}
+
+fn countdown(xs: Array[Int], n: Int) -> Int {
+  if n == 0 {
+    Array::length(keep(xs))
+  } else {
+    countdown(xs = mk(n), n = n - 1)
+  }
+}
+
+fn moved_all(xs: Array[Int], c: Bool) -> Int {
+  if c {
+    Array::length(keep(xs))
+  } else {
+    Array::length(keep(keep(xs)))
+  }
+}
+
+fn in_struct(r: Rec, c: Bool) -> Int {
+  if c {
+    Array::length(keep_rec(r).xs)
+  } else {
+    1
+  }
+}
+
+fn round(_ i: Int) -> Int {
+  let even = i % 2 == 0
+  let lam = (xs: Array[Int], c: Bool) -> Int {
+    if c {
+      Array::length(keep(xs))
+    } else {
+      1
+    }
+  }
+  let a = one_arm(xs = mk(i), c = even) + by_arm(xs = mk(i), k = i % 2) + nested(xs = mk(i), a = even, b = even)
+  let b = both(xs = mk(i), ys = mk(i + 1), c = even) + read_other(xs = mk(i), c = even) + countdown(xs = mk(i), n = i % 3)
+  let c = lam(mk(i), even) + in_struct(r = Rec::{ xs: mk(i) }, c = even) + moved_all(xs = mk(i), c = even)
+  a + b + c
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

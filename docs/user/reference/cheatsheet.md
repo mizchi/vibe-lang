@@ -3123,9 +3123,9 @@ written, and points at `MutMap[K, V]` from `@vibe/core`.
 `keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`;
 `m[k]`, `for k in m` and `==` work for every key type.
 An `Int` / `Char` / `Bool` key is compared as an exact value, with a linear
-lookup (no hash index yet). Three places do not take one yet, and each says so
-at build time: the wasm-gc backend; a linked build with no type check of its
-text; and a generic function whose type parameter is a map's key, called at
+lookup (no hash index yet), on the default backend and on wasm-gc alike. Two
+places do not take one yet, and each says so at build time: a linked build
+with no type check of its text; and a generic function whose type parameter is a map's key, called at
 that key (its one lowered body compares keys as Strings) -- write the function
 for `Map[Int, V]`, or key the map by `String`. Such a function is also refused
 when it is exported or passed as a value, where its calls cannot be checked;
@@ -3358,15 +3358,17 @@ let debug_dump = (x) -> { ... }   // exists ONLY when the `dev` flag is active
 #cfg(dev)
 let run_mode = () -> Int { debug_dump(run()) }
 
-#cfg(release)
+#cfg(not(dev))
 let run_mode = () -> Int { run() }
 ```
 
 - Activate flags at compile time: `VIBE_CFG=dev vibe build app.vibe` (comma-separated for multiple). The set applies to **every module of the program**, imports included, and is part of the build-cache key, so switching flags between two builds is a cache miss, never a replay (#2513).
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
+- `#cfg(not(flag))` keeps the declaration only when `flag` is inactive. It uses the same active set, including file-local `#cfg_enable(flag)`, so one flag can select an implementation and its fallback. Only a single negated flag is supported; nested conditions and expressions in `#cfg_enable` are rejected. `#cfg(not)` still selects the ordinary flag named `not`.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
 - `vibe normalize` refuses a `#cfg` source (it prints the parsed program, and an inactive statement is no longer in it). `vibe fmt` is token-based and keeps every directive and both arms, so `#cfg` sources format and pass `check_vibe_fmt.sh` (measured on `fixtures/cfg_flag_test.vibe`).
 - The compiler's own sources may use it: the committed seed (seed/cfg-spans-emission-2026-09-04 and later) resolves `#cfg` in module-source emission, so the flattened self-build carries the active statements as themselves. Module-source emission and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) all resolve against the same active set (#2497 step 0, #2516).
+- The new `not(flag)` form requires a compiler built from current sources. Do not use it in the compiler's own declarations until the committed seed supports it; tests may pass it as source text to a rebuilt parser.
 
 ## Allocation contract (`#zero_alloc`)
 

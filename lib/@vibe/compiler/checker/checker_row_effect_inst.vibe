@@ -2032,6 +2032,48 @@ export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type
   }, subject = subject, slot = slot, defs = defs, errors = errors, mode = 0)
 }
 
+/// #3417: the same comparison for `name = value` on a `let mut` binding.
+/// Before, `let mut f = h` with `h` performing `Box[String]` accepted
+/// `f = g` with `g` performing `Box[Int]`: row labels unify by base name, and
+/// no hand-off ran on an assignment. The binding's row is read like an
+/// annotation's, in this scope, so a formal of the enclosing binder is that
+/// formal. A row with a published row's marks (`T$0`, `^Name`), or one this
+/// scope cannot read (a generic `mk[U]`'s `Box[U]` after `let mut f = mk`),
+/// is read in the value's own scope instead (`value_effect_instantiations` on
+/// the target's name), where an imported nominal still resolves.
+export fn assignment_effect_inst_check(env: TypeEnv, name: String, value: Expr, value_ty: Type, var_ty: Type, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let want_ty = subst_apply(s = s, ty = var_ty)
+  if effect_inst_leaf_slot(want_ty) {
+    return s
+  }
+  let target = EIdent(name, 0 - 1)
+  effect_inst_value_check(env = env, arg = value, arg_ty = value_ty, param_ty = want_ty, s = s, read = (row: String) -> Array[Type] {
+    let marked = String::contains(row, needle = "$") || String::contains(row, needle = "^")
+    let lexical = if marked {
+      array_empty()
+    } else {
+      lexical_value_row_instantiations_at(row = row, env = env, defs = defs, closed = true)
+    }
+    let payloads: Array[Type] = []
+    for item in lexical {
+      match effect_inst_wanted_payload(item) {
+        Some((_, payload)) => Array::push(payloads, value = payload),
+        None => ()
+      }
+    }
+    if !marked && (callback_row_unreadable(payloads) is None) {
+      lexical
+    } else {
+      let wants: Array[Type] = []
+      for pair in value_effect_instantiations(env = env, arg = target, arg_ty = want_ty, arow = row, s = s, defs = defs) {
+        let (eff, t) = pair
+        Array::push(wants, value = CtNamed(eff, [CtTuple([t])]))
+      }
+      wants
+    }
+  }, subject = "the function assigned to `\{name}`", slot = "the variable's row", defs = defs, errors = errors, mode = 0)
+}
+
 fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String], mode: Int) -> Subst {
   let arg = call_arg_value(arg)
   if effect_inst_leaf_slot(param_ty) {

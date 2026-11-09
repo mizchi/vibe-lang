@@ -1,0 +1,59 @@
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+// #3255 (Codex on #3984): a call through a function alias of a retaining
+// builtin stores into its receiver what the builtin does. Its spelling named
+// no retaining operation, so the region write check did not see the write:
+// `let put = Array::push; put(xs, value)` inside a function let a region value
+// escape into an outer binding, under a plain name on main and, once a
+// builtin-named program function was judged by its body, under that name too.
+
+fn with_call(_ call: String) -> String {
+  "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    \{call}\n    0\n  }\n}\n"
+}
+
+let container_write = "region escapes its scope: a container write stores a value that captures this region into an outer binding"
+
+test "a builtin-named program function writing through an alias is refused by its body" {
+  let src = String::concat("fn MutList::push(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  let put = Array::push\n  put(xs, value)\n}\n", with_call("MutList::push(sink, value = cell)"))
+  assert(check_source_err_contains(source = src, needle = "this call to `MutList::push` stores a value that captures this region"))
+}
+
+test "a plain-named program function writing through an alias is refused by its body" {
+  let src = String::concat("fn keep(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  let put = Array::push\n  put(xs, value)\n}\n", with_call("keep(sink, value = cell)"))
+  assert(check_source_err_contains(source = src, needle = "this call to `keep` stores a value that captures this region"))
+}
+
+test "a write through a local, chained or top-level alias is refused at the call, in a callback too" {
+  let local = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let put = Array::push\n  region r {\n    let cell = MutList::empty(r)\n    put(sink, cell)\n    0\n  }\n}\n"
+  assert(check_source_err_contains(source = local, needle = container_write))
+  let chained = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let put = Array::push\n  let again = put\n  region r {\n    let cell = MutList::empty(r)\n    again(sink, cell)\n    0\n  }\n}\n"
+  assert(check_source_err_contains(source = chained, needle = container_write))
+  let top_level = String::concat("let put = Array::set\n", with_call("put(sink, 0, cell)"))
+  assert(check_source_err_contains(source = top_level, needle = container_write))
+  // The element-callback scan follows an alias its call's scope binds.
+  let callback = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let put = Array::push\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = (c) -> {\n      put(sink, c)\n      0\n    })\n  }\n  0\n}\n"
+  assert(check_source_err_contains(source = callback, needle = container_write))
+}
+
+// Codex on #3984: a top-level alias spelled as a builtin is a program binding
+// of that spelling, so the checker's answer for the call is -1, not the
+// builtin; the write check still follows it to the builtin it names.
+test "a write through a builtin-spelled top-level alias of a builtin is refused at the call" {
+  let push = String::concat("let MutList::push = Array::push\n", with_call("MutList::push(sink, cell)"))
+  assert(check_source_err_contains(source = push, needle = container_write))
+  let set = String::concat("let Array::set = Array::push\n", with_call("Array::set(sink, cell)"))
+  assert(check_source_err_contains(source = set, needle = container_write))
+}
+
+test "a builtin-spelled top-level alias of a function that keeps nothing is fine" {
+  assert(check_source_ok(String::concat("fn ignore(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  let _ = xs\n  let _ = value\n  ()\n}\nlet MutList::push = ignore\n", with_call("MutList::push(sink, cell)"))))
+}
+
+test "a write of no region value through an alias, or a rebound alias, is fine" {
+  assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  let put = Array::push\n  region r {\n    let cell = MutList::empty(r)\n    put(sink, MutList::length(cell))\n    0\n  }\n}\n"))
+  // An alias the region body rebinds to its own function no longer names
+  // the builtin.
+  assert(check_source_ok("fn ignore(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  let _ = xs\n  let _ = value\n  ()\n}\nfn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let put = Array::push\n  region r {\n    let put = ignore\n    let cell = MutList::empty(r)\n    put(sink, cell)\n    0\n  }\n}\n"))
+}

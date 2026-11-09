@@ -191,8 +191,8 @@ spend the initial reference — `pe_use` and the `ELet` alias arm — call
 The codegen admits a `PaPathDrop` only when the drop it gives back is certain
 to be owed (`path_value_owned`, `compile_expr_tail_classify_let_value_heap.vibe`):
 
-- the binding is a plain immutable `let` (not `let mut`, not a pattern bind or
-  parameter);
+- the binding is a plain immutable `let` (not `let mut`, not a pattern bind;
+  a parameter is the case below);
 - every leaf of the value's result spine (through `let` / `;` chains and
   conditional branches) is an allocation made at the site, or a call to a
   named, non-local function whose declared return type is heap and which
@@ -202,8 +202,23 @@ to be owed (`path_value_owned`, `compile_expr_tail_classify_let_value_heap.vibe`
 - every marked occurrence has a source offset (a lambda capture has none);
 - the binding is not borrow-bound and not `Int`-valued.
 
+A parameter splits the same way (#2827): `fn f(xs, c) { if c { keep(xs) }
+else { 0 } }` moved `xs` out on one path and released it on none. It takes
+the same marks and `PaPathDrop`, and codegen gives the drop in the function
+epilogue under the flag local the #1980 parameter merge below already uses,
+for an owned heap parameter only. The planner adds what the epilogue needs
+(`pe_split_release_ok`): no early exit in the body, since codegen releases a
+parameter at an exit from a table that reads no path flag; no owning use
+inside a loop; a name no other binding of the plan has; and a body that
+cannot hand back a view of the parameter, since the guarded drop does not
+retain an escaping interior read. A pattern bind is still declined: its
+references are dups taken at the bind (`bind_match_pat`), so the path that
+skips its consume leaks the dup, which is the #1980 shape rather than this
+one.
+
 `scripts/path_release_census.sh` classifies every `PaPathDrop` row of a flat
-source by this rule.
+source by this rule, splitting parameters (`param_heap` / `param_scalar`)
+from the `let` rows.
 
 ### Branch-dependent dups (#1980)
 
@@ -238,23 +253,32 @@ and a missing one a premature release.
 
 A merge declines (the binding keeps today's rows) when an arm took the
 initial reference (the split above owns that), when an occurrence has no
-source offset or sits in a loop the binding is declared outside of. The
-whole binding declines when it has an early-exit row, whose count reads the
-dup budget, and its marks are withheld when another binding of the plan has
-its name: codegen gives a `PaPathDrop` to every `let` of the row's name. A
-path short by two or more still leaks the rest.
+source offset or sits in a loop the binding is declared outside of. Its
+marks are withheld when another binding of the plan has its name: codegen
+gives a `PaPathDrop` to every `let` of the row's name. A path short by two
+or more still leaks the rest.
+
+An early exit's row is resolved after the redundant rows are dropped, so it
+reads the merged budget `B`: it releases at most `1 + B - cons`, `cons` the
+most any path reaching the exit consumed, which no path holds less than. A
+`let`'s exit release is also guarded on its path flag, so a path that ran a
+mark releases nothing there; the whole binding declines when an exit row is
+taken after an occurrence its dups were planned for (`pf_exit_late`), where
+the declined plan released the row's count. An exit before every such
+occurrence -- the guard clause `if bad { return d }` ahead of the branch --
+is reached by no path that ran a mark, and merges.
 
 A parameter is the same case: its planned dups are taken at function entry
 (`pf_param`), so `fn f(v) { if c { keep(v) }; use(v) }` leaked one per call
 that skipped the consume. It merges like a `let` whose scope is the whole
 body, and its path drop is a flag local the function epilogue reads
 (`linked_compile_function_bodies`, `compile_lambda`), for an owned heap
-parameter only -- a borrowed one's reference is the caller's. A body with any
-exit declines its parameters, because codegen releases parameters at an exit
-from its own table, which reads no path flag. So does a parameter consumed
-inside a loop: codegen retains it at each such call site and gives the
-epilogue a drop for the loop sites (#725, #1085), which the merge's budget
-does not model.
+parameter only -- a borrowed one's reference is the caller's. Codegen
+releases a parameter at an exit from a table of its own, which reads no path
+flag, so its exits never decline the merge: each releases the row's count
+on every path. A parameter consumed inside a loop declines: codegen retains
+it at each such call site and gives the epilogue a drop for the loop sites
+(#725, #1085), which the merge's budget does not model.
 
 Freeing a parameter on every path exposed a gap that its leak had hidden: a
 collected `for` retained its body value only when the whole body was a view,
@@ -430,8 +454,8 @@ unrelated place, at a location that moves with the binary layout.
 ## Checks
 
 - `lib/@vibe/compiler/tests/perceus_rc_test.vibe`,
-  `perceus_reuse_plan_test.vibe` and `perceus_path_release_plan_test.vibe` pin
-  plan rows.
+  `perceus_reuse_plan_test.vibe`, `perceus_path_release_plan_test.vibe` and
+  `perceus_param_path_release_plan_test.vibe` pin plan rows.
 - `perceus_reuse_e2e_test.vibe`, `hof_rc_ownership_test.vibe`,
   `lambda_param_consume_rc_test.vibe`, `borrowed_temp_release_rc_test.vibe`,
   `map_builder_rc_test.vibe` and `map_reuse_rc_test.vibe` (all under
@@ -440,4 +464,6 @@ unrelated place, at a location that moves with the binary layout.
   bounds the heap of loops over every shape above (`widen0`, `hold`,
   `only_then`, `move_through_wrapper`, the HOF and map shapes), and
   [`rc_shadow_regression_test.vibe`](../../../fixtures/rc_shadow_regression_test.vibe)
-  runs the bug-shape corpus under shadow.
+  runs the bug-shape corpus under shadow;
+  [`rc_param_path_release_bounded_test.vibe`](../../../fixtures/rc_param_path_release_bounded_test.vibe)
+  bounds the parameter split shapes.

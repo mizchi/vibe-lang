@@ -1,0 +1,83 @@
+//# Imports
+
+// #2827: a parameter whose INITIAL reference one branch spends and another
+// keeps. The merge keeps the minimum remaining count (#705), so before this
+// nothing released the parameter on the paths that did not consume it. It
+// now takes the #2389 pair a plain `let` takes -- `path_drop` plus a
+// `consume_mark` per spending occurrence -- and codegen releases it in the
+// function epilogue under the flag those marks set. The shapes the epilogue
+// cannot guard stay silent: an early exit (released from a table that reads
+// no path flag), a consume inside a loop (codegen's own per-site rules), an
+// unmarkable occurrence and a body that may hand back a view of it.
+
+import @vibe/compiler/query {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(_ source: String) -> String with Exception {
+  rc_plan_source(source = source, fn_filter = "")
+}
+
+let prelude = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\n"
+
+let epilogue = "\nlet run: (Bool) -> Node = (c) -> pick(Pair(Leaf(1), Leaf(2)), c)\nlet main: () -> Int = () -> {\n  match run(true) {\n    _ => 0\n  }\n}"
+
+test "a parameter consumed in one if-branch only gets a guarded drop and a mark" {
+  let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick t path_drop 1"))
+  assert(String::contains(plan, needle = "pick t consume_mark:"))
+}
+
+test "a parameter consumed in one match arm only gets the same pair" {
+  let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  match c {\n    true => own(t),\n    false => Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick t path_drop 1"))
+  assert(String::contains(plan, needle = "pick t consume_mark:"))
+}
+
+test "a parameter consumed on every branch is not a split" {
+  let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    own(t)\n  } else {\n    t\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick t path_drop"))
+  assert(!String::contains(plan, needle = "pick t consume_mark:"))
+}
+
+test "a split parameter of a body with an exit gets no path drop" {
+  // Codegen releases a parameter at an exit from a table that reads no path
+  // flag, so a path that ran the mark would release it there again.
+  let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    return own(t)\n  } else {\n    ()\n  }\n  Leaf(0)\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick t path_drop"))
+  assert(!String::contains(plan, needle = "pick t consume_mark:"))
+}
+
+test "a parameter consumed inside a loop gets no path drop" {
+  // Codegen retains a parameter at each owning call site in a loop and gives
+  // the epilogue a drop for those sites (#725, #1085), which the merge's
+  // count does not model. A use there does not spend the initial reference
+  // today, and the planner declines the parameter outright as a backstop.
+  let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    let mut acc = Leaf(0)\n    let mut i = 0\n    while i < 2 {\n      acc = own(t)\n      i = i + 1\n    }\n    acc\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick t path_drop"))
+  assert(!String::contains(plan, needle = "pick t consume_mark:"))
+}
+
+test "a parameter consumed only by a capture gets no path drop" {
+  // A capture has no source offset, so codegen has no site to set the flag.
+  let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    let f: () -> Node = () -> t\n    f()\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick t path_drop"))
+  assert(!String::contains(plan, needle = "pick t consume_mark:"))
+}
+
+test "a parameter whose body may hand back a view of it gets no path drop" {
+  // The guarded epilogue drop does not retain an escaping interior read, so
+  // `Array::get(xs, at = 0)` would come back freed.
+  let src = String::concat(prelude, "let hold: (Array[Node]) -> Int = (xs) -> Array::length([\n  xs\n])\nlet pick: (Array[Node], Bool) -> Node = (xs, c) -> {\n  if c {\n    Leaf(hold(xs))\n  } else {\n    Array::get(xs, at = 0)\n  }\n}\nlet main: () -> Int = () -> {\n  match pick([\n    Leaf(1)\n  ], true) {\n    _ => 0\n  }\n}")
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick xs path_drop"))
+  assert(!String::contains(plan, needle = "pick xs consume_mark:"))
+}

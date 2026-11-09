@@ -31,10 +31,26 @@ cp "$input" "$out_dir/input.vibe"
 probe="scripts/path_release_census_probe.vibe"
 # vibe_test.sh compiles the probe to _build/vibe_test/<path with / as _>.wasm
 # and runs it, but discards the run's stdout; rerun the wasm to collect it.
-VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$probe" >/dev/null
+# Its own run is allowed to fail: checking the flat source (the lowering needs
+# the checker's argument placement, ADR-0120) recurses deeper than the default
+# host stack, so only the rerun below, with a raised stack, is the census.
 wasm="_build/vibe_test/$(printf '%s' "${probe%.vibe}" | tr '/' '_').wasm"
+rm -f "$wasm"
+VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$probe" >/dev/null 2>&1 || true
 [ -s "$wasm" ] || { echo "path_release_census: probe wasm not produced: $wasm" >&2; exit 1; }
-VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$wasm" > "$out_dir/rows.tsv"
+# The raised node stack needs an OS thread stack at least as large: V8
+# trusts --stack-size, so a budget above the real limit segfaults instead of
+# raising RangeError (scripts/run_wasm_vibe_host_runner.sh bounds its own
+# default by `ulimit -s`, but not an explicit VIBE_NODE_STACK_SIZE). Raise the
+# limit in the subshell that runs the probe, and refuse when it cannot be.
+(
+  ulimit -s unlimited 2>/dev/null || {
+    echo "path_release_census: cannot raise the OS stack limit (ulimit -s unlimited), which the raised node stack needs; run from a shell that allows it" >&2
+    exit 1
+  }
+  VIBE_NODE_STACK_SIZE="${VIBE_NODE_STACK_SIZE:-500000}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$wasm"
+) > "$out_dir/rows.tsv"
 
 echo "[path-release-census] input=$input rows=$(wc -l < "$out_dir/rows.tsv") file=$out_dir/rows.tsv"
 echo "[path-release-census] verdicts (FLAT + SPINE = admitted; SPINE = only the recursive result-spine read reaches it):"

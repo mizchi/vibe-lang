@@ -514,6 +514,46 @@ fi
 rm -rf "$psdir"
 echo "[compiler-gate] RC parameter-branch, field-arm and truncate-tally guard ok (heap_used=$ps_used B at N=20000)"
 
+# 40e8. #1980: an early exit no longer declines a branch-dup merge it cannot
+# disturb. Every exit that released a binding declined pe_dup_merge for it --
+# for a parameter, any exit in the body -- so `if bad { return d }` ahead of
+# `if c { sink(v) }` kept the consume's dup on every call that took neither
+# (pe_dsplit_ok). An exit row reads the merged budget and releases what the
+# path that consumed the most still holds; a parameter's exit release reads
+# no path flag, and a `let`'s exit before every consume runs no mark. The
+# fixture measured 4,905,100 B at N=20000 before and 1,652 B after; the bound
+# is 4,000. Its controls keep the consumed values past the call -- behind the
+# guard, in the arm the exit leaves from, and with the exit after the consume
+# -- so the shadow run is what proves no exit or path drop released a value
+# still held.
+echo "[compiler-gate] 40e8/40 RC branch-dup early-exit guard"
+gate_workdir bxdir "_build/_gate_rc_branch_dup_exit"
+for bx_mode in 1 shadow; do
+  VIBE_RC="$bx_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/rc_branch_dup_exit_leak_test.vibe" "$bxdir/rc_$bx_mode.wasm" main >/dev/null 2>&1 || true
+  gate_require_artifact "$bxdir/rc_$bx_mode.wasm" "rc_branch_dup_exit fixture did not compile under VIBE_RC=$bx_mode"
+done
+bx_shadow_json="$(node scripts/measure_heap.mjs "$bxdir/rc_shadow.wasm" main 2>&1 || true)"
+bx_shadow_result="$(printf '%s' "$bx_shadow_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ "$bx_shadow_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit under VIBE_RC=shadow did not return 0 (an exit or a path drop released a value a path still held): $bx_shadow_json" >&2; exit 1
+fi
+bx_json="$(node scripts/measure_heap.mjs "$bxdir/rc_1.wasm" main 2>/dev/null)"
+bx_used="$(printf '%s' "$bx_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+bx_result="$(printf '%s' "$bx_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$bx_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_branch_dup_exit heap ($bx_json)" >&2; exit 1
+fi
+if [ "$bx_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit wrong result $bx_result (want 0)" >&2; exit 1
+fi
+if [ "$bx_used" -ge 4000 ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit heap_used=$bx_used >= 4000 (an early exit declines a branch-dup merge, so the consume's dup is held on the paths that skip it; measured 4905100 at N=20000 when it did)" >&2; exit 1
+fi
+rm -rf "$bxdir"
+echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a
@@ -1584,6 +1624,37 @@ for fnm_lane in bump rc shadow gc; do
 done
 rm -rf "$fnmdir"
 echo "[compiler-gate] block-name for iterable guard ok (-11913000 on bump/rc/shadow/gc, rc heap_used=$fnm_used B)"
+
+# 40f0p. #2827: a parameter consumed on some paths only was released on none.
+#        The branch merge keeps the minimum remaining count (#705), so the
+#        paths that did not move the parameter out leaked the caller's
+#        reference on every call; a plain `let` in that shape already took a
+#        guarded path drop (#2389). The parameter now takes the same one, in
+#        the function epilogue, under the flag its consuming occurrences set.
+#        Unfixed, the bounded fixture grew __heap_ptr by 815,996 B over its
+#        2000 rounds. The answer is checked on bump, rc, shadow and gc; the
+#        shadow lane traps on the drop of a freed block, which is what an
+#        epilogue release on a path that already consumed would hit.
+echo "[compiler-gate] 40f0p/40 a parameter consumed on some paths only is released on the others (#2827)"
+gate_workdir ppdir "_build/_gate_rc_param_path_release"
+for pp_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$pp_lane" "fixtures/rc_param_path_release_bounded_test.vibe" "$ppdir/pp.wasm" main
+  gate_require_artifact "$ppdir/pp.wasm" "rc_param_path_release_bounded fixture did not compile on the $pp_lane lane (#2827)"
+  gate_run pp_out last "$ppdir/pp.wasm"
+  gate_require_eq "$pp_out" "49000" "rc_param_path_release_bounded got '$pp_out' on the $pp_lane lane (want 49000). A trap means a parameter's path drop released it on a path that had moved it out (#2827)."
+  if [ "$pp_lane" = rc ]; then
+    pp_json="$(node scripts/measure_heap.mjs "$ppdir/pp.wasm" main 2>/dev/null)"
+    pp_used="$(printf '%s' "$pp_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$pp_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_param_path_release_bounded heap ($pp_json)" >&2; exit 1
+    fi
+    if [ "$pp_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_param_path_release_bounded heap_used=$pp_used >= 20000 (#2827 regressed: a parameter consumed on some paths only is left unreleased on the others again; unfixed, this fixture measured 815,996 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$ppdir"
+echo "[compiler-gate] parameter path release guard ok (49000 on bump/rc/shadow/gc, rc heap_used=$pp_used B)"
 
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).

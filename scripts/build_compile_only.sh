@@ -24,6 +24,11 @@
 #     --compiler W    the compiler that compiles the flat source; default: the
 #                     generation for HEAD (scripts/resolve_stage2.sh), override
 #                     also via COMPILE_ONLY_COMPILER
+# Writes <out>.receipt.json beside the artifact (scripts/compile_only_size_budget.mjs
+# receipt): the artifact's, the compiler's and the module source's sha256, the
+# ensure_generated fingerprint and this script's own sha256. A reader holds the
+# artifact to it instead of trusting whatever file is at the path
+# (scripts/check_compile_only_size.sh).
 # Prints `compile-only artifact: <path> (<bytes> bytes)` on success.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,7 +43,7 @@ while [ "$#" -gt 0 ]; do
     --out) OUT="$2"; shift 2 ;;
     --names) NAMES=1; shift ;;
     --compiler) COMPILER_OVERRIDE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "build_compile_only: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -97,7 +102,7 @@ VIBE_COMPILE_ONLY_MODULE_SOURCE_OUT="$MODULE_SOURCE" \
 # compiler self-build is pinned to the bump lane, flat generated source is
 # the trusted-source lane, and the persistent artifact cache stays out of a
 # build whose output is compared by bytes.
-rm -f "$OUT" "$OUT.diag"
+rm -f "$OUT" "$OUT.diag" "$OUT.receipt.json"
 if ! (
   cd "$ROOT_DIR" &&
     env $CLEAR_ARGS \
@@ -125,4 +130,12 @@ if [ "$(head -c 4 "$OUT" | od -An -tx1 | tr -d ' \n')" != "0061736d" ]; then
   echo "build_compile_only: $OUT is not a wasm module (first bytes: $(head -c 16 "$OUT" | od -An -c | tr -s ' '))" >&2
   exit 1
 fi
+# The receipt names the generated sources by the fingerprint ensure_generated
+# brought them to above, so a later reader can tell this artifact from one
+# built before the checkout moved.
+FINGERPRINT="$(bash "$ROOT_DIR/scripts/ensure_generated.sh" --print-fingerprint 2>/dev/null)" \
+  || { echo "build_compile_only: could not compute the generated-source fingerprint" >&2; exit 1; }
+node "$ROOT_DIR/scripts/compile_only_size_budget.mjs" receipt --artifact "$OUT" --compiler "$COMPILER" \
+  --module-source "$MODULE_SOURCE" --fingerprint "$FINGERPRINT" --names "$NAMES" \
+  || { echo "build_compile_only: could not write $OUT.receipt.json" >&2; exit 1; }
 echo "compile-only artifact: $OUT ($(wc -c <"$OUT") bytes)"

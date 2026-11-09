@@ -1,0 +1,68 @@
+// #2501: an index or a `for` iterand whose receiver is a `match` arm binder
+// shadowing an outer Map binding. The checker settles the binder as an Array,
+// but it used to file a row only for a Map or an open receiver, so the pass
+// fell back to the receiver's SPELLING -- read from a syntactic scope that
+// does not see the arm binder -- and lowered the Array as the outer Map.
+// Measured on main at 9859014: the loop summed an unrelated word (`721`,
+// `1877`; it varies with the heap) and the index trapped in `Map::get`. The
+// checker now files every settled receiver (`typed_index_seq_verdict`), and
+// the spelling is read only where no row was filed.
+
+fn table() -> StringMap[Int] {
+  Map::set(Map::new(), key = "a", value = 1)
+}
+
+test "a for loop over an arm binder that shadows a Map iterates the Array" {
+  let m = table()
+  let o = Some(["pp", "qqqq"])
+  let r = match o {
+    Some(m) => {
+      let mut n = 0
+      for x in m {
+        n = n + String::length(x)
+      }
+      n
+    },
+    None => 0
+  }
+  inspect(r, content = "6")
+  inspect(Map::get(m, key = "a"), content = "1")
+}
+
+test "an index of an arm binder that shadows a Map reads the Array" {
+  let m = table()
+  let o = Some(["pp", "qqqq"])
+  let r = match o {
+    Some(m) => m[1],
+    None => ""
+  }
+  inspect(r, content = "qqqq")
+}
+
+test "an arm binder that IS a Map still iterates its keys and indexes by key" {
+  let m = ["zz"]
+  let o = Some(table())
+  let (keys, hit) = match o {
+    Some(m) => {
+      let mut ks = ""
+      for k in m {
+        ks = ks + k
+      }
+      (ks, m["a"])
+    },
+    None => ("", 0)
+  }
+  inspect(keys, content = "a")
+  inspect(hit + 10, content = "11")
+  inspect(m[0], content = "zz")
+}
+
+test "an annotated Map still iterates its keys" {
+  let m: StringMap[Int] = Map::set(table(), key = "bb", value = 2)
+  let mut n = 0
+  for k in m {
+    n = n + String::length(k)
+  }
+  inspect(n, content = "3")
+  inspect(m["bb"] + 40, content = "42")
+}
