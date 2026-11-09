@@ -37,6 +37,20 @@ test "a write through a local, chained or top-level alias is refused at the call
   assert(check_source_err_contains(source = callback, needle = container_write))
 }
 
+// Codex on #3984: a top-level alias spelled as a builtin is a program binding
+// of that spelling, so the checker's answer for the call is -1, not the
+// builtin; the write check still follows it to the builtin it names.
+test "a write through a builtin-spelled top-level alias of a builtin is refused at the call" {
+  let push = String::concat("let MutList::push = Array::push\n", with_call("MutList::push(sink, cell)"))
+  assert(check_source_err_contains(source = push, needle = container_write))
+  let set = String::concat("let Array::set = Array::push\n", with_call("Array::set(sink, cell)"))
+  assert(check_source_err_contains(source = set, needle = container_write))
+}
+
+test "a builtin-spelled top-level alias of a function that keeps nothing is fine" {
+  assert(check_source_ok(String::concat("fn ignore(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Unit {\n  let _ = xs\n  let _ = value\n  ()\n}\nlet MutList::push = ignore\n", with_call("MutList::push(sink, cell)"))))
+}
+
 test "a write of no region value through an alias, or a rebound alias, is fine" {
   assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  let put = Array::push\n  region r {\n    let cell = MutList::empty(r)\n    put(sink, MutList::length(cell))\n    0\n  }\n}\n"))
   // An alias the region body rebinds to its own function no longer names
