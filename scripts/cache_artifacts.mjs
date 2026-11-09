@@ -33,6 +33,10 @@ export const ENVELOPE_MAGIC = Buffer.from("VART1");
 export const PAYLOAD_MAGICS = {
   checked_module: Buffer.from([118, 77, 79, 68, 2]), // "vMOD", version 2
   codegen_body_cache: Buffer.from("VBW2"),
+  // The per-file AST cache (`selfhost_ast_v1`): ast_binary_write_header's
+  // "vAST" (cache/ast_binary.vibe), which ast_cache.vibe stores as the
+  // envelope payload.
+  ast: Buffer.from("vAST"),
 };
 export const PAYLOAD_MAGIC = PAYLOAD_MAGICS.checked_module;
 export const IDENTITY_MAGIC = "checked-module-input-v1";
