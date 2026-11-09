@@ -72,7 +72,8 @@ import @vibe/compiler/loader {
   find_deps_missing,
   find_missing_vpkg_dirs,
   ingest_source_text_fs,
-  ingestion_pipeline_telemetry_json,
+  ingestion_pipeline_telemetry_publish,
+  ingestion_pipeline_telemetry_refusal,
   load_or_parse_module_header_fs,
   publish_check_fs,
   set_ingestion_pipeline_telemetry_enabled,
@@ -727,7 +728,13 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     ()
   }
   if ingestion_pipeline_out != "" {
-    if Env::get("VIBE_CHECK_ONLY") != "1" {
+    // #2498: a compiler flattened without `VIBE_CFG=telemetry` has no counters
+    // to publish. Refuse here, after the stale sidecar is gone and before any
+    // work, rather than answer the request with zeros or with nothing.
+    let pipeline_refusal = ingestion_pipeline_telemetry_refusal()
+    if pipeline_refusal != "" {
+      throw(pipeline_refusal)
+    } else if Env::get("VIBE_CHECK_ONLY") != "1" {
       throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
     } else if ingestion_pipeline_nonce == "" || has_control_character(ingestion_pipeline_nonce) {
       throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
@@ -1148,7 +1155,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       // Publish this successful-check observation strictly after the final
       // output. If that authoritative write fails, no pipeline sidecar exists.
       if ingestion_pipeline_out != "" {
-        Fs::write_file(ingestion_pipeline_out, contents = ingestion_pipeline_telemetry_json(ingestion_pipeline_nonce))
+        ingestion_pipeline_telemetry_publish(path = ingestion_pipeline_out, nonce = ingestion_pipeline_nonce)
       } else {
         ()
       }

@@ -10,6 +10,11 @@
 #                    the absence check must name it.
 #   3. accepted   -- the full CLI stage2, invoked as `cli_main`: it serves
 #                    VIBE_BACKEND=gc, so the refusal check must fail.
+#   3b. telemetry -- the same stage2, flattened WITH the compiler's
+#                    `telemetry` cfg flag (#2498): it publishes the
+#                    ingestion-pipeline sidecar, so --telemetry-only must
+#                    fail; and a named build spelling the encoder's name must
+#                    fail the absence check (case 2's probe).
 #   4. control    -- the real compile-only artifact passes.
 #
 # Fixture: the named compile-only artifact the gate builds
@@ -122,10 +127,15 @@ check_leak() { # <source-level name of a forbidden family>
 }
 check_leak compile_file_fs_mode_gc
 check_leak codegen_body_cache_replay
+check_leak ingestion_pipeline_telemetry_json
 
 # 3. accepted: the full CLI serves the gc lane, so the refusal check fails on
 # the first switch.
 expect_fail accepted "VIBE_BACKEND=gc was ACCEPTED" --artifact "$STAGE2" --entry cli_main
+
+# 3b. telemetry: the generation's stage2 keeps the counters, so it publishes
+# the sidecar the compile-only artifact must refuse.
+expect_fail telemetry "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --telemetry-only
 
 # 4. control.
 if ! bash "$GATE" --artifact "$ART" --entry cli_main_compile_only >"$TMP/control.log" 2>&1; then
