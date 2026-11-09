@@ -1108,6 +1108,29 @@ fn collect_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(String,
   out
 }
 
+/// The private-type stage's owner renames: an impl's method bindings follow
+/// its key and target exactly as `namespace_private_type_ctor_stmt` rewrites
+/// them, which renames a trait key's arguments and never its head (#3958).
+fn collect_private_impl_owner_aliases(stmts: Array[Stmt], type_renames: Array[(String, String)]) -> Array[(String, String)] {
+  let out = empty_aliases()
+  for stmt in stmts {
+    match stmt {
+      SImpl(tparams, _, trait_name, target) => {
+        let inner = alias_map_without_names(aliases = type_renames, names = tparams)
+        let source_owner = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target)
+        let rewritten_owner = impl_method_owner(tparams = tparams, trait_name = rewrite_private_trait_key(trait_name = trait_name, renames = inner), target = rewrite_private_type_expr(ty = target, renames = inner))
+        if source_owner != rewritten_owner {
+          Array::push(out, value = (source_owner, rewritten_owner))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
 fn rewrite_impl_method_binding_name(name: String, owner_aliases: Array[(String, String)]) -> String {
   let mut out = name
   let mut i = 0
@@ -2636,7 +2659,7 @@ export fn namespace_private_type_ctor_stage(path: String, value_renamed: Array[S
       }
     }
     let local_type_aliases = collect_local_type_aliases(value_renamed)
-    let owner_aliases = collect_impl_method_owner_aliases(stmts = value_renamed, aliases = type_renames)
+    let owner_aliases = collect_private_impl_owner_aliases(stmts = value_renamed, type_renames = type_renames)
     let owner_renamed = for stmt in value_renamed {
       rewrite_impl_method_binding(stmt = stmt, owner_aliases = owner_aliases)
     }
@@ -2885,15 +2908,16 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
       (qualifier, variant)
     }),
     // #3958: the trait key's arguments and the bounds name private types too
-    // (`impl Value[Alias] for Note` with `type Alias = Int` private). The
-    // method bindings were already renamed after the rewritten key
-    // (`collect_impl_method_owner_aliases`), so the key is rewritten the same
-    // way; left as written, it named an alias no declaration carries any more,
-    // and the linked overlap check let a sibling's `impl Value[Int]` through.
+    // (`impl Value[Alias] for Note` with `type Alias = Int` private); left as
+    // written, the key named an alias no declaration carries any more, and the
+    // linked overlap check let a sibling's `impl Value[Int]` through. Only the
+    // ARGUMENTS are renamed: a trait spelled like a private type
+    // (`type Key = Int` beside `trait Key`) lives in another namespace (Codex
+    // on #3971). `collect_private_impl_owner_aliases` names the methods after
+    // the same rewrite.
     SImpl(tparams, bounds, trait_name, target) => {
       let inner = alias_map_without_names(aliases = type_renames, names = tparams)
-      let am = aliasidx_build(inner)
-      SImpl(tparams, rewrite_alias_bounds(bounds = bounds, am = am), rewrite_alias_trait_ref(trait_ref = trait_name, am = am), rewrite_private_type_expr(ty = target, renames = inner))
+      SImpl(tparams, rewrite_private_bound_keys(bounds = bounds, renames = inner), rewrite_private_trait_key(trait_name = trait_name, renames = inner), rewrite_private_type_expr(ty = target, renames = inner))
     },
     SExternLet(name, ty) => SExternLet(name, rewrite_private_type_expr(ty = ty, renames = type_renames)),
     STest(name, body) => STest(name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
