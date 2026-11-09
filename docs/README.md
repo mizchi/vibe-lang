@@ -153,6 +153,7 @@ the repo; not the user manual.
 | [internal/compiler/checked-direct-expression-return-observation.md](internal/compiler/checked-direct-expression-return-observation.md) | Checker observation note |
 | [internal/compiler/tracing-design.md](internal/compiler/tracing-design.md) | Internal span tracing: host-side stage 0 implemented; guest `effect Trace` proposed |
 | [internal/design/experimental-wasmfx-effect-backend.md](internal/design/experimental-wasmfx-effect-backend.md) | WasmFX feasibility probe. Tracked by #2221 |
+| [internal/design/wasmfx-continuation-ownership.md](internal/design/wasmfx-continuation-ownership.md) | ADR-0123 (proposed): stored WasmFX continuations live in a handle table behind an ordinary closure, with one-shot enforced in the guest; engine measurements and the emitter's acceptance rows. Part of #2221 |
 | [internal/design/experimental-wasmtime-guest-profiler.md](internal/design/experimental-wasmtime-guest-profiler.md) | Wasmtime guest CPU profiling, implemented for core modules (#2207); component and continuation probes have no owner |
 | [internal/compiler/vibec-component.md](internal/compiler/vibec-component.md) | Compiler-core component split |
 | [internal/compiler/gc-value-abi.md](internal/compiler/gc-value-abi.md) | wasm-gc value ABI |
