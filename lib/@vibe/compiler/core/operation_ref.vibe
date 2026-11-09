@@ -1,0 +1,170 @@
+//# OperationRef and the metadata-driven effect classifier (ADR-0084 step 1, #3143)
+//
+// ADR-0084 classifies an effect operation as a capability (it acts on a
+// resource kind a host / provider resolves), an algebraic effect (no resource,
+// discharged by an in-process `handle`), the core ambient exception effect, or
+// the runtime effect. This module is the executable form of that boundary,
+// ported from `formal/VibeFormal/Effect/TaxonomyClassifier.lean`:
+//
+// - an operation is an `OperationRef`: its effect definition, the operation,
+//   and its normalized arguments, each tagged as a type, a region or a
+//   logical resource (ADR-0071's `NormalizedEffectArguments`);
+// - an effect's class is METADATA in a catalog, looked up by effect
+//   definition, never guessed from the operation's argument shape;
+// - classification fails closed: unknown or duplicate metadata, a capability
+//   without exactly one resource, an algebraic or runtime operation carrying
+//   a resource, and an exception without exactly one kind are all rejected,
+//   and one rejected operation rejects the whole row.
+//
+// `formal/oracle/effect-taxonomy.tsv` is the Lean model's corpus; the
+// differential test (`operation_ref_test.vibe`) runs it through this module.
+//
+// The runtime class (`Async`, ADR-0084 #1458) is not in the Lean model. It is
+// classified like an algebraic operation (resource-free) but kept as its own
+// requirement, because the entry admits it and does not admit an algebraic
+// effect.
+//
+// The standard catalog and the lowering of a row label to an `OperationRef`
+// live with the policy they serve, in `standard_effect_policy.vibe`.
+
+/// One normalized argument of an operation. The payload is the argument's
+/// normalized spelling: a type, a region, or a logical resource identity.
+export enum EffectArgument {
+  TypeArgument(String);
+  RegionArgument(String);
+  ResourceArgument(String)
+}
+
+/// A resolved operation: `effect_def` identifies the effect definition,
+/// `operation` the operation within it (`""` for the whole effect), and
+/// `arguments` its normalized effect arguments in declaration order.
+export struct OperationRef {
+  effect_def: String;
+  operation: String;
+  arguments: Array[EffectArgument]
+}
+
+/// An effect definition's class. A capability names the resource kind its
+/// operations act on.
+export enum EffectClass {
+  CapabilityClass(String);
+  AlgebraicClass;
+  CoreExceptionClass;
+  RuntimeClass
+}
+
+/// One classified row element. A capability keeps its operation, its
+/// resource kind and the one logical resource it acts on; an exception keeps
+/// its kind (`""` is the erased kind, see `exception_effect.vibe`).
+export enum EffectRequirement {
+  CapabilityRequirement(OperationRef, String, String);
+  AlgebraicRequirement(OperationRef);
+  ExceptionRequirement(String);
+  RuntimeRequirement(OperationRef)
+}
+
+/// The class recorded for `effect_def`, or `None` when the catalog has no
+/// entry or more than one: name resolution must produce exactly one class
+/// before an operation can enter a classified row.
+export fn effect_catalog_lookup_unique(catalog: Array[(String, EffectClass)], effect_def: String) -> Option[EffectClass] {
+  let mut found: Option[EffectClass] = None
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(catalog) {
+    let (id, effect_class) = Array::get(catalog, at = i)
+    if id == effect_def {
+      count = count + 1
+      found = Some(effect_class)
+    }
+    i = i + 1
+  }
+  if count == 1 {
+    found
+  } else {
+    None
+  }
+}
+
+/// The logical resources among an operation's arguments, in order.
+export fn operation_resource_ids(_ operation: OperationRef) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(operation.arguments) {
+    match Array::get(operation.arguments, at = i) {
+      ResourceArgument(id) => Array::push(out, value = id),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn operation_resource_free(_ operation: OperationRef) -> Bool {
+  Array::length(operation_resource_ids(operation)) == 0
+}
+
+/// The exception kind of an operation whose arguments are exactly one type.
+fn operation_exception_kind(_ operation: OperationRef) -> Option[String] {
+  if Array::length(operation.arguments) == 1 {
+    match Array::get(operation.arguments, at = 0) {
+      TypeArgument(kind) => Some(kind),
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+/// Classify one resolved operation against `catalog`, or `None` when it
+/// cannot be classified (see the module header for the refusals).
+export fn classify_operation(catalog: Array[(String, EffectClass)], operation: OperationRef) -> Option[EffectRequirement] {
+  match effect_catalog_lookup_unique(catalog = catalog, effect_def = operation.effect_def) {
+    Some(effect_class) => match effect_class {
+      CapabilityClass(resource_kind) => {
+        let resources = operation_resource_ids(operation)
+        if Array::length(resources) == 1 {
+          Some(CapabilityRequirement(operation, resource_kind, Array::get(resources, at = 0)))
+        } else {
+          None
+        }
+      },
+      AlgebraicClass => if operation_resource_free(operation) {
+        Some(AlgebraicRequirement(operation))
+      } else {
+        None
+      },
+      CoreExceptionClass => match operation_exception_kind(operation) {
+        Some(kind) => Some(ExceptionRequirement(kind)),
+        None => None
+      },
+      RuntimeClass => if operation_resource_free(operation) {
+        Some(RuntimeRequirement(operation))
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+/// Classify a whole row, all or nothing: one operation that cannot be
+/// classified rejects the row rather than being dropped from it.
+export fn classify_row(catalog: Array[(String, EffectClass)], operations: Array[OperationRef]) -> Option[Array[EffectRequirement]] {
+  let out: Array[EffectRequirement] = []
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(operations) {
+    match classify_operation(catalog = catalog, operation = Array::get(operations, at = i)) {
+      Some(requirement) => Array::push(out, value = requirement),
+      None => {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
