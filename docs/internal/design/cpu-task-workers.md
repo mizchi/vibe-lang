@@ -137,15 +137,21 @@ which decision 7 requires measuring.
   trap in a cooperative child does today. The executor does not turn a trap
   into a catchable `TaskError`, because that would make the backend
   observable.
-- **Cancelling** a job (fail-fast, `TaskHandle::cancel`, the group closing)
-  drops it if it has not started. A running job is interrupted through
-  Wasmtime epoch interruption, its Store is dropped, and its result is
-  discarded. A CPU job performs no host effect (decision 1), so interrupting
-  it leaves nothing half-done outside its own Store.
+- **A normal close drains; it does not cancel.** When the group's body
+  returns normally with jobs still unjoined, `run` waits for each of them to
+  finish, exactly as `TaskGroup::run` drains unfinished cooperative children
+  at a normal close. A job that fails there raises its `TaskError::Failed`
+  from `run`, as a cooperative child does.
+- **Cancellation is fail-fast, `TaskHandle::cancel`, or the body unwinding
+  with an exception.** Cancelling a job drops it if it has not started. A
+  running job is interrupted through Wasmtime epoch interruption, its Store
+  is dropped, and its result is discarded. A CPU job performs no host effect
+  (decision 1), so interrupting it leaves nothing half-done outside its own
+  Store.
 - **"No group closes while a child is live"** holds on the executor too. The
   group's `run` returns only after every job of the group has been consumed,
-  discarded or interrupted, and no worker thread retains the group's inputs
-  after that.
+  drained, discarded or interrupted, and no worker thread retains the group's
+  inputs after that.
 
 ### 6. What this does not decide
 
@@ -183,4 +189,5 @@ All of the following are true at once:
     cooperative;
   - a worker that runs `_start`;
   - an executor that skips R;
-  - a trap turned into a `TaskError`.
+  - a trap turned into a `TaskError`;
+  - a normal close that cancels a failing job instead of draining it.
