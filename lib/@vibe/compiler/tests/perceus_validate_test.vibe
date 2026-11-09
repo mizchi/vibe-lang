@@ -194,11 +194,15 @@ test "a binding consumed on one branch and read in place on the other" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  if c {\n    keep(A(t))\n  } else {\n    Array::get(t, at = 0)\n  }\n}"), content = "run t if1:else: owned value not consumed")
 }
 
-//# Not checked
-
-test "an early return is not checked" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d -: not checked: early exit: an exit releases it (exit-drop row)")
+// Slice 3 checks early exits: the plan takes a dup at the declaration for
+// the guard's consume and releases it at the exit, so the path that never
+// reaches the exit keeps it (112 B per call, measured). More exit shapes are
+// in perceus_validate_exit_test.vibe.
+test "an early return that consumes leaks the dup on the path that does not return" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d if1:else: owned value not consumed")
 }
+
+//# Not checked
 
 test "a closure capture is not checked" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let f = () -> keep(d)\n  f()\n}"), content = "run d -: not checked: closure capture\nrun * -: not checked: lambda body")
@@ -228,8 +232,6 @@ let carried_alias = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let 
 let loop_discarded = "let run: (Bool) -> Int = (c) -> {\n  loop (i = 0) {\n    let d = A([i])\n    if i == 2 {\n      break d\n    }\n    continue(i + 1)\n  }\n  0\n}"
 
 let loop_used = "let run: (Bool) -> Int = (c) -> {\n  let r = loop (i = 0) {\n    let d = A([i])\n    if i == 2 {\n      break d\n    }\n    continue(i + 1)\n  }\n  keep(r)\n}"
-
-let loop_skips = "run d -: not checked: early exit: an exit releases it (exit-drop row)\nrun __lt0 -: not checked: early exit: break or continue leaves its scope"
 
 test "a loop-carried binding passed to a consuming call keeps its drop" {
   inspect(plan(carried), content = "run __seq0 drop 1\nrun d drop 1")
@@ -343,8 +345,10 @@ test "a parameter retained in a loop with no planned drop is not checked" {
 }
 
 test "a discarded parameterized loop releases its break value (#3168)" {
-  inspect(validate(loop_discarded), content = loop_skips)
-  inspect(validate(loop_used), content = loop_skips)
+  // Slice 3: `break d` leaves `d`'s scope, and the exit row releases what
+  // the store into the result slot did not take.
+  inspect(validate(loop_discarded), content = "")
+  inspect(validate(loop_used), content = "")
 }
 
 test "the #3168 plan without the result slot's drop leaks the break value" {
@@ -355,7 +359,7 @@ test "the #3168 plan without the result slot's drop leaks the break value" {
       pa_is_drop(a) && a.name == "__loop_result"
     })
   })
-  inspect(out, content = "run __loop_result loop1:once,if1:then: owned value not consumed\n" + loop_skips)
+  inspect(out, content = "run __loop_result loop1:once,if1:then: owned value not consumed")
 }
 
 // #3919: a compound `for` iterable whose result leaf names a loop-carried
