@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Self-test for scripts/check_prove.sh (#3717, #2248): the gate must FAIL
-# when a proved fixture stops being provable. It mutates a copy of
+# when a proved fixture stops being provable, and when a counterexample does
+# not reproduce at run time. It mutates a copy of
 # fixtures/prove/ -- `add_small`'s `a + b` becomes `a - b`, so its
 # `ensures: result >= a` is false -- and asserts the gate refuses it, after
 # first asserting the mutation actually landed.
@@ -94,4 +95,31 @@ fi
 if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
   echo "[prove-selftest] FAIL: the gate accepted a loop that lost its break" >&2; exit 1
 fi
-echo "[prove-selftest] ok (a weakened implementation stops proving and the gate fails)"
+cp fixtures/prove/proved.vibe "$work/proved.vibe"
+# #3717: a counterexample that runs clean at run time, and is not one of the
+# gate's named spurious cases, must fail the replay. `plain_again` is
+# `plain`'s shape under another name: the prover forgets the loop-assigned
+# local and reports `result == 0` unproved, while every run returns 0.
+cat >> "$work/unproved.vibe" <<'VIBE'
+
+fn plain_again(xs: Array[Int]) -> Int where { ensures: result == 0 } {
+  let mut n = 0
+  for x in xs {
+    n = 0
+  }
+  n
+}
+VIBE
+if ! grep -q '^fn plain_again' "$work/unproved.vibe"; then
+  echo "[prove-selftest] FAIL: the replay mutation did not apply" >&2; exit 1
+fi
+if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" > "$work/replay.log" 2>&1; then
+  echo "[prove-selftest] FAIL: the gate accepted a counterexample that runs clean" >&2; exit 1
+fi
+if ! grep -qF 'replay of `plain_again` does not trap in `plain_again` at run time' "$work/replay.log"; then
+  echo "[prove-selftest] FAIL: the gate failed, but not on the replay of plain_again:" >&2
+  cat "$work/replay.log" >&2
+  exit 1
+fi
+cp fixtures/prove/unproved.vibe "$work/unproved.vibe"
+echo "[prove-selftest] ok (a weakened implementation stops proving, a counterexample that runs clean fails the replay, and the gate fails)"
