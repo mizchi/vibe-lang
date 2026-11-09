@@ -47,6 +47,18 @@ mask. `pctx_apply_borrow_retention` adds one owning use to any binding that
 also has a borrow occurrence, so a consuming use sequenced before a later read
 dups instead of moving.
 
+The mask is a greatest fixed point over the direct call graph
+(`bp_fixpoint_parts`): every eligible position starts borrowed and loses its
+bit only when the body consumes the parameter other than by passing it to a
+position that is still borrowed, so a parameter that recursion only hands back
+to itself stays borrowed. A field read off the parameter (`ctx.n`,
+`ctx.inner.v`) is a borrow, as it is for the planner: codegen treats every
+name-rooted projection as a view that a consumer which keeps it retains,
+whether the name is owned or borrowed (#2827). What still makes a parameter
+owned is a real escape -- returned, stored, captured by a closure, moved into
+an owning call -- and a function used as a value, since an indirect call
+cannot read the mask.
+
 ## Dead-alias elision (#1056)
 
 `let a = t`, where `t` still has later owning uses, would dup `t`'s reference

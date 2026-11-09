@@ -1,0 +1,91 @@
+// #2827: a parameter read only through its fields, and passed on to itself or
+// to other such readers, is borrowed.
+//
+// Borrow inference used to count a field read (`ctx.n`) as a consume, so a
+// function that only read a parameter's fields owned it, and so did every
+// caller that passed it along -- recursion included. An owned parameter takes
+// its planned dups at entry on every path, and a path that runs none of the
+// uses gives back only the scope-end drop and, at best, one guarded path
+// drop: `walk`'s base case leaked one reference per call, `three`'s `false`
+// arm two. Measured on a stage2 built from main at 9b7674401, this fixture
+// grew __heap_ptr by <UNFIXED> B over its 2000 rounds; borrowed, <FIXED> B.
+//
+// The shapes: direct recursion (`walk`), mutual recursion (`even` / `odd`),
+// a reader called several times on one branch (`three`), and a field that
+// escapes through the return value (`items`) and must outlive the binding it
+// was read from. The gate compiles this under VIBE_RC=1 and bounds the growth
+// (tests/gates/mid, 40f-b6), and checks the answer on the bump, rc, shadow and
+// gc lanes; the shadow lane traps on a read of a freed block, which is what a
+// field read off a parameter the caller had already released would hit.
+//
+// `main` sums, per round i of 2000: `three` 3 * (i + 3) on even rounds, `walk`
+// i + 3 * (i % 4), `even` i unless i % 3 == 1, and the escaped field's last
+// element i + 2: 8349000.
+
+struct Ctx {
+  n: Int;
+  xs: Array[Int]
+}
+
+fn mk(_ i: Int) -> Ctx {
+  Ctx::{ n: i, xs: [i, i + 1, i + 2] }
+}
+
+fn use1(ctx: Ctx) -> Int {
+  ctx.n + Array::length(ctx.xs)
+}
+
+fn three(ctx: Ctx, c: Bool) -> Int {
+  if c {
+    use1(ctx = ctx) + use1(ctx = ctx) + use1(ctx = ctx)
+  } else {
+    0
+  }
+}
+
+fn walk(ctx: Ctx, k: Int) -> Int {
+  if k <= 0 {
+    ctx.n
+  } else {
+    walk(ctx = ctx, k = k - 1) + Array::length(ctx.xs)
+  }
+}
+
+fn even(ctx: Ctx, k: Int) -> Int {
+  if k <= 0 {
+    ctx.n
+  } else {
+    odd(ctx = ctx, k = k - 1)
+  }
+}
+
+fn odd(ctx: Ctx, k: Int) -> Int {
+  if k <= 0 {
+    0
+  } else {
+    even(ctx = ctx, k = k - 1)
+  }
+}
+
+fn items(ctx: Ctx) -> Array[Int] {
+  ctx.xs
+}
+
+fn round(_ i: Int) -> Int {
+  let c = mk(i)
+  let a = three(ctx = c, c = i % 2 == 0)
+  let b = walk(ctx = c, k = i % 4)
+  let d = even(ctx = c, k = i % 3)
+  let xs = items(ctx = c)
+  a + b + d + Array::get(xs, at = 2)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}
