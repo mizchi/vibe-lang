@@ -13,6 +13,31 @@ import ../lib/@vibe/parser {
   validate_program_binder_rows
 }
 
+//# Functions
+
+/// The published rows of `source` on one line: `name@start` for a source row,
+/// `~name` for a synthetic one, or `none` when no authority is published. A
+/// source row whose span does not spell its name renders as `!name`.
+fn rendered_rows(_ source: String) -> String with Exception {
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let mut out = "some:"
+      for row in located_program_binder_authority_rows(authority) {
+        out = match row {
+          SourceToken(name, start, end) => if String::substring(source, start = start, end = end) == name {
+            "\{out} \{name}@\{start}"
+          } else {
+            "\{out} !\{name}"
+          },
+          Synthetic(name, _) => "\{out} ~\{name}"
+        }
+      }
+      out
+    },
+    None => "none"
+  }
+}
+
 //# Tests
 
 test "source-owning binder authority publishes exact supported rows" {
@@ -378,6 +403,39 @@ test "contract rows follow lowered requires checker result ensures body order" {
     },
     None => inspect(false, "true")
   }
+}
+
+test "a loop contract keeps the issue's while authority" {
+  // #3789: a loop `where` clause used to make the whole file's authority
+  // unavailable.
+  inspect(rendered_rows("fn f(n: Int) -> Int {\n  let mut i = 0\n  while i < n where { invariant: i <= n } {\n    i = i + 1\n  }\n  i\n}"), "some: f@3 n@5 i@32 ~__vibe_clause")
+}
+
+test "contracted while rows follow measure cells clauses condition body order" {
+  // #3789: the lowering binds the measure cells around the loop, then
+  // checks every invariant and then the measure (`<stem>_dec_now`), each
+  // through a `__vibe_clause` lambda, ahead of the condition. The clauses
+  // were written invariant, decreases, invariant.
+  inspect(rendered_rows("fn f(n: Int) -> Int {\n  let mut i = 0\n  while ((c) -> { c })(i < n) where { invariant: ((a) -> { a })(i <= n), decreases: ((d) -> { d })(n - i), invariant: ((b) -> { b })(i >= 0) } {\n    let s = i\n    i = s + 1\n  }\n  i\n}"), "some: f@3 n@5 i@32 ~__loop_17_dec_prev ~__loop_17_dec_seen ~__vibe_clause a@89 ~__vibe_clause b@158 ~__loop_17_dec_now ~__vibe_clause d@124 c@48 s@191")
+}
+
+test "nested contracted while rows stay inside the outer body" {
+  inspect(rendered_rows("let f = (n: Int) -> { let mut i = 0\n while i < n where { invariant: i <= n } { let mut j = 0\n while j < i where { decreases: i - j } { j = j + 1 }\n i = i + 1 }\n i }"), "some: f@4 n@9 i@30 ~__vibe_clause j@87 ~__loop_36_dec_prev ~__loop_36_dec_seen ~__loop_36_dec_now ~__vibe_clause")
+}
+
+test "contracted for rows follow cells checkpoint clauses head body value body order" {
+  // #3789: a `for` checkpoint is a closure (`<stem>_check`) bound before the
+  // loop, and the body's value is kept in `<stem>_body`. `for k, v` binds
+  // the value before the index.
+  inspect(rendered_rows("let f = (xs: Array[Int]) -> { let mut t = 0\n for k, v in xs where { decreases: ((d) -> { d })(10 - t), invariant: ((a) -> { a })(t >= 0) } { let w = v\n t = t + w + k }\n t }"), "some: f@4 xs@9 t@38 ~__loop_20_dec_prev ~__loop_20_dec_seen ~__loop_20_check ~__vibe_clause a@116 ~__loop_20_dec_now ~__vibe_clause d@81 v@52 k@49 ~__loop_20_body w@145")
+  inspect(rendered_rows("let f = (xs: Array[Int]) -> { let mut t = 0\n for x in ((ys) -> { ys })(xs) where { invariant: t >= 0 } { if x > 0 { continue } else { () }\n t = t + x }\n t }"), "some: f@4 xs@9 t@38 ~__loop_20_check ~__vibe_clause x@49 ys@56 ~__loop_20_body")
+}
+
+test "contracted loop rows place the contract between loop result and body" {
+  // #3789: a `loop` lowers to `while true`, so it has no head; with
+  // parameters, `__loop_result` comes after them and before the contract.
+  inspect(rendered_rows("let f = () -> { let mut i = 0\n loop where { invariant: ((a) -> { a })(i >= 0), decreases: 10 - i } { let j = i\n if j > 5 { break } else { () }\n i = j + 1 } }"), "some: f@4 i@24 ~__loop_13_dec_prev ~__loop_13_dec_seen ~__vibe_clause a@57 ~__loop_13_dec_now ~__vibe_clause j@105")
+  inspect(rendered_rows("let f = () -> { loop (i = 0) where { invariant: ((a) -> { a })(i >= 0), decreases: 10 - i } { if i > 5 { break(i) } else { continue(((c) -> { c })(i + 1)) } } }"), "some: f@4 i@22 ~__loop_result ~__loop1_7_dec_prev ~__loop1_7_dec_seen ~__vibe_clause a@50 ~__loop1_7_dec_now ~__vibe_clause ~__lt0 c@134")
 }
 
 test "block-local nested record destructuring rows mirror every lowered slot" {
