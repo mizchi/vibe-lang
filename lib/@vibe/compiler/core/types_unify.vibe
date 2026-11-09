@@ -1371,25 +1371,47 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
 /// structure around it is canonical: `Value[StringMap[T]]` is
 /// `Value[Map[String, T]]` (Codex on #3956). A bare trait name is kept as
 /// written.
+///
+/// A key whose arguments resolve to more than `canonical_trait_key_node_budget`
+/// type nodes is kept as written: a branching alias (`type A1 = (A0, A0)` ..
+/// `A30`) is a few lines that resolve to a shared graph and would be written
+/// back as a billion-node tree. The checker's alias preflight
+/// (`alias_expansion_node_limit`) reports such an alias with the edit.
 export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[TypeDef]) -> String {
   if !trait_ref_is_applied(key) {
     key
   } else {
     match trait_ref_from_key(key) {
       Some(TyApp(head, args)) => {
+        let resolved = for arg in args {
+          resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)
+        }
+        let budget = [canonical_trait_key_node_budget]
+        for ty in resolved {
+          canonical_type_spend_nodes(ty = ty, budget = budget)
+        }
         let mut changed = false
-        let mapped = for arg in args {
-          match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)) {
-            Some(next) => {
-              if next != arg {
+        let mut i = 0
+        let mapped: Array[TypeExpr] = []
+        while i < Array::length(args) {
+          let arg = Array::get(args, at = i)
+          let next = if Array::get(budget, at = 0) <= 0 {
+            None
+          } else {
+            canonical_trait_arg_type_expr(Array::get(resolved, at = i))
+          }
+          match next {
+            Some(spelled) => {
+              if spelled != arg {
                 changed = true
               } else {
                 ()
               }
-              next
+              Array::push(mapped, value = spelled)
             },
-            None => arg
+            None => Array::push(mapped, value = arg)
           }
+          i = i + 1
         }
         if changed {
           trait_ref_key(TyApp(head, mapped))
@@ -1434,12 +1456,66 @@ fn canonical_key_args_name(tys: Array[TypeExpr], binders: Array[String]) -> Bool
   found
 }
 
+/// The most type nodes one key's arguments may resolve to before
+/// `canonical_trait_key` keeps the key as written (see there).
+let canonical_trait_key_node_budget = 4096
+
+/// Spend one node of `budget` for each node of `ty`, stopping once it is gone.
+/// A resolved alias shares its subgraphs, so the walk counts what writing the
+/// type back would spell, and stops early on a graph that would blow up.
+fn canonical_type_spend_nodes(ty: Type, budget: Array[Int]) -> Unit {
+  let left = Array::get(budget, at = 0)
+  if left > 0 {
+    Array::set(budget, at = 0, value = left - 1)
+    match ty {
+      CtTuple(items) => for item in items {
+        canonical_type_spend_nodes(ty = item, budget = budget)
+      },
+      CtArray(item) => canonical_type_spend_nodes(ty = item, budget = budget),
+      CtOption(item) => canonical_type_spend_nodes(ty = item, budget = budget),
+      CtFn(params, ret, _) => {
+        for param in params {
+          canonical_type_spend_nodes(ty = param, budget = budget)
+        }
+        canonical_type_spend_nodes(ty = ret, budget = budget)
+      },
+      CtNamed(_, items) => for item in items {
+        canonical_type_spend_nodes(ty = item, budget = budget)
+      },
+      CtApplied(head, items) => {
+        canonical_type_spend_nodes(ty = head, budget = budget)
+        for item in items {
+          canonical_type_spend_nodes(ty = item, budget = budget)
+        }
+      },
+      CtForAll(_, _, body) => canonical_type_spend_nodes(ty = body, budget = budget),
+      CtRecord(fields) => for field in fields {
+        let (_, fty) = field
+        canonical_type_spend_nodes(ty = fty, budget = budget)
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 /// #3947: the type declarations of `stmts` as `canonical_trait_key` resolves
 /// against them. A struct, enum or suberror is entered by name and parameters
 /// (the resolver keeps a declared name as written, so a program's own
 /// `struct StringMap[T]` is that type, not the builtin map); an alias by its
 /// resolved body, one round per alias when an alias names another.
 export fn canonical_key_defs(_ stmts: Array[Stmt]) -> Array[TypeDef] {
+  canonical_key_defs_with(stmts = stmts, imported = [])
+}
+
+/// `canonical_key_defs` with the definitions a module imports as well
+/// (#3953). A type the module declares itself -- an alias, a struct, an enum,
+/// a suberror -- wins over an import of the same name, as when the checker
+/// seeds imported type definitions (`seed_imported_type_defs`); the imports
+/// are entered after the module's own nominal types and before its aliases'
+/// rounds, so a local alias over an imported type resolves through it.
+export fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) -> Array[TypeDef] {
   let nominal: Array[TypeDef] = []
   let aliases: Array[(String, Array[String], TypeExpr)] = []
   for stmt in stmts {
@@ -1457,6 +1533,20 @@ export fn canonical_key_defs(_ stmts: Array[Stmt]) -> Array[TypeDef] {
   for row in aliases {
     let (name, _, _) = row
     Array::push(alias_names, value = name)
+  }
+  let local_names: Array[String] = []
+  for name in alias_names {
+    Array::push(local_names, value = name)
+  }
+  for d in nominal {
+    Array::push(local_names, value = canonical_key_def_name(d))
+  }
+  for d in imported {
+    if !canonical_key_names_contain(names = local_names, name = canonical_key_def_name(d)) {
+      Array::push(nominal, value = d)
+    } else {
+      ()
+    }
   }
   let mut chained = false
   for row in aliases {
@@ -1492,6 +1582,28 @@ export fn canonical_key_defs(_ stmts: Array[Stmt]) -> Array[TypeDef] {
     r = r + 1
   }
   defs
+}
+
+fn canonical_key_def_name(_ def: TypeDef) -> String {
+  match def {
+    TDEnum(name, _, _) => name,
+    TDStruct(name, _, _, _) => name,
+    TDAlias(name, _, _) => name,
+    TDEffect(name, _, _) => name,
+    TDEffectSet(name, _) => name
+  }
+}
+
+fn canonical_key_names_contain(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  for candidate in names {
+    if !found && candidate == name {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 /// #3947: a resolved type written back as the `TypeExpr` a trait key spells,

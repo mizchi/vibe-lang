@@ -1,468 +1,555 @@
-// lib/@vibe/compiler/core/trait_ref_aliases.vibe — an applied trait reference
-// spelled through a local type alias (#3947).
+// lib/@vibe/compiler/core/trait_ref_aliases.vibe -- one spelling for every
+// applied trait key (#3947, #3953).
 //
-// A trait key is the string `trait_ref_key` makes from the reference AS
-// WRITTEN, and impls, bounds and the witnesses lowering synthesizes are all
-// matched by that string. `impl Value[Alias] for Note` was recorded as
-// `Value[Alias]` while the checker resolved the bound `[V: Value[Alias]]`
-// through the alias to `Value[Int]`, so the call answered
-// ``no impl `Value[Int]` for `Note` ``; spelling the impl `Value[Int]` instead
-// passed the checker, and then the witness desugar, which matches the bound as
-// written, found no method and asked for a body that was there.
+// A trait key is the string `trait_ref_key` makes from a reference, and impls,
+// bounds and the witnesses lowering synthesizes are all matched by that
+// string. So `impl Value[Alias] for Note` (`type Alias = Int`) and a bound
+// `[V: Value[Int]]` have to reach every consumer as the same string, and so
+// do `Unit` and `()`, or `StringMap[V]` and `Map[String, V]`.
 //
-// So every applied key a declaration in this module writes is put in one
-// spelling first: each argument with the module's own `type` aliases
-// expanded. Both the checker and the desugar run this before they read a key,
-// so they compare the same strings, and running it twice changes nothing. A
-// name a declaration binds as a type parameter is never expanded. An alias
-// imported from another module is expanded when the caller passes it in
-// (`canonicalize_trait_ref_aliases_with`, #3953): the checker's import-aware
-// entry reads them from its projected environment, so `impl Value[Alias]`
-// beside `import ./defs.vibe { Alias }` names the instantiation the checker
-// resolves a bound to.
+// This pass rewrites, in place, every applied key the statements write --
+// impl heads and bounds, trait supertraits and method bounds, function bounds,
+// and the bounds of every lambda nested in an executable body -- through core's
+// `canonical_trait_key`: each argument is resolved over the module's own type
+// declarations (and, in the checker, the ones it imports) and written back. A
+// name a declaration binds as a type parameter is that parameter, never an
+// alias of its spelling. The checker runs it before it reads a key, and the
+// desugar runs it once more over the merged program, so both compare the same
+// strings; running it twice changes nothing.
 //
 // An impl's methods are parsed into top-level bindings named after the impl's
-// key (`impl_method_binding_name`), so an impl whose key changes has its
-// methods renamed with it: a method left under the old owner is no longer the
-// impl's, and its `self` loses the type the impl gives it.
+// key (`impl_method_owner`), so an impl whose key changes has its methods
+// renamed with it: a method left under the old owner is no longer the impl's,
+// and its `self` loses the type the impl gives it.
 
 import ./ast.vibe {
-  Expr, Stmt, TypeExpr
+  Expr, Pat, Stmt
 }
 
-import @vibe/core {
-  array_empty
+import ./types_env_cache.vibe {
+  TypeDef
+}
+
+import ./types_unify.vibe {
+  canonical_key_defs_with, canonical_trait_key
 }
 
 import @vibe/ast {
-  impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
+  impl_method_owner, trait_ref_is_applied, type_param_name
 }
 
 //# Functions
 
-/// Rewrite, in place, every applied trait key the top-level declarations of
-/// `stmts` write -- an impl's trait and its parameter bounds, a function's
-/// type-parameter bounds, a trait's supertraits and method bounds -- with the
-/// module's own type aliases expanded in the trait's arguments.
+/// Rewrite, in place, every applied trait key `stmts` write so each spells its
+/// arguments canonically (see the file header), resolving them over the
+/// module's own declarations.
 export fn canonicalize_trait_ref_aliases(_ stmts: Array[Stmt]) -> Unit {
-  canonicalize_trait_ref_aliases_with(stmts = stmts, imported = array_empty())
+  canonicalize_trait_ref_aliases_with(stmts = stmts, imported = [])
 }
 
-/// `canonicalize_trait_ref_aliases` with the aliases the module imports as
-/// well, `(name, params, body)` under the name this module sees. A type the
-/// module declares itself -- an alias, a struct, an enum -- wins over an import
-/// of the same name, as it does when the checker seeds imported type
-/// definitions (`seed_imported_type_defs`): expanding the imported alias in a
-/// module whose own `struct Alias` it names rewrote `impl Value[Alias]` to
-/// `Value[Int]` and refused its methods (Codex on #3961).
-export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[(String, Array[String], TypeExpr)]) -> Unit {
-  let aliases = trait_ref_local_aliases(stmts)
-  let local_types = trait_ref_local_type_names(stmts)
-  for alias in imported {
-    let (name, _, _) = alias
-    if !trait_ref_names_contain(names = local_types, name = name) {
-      Array::push(aliases, value = alias)
+/// `canonicalize_trait_ref_aliases` with the type definitions the module
+/// imports as well (#3953). A type the module declares itself wins over an
+/// import of the same name (`canonical_key_defs_with`).
+export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[TypeDef]) -> Unit {
+  // The definitions are built on the first applied key the pass meets: most
+  // modules spell none, and those pay nothing for them.
+  Array::truncate(trk_defs, length = 0)
+  Array::truncate(trk_source, length = 0)
+  Array::push(trk_source, value = (stmts, imported))
+  trk_stmts(stmts)
+  // The definitions stay for `canonical_program_trait_key`, which witness
+  // generation asks later in the same run; the next run replaces them. The
+  // program itself is not kept.
+  Array::truncate(trk_source, length = 0)
+}
+
+/// The applied trait key `key` in the spelling the last
+/// `canonicalize_trait_ref_aliases` run gave its program's keys, with
+/// `binders` left as written. Witness narrowing substitutes a call's argument
+/// types into the bound it requests, and an argument annotated
+/// `StringMap[Int]` has to meet the impl spelled `Map[String, Int]` (Codex on
+/// #3956).
+export fn canonical_program_trait_key(key: String, binders: Array[String]) -> String {
+  trk_key(key = key, names = binders)
+}
+
+let trk_defs: Array[Array[TypeDef]] = []
+
+let trk_source: Array[(Array[Stmt], Array[TypeDef])] = []
+
+fn trk_key_defs() -> Array[TypeDef] {
+  if Array::length(trk_defs) == 0 {
+    let built = if Array::length(trk_source) > 0 {
+      let (stmts, imported) = Array::get(trk_source, at = 0)
+      canonical_key_defs_with(stmts = stmts, imported = imported)
     } else {
-      ()
+      []
     }
-  }
-  if Array::length(aliases) > 0 {
-    // (old method-owner prefix, new one) for each impl whose key changed.
-    let renames: Array[(String, String)] = array_empty()
-    let mut i = 0
-    while i < Array::length(stmts) {
-      let stmt = Array::get(stmts, at = i)
-      match trait_ref_alias_stmt(stmt = stmt, aliases = aliases) {
-        Some(next) => {
-          match (stmt, next) {
-            (SImpl(tparams, _, old_key, target), SImpl(_, _, new_key, _)) => if old_key != new_key {
-              Array::push(renames, value = (String::concat(impl_method_owner(tparams = tparams, trait_name = old_key, target = target), "::"), String::concat(impl_method_owner(tparams = tparams, trait_name = new_key, target = target), "::")))
-            } else {
-              ()
-            },
-            _ => ()
-          }
-          Array::set(stmts, at = i, value = next)
-        },
-        None => ()
-      }
-      i = i + 1
-    }
-    if Array::length(renames) > 0 {
-      trait_ref_rename_impl_methods(stmts = stmts, renames = renames)
-    } else {
-      ()
-    }
+    Array::push(trk_defs, value = built)
   } else {
     ()
   }
+  Array::get(trk_defs, at = 0)
 }
 
-fn trait_ref_rename_impl_methods(stmts: Array[Stmt], renames: Array[(String, String)]) -> Unit {
+/// The pass over every top-level statement; an impl whose key changed has its
+/// method bindings renamed after the loop.
+fn trk_stmts(_ stmts: Array[Stmt]) -> Unit {
+  let owner_renames: Array[(String, String)] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
-      SLet(exported, recursive, name, ty, value) => match trait_ref_renamed(name = name, renames = renames) {
-        Some(next) => Array::set(stmts, at = i, value = SLet(exported, recursive, next, ty, value)),
+      SImpl(tparams, bounds, trait_name, target) => {
+        let names = trk_param_names(tparams)
+        let next_key = trk_key(key = trait_name, names = names)
+        let next_bounds = trk_bounds(bounds = bounds, names = names)
+        if next_key != trait_name || next_bounds != bounds {
+          Array::set(stmts, at = i, value = SImpl(tparams, next_bounds, next_key, target))
+        } else {
+          ()
+        }
+        if next_key != trait_name {
+          let before = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target)
+          let after = impl_method_owner(tparams = tparams, trait_name = next_key, target = target)
+          if before != after {
+            Array::push(owner_renames, value = (String::concat(before, "::"), String::concat(after, "::")))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      // A trait's supertraits, and its methods' own binder bounds
+      // (`run[T: Value[Alias]](Self, T)`), are matched against the same impls.
+      STrait(exported, name, supers, methods, method_tparams, tparams) => {
+        let names = trk_param_names(tparams)
+        let next_supers = for key in supers {
+          trk_key(key = key, names = names)
+        }
+        let next_rows = for row in method_tparams {
+          let (mname, mtparams, mbounds) = row
+          let inner = trk_param_names(tparams)
+          for t in mtparams {
+            Array::push(inner, value = type_param_name(t))
+          }
+          (mname, mtparams, trk_bounds(bounds = mbounds, names = inner))
+        }
+        if next_supers != supers || next_rows != method_tparams {
+          Array::set(stmts, at = i, value = STrait(exported, name, next_supers, methods, next_rows, tparams))
+        } else {
+          ()
+        }
+      },
+      // A function's bounds, and those of every lambda nested in a body
+      // (`let inner = [V: Value[Alias]](v: V) -> ..`), in every statement that
+      // holds an executable expression, as the dictionary rewriting visits
+      // them (Codex on #3956).
+      SLet(exported, is_rec, name, ty, body) => match trk_expr(e = body, names = [
+      ]) {
+        Some(next) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, next)),
+        None => ()
+      },
+      SFnDecl(exported, name, body, attrs, off) => match trk_expr(e = body, names = [
+      ]) {
+        Some(next) => Array::set(stmts, at = i, value = SFnDecl(exported, name, next, attrs, off)),
+        None => ()
+      },
+      STest(label, body) => match trk_expr(e = body, names = []) {
+        Some(next) => Array::set(stmts, at = i, value = STest(label, next)),
+        None => ()
+      },
+      SLetMut(name, ty, body) => match trk_expr(e = body, names = []) {
+        Some(next) => Array::set(stmts, at = i, value = SLetMut(name, ty, next)),
+        None => ()
+      },
+      SBench(label, body) => match trk_expr(e = body, names = []) {
+        Some(next) => Array::set(stmts, at = i, value = SBench(label, next)),
+        None => ()
+      },
+      SExample(label, body) => match trk_expr(e = body, names = []) {
+        Some(next) => Array::set(stmts, at = i, value = SExample(label, next)),
+        None => ()
+      },
+      SExpr(body) => match trk_expr(e = body, names = []) {
+        Some(next) => Array::set(stmts, at = i, value = SExpr(next)),
+        None => ()
+      },
+      SLetPat(pat, body) => match trk_expr(e = body, names = []) {
+        Some(next) => Array::set(stmts, at = i, value = SLetPat(pat, next)),
         None => ()
       },
       _ => ()
     }
     i = i + 1
   }
-}
-
-fn trait_ref_renamed(name: String, renames: Array[(String, String)]) -> Option[String] {
-  let mut out: Option[String] = None
-  for rename in renames {
-    let (old_prefix, new_prefix) = rename
-    if (out is None) && String::starts_with(name, prefix = old_prefix) {
-      out = Some(String::concat(new_prefix, String::substring(name, start = String::length(old_prefix), end = String::length(name))))
-    } else {
-      ()
-    }
-  }
-  out
-}
-
-/// Every type name the module declares itself.
-fn trait_ref_local_type_names(_ stmts: Array[Stmt]) -> Array[String] {
-  let out: Array[String] = array_empty()
-  for stmt in stmts {
-    match stmt {
-      STypeAlias(_, name, _, _) => Array::push(out, value = name),
-      SStruct(_, name, _, _, _, _) => Array::push(out, value = name),
-      SEnum(_, name, _, _, _) => Array::push(out, value = name),
-      SSuberror(_, name, _) => Array::push(out, value = name),
-      _ => ()
-    }
-  }
-  out
-}
-
-fn trait_ref_local_aliases(_ stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
-  let out: Array[(String, Array[String], TypeExpr)] = array_empty()
-  for stmt in stmts {
-    match stmt {
-      STypeAlias(_, name, params, target) => Array::push(out, value = (name, params, target)),
-      _ => ()
-    }
-  }
-  out
-}
-
-/// The statement with its keys canonical, or `None` when nothing changed.
-fn trait_ref_alias_stmt(stmt: Stmt, aliases: Array[(String, Array[String], TypeExpr)]) -> Option[Stmt] {
-  match stmt {
-    SImpl(type_params, bounds, trait_name, target) => {
-      let shadow = trait_ref_param_names(type_params)
-      let key = trait_ref_alias_key(key = trait_name, aliases = aliases, shadow = shadow)
-      let next_bounds = trait_ref_alias_bounds(bounds = bounds, aliases = aliases, shadow = shadow)
-      if key == trait_name && trait_ref_bounds_same(a = next_bounds, b = bounds) {
-        None
-      } else {
-        Some(SImpl(type_params, next_bounds, key, target))
-      }
-    },
-    SLet(exported, recursive, name, ty, value) => match trait_ref_alias_fn(expr = value, aliases = aliases) {
-      Some(next) => Some(SLet(exported, recursive, name, ty, next)),
-      None => None
-    },
-    SFnDecl(exported, name, value, requires, ensures) => match trait_ref_alias_fn(expr = value, aliases = aliases) {
-      Some(next) => Some(SFnDecl(exported, name, next, requires, ensures)),
-      None => None
-    },
-    STrait(exported, name, supers, methods, method_generics, params) => {
-      let shadow = trait_ref_param_names(params)
-      let next_supers = for key in supers {
-        trait_ref_alias_key(key = key, aliases = aliases, shadow = shadow)
-      }
-      let mut same = trait_ref_strings_same(a = next_supers, b = supers)
-      let next_generics = for item in method_generics {
-        let (method, tparams, mbounds) = item
-        let inner = trait_ref_shadow_union(outer = shadow, inner = trait_ref_param_names(tparams))
-        let next = trait_ref_alias_bounds(bounds = mbounds, aliases = aliases, shadow = inner)
-        if !trait_ref_bounds_same(a = next, b = mbounds) {
-          same = false
-        } else {
-          ()
-        }
-        (method, tparams, next)
-      }
-      if same {
-        None
-      } else {
-        Some(STrait(exported, name, next_supers, methods, next_generics, params))
-      }
-    },
-    _ => None
-  }
-}
-
-/// A top-level function's type-parameter bounds, canonical.
-fn trait_ref_alias_fn(expr: Expr, aliases: Array[(String, Array[String], TypeExpr)]) -> Option[Expr] {
-  match expr {
-    EFn(type_params, bounds, params, result, effect, body) => {
-      let next_bounds = trait_ref_alias_bounds(bounds = bounds, aliases = aliases, shadow = trait_ref_param_names(type_params))
-      if trait_ref_bounds_same(a = next_bounds, b = bounds) {
-        None
-      } else {
-        Some(EFn(type_params, next_bounds, params, result, effect, body))
-      }
-    },
-    _ => None
-  }
-}
-
-fn trait_ref_alias_bounds(bounds: Array[(String, Array[String])], aliases: Array[(String, Array[String], TypeExpr)], shadow: Array[String]) -> Array[(String, Array[String])] {
-  for bound in bounds {
-    let (param, keys) = bound
-    (param, for key in keys {
-      trait_ref_alias_key(key = key, aliases = aliases, shadow = shadow)
-    })
-  }
-}
-
-/// The most type nodes one key's arguments may expand to. Past it the key is
-/// left as written, and the checker's own alias preflight
-/// (`alias_expansion_node_limit`) reports the expansion: a branching alias
-/// (`type A1 = (A0, A0)` .. `A30`) is a few lines that expand to a billion
-/// nodes, and this pass runs before that preflight (Codex on #3952).
-let trait_ref_alias_node_budget = 4096
-
-/// `key` with its trait's arguments expanded; a bare trait name, or a key
-/// whose arguments name no alias, comes back unchanged.
-fn trait_ref_alias_key(key: String, aliases: Array[(String, Array[String], TypeExpr)], shadow: Array[String]) -> String {
-  match trait_ref_from_key(key) {
-    Some(TyApp(name, args)) => {
-      let budget = [trait_ref_alias_node_budget]
-      let next = for arg in args {
-        trait_ref_alias_expand(te = arg, aliases = aliases, shadow = shadow, fuel = 64, budget = budget)
-      }
-      // The expansion shares subtrees, so its size is counted before the key
-      // spells every one of them out.
-      for arg in next {
-        trait_ref_count_nodes(te = arg, budget = budget)
-      }
-      if Array::get(budget, at = 0) <= 0 {
-        key
-      } else {
-        // Compared as keys: the key string is the identity every consumer
-        // matches by, and it is all that can tell an expansion happened.
-        trait_ref_key(TyApp(name, next))
-      }
-    },
-    _ => key
-  }
-}
-
-/// Spend one node of `budget`; false once it is gone.
-fn trait_ref_spend(_ budget: Array[Int]) -> Bool {
-  let left = Array::get(budget, at = 0)
-  if left <= 0 {
-    false
-  } else {
-    Array::set(budget, at = 0, value = left - 1)
-    true
-  }
-}
-
-fn trait_ref_count_nodes(te: TypeExpr, budget: Array[Int]) -> Unit {
-  if trait_ref_spend(budget) {
-    match te {
-      TyApp(_, args) => for arg in args {
-        trait_ref_count_nodes(te = arg, budget = budget)
-      },
-      TyTuple(items) => for item in items {
-        trait_ref_count_nodes(te = item, budget = budget)
-      },
-      TyFn(params, ret, _) => {
-        for param in params {
-          trait_ref_count_nodes(te = param, budget = budget)
-        }
-        trait_ref_count_nodes(te = ret, budget = budget)
-      },
-      _ => ()
-    }
+  if Array::length(owner_renames) > 0 {
+    trk_rename_impl_methods(stmts = stmts, renames = owner_renames)
   } else {
     ()
   }
 }
 
-/// Expand every alias `te` names, recursively. `shadow` holds the type
-/// parameters in scope where `te` is written, which are never expanded.
-///
-/// An alias's body is expanded in its OWN scope -- only its parameters are
-/// bound there -- and the arguments, already expanded where they were
-/// written, are substituted afterwards. Expanding the substituted body in the
-/// caller's scope instead let a caller's parameter capture a name the body
-/// meant as another alias: with `type A = Int` and `type B = A`, the bound
-/// `Mark[B]` in `fn f[A, T: Mark[B]]` became `Mark[A]` (Codex on #3952).
-///
-/// `fuel` bounds an alias that (illegally) refers to itself, and `budget` the
-/// total work (see `trait_ref_alias_node_budget`); whatever is left when
-/// either runs out is kept as written.
-fn trait_ref_alias_expand(te: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], shadow: Array[String], fuel: Int, budget: Array[Int]) -> TypeExpr {
-  if fuel <= 0 || !trait_ref_spend(budget) {
-    te
-  } else {
-    match te {
-      TyName(name) => if trait_ref_names_contain(names = shadow, name = name) {
-        te
-      } else {
-        match trait_ref_alias_lookup(aliases = aliases, name = name, arity = 0) {
-          Some((_, target)) => trait_ref_alias_expand(te = target, aliases = aliases, shadow = array_empty(), fuel = fuel - 1, budget = budget),
-          None => te
-        }
-      },
-      TyApp(name, args) => {
-        let next = for arg in args {
-          trait_ref_alias_expand(te = arg, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget)
-        }
-        if trait_ref_names_contain(names = shadow, name = name) {
-          TyApp(name, next)
-        } else {
-          match trait_ref_alias_lookup(aliases = aliases, name = name, arity = Array::length(next)) {
-            Some((params, target)) => {
-              let body = trait_ref_alias_expand(te = target, aliases = aliases, shadow = trait_ref_param_names(params), fuel = fuel - 1, budget = budget)
-              trait_ref_substitute(te = body, params = params, args = next)
-            },
-            None => TyApp(name, next)
-          }
-        }
-      },
-      TyTuple(items) => TyTuple(for item in items {
-        trait_ref_alias_expand(te = item, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget)
-      }),
-      TyFn(params, ret, effect) => TyFn(for param in params {
-        trait_ref_alias_expand(te = param, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget)
-      }, trait_ref_alias_expand(te = ret, aliases = aliases, shadow = shadow, fuel = fuel - 1, budget = budget), effect),
-      TyUnit => TyUnit
-    }
-  }
-}
-
-fn trait_ref_alias_lookup(aliases: Array[(String, Array[String], TypeExpr)], name: String, arity: Int) -> Option[(Array[String], TypeExpr)] {
-  let mut found: Option[(Array[String], TypeExpr)] = None
-  for alias in aliases {
-    let (alias_name, params, target) = alias
-    if alias_name == name && Array::length(params) == arity && (found is None) {
-      found = Some((params, target))
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-/// The argument an alias parameter named `name` stands for, if any.
-fn trait_ref_param_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {
-  let mut out: Option[TypeExpr] = None
-  let mut i = 0
-  while i < Array::length(params) && i < Array::length(args) {
-    if (out is None) && type_param_name(Array::get(params, at = i)) == name {
-      out = Some(Array::get(args, at = i))
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
-}
-
-/// `te` with each of the alias's `params` replaced by the matching argument.
-/// A parameter in a constructor position (`G` of `type Apply[G[_], A] =
-/// G[A]`) is replaced as the head: `Apply[F, Int]` is `F[Int]`, not
-/// `G[Int]` (Codex on #3952).
-fn trait_ref_substitute(te: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
-  match te {
-    TyName(name) => match trait_ref_param_arg(params = params, args = args, name = name) {
-      Some(arg) => arg,
-      None => te
-    },
-    TyApp(name, items) => {
-      let next = for item in items {
-        trait_ref_substitute(te = item, params = params, args = args)
-      }
-      match trait_ref_param_arg(params = params, args = args, name = name) {
-        Some(TyName(head)) => TyApp(head, next),
-        Some(TyApp(head, applied)) => TyApp(head, Array::concat(applied, next)),
-        _ => TyApp(name, next)
-      }
-    },
-    TyTuple(items) => TyTuple(for item in items {
-      trait_ref_substitute(te = item, params = params, args = args)
-    }),
-    TyFn(fparams, ret, effect) => TyFn(for param in fparams {
-      trait_ref_substitute(te = param, params = params, args = args)
-    }, trait_ref_substitute(te = ret, params = params, args = args), effect),
-    TyUnit => TyUnit
-  }
-}
-
-fn trait_ref_strings_same(a: Array[String], b: Array[String]) -> Bool {
-  if Array::length(a) != Array::length(b) {
-    false
-  } else {
-    let mut same = true
-    let mut i = 0
-    while i < Array::length(a) {
-      if Array::get(a, at = i) != Array::get(b, at = i) {
-        same = false
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    same
-  }
-}
-
-fn trait_ref_bounds_same(a: Array[(String, Array[String])], b: Array[(String, Array[String])]) -> Bool {
-  if Array::length(a) != Array::length(b) {
-    false
-  } else {
-    let mut same = true
-    let mut i = 0
-    while i < Array::length(a) {
-      let (_, ka) = Array::get(a, at = i)
-      let (_, kb) = Array::get(b, at = i)
-      if !trait_ref_strings_same(a = ka, b = kb) {
-        same = false
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    same
-  }
-}
-
-fn trait_ref_param_names(_ params: Array[String]) -> Array[String] {
+fn trk_param_names(_ params: Array[String]) -> Array[String] {
   for param in params {
     type_param_name(param)
   }
 }
 
-fn trait_ref_shadow_union(outer: Array[String], inner: Array[String]) -> Array[String] {
-  let out: Array[String] = array_empty()
-  for name in outer {
-    Array::push(out, value = name)
+/// One key, canonical, with `names` (the binders in scope) kept as written.
+fn trk_key(key: String, names: Array[String]) -> String {
+  // A bare trait name has no argument to resolve; most keys are bare.
+  if !trait_ref_is_applied(key) {
+    key
+  } else {
+    canonical_trait_key(key = key, binders = names, defs = trk_key_defs())
   }
-  for name in inner {
-    Array::push(out, value = name)
-  }
-  out
 }
 
-fn trait_ref_names_contain(names: Array[String], name: String) -> Bool {
-  let mut found = false
-  for candidate in names {
-    if candidate == name {
-      found = true
+fn trk_bounds(bounds: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
+  // Only an applied key can change, so bounds of bare trait names are kept
+  // without rebuilding them.
+  let mut applied = false
+  for bound in bounds {
+    let (_, traits) = bound
+    for t in traits {
+      if !applied && trait_ref_is_applied(t) {
+        applied = true
+      } else {
+        ()
+      }
+    }
+  }
+  if applied {
+    for bound in bounds {
+      let (param, traits) = bound
+      (param, for trait_ref in traits {
+        trk_key(key = trait_ref, names = names)
+      })
+    }
+  } else {
+    bounds
+  }
+}
+
+fn trk_rename_impl_methods(stmts: Array[Stmt], renames: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, at = i) {
+      SLet(exported, is_rec, name, ty, body) => match trk_renamed_owner(name = name, renames = renames) {
+        Some(next) => Array::set(stmts, at = i, value = SLet(exported, is_rec, next, ty, body)),
+        None => ()
+      },
+      SFnDecl(exported, name, body, attrs, off) => match trk_renamed_owner(name = name, renames = renames) {
+        Some(next) => Array::set(stmts, at = i, value = SFnDecl(exported, next, body, attrs, off)),
+        None => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn trk_renamed_owner(name: String, renames: Array[(String, String)]) -> Option[String] {
+  let mut out = None
+  for row in renames {
+    let (before, after) = row
+    if out == None && String::starts_with(name, prefix = before) {
+      out = Some(String::concat(after, String::substring(name, start = String::length(before), end = String::length(name))))
     } else {
       ()
     }
   }
-  found
+  out
+}
+
+/// `e` with every lambda's bounds canonical, or None when nothing changed.
+/// `names` are the binders in scope, which shadow an alias of their spelling.
+fn trk_expr(e: Expr, names: Array[String]) -> Option[Expr] {
+  match e {
+    EFn(tp, bs, ps, ret, eff, body) => if Array::length(tp) == 0 && Array::length(bs) == 0 {
+      // An ordinary lambda binds no type and asks for no witness: only its
+      // body can change, under the same binders.
+      match trk_expr(e = body, names = names) {
+        Some(next) => Some(EFn(tp, bs, ps, ret, eff, next)),
+        None => None
+      }
+    } else {
+      let inner: Array[String] = []
+      for n in names {
+        Array::push(inner, value = n)
+      }
+      for t in tp {
+        Array::push(inner, value = type_param_name(t))
+      }
+      let nb = trk_bounds(bounds = bs, names = inner)
+      let nbody = trk_expr(e = body, names = inner)
+      if nb != bs || trk_changed(nbody) {
+        Some(EFn(tp, nb, ps, ret, eff, trk_or(o = nbody, e = body)))
+      } else {
+        None
+      }
+    },
+    ETuple(items) => match trk_list(es = items, names = names) {
+      Some(next) => Some(ETuple(next)),
+      None => None
+    },
+    EArray(items) => match trk_list(es = items, names = names) {
+      Some(next) => Some(EArray(next)),
+      None => None
+    },
+    EContinue(items) => match trk_list(es = items, names = names) {
+      Some(next) => Some(EContinue(next)),
+      None => None
+    },
+    ERecord(n, fields, tas) => match trk_fields(fields = fields, names = names) {
+      Some(next) => Some(ERecord(n, next, tas)),
+      None => None
+    },
+    EMap(fields) => match trk_fields(fields = fields, names = names) {
+      Some(next) => Some(EMap(next)),
+      None => None
+    },
+    ELoop(binds, body) => {
+      let nbinds = trk_fields(fields = binds, names = names)
+      let nbody = trk_expr(e = body, names = names)
+      if trk_changed(nbinds) || trk_changed(nbody) {
+        Some(ELoop(match nbinds {
+          Some(x) => x,
+          None => binds
+        }, trk_or(o = nbody, e = body)))
+      } else {
+        None
+      }
+    },
+    EIf(c, t, el) => {
+      let a = trk_expr(e = c, names = names)
+      let b = trk_expr(e = t, names = names)
+      let d = trk_expr(e = el, names = names)
+      if trk_changed(a) || trk_changed(b) || trk_changed(d) {
+        Some(EIf(trk_or(o = a, e = c), trk_or(o = b, e = t), trk_or(o = d, e = el)))
+      } else {
+        None
+      }
+    },
+    ELet(n, v, b, off) => match trk_pair(a = v, b = b, names = names) {
+      Some((x, y)) => Some(ELet(n, x, y, off)),
+      None => None
+    },
+    ELetRec(n, v, b) => match trk_pair(a = v, b = b, names = names) {
+      Some((x, y)) => Some(ELetRec(n, x, y)),
+      None => None
+    },
+    ELetMut(n, v, b, off) => match trk_pair(a = v, b = b, names = names) {
+      Some((x, y)) => Some(ELetMut(n, x, y, off)),
+      None => None
+    },
+    EAssign(n, v, c, off) => match trk_pair(a = v, b = c, names = names) {
+      Some((x, y)) => Some(EAssign(n, x, y, off)),
+      None => None
+    },
+    EAssignOp(n, op, v, c, off) => match trk_pair(a = v, b = c, names = names) {
+      Some((x, y)) => Some(EAssignOp(n, op, x, y, off)),
+      None => None
+    },
+    ESeq(a, b) => match trk_pair(a = a, b = b, names = names) {
+      Some((x, y)) => Some(ESeq(x, y)),
+      None => None
+    },
+    EWhile(c, b) => match trk_pair(a = c, b = b, names = names) {
+      Some((x, y)) => Some(EWhile(x, y)),
+      None => None
+    },
+    EBinOp(op, l, r, off) => match trk_pair(a = l, b = r, names = names) {
+      Some((x, y)) => Some(EBinOp(op, x, y, off)),
+      None => None
+    },
+    EForIn(n, idx, it, b) => match trk_pair(a = it, b = b, names = names) {
+      Some((x, y)) => Some(EForIn(n, idx, x, y)),
+      None => None
+    },
+    EMatch(sc, arms) => {
+      let a = trk_expr(e = sc, names = names)
+      let narms = trk_arms(arms = arms, names = names)
+      if trk_changed(a) || trk_changed(narms) {
+        Some(EMatch(trk_or(o = a, e = sc), match narms {
+          Some(x) => x,
+          None => arms
+        }))
+      } else {
+        None
+      }
+    },
+    EHandle(body, arms) => {
+      let a = trk_expr(e = body, names = names)
+      let narms = trk_arms(arms = arms, names = names)
+      if trk_changed(a) || trk_changed(narms) {
+        Some(EHandle(trk_or(o = a, e = body), match narms {
+          Some(x) => x,
+          None => arms
+        }))
+      } else {
+        None
+      }
+    },
+    ECall(callee, args, off, cell) => {
+      let a = trk_expr(e = callee, names = names)
+      let nargs = trk_list(es = args, names = names)
+      if trk_changed(a) || trk_changed(nargs) {
+        Some(ECall(trk_or(o = a, e = callee), match nargs {
+          Some(x) => x,
+          None => args
+        }, off, cell))
+      } else {
+        None
+      }
+    },
+    EUnaryOp(op, x) => match trk_expr(e = x, names = names) {
+      Some(next) => Some(EUnaryOp(op, next)),
+      None => None
+    },
+    EDot(o, f, o1, o2) => match trk_expr(e = o, names = names) {
+      Some(next) => Some(EDot(next, f, o1, o2)),
+      None => None
+    },
+    ELabeledArg(l, n, v) => match trk_expr(e = v, names = names) {
+      Some(next) => Some(ELabeledArg(l, n, next)),
+      None => None
+    },
+    EReturn(x) => match trk_expr(e = x, names = names) {
+      Some(next) => Some(EReturn(next)),
+      None => None
+    },
+    ESpread(x) => match trk_expr(e = x, names = names) {
+      Some(next) => Some(ESpread(next)),
+      None => None
+    },
+    EBreak(Some(x)) => match trk_expr(e = x, names = names) {
+      Some(next) => Some(EBreak(Some(next))),
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn trk_changed[X](_ o: Option[X]) -> Bool {
+  match o {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn trk_or(o: Option[Expr], e: Expr) -> Expr {
+  match o {
+    Some(x) => x,
+    None => e
+  }
+}
+
+fn trk_pair(a: Expr, b: Expr, names: Array[String]) -> Option[(Expr, Expr)] {
+  let na = trk_expr(e = a, names = names)
+  let nb = trk_expr(e = b, names = names)
+  if trk_changed(na) || trk_changed(nb) {
+    Some((trk_or(o = na, e = a), trk_or(o = nb, e = b)))
+  } else {
+    None
+  }
+}
+
+fn trk_list(es: Array[Expr], names: Array[String]) -> Option[Array[Expr]] {
+  // Allocates only from the first element that changes.
+  let n = Array::length(es)
+  let mut i = 0
+  let mut first: Option[Expr] = None
+  while i < n && !trk_changed(first) {
+    first = trk_expr(e = Array::get(es, at = i), names = names)
+    if !trk_changed(first) {
+      i = i + 1
+    }
+  }
+  match first {
+    None => None,
+    Some(changed) => {
+      let out: Array[Expr] = []
+      let mut j = 0
+      while j < i {
+        Array::push(out, value = Array::get(es, at = j))
+        j = j + 1
+      }
+      Array::push(out, value = changed)
+      j = i + 1
+      while j < n {
+        let x = Array::get(es, at = j)
+        Array::push(out, value = trk_or(o = trk_expr(e = x, names = names), e = x))
+        j = j + 1
+      }
+      Some(out)
+    }
+  }
+}
+
+fn trk_fields(fields: Array[(String, Expr)], names: Array[String]) -> Option[Array[(String, Expr)]] {
+  let n = Array::length(fields)
+  let mut i = 0
+  let mut first: Option[Expr] = None
+  while i < n && !trk_changed(first) {
+    let (_, x) = Array::get(fields, at = i)
+    first = trk_expr(e = x, names = names)
+    if !trk_changed(first) {
+      i = i + 1
+    }
+  }
+  match first {
+    None => None,
+    Some(changed) => {
+      let out: Array[(String, Expr)] = []
+      let mut j = 0
+      while j < i {
+        Array::push(out, value = Array::get(fields, at = j))
+        j = j + 1
+      }
+      let (name_i, _) = Array::get(fields, at = i)
+      Array::push(out, value = (name_i, changed))
+      j = i + 1
+      while j < n {
+        let (fname, x) = Array::get(fields, at = j)
+        Array::push(out, value = (fname, trk_or(o = trk_expr(e = x, names = names), e = x)))
+        j = j + 1
+      }
+      Some(out)
+    }
+  }
+}
+
+fn trk_arms(arms: Array[(Pat, Expr)], names: Array[String]) -> Option[Array[(Pat, Expr)]] {
+  let n = Array::length(arms)
+  let mut i = 0
+  let mut first: Option[Expr] = None
+  while i < n && !trk_changed(first) {
+    let (_, x) = Array::get(arms, at = i)
+    first = trk_expr(e = x, names = names)
+    if !trk_changed(first) {
+      i = i + 1
+    }
+  }
+  match first {
+    None => None,
+    Some(changed) => {
+      let out: Array[(Pat, Expr)] = []
+      let mut j = 0
+      while j < i {
+        Array::push(out, value = Array::get(arms, at = j))
+        j = j + 1
+      }
+      let (pat_i, _) = Array::get(arms, at = i)
+      Array::push(out, value = (pat_i, changed))
+      j = i + 1
+      while j < n {
+        let (p, x) = Array::get(arms, at = j)
+        Array::push(out, value = (p, trk_or(o = trk_expr(e = x, names = names), e = x)))
+        j = j + 1
+      }
+      Some(out)
+    }
+  }
 }
