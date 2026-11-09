@@ -622,23 +622,22 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
 fi
 echo "[compiler-gate] wasm-gc test-block runtime regression suite ok"
 
-# 40h8s. #2334: a map keyed by `Int` / `Char` / `Bool` compares its keys as
-# exact i64 values on the linear lane. The gc lane's map is a String-keyed
-# scan, so it must REFUSE such a program at build time, with the edit, rather
-# than compare an `Int` key the way it compares a String. The fixture is the
-# linear lane's own runtime test, so the refusal is asked of real call shapes.
-echo "[compiler-gate] 40h8s/40 wasm-gc refuses a scalar-keyed Map at build time (#2334)"
-if gc_scalar_map_out="$(VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-  bash scripts/vibe_test.sh fixtures/map_scalar_key_test.vibe 2>&1)"; then
-  echo "[compiler-gate] FAIL: a scalar-keyed Map compiled on the wasm-gc lane" >&2
+# 40h8s. #2334: a map keyed by `Int` / `Char` / `Bool` (and `Int32` /
+# `UInt32`, which erase to `Int`) compares its keys as exact i64 values on
+# both lanes. The gc lane used to refuse such a program at build time; it now
+# runs the linear lane's own runtime tests, whose `inspect` expectations are
+# the oracle. `map_scalar_key_test.vibe` holds Int keys that the String-aware
+# `eq` would call equal (`1 << 32` and `2 << 32`), so a gc lowering that
+# routed a scalar key through it fails here rather than going green.
+echo "[compiler-gate] 40h8s/40 wasm-gc runs a scalar-keyed Map (#2334)"
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh \
+    fixtures/map_scalar_key_test.vibe \
+    fixtures/int32_hash_map_key_test.vibe; then
+  echo "[compiler-gate] FAIL: a scalar-keyed Map on the wasm-gc lane" >&2
   exit 1
 fi
-if ! printf '%s\n' "$gc_scalar_map_out" | grep -qF 'does not run on the wasm-gc backend yet'; then
-  echo "[compiler-gate] FAIL: the wasm-gc lane refused a scalar-keyed Map for another reason:" >&2
-  printf '%s\n' "$gc_scalar_map_out" >&2
-  exit 1
-fi
-echo "[compiler-gate] wasm-gc scalar-keyed Map refusal ok"
+echo "[compiler-gate] wasm-gc scalar-keyed Map ok"
 
 # 40h8b. #1861: the Array HOFs (map/filter/fold/reverse/any/all/find) were the
 # `gc-hof-gap` rows of scripts/builtin_parity_classification.tsv -- served by
