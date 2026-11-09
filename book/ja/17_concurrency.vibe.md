@@ -297,12 +297,12 @@ spawn の検査は、クロージャが何を捕獲したかを見る必要が�
 | 待ち方 | 兄弟 | 操作 |
 |---|---|---|
 | インスタンスをブロック | 何も走らない | `sleep_blocking` |
-| 呼び出し側のスタック上で駆動 | キューの兄弟が最後まで走る | `join`、`send` / `recv` |
+| 呼び出し側のスタック上で駆動 | キューの兄弟が最後まで走り、park した兄弟が再開する | `join`、`send` / `recv` |
 | タスクを中断 | 兄弟と交互に走る | `sleep`、`await`、中断可能なタスクでは `sleep_wait`、`send_wait` / `recv_wait`、`result_wait` |
 
 `join`、`send`、`recv` はブロックしません: 呼び出し側が待つ間、必要な値・
 空き・メッセージが揃うまで、グループのキューのタスクをそのスタック上で
-走らせます。できないのは、呼び出し側を本体の途中で止めて後でそこへ戻る
+走らせ、park した中断可能なタスクを再開します。できないのは、呼び出し側を本体の途中で止めて後でそこへ戻る
 ことで、途中で兄弟を待ち、その兄弟もこちらを待つ、というタスクはこの方法
 では書けません。`sleep_blocking(ms)` はすべてを止めます。
 
@@ -320,9 +320,9 @@ spawn の検査は、クロージャが何を捕獲したかを見る必要が�
 ビルドには `VIBE_UNSTABLE=1` が必要) は、中断できるタスクを始めます。その
 中では `sleep` と `sleep_wait` がタスクを park して兄弟を走らせ、
 `TaskHandle::result_wait` は中断する `join`、`send_wait` / `recv_wait` は
-中断するチャネル操作です。`TaskGroup::pump_all(g)` は park したタスクが
-無くなるまで走らせます。park したタスクへの `join` も、そのタスクについて
-同じことをします。
+中断するチャネル操作です。スケジューラを自分で駆動することはありません:
+park したタスクを待つ `join`、`send`、`recv` はそのタスクを再開し、グループの
+close は park したタスクをすべて最後まで走らせます。
 
 `spawn` と違って、`spawn_suspend` はタスクをキューに積みません: 呼び出しの
 その場で最初の待ちまで走らせるので、一度も待たないタスクは `spawn_suspend`
@@ -347,7 +347,6 @@ fn main allows Console + Exception + Async {
       println("b2 saw a = \{va}")
       va + 1
     })
-    TaskGroup::pump_all(g)
     TaskHandle::join(a) + TaskHandle::join(b)
   })
   println("total = \{total}")

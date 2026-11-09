@@ -129,7 +129,7 @@ import @vibe/compiler/codegen/executable {
 }
 
 import @vibe/compiler/core {
-  merged_offset_space_reset, set_executable_exports_stripped
+  merged_offset_space_reset, reloc_slot_width, set_executable_exports_stripped
 }
 
 import @vibe/lsp {
@@ -149,6 +149,7 @@ import ./cli_adapter_fs_lane_request.vibe {
   adapter_program_parses,
   adapter_split_nonempty_lines,
   adapter_string_to_bytes,
+  apply_reloc_slot_width_env,
   cli_adapter_FsLane,
   cli_adapter_SsLane,
   cli_adapter_join_alloc_spans,
@@ -683,6 +684,11 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
       throw("VIBE_ARTIFACT_INPUT_TRACE_OUT requires VIBE_ARTIFACT_INPUT_TRACE_NONCE")
     } else if Env::get("VIBE_FS_COMPILE") != "1" || Env::get("VIBE_RC") != "0" || Env::get("VIBE_LSP") == "1" || Env::get("VIBE_CHECK_ONLY") == "1" || Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_DEBUG_BREAK") == "1" || Env::get("VIBE_DEBUG") == "1" || Env::get("VIBE_TESTMETA_OUT") != "" || Env::get("VIBE_HASH") == "1" || Env::get("VIBE_HASH_WRITE") == "1" || Env::get("VIBE_MISSING_VPKG_SCAN") == "1" || Env::get("VIBE_DEPS_MISSING_SCAN") == "1" || Env::get("VIBE_FILL_PINS") == "1" || Env::get("VIBE_PUBLISH_CHECK") == "1" || Env::get("VIBE_MODULE_JOB_DIR") == "1" || Env::get("VIBE_PUBLISH_ENV_CACHE") == "1" || Env::get("VIBE_LIST_DEPS") == "1" || Env::get("VIBE_MODULE_PLAN") == "1" {
       throw("artifact-input trace requires the exact uninstrumented VIBE_FS_COMPILE=1, VIBE_RC=0 file_compile cached bump lane")
+    } else if reloc_slot_width() != 0 {
+      // #3941: the trace records the minimal-encoding artifact kind and has no
+      // field for the slot width, so a padded build would be attributed to a
+      // cache it did not query.
+      throw("artifact-input trace records minimal-encoding builds only: unset VIBE_RELOC_SLOT_WIDTH (or set it to 0)")
     } else {
       ()
     }
@@ -2032,6 +2038,8 @@ fn host_argv() -> Array[String] with Env {
 /// returning would append a stray `0` (or `1`, with exit status 0) to every
 /// verb's output -- `vibe check`'s empty-means-clean output included.
 export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler {
+  // #3941: one width for every compile this process runs.
+  apply_reloc_slot_width_env()
   if user_dispatch_is_verb(host_argv_first()) {
     // #2513: the `#cfg` flag set for every module this invocation parses;
     // cli_main_with_lanes does the same for the positional protocol.

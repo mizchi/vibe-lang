@@ -30,6 +30,10 @@ import @vibe/compiler/runtime/checked_module_cache {
   set_checked_module_cache_mode
 }
 
+import @vibe/compiler/core {
+  set_reloc_slot_width
+}
+
 import @vibe/compiler/loader {
   collect_source_groups_fs
 }
@@ -813,6 +817,27 @@ export fn fs_lane_is_instrumented(_ lane: cli_adapter_FsLane) -> Bool {
   }
 }
 
+/// #3941: the opt-in slot width for relocatable immediates in a body. Read
+/// once at the top of `cli_main`, so every compile in the process -- the
+/// positional protocol and the `vibe build` / `run` / `test` verbs, which
+/// reach `compile_file_fs_mode_cached` without passing through a lane request
+/// -- sees the same width, and codegen stays Env-free. The lane requests read
+/// it again, harmlessly. Unset, empty, or anything that is not an integer in
+/// 1..5 leaves minimal LEB128 -- the production encoding, byte-identical to a
+/// build that never read it.
+export fn apply_reloc_slot_width_env() -> Unit with Env {
+  let raw = Env::get("VIBE_RELOC_SLOT_WIDTH")
+  let w = match Int::parse(raw) {
+    Some(n) => if n >= 1 && n <= 5 {
+      n
+    } else {
+      0
+    },
+    None => 0
+  }
+  set_reloc_slot_width(w)
+}
+
 export fn fs_lane_request(mark_memory: Bool, artifact_input_trace_out: String, artifact_input_trace_nonce: String, artifact_input_trace_checked_error_row_mode: String, artifact_input_trace_diagnostics_mode: String, artifact_input_trace_dep_order_seed: String) -> cli_adapter_FsLane with Env {
   // The special compile MODES (coverage / debugger break / trace) are checked
   // first; they are mutually exclusive instrumentation builds and are
@@ -820,6 +845,7 @@ export fn fs_lane_request(mark_memory: Bool, artifact_input_trace_out: String, a
   // precedence than VIBE_BACKEND. The normal compile then defaults to the
   // Perceus RC backend (#493 cutover, #705 parity) unless VIBE_RC=0 selects
   // the legacy bump path (which carries the #634 testmeta variant).
+  apply_reloc_slot_width_env()
   let coverage_selected = Env::get("VIBE_COVERAGE") == "1"
   let debug_break_selected = !coverage_selected && Env::get("VIBE_DEBUG_BREAK") == "1"
   let debug_trace_selected = !coverage_selected && !debug_break_selected && Env::get("VIBE_DEBUG") == "1"
@@ -953,6 +979,7 @@ export fn ss_lane_request(_ rc_flag: String) -> cli_adapter_SsLane with Env {
   // backend) is the DEFAULT; set VIBE_RC=0 to opt back into the legacy bump
   // path. The compiler self-build, bootstrap, and bump-baseline gates pin
   // VIBE_RC=0 (see scripts/*.sh) so they stay byte-identical on bump.
+  apply_reloc_slot_width_env()
   if Env::get("VIBE_COVERAGE") == "1" {
     // #cov: function-level coverage build (same source pipeline, instrumented
     // codegen). Running the produced wasm records which compiler functions ran.

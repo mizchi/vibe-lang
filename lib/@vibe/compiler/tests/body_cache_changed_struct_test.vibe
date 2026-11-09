@@ -11,11 +11,15 @@
 //# compile.
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+  codegen_body_cache_artifact_key, compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
 }
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, persistent_artifact_cache_path
+  persistent_artifact_cache_path
+}
+
+import @vibe/compiler/core {
+  set_reloc_slot_width
 }
 
 fn bcs_bytes(_ s: String) -> Bytes {
@@ -82,7 +86,7 @@ fn bcs_main() -> String {
 }
 
 fn bcs_probe(decl: String, build: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bcs_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bcs_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -99,19 +103,71 @@ fn bcs_probe(decl: String, build: String) -> String with Env + Exception + Fs {
   "saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bcs_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "a struct field made Float64 recompiles the body that reads it" {
+//# #3941: every row runs at slot width 0 and at slot width 3. A relocation
+//# that wrote a padded slot back minimal, or a cache slot shared between the
+//# widths, answers differently at 3 than the same row at 0.
+
+/// Run `row` at relocatable-slot width `width`, restoring width 0 after it.
+fn bcs_at_slot_width(width: Int, row: () -> Unit with Console + Env + Exception + Fs) -> Unit with Console + Env + Exception + Fs {
+  set_reloc_slot_width(width)
+  handle {
+    row()
+    set_reloc_slot_width(0)
+  } with { Exception::Throw(m) => {
+    set_reloc_slot_width(0)
+    throw(m)
+  } }
+}
+
+/// The row behind the test "a struct field made Float64 recompiles the body that reads it"; run at slot widths 0 and 3.
+fn bcs_row_1() -> Unit with Console + Env + Exception + Fs {
   inspect(bcs_probe(decl = "export struct BcsPt { x: Int; y: Float64 }", build = "BcsPt::{ x: n, y: 1.5 }"), content = "saved=4 equal=true")
 }
 
-test "swapped struct fields recompile the body that reads one" {
+test "a struct field made Float64 recompiles the body that reads it" {
+  bcs_row_1()
+}
+
+test "a struct field made Float64 recompiles the body that reads it, at slot width 3 (#3941)" {
+  bcs_at_slot_width(width = 3, row = bcs_row_1)
+}
+
+/// The row behind the test "swapped struct fields recompile the body that reads one"; run at slot widths 0 and 3.
+fn bcs_row_2() -> Unit with Console + Env + Exception + Fs {
   inspect(bcs_probe(decl = "export struct BcsPt { y: Int; x: Int }", build = bcs_base_build), content = "saved=4 equal=true")
 }
 
-test "a field added recompiles the bodies that read the struct" {
+test "swapped struct fields recompile the body that reads one" {
+  bcs_row_2()
+}
+
+test "swapped struct fields recompile the body that reads one, at slot width 3 (#3941)" {
+  bcs_at_slot_width(width = 3, row = bcs_row_2)
+}
+
+/// The row behind the test "a field added recompiles the bodies that read the struct"; run at slot widths 0 and 3.
+fn bcs_row_3() -> Unit with Console + Env + Exception + Fs {
   inspect(bcs_probe(decl = "export struct BcsPt { x: Int; y: Int; z: Int }", build = "BcsPt::{ x: n, y: n + 1, z: 0 }"), content = "saved=3 equal=true")
 }
 
-test "an added struct sharing a field recompiles the bodies that read the field" {
+test "a field added recompiles the bodies that read the struct" {
+  bcs_row_3()
+}
+
+test "a field added recompiles the bodies that read the struct, at slot width 3 (#3941)" {
+  bcs_at_slot_width(width = 3, row = bcs_row_3)
+}
+
+/// The row behind the test "an added struct sharing a field recompiles the bodies that read the field"; run at slot widths 0 and 3.
+fn bcs_row_4() -> Unit with Console + Env + Exception + Fs {
   // `p.y` now dispatches over two structs holding `y`.
   inspect(bcs_probe(decl = String::concat(bcs_base_decl, "\nexport struct BcsQ { w: Int; y: Int }\nexport let bcs_q: (Int) -> Int = (n) -> { BcsQ::{ w: 1, y: n }.y }"), build = bcs_base_build), content = "saved=4 equal=true")
+}
+
+test "an added struct sharing a field recompiles the bodies that read the field" {
+  bcs_row_4()
+}
+
+test "an added struct sharing a field recompiles the bodies that read the field, at slot width 3 (#3941)" {
+  bcs_at_slot_width(width = 3, row = bcs_row_4)
 }

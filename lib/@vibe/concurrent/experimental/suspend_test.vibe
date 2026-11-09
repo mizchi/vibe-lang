@@ -769,6 +769,114 @@ test "a group closes by running a queued producer before pumping its waiter" {
   assert_eq(out, 42)
 }
 
+/// #3200: a `Receiver::recv` on the group's own stack resumes a PARKED
+/// producer. It used to run only queued run-to-completion tasks, so a
+/// producer parked at its sleep read as a deadlock and the body had to call
+/// `pump_all` before receiving. Measured on main: the deadlock trap.
+test "the body's recv resumes a parked producer" {
+  let out = TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 1)
+    let _ = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+      sleep(5)
+      Sender::send_wait(tx, v = 41)
+      Sender::release(tx)
+      0
+    })
+    match Receiver::recv(rx) {
+      Some(v) => v + 1,
+      None => -1
+    }
+  })
+  assert_eq(out, 42)
+}
+
+/// #3200: the send side over a rendezvous channel. The receiver is parked at
+/// its sleep and has not reached `recv_wait` yet, so this program had no
+/// spelling at all on main: `send` trapped as a deadlock, and a `pump_all`
+/// before it trapped instead, on the receiver waiting for this very send.
+test "the body's rendezvous send resumes a receiver parked before its recv_wait" {
+  let out = TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 0)
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
+      sleep(5)
+      let got = Receiver::recv_wait(rx)
+      match got {
+        Some(v) => v,
+        None => -1
+      }
+    })
+    Sender::send(tx, v = 40)
+    TaskHandle::join(h) + 2
+  })
+  assert_eq(out, 42)
+}
+
+/// #3200: a send blocked on a FULL buffer resumes the parked consumer that
+/// drains it. The second send waits for room; the consumer sleeps first.
+test "a send blocked on a full channel resumes its parked consumer" {
+  let out = TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 1)
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
+      sleep(5)
+      let a = Receiver::recv_wait(rx)
+      let b = Receiver::recv_wait(rx)
+      let va = match a {
+        Some(v) => v,
+        None => -100
+      }
+      let vb = match b {
+        Some(v) => v,
+        None => -100
+      }
+      va * 10 + vb
+    })
+    Sender::send(tx, v = 3)
+    Sender::send(tx, v = 9)
+    TaskHandle::join(h)
+  })
+  assert_eq(out, 39)
+}
+
+/// #3200: the same wait from inside a run-to-completion task. Its `recv`
+/// runs on the joining stack, and the parked producer is resumed from there.
+test "a run-to-completion task's recv resumes a parked producer" {
+  let out = TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 1)
+    let _ = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+      sleep(5)
+      Sender::send_wait(tx, v = 35)
+      Sender::release(tx)
+      0
+    })
+    let c = TaskGroup::spawn(g, f = () -> Int {
+      match Receiver::recv(rx) {
+        Some(v) => v + 7,
+        None => -1
+      }
+    })
+    TaskHandle::join(c)
+  })
+  assert_eq(out, 42)
+}
+
+/// #3200: a parked producer that releases its sender without sending ends
+/// the body's `recv` with `None`, not with a deadlock trap.
+test "the body's recv sees a close made by a parked producer" {
+  let out = TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 0)
+    let _ = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
+      sleep(5)
+      Sender::release(tx)
+      0
+    })
+    match Receiver::recv(rx) {
+      Some(v) => v,
+      None => 17
+    }
+  })
+  assert_eq(out, 17)
+}
+
 /// Same scheduler hole, channel spelling: a consumer polling recv_wait on
 /// a producer that sleeps between sends must not trap as deadlock -- the
 /// forced settle wakes the producer.
