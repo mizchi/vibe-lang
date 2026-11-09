@@ -2601,6 +2601,45 @@ resource を作るわけではなく、値でも型でもなく、physical name 
 - `export` できない (ADR-0075 は `.vibex` root 限定。再利用モジュールは
   resource 名ではなく resource **kind パラメータ**で抽象化する)
 
+### Resource parameters on an effect (ADR-0094, #3143)
+
+An effect that acts on a resource declares it as a bounded parameter. The
+bound is the resource KIND, qualified as `Owner::Kind`. Use `_` when no
+operation names the parameter:
+
+```vibe
+effect Kv[R: Store::Bucket] {
+  Get(String) -> String
+}
+
+effect Clock[_: Process::Root] {
+  Now() -> Int
+}
+
+resource Posts: Store::Bucket
+
+fn lookup(key: String) -> String with Kv[Posts] {
+  perform Kv::Get(key)
+}
+
+fn any_bucket(key: String) -> String with Kv {
+  perform Kv::Get(key)
+}
+```
+
+How a resource parameter behaves:
+
+- **The row names the resource.** `Kv[Posts]` must name a resource in scope
+  of the effect's kind: either the predeclared `Process::Root`, or a
+  `resource` in the module. A bare `Kv` means any resource of that kind. The
+  same rule holds for the standard providers, whose kind is `Process::Root`:
+  `with Fs[SrcTree]` is refused unless `SrcTree` is declared.
+- **It is not a type.** An operation cannot take or return `R`.
+- **Limits.** An effect takes at most one resource parameter, and cannot take
+  one beside a type parameter yet. Both are refused at the declaration.
+- **Handling.** The effect is handled like any other:
+  `handle { .. } with { Kv::Get(k) => resume(..) }`.
+
 ## Module System
 
 <!-- doctest-skip: 存在しない import 先 (./lib.vibe) を参照する構文一覧 -->

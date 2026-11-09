@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Self-test for scripts/check_prove.sh (#3717, #2248): the gate must FAIL
-# when a proved fixture stops being provable. It mutates a copy of
+# when a proved fixture stops being provable, and when a counterexample does
+# not reproduce at run time. It mutates a copy of
 # fixtures/prove/ -- `add_small`'s `a + b` becomes `a - b`, so its
 # `ensures: result >= a` is false -- and asserts the gate refuses it, after
 # first asserting the mutation actually landed.
@@ -94,4 +95,54 @@ fi
 if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
   echo "[prove-selftest] FAIL: the gate accepted a loop that lost its break" >&2; exit 1
 fi
-echo "[prove-selftest] ok (a weakened implementation stops proving and the gate fails)"
+cp fixtures/prove/proved.vibe "$work/proved.vibe"
+# #3717: a counterexample that runs clean at run time, and is not one of the
+# gate's named spurious cases, must fail the replay. `plain_again` is
+# `plain`'s shape under another name: the prover forgets the loop-assigned
+# local and reports `result == 0` unproved, while every run returns 0. The
+# length bound keeps its counterexample within the eight elements a model
+# shows, so the replay always runs it rather than noting a truncated array.
+cat >> "$work/unproved.vibe" <<'VIBE'
+
+fn plain_again(xs: Array[Int]) -> Int where { requires: Array::length(xs) <= 8, ensures: result == 0 } {
+  let mut n = 0
+  for x in xs {
+    n = 0
+  }
+  n
+}
+VIBE
+if ! grep -q '^fn plain_again' "$work/unproved.vibe"; then
+  echo "[prove-selftest] FAIL: the replay mutation did not apply" >&2; exit 1
+fi
+if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" > "$work/replay.log" 2>&1; then
+  echo "[prove-selftest] FAIL: the gate accepted a counterexample that runs clean" >&2; exit 1
+fi
+if ! grep -qF 'replay of `plain_again` does not trap in `plain_again` at run time' "$work/replay.log"; then
+  echo "[prove-selftest] FAIL: the gate failed, but not on the replay of plain_again:" >&2
+  cat "$work/replay.log" >&2
+  exit 1
+fi
+cp fixtures/prove/unproved.vibe "$work/unproved.vibe"
+# A counterexample whose array is longer than the elements the model shows
+# (`[a, ..., ...] (length N)`) is not a value a call can be written with: the
+# replay must name it in a note, not fail it as a replay that does not compile.
+cat >> "$work/unproved.vibe" <<'VIBE'
+
+fn ninth(xs: Array[Int]) -> Int where { requires: Array::length(xs) >= 9, ensures: result == 0 } {
+  xs[8]
+}
+VIBE
+VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" > "$work/partial.log" 2>&1 || true
+if ! grep -qxF "[prove] note (${VIBE_PROVE_SOLVER:-z3}): unproved.vibe: not replayed, an array longer than the model shows: ninth" "$work/partial.log"; then
+  echo "[prove-selftest] FAIL: a truncated array counterexample was not named as not replayed:" >&2
+  cat "$work/partial.log" >&2
+  exit 1
+fi
+if grep -qF 'replay of `ninth`' "$work/partial.log"; then
+  echo "[prove-selftest] FAIL: a truncated array counterexample was replayed:" >&2
+  grep -F 'replay of `ninth`' "$work/partial.log" >&2
+  exit 1
+fi
+cp fixtures/prove/unproved.vibe "$work/unproved.vibe"
+echo "[prove-selftest] ok (a weakened implementation stops proving, a counterexample that runs clean fails the replay, and the gate fails)"

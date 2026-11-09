@@ -6,6 +6,8 @@
 
 let type_param_kind_prefix = "$type_param$"
 
+let resource_param_prefix = "$resource_param$"
+
 /// #3132: the source offset a COMPILER-SYNTHESIZED reference to a builtin
 /// carries. A program may define its own `Array::length`; the compiler moves
 /// that definition, and every reference the program wrote, aside to a name of
@@ -70,10 +72,71 @@ fn type_param_kind_split(_ key: String) -> Option[(String, Int)] {
   }
 }
 
+/// ADR-0094: the AST key of an effect's RESOURCE parameter, `R` of
+/// `effect Kv[R: Store::Bucket]`, carrying its resource kind. Like a kinded
+/// binder's key it is not a source identifier, so it cannot collide with a
+/// type parameter; `type_param_name` reads the name back and
+/// `resource_param_kind` the kind.
+export fn resource_param_key(name: String, kind: String) -> String {
+  String::concat(resource_param_prefix, String::concat(kind, String::concat("$", name)))
+}
+
+fn resource_param_split(_ key: String) -> Option[(String, String)] {
+  if !String::starts_with(key, prefix = resource_param_prefix) {
+    None
+  } else {
+    let start = String::length(resource_param_prefix)
+    let mut pos = start
+    while pos < String::length(key) && String::char_code_at(key, at = pos) != '$' {
+      pos = pos + 1
+    }
+    if pos == start || pos >= String::length(key) - 1 {
+      None
+    } else {
+      Some((String::substring(key, start = pos + 1, end = String::length(key)), String::substring(key, start = start, end = pos)))
+    }
+  }
+}
+
+/// The resource kind of an effect parameter key (`Store::Bucket`), or `""`
+/// for an ordinary type parameter.
+export fn resource_param_kind(_ key: String) -> String {
+  match resource_param_split(key) {
+    Some(pair) => pair.1,
+    None => ""
+  }
+}
+
+/// An effect binder's parameters as `TDEffect` keeps them (ADR-0094): a
+/// resource parameter by its name, every other key unchanged (a kinded
+/// binder keeps its key). Parallel to `effect_param_kinds`.
+export fn effect_param_names(_ keys: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for key in keys {
+    match resource_param_split(key) {
+      Some(pair) => Array::push(out, value = pair.0),
+      None => Array::push(out, value = key)
+    }
+  }
+  out
+}
+
+/// Each parameter's resource kind, `""` for an ordinary type parameter.
+export fn effect_param_kinds(_ keys: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for key in keys {
+    Array::push(out, value = resource_param_kind(key))
+  }
+  out
+}
+
 export fn type_param_name(_ key: String) -> String {
   match type_param_kind_split(key) {
     Some(pair) => pair.0,
-    None => key
+    None => match resource_param_split(key) {
+      Some(pair) => pair.0,
+      None => key
+    }
   }
 }
 
