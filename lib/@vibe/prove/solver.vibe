@@ -1,6 +1,8 @@
 // What the solver's answer means for one query (#3717, ADR-0121): only
 // `unsat` proves, and a model is read back as the parameter values that
 // break the obligation. Split from prove.vibe, which builds the queries.
+// The `Array[Int]` encoding lives here too, because reading a model back
+// needs the same accessor names the queries are written with.
 
 //# Solver output
 
@@ -35,45 +37,138 @@ export fn prove_verdict(_ z3_out: String) -> (String, String) {
   }
 }
 
-/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`.
+/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`. An array arrives as its
+/// length and its first elements (`model_terms`), one pair each, and is shown
+/// as one `xs = [1, -2]`. An answer of another shape is shown as z3 gave it.
 fn model_text(_ text: String) -> String {
+  let toks = smt_tokens(text)
+  let n = Array::length(toks)
   let parts: Array[String] = []
-  let mut i = 0
-  let n = String::length(text)
-  while i < n {
-    if String::byte_at(text, at = i) == '|' {
-      let close = find_byte(text = text, byte = '|', from = i + 1)
-      let name = String::substring(text, start = i + 1, end = close)
-      let mut j = close + 1
-      let mut depth = 0
-      let start = j
-      let mut done = false
-      while j < n && !done {
-        let c = String::byte_at(text, at = j)
-        if c == '(' {
-          depth = depth + 1
-        } else if c == ')' {
-          if depth == 0 {
-            done = true
-          } else {
-            depth = depth - 1
-          }
-        } else {
-          ()
-        }
-        if !done {
-          j = j + 1
-        } else {
-          ()
-        }
-      }
-      Array::push(parts, value = "\{name} = \{smt_value_text(String::trim(String::substring(text, start = start, end = j)))}")
-      i = j
+  let arr = ArrModel::{ name: [""], len: [""], elems: [] }
+  let pos = [1]
+  let mut ok = n >= 2 && Array::get(toks, at = 0) == "("
+  while ok && Array::get(pos, at = 0) < n && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
+    if Array::get(toks, at = Array::get(pos, at = 0)) != "(" {
+      ok = false
     } else {
-      i = i + 1
+      let start = Array::get(pos, at = 0) + 1
+      Array::set(pos, at = 0, value = start)
+      smt_skip(toks = toks, pos = pos)
+      let term = Array::slice(toks, start = start, end = Array::get(pos, at = 0))
+      let value = smt_render(toks = toks, pos = pos)
+      if Array::get(pos, at = 0) < n && Array::get(toks, at = Array::get(pos, at = 0)) == ")" {
+        Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+        model_pair(parts = parts, arr = arr, term = term, value = value)
+      } else {
+        ok = false
+      }
     }
   }
-  String::join(parts, sep = ", ")
+  if ok {
+    flush_array(parts = parts, arr = arr)
+    String::join(parts, sep = ", ")
+  } else {
+    String::trim(text)
+  }
+}
+
+/// The array `model_text` is collecting: its name, the length the model
+/// gave, and the elements read so far.
+struct ArrModel {
+  name: Array[String];
+  len: Array[String];
+  elems: Array[String]
+}
+
+/// One `(term value)` pair of a `get-value` answer: a constant is shown at
+/// once, an array's length starts collecting that array, and an element
+/// joins it.
+fn model_pair(parts: Array[String], arr: ArrModel, term: Array[String], value: String) -> Unit {
+  let k = Array::length(term)
+  if k == 1 {
+    flush_array(parts = parts, arr = arr)
+    Array::push(parts, value = "\{smt_unquote(Array::get(term, at = 0))} = \{value}")
+  } else if k == 4 && Array::get(term, at = 1) == "|Array[Int].len|" {
+    flush_array(parts = parts, arr = arr)
+    Array::set(arr.name, at = 0, value = smt_unquote(Array::get(term, at = 2)))
+    Array::set(arr.len, at = 0, value = value)
+  } else if k == 8 && Array::get(term, at = 1) == "select" && Array::get(term, at = 3) == "|Array[Int].data|" && smt_unquote(Array::get(term, at = 4)) == Array::get(arr.name, at = 0) {
+    Array::push(arr.elems, value = value)
+  } else {
+    flush_array(parts = parts, arr = arr)
+    Array::push(parts, value = "\{String::join(term, sep = " ")} = \{value}")
+  }
+}
+
+/// Emit the array being collected, if any: its first `length` elements, or
+/// the elements asked for and the length when it is longer than that.
+fn flush_array(parts: Array[String], arr: ArrModel) -> Unit {
+  let name = Array::get(arr.name, at = 0)
+  if name != "" {
+    let len_text = Array::get(arr.len, at = 0)
+    let len = small_nat(len_text)
+    let have = Array::length(arr.elems)
+    if len >= 0 && len <= have {
+      let shown = Array::slice(arr.elems, start = 0, end = len)
+      Array::push(parts, value = "\{name} = [\{String::join(shown, sep = ", ")}]")
+    } else {
+      Array::push(parts, value = "\{name} = [\{String::join(arr.elems, sep = ", ")}, ...] (length \{len_text})")
+    }
+    Array::set(arr.name, at = 0, value = "")
+    Array::set(arr.len, at = 0, value = "")
+    Array::truncate(arr.elems, length = 0)
+  } else {
+    ()
+  }
+}
+
+/// A decimal of at most nine digits as its value, and -1 for anything else
+/// (a longer number, a negative one, or not a number).
+fn small_nat(_ t: String) -> Int {
+  let n = String::length(t)
+  if n == 0 || n > 9 {
+    0 - 1
+  } else {
+    let mut v = 0
+    let mut i = 0
+    let mut ok = true
+    while i < n {
+      let c = String::byte_at(t, at = i)
+      if c >= '0' && c <= '9' {
+        v = v * 10 + (c - '0')
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      v
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// Move `pos` past one s-expression: an atom, or a parenthesized list.
+fn smt_skip(toks: Array[String], pos: Array[Int]) -> Unit {
+  let mut depth = 0
+  let mut go = true
+  while go && Array::get(pos, at = 0) < Array::length(toks) {
+    let t = Array::get(toks, at = Array::get(pos, at = 0))
+    Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+    if t == "(" {
+      depth = depth + 1
+    } else if t == ")" {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    if depth <= 0 {
+      go = false
+    } else {
+      ()
+    }
+  }
 }
 
 fn find_byte(text: String, byte: Int, from: Int) -> Int {
@@ -163,5 +258,53 @@ fn smt_render(toks: Array[String], pos: Array[Int]) -> String {
         "\{name}(\{String::join(args, sep = ", ")})"
       }
     }
+  }
+}
+
+//# `Array[Int]` (#3717)
+
+/// An `Array[Int]` is one SMT datatype: its contents as an SMT array and its
+/// length. An array stays a value: `Array::set`, an index write and
+/// `Array::push` are admitted only on a local no other name holds
+/// (`writable_arrays`), where a write replaces that binding's value, and a
+/// parameter is never written, so no call changes an array a caller holds.
+/// The contents past the length are unconstrained, so `==` on arrays is not
+/// encoded (SMT `=` would compare them too).
+export fn arr_sort() -> String {
+  "|Array[Int]|"
+}
+
+export fn arr_len(_ t: String) -> String {
+  "(|Array[Int].len| \{t})"
+}
+
+export fn arr_data(_ t: String) -> String {
+  "(|Array[Int].data| \{t})"
+}
+
+export fn arr_datatype_decl() -> String {
+  "(declare-datatypes ((|Array[Int]| 0)) (((|Array[Int]::mk| (|Array[Int].data| (Array Int Int)) (|Array[Int].len| Int)))))"
+}
+
+/// How many leading elements of an `Array[Int]` a counterexample shows.
+fn model_array_prefix() -> Int {
+  8
+}
+
+/// The terms `get-value` asks for to show the constant `name` of `sort`:
+/// the constant itself, or for an `Array[Int]` its length and first
+/// `model_array_prefix()` elements. z3 answers those as numbers, where the
+/// array's own value is a `store` chain or a `lambda` nobody can read.
+export fn model_terms(name: String, sort: String) -> Array[String] {
+  if sort == arr_sort() {
+    let out = [arr_len(name)]
+    let mut k = 0
+    while k < model_array_prefix() {
+      Array::push(out, value = "(select \{arr_data(name)} \{k})")
+      k = k + 1
+    }
+    out
+  } else {
+    [name]
   }
 }
