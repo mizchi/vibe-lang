@@ -830,9 +830,13 @@ A non-minimal LEB128 is valid wasm. It is the slot shape that the
 tool-conventions object format, `wasm-ld` and wild reserve for this reason.
 Unset is minimal, and the output is byte-identical to a compiler without the
 switch. A built-in constructor tag (below `2 << 16`) never moves and stays
-minimal. So do the `call_indirect` table index (always 0), the gc lane's
-type-index blocktypes and heap types, and the generated runtime helpers'
-message addresses.
+minimal. So do the `call_indirect` table index (always 0) and the gc lane's
+type-index blocktypes and heap types.
+
+The width is read once, at the top of `cli_main`, so every compile in the
+process uses it. That covers the positional protocol and also the
+`vibe build` / `run` / `test` verbs, which reach `compile_file_fs_mode_cached`
+without a lane request.
 
 **Every writer of a padded reference goes through one encoder.**
 
@@ -847,14 +851,22 @@ message addresses.
   - late-DCE renumbering (`lc_pf_emit_code` and its linemap delta).
 - `emit_i64_const_slot` and `emit_i32_const_slot` write table slots, at the
   four sites that record kinds 101 / 102 and in `lc_move_body`.
-- `emit_i64_const_str` writes string addresses, in `emit_str_ref_slot` /
-  `emit_str_fat_slot` and the string relocator `lc_relocate_body`.
+- `emit_i64_const_str` writes string addresses:
+  - in `emit_str_ref_slot` / `emit_str_fat_slot`;
+  - in the string relocator `lc_relocate_body`;
+  - for the `(offset << 32) | length` message constants the generated runtime
+    helpers embed. These are the `*_fat` operands in `builtin_bodies/` (OOB
+    prefixes, capacity errors, the `__rt_oob_abort` / `__rt_div_zero_abort`
+    fragments) and the shadow lane's use-after-free prefix.
 - `emit_i32_const_ctor_tag` writes constructor tags, in `emit_ctor_tag` (the
   only emitter of kind 105) and `lc_move_body`.
 
 That is what keeps a replayed or pruned body equal to a fresh one. The
-persisted `codegen-body-cache` slot and the linked-output memo are keyed on
-the width, so the two encodings never replay into each other.
+persisted `codegen-body-cache` slot, the file-compile artifact
+(`persistent_artifact_kind_for_mode`) and the linked-output memo are all keyed
+on the width, so the two encodings never replay into each other. One build
+directory used for `vibe build` at W=0, then 3, then 0 gives 1830, 1907 and
+1830 bytes.
 
 **Coverage is checked, not assumed.** `scripts/reloc_roundtrip.sh` with
 `RELOC_ROUNDTRIP_SLOT_WIDTH=W` rebuilds every function, tag, global and type
@@ -903,13 +915,18 @@ every row. The W=0 counts moved with main's own codegen changes:
 
 The total cost at `616d2e2` is +5.94% (6,726,147 → 7,125,553).
 
+The runtime helpers' message constants were padded last, measured at
+`616d2e2`. The literal edit drops from 3 to **1**, and every other row
+answers as before. The cost is +7 bytes (7,125,560). `vibe run` at W=3 prints
+the same OOB and division-by-zero lines as at W=0.
+
 In every row the 1 is the edited body. A dash was not measured. Five rows
 need a note:
 
-- **Strings.** The 3 left are the edited body, `__rt_oob_abort` and
-  `__rt_div_zero_abort`. Those runtime helpers embed their message's address
-  outside the recorded emitters; they are generated builtins, not cached
-  bodies.
+- **Strings.** In this table the 3 left are the edited body, `__rt_oob_abort`
+  and `__rt_div_zero_abort`. Those runtime helpers embed their message's
+  address outside the recorded emitters; they are generated builtins, not
+  cached bodies. Padding those constants as well removes both (above).
 - **Thunk.** The two bodies only global padding removes are
   `rad_to_deg_lo` / `deg_to_rad_hi`, which read the memo globals that crossed
   127 → 128.
