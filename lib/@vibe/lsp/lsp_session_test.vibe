@@ -1,0 +1,184 @@
+// #1960: hover reuse in a resident `vibe lsp --selfhost` session.
+//
+// The session keeps one typing per exact buffer text, so repeated hovers of
+// one revision run the checker once per revision instead of once or twice per
+// request. What must not happen is a hover answered from that kept typing
+// after the buffer changed: an edit that changes a type, an edit that moves a
+// declaration, closing and reopening, and switching between two documents
+// all have to answer exactly what a cold hover of the CURRENT text answers.
+// The oracle is `type_at_source` itself, the cold single-file answer.
+//
+// The counters are cumulative for the process, so every row reads a delta.
+
+//# Imports
+
+import .{
+  lsp_hover_reuse_counters, lsp_notify, lsp_request
+}
+
+import @vibe/compiler/query {
+  type_at_source
+}
+
+import @vibe/json {
+  Json
+}
+
+//# Functions
+
+fn uri_a() -> String {
+  "file:///work/a.vibe"
+}
+
+fn uri_b() -> String {
+  "file:///work/b.vibe"
+}
+
+fn json_str(_ s: String) -> String {
+  Json::stringify(JStr(s))
+}
+
+fn open_params(uri: String, text: String) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)},\"version\":1,\"text\":\{json_str(text)}}}")
+}
+
+fn change_params(uri: String, text: String) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)},\"version\":2},\"contentChanges\":[{\"text\":\{json_str(text)}}]}")
+}
+
+fn close_params(_ uri: String) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)}}}")
+}
+
+fn pos_params(uri: String, line0: Int, char0: Int) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)}},\"position\":{\"line\":\{line0},\"character\":\{char0}}}")
+}
+
+/// The type a hover response renders, or "" for a `null` response.
+fn hover_type(_ result: Json) -> String {
+  if Json::is_null(result) {
+    ""
+  } else {
+    let value = Json::string(Json::field(Json::field(result, key = "contents"), key = "value"))
+    let fence = "```vibe\n"
+    if String::starts_with(value, prefix = fence) {
+      let rest = value[String::length(fence): String::length(value)]
+      let mut end = 0
+      while end < String::length(rest) && String::byte_at(rest, at = end) != 10 {
+        end = end + 1
+      }
+      rest[0: end]
+    } else {
+      ""
+    }
+  }
+}
+
+fn hover(docs: Map[String, String], uri: String, line0: Int, char0: Int) -> String {
+  hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri, line0 = line0, char0 = char0), docs = docs))
+}
+
+/// The cold single-file answer for the same 0-based position (ASCII sources,
+/// so the UTF-16 column is the byte column).
+fn cold(text: String, line0: Int, char0: Int) -> String {
+  type_at_source(source = text, line = line0 + 1, col = char0 + 1)
+}
+
+fn builds() -> Int {
+  let (b, _) = lsp_hover_reuse_counters()
+  b
+}
+
+fn kept_checks() -> Int {
+  let (_, c) = lsp_hover_reuse_counters()
+  c
+}
+
+fn v1() -> String {
+  "fn scale(_ n: Int) -> Int {\n  n * 3\n}\n\nfn main() -> Int {\n  let k = scale(2)\n  k + 1\n}\n"
+}
+
+/// `scale` now takes and returns a String: the same positions answer
+/// differently.
+fn v2() -> String {
+  "fn scale(_ n: String) -> String {\n  n\n}\n\nfn main() -> Int {\n  let k = scale(\"x\")\n  String::length(k)\n}\n"
+}
+
+/// v1 with two lines inserted above: every declaration moved down two lines.
+fn v1_moved() -> String {
+  "let pad = \"p\"\n\nfn scale(_ n: Int) -> Int {\n  n * 3\n}\n\nfn main() -> Int {\n  let k = scale(2)\n  k + 1\n}\n"
+}
+
+//# Tests
+
+test "#1960: repeated hovers of one revision type it once" {
+  let docs = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_a(), text = v1()), docs = Map::new())
+  let b0 = builds()
+  inspect(hover(docs = docs, uri = uri_a(), line0 = 0, char0 = 3), content = "(Int) -> Int")
+  inspect(hover(docs = docs, uri = uri_a(), line0 = 5, char0 = 6), content = "Int")
+  assert_eq(hover(docs = docs, uri = uri_a(), line0 = 1, char0 = 2), cold(text = v1(), line0 = 1, char0 = 2))
+  assert_eq(hover(docs = docs, uri = uri_a(), line0 = 6, char0 = 2), cold(text = v1(), line0 = 6, char0 = 2))
+  assert_eq(hover(docs = docs, uri = uri_a(), line0 = 5, char0 = 10), cold(text = v1(), line0 = 5, char0 = 10))
+  // Five hovers, one revision typed, and a bounded number of checks for it.
+  assert_eq(builds() - b0, 1)
+  assert(kept_checks() <= 3)
+}
+
+test "#1960: an edited buffer is never answered from the previous revision" {
+  let opened = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_a(), text = v1()), docs = Map::new())
+  assert_eq(hover(docs = opened, uri = uri_a(), line0 = 0, char0 = 3), "(Int) -> Int")
+  let b0 = builds()
+  let edited = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri_a(), text = v2()), docs = opened)
+  inspect(hover(docs = edited, uri = uri_a(), line0 = 0, char0 = 3), content = "(String) -> String")
+  assert_eq(hover(docs = edited, uri = uri_a(), line0 = 5, char0 = 6), cold(text = v2(), line0 = 5, char0 = 6))
+  assert_eq(builds() - b0, 1)
+  // Undoing the edit is a third text as far as the session knows: it is typed
+  // again, and answers as v1 does.
+  let undone = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri_a(), text = v1()), docs = edited)
+  assert_eq(hover(docs = undone, uri = uri_a(), line0 = 0, char0 = 3), "(Int) -> Int")
+  assert_eq(builds() - b0, 2)
+}
+
+test "#1960: a moved declaration answers at its new location, not its old offset" {
+  let opened = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_a(), text = v1()), docs = Map::new())
+  assert_eq(hover(docs = opened, uri = uri_a(), line0 = 0, char0 = 3), "(Int) -> Int")
+  let moved = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri_a(), text = v1_moved()), docs = opened)
+  // Line 0 is now `let pad`; `scale` is on line 2.
+  inspect(hover(docs = moved, uri = uri_a(), line0 = 0, char0 = 4), content = "String")
+  assert_eq(hover(docs = moved, uri = uri_a(), line0 = 2, char0 = 3), "(Int) -> Int")
+  let mut line0 = 0
+  while line0 < 10 {
+    assert_eq(hover(docs = moved, uri = uri_a(), line0 = line0, char0 = 2), cold(text = v1_moved(), line0 = line0, char0 = 2))
+    line0 = line0 + 1
+  }
+}
+
+test "#1960: two open documents each answer from their own text" {
+  let one = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_a(), text = v1()), docs = Map::new())
+  let both = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_b(), text = v2()), docs = one)
+  assert_eq(hover(docs = both, uri = uri_a(), line0 = 0, char0 = 3), "(Int) -> Int")
+  assert_eq(hover(docs = both, uri = uri_b(), line0 = 0, char0 = 3), "(String) -> String")
+  assert_eq(hover(docs = both, uri = uri_a(), line0 = 5, char0 = 6), "Int")
+  assert_eq(hover(docs = both, uri = uri_b(), line0 = 5, char0 = 6), "String")
+}
+
+test "#1960: closing the document releases its kept typing" {
+  let opened = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_a(), text = v1()), docs = Map::new())
+  assert_eq(hover(docs = opened, uri = uri_a(), line0 = 0, char0 = 3), "(Int) -> Int")
+  assert(kept_checks() > 0)
+  let closed = lsp_notify(method = "textDocument/didClose", params = close_params(uri_a()), docs = opened)
+  assert_eq(kept_checks(), 0)
+  // A hover on a closed document sees no text, so no type.
+  assert_eq(hover(docs = closed, uri = uri_a(), line0 = 0, char0 = 3), "")
+}
+
+test "#1960: signature help reads the same kept typing as hover" {
+  let text = "fn scale(_ n: Int, _ m: Int) -> Int {\n  n * m\n}\n\nfn main() -> Int {\n  scale(2, 3)\n}\n"
+  let docs = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_a(), text = text), docs = Map::new())
+  let b0 = builds()
+  let sig = lsp_request(method = "textDocument/signatureHelp", params = pos_params(uri = uri_a(), line0 = 5, char0 = 11), docs = docs)
+  let label = Json::string(Json::field(Json::index(Json::field(sig, key = "signatures"), idx = 0), key = "label"))
+  inspect(label, content = "scale: (Int, Int) -> Int")
+  assert_eq(hover(docs = docs, uri = uri_a(), line0 = 0, char0 = 3), cold(text = text, line0 = 0, char0 = 3))
+  assert_eq(builds() - b0, 1)
+}
