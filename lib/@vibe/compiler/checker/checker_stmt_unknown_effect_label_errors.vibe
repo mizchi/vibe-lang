@@ -780,7 +780,16 @@ fn resource_rows_in_stmts(stmts: Array[Stmt], res: ResourceRowCtx, errors: Array
       STest(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
       SBench(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
       SExample(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
-      _ => ()
+      // A declaration-owned function type -- a struct field, an enum or
+      // suberror payload, a type alias body, a trait or effect signature,
+      // an extern binding (Codex review on #4020).
+      _ => {
+        let (_, labels) = stmt_type_rows(stmt)
+        for label in labels {
+          resource_label_check(label = label, res = res, errors = errors)
+        }
+        ()
+      }
     }
   }
   ()
@@ -838,19 +847,23 @@ fn resource_rows_in_texpr(te: TypeExpr, res: ResourceRowCtx, errors: Array[Strin
   }
 }
 
+fn resource_label_check(label: String, res: ResourceRowCtx, errors: Array[String]) -> Unit {
+  let text = String::trim(label)
+  let bi = String::index_of(text, needle = "[")
+  if bi > 0 && String::ends_with(text, suffix = "]") {
+    let base = text[0: bi]
+    let inner = String::trim(text[bi + 1: String::length(text) - 1])
+    let _ = resource_row_arg_checked(label = text, base = base, inner = inner, res = res, errors = errors)
+  } else {
+    ()
+  }
+}
+
 fn resource_rows_in_row(row: Option[String], res: ResourceRowCtx, errors: Array[String]) -> Unit {
   match row {
     Some(r) => {
       for raw in String::split(r, sep = ",") {
-        let label = String::trim(raw)
-        let bi = String::index_of(label, needle = "[")
-        if bi > 0 && String::ends_with(label, suffix = "]") {
-          let base = label[0: bi]
-          let inner = String::trim(label[bi + 1: String::length(label) - 1])
-          let _ = resource_row_arg_checked(label = label, base = base, inner = inner, res = res, errors = errors)
-        } else {
-          ()
-        }
+        resource_label_check(label = raw, res = res, errors = errors)
       }
       ()
     },
