@@ -146,17 +146,20 @@ fn bp_round0_scan(stmts: Array[Stmt], nonident: MutMap[String, Int], valued_set:
   source_shadow_mask
 }
 
-/// Record a conservative reverse call graph. Shadowed names may add work,
-/// but every expression child is visited so an ownership change reaches all
-/// possible callers. A generation mark deduplicates edges within each body.
-fn bp_index_callers(e: Expr, caller: Int, names: Array[String], callers: Array[Array[Int]], seen: Array[Int]) -> Unit {
+/// Record a conservative call graph, both ways: `callers[slot]` lists the
+/// functions that call `slot`, and `callees[caller]` the ones it calls.
+/// Shadowed names may add work, but every expression child is visited so an
+/// ownership change reaches all possible callers. A generation mark
+/// deduplicates edges within each body.
+fn bp_index_callers(e: Expr, caller: Int, slots: MutMap[String, Int], callers: Array[Array[Int]], callees: Array[Array[Int]], seen: Array[Int]) -> Unit {
   match e {
-    ECall(EIdent(name, _), _, _, _) => {
-      let slot = bsearch_leftmost(sorted = names, name = name)
-      if slot >= 0 && Array::get(seen, at = slot) != caller {
+    ECall(EIdent(name, _), _, _, _) => match MutMap::get(slots, k = name) {
+      Some(slot) => if Array::get(seen, at = slot) != caller {
         Array::set(seen, at = slot, value = caller)
         Array::push(Array::get(callers, at = slot), value = caller)
-      }
+        Array::push(Array::get(callees, at = caller), value = slot)
+      },
+      None => ()
     },
     _ => ()
   }
@@ -164,10 +167,58 @@ fn bp_index_callers(e: Expr, caller: Int, names: Array[String], callers: Array[A
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    bp_index_callers(e = expr_child_at(i), caller = caller, names = names, callers = callers, seen = seen)
+    bp_index_callers(e = expr_child_at(i), caller = caller, slots = slots, callers = callers, callees = callees, seen = seen)
     i = i + 1
   }
   expr_children_pop(mark)
+}
+
+/// The slots with a non-zero mask, each callee before its callers wherever
+/// the call graph allows it: a post-order of `callees` from every such slot,
+/// in slot order. Seeding the worklist this way judges a function after the
+/// functions it calls, so a callee's narrowed mask is usually final before
+/// any caller reads it, and few callers have to be judged again (#3950). A
+/// cycle is entered once, at the slot it is first reached from.
+fn bp_callees_first(callees: Array[Array[Int]], masks: Array[Int]) -> Array[Int] {
+  let n = Array::length(masks)
+  let visited: Array[Bool] = []
+  let mut v = 0
+  while v < n {
+    Array::push(visited, value = false)
+    v = v + 1
+  }
+  let order: Array[Int] = []
+  let stack_node: Array[Int] = []
+  let stack_next: Array[Int] = []
+  let mut root = 0
+  while root < n {
+    if Array::get(masks, at = root) != 0 && !Array::get(visited, at = root) {
+      Array::set(visited, at = root, value = true)
+      Array::push(stack_node, value = root)
+      Array::push(stack_next, value = 0)
+      while Array::length(stack_node) > 0 {
+        let top = Array::length(stack_node) - 1
+        let node = Array::get(stack_node, at = top)
+        let next = Array::get(stack_next, at = top)
+        let out = Array::get(callees, at = node)
+        if next < Array::length(out) {
+          Array::set(stack_next, at = top, value = next + 1)
+          let child = Array::get(out, at = next)
+          if Array::get(masks, at = child) != 0 && !Array::get(visited, at = child) {
+            Array::set(visited, at = child, value = true)
+            Array::push(stack_node, value = child)
+            Array::push(stack_next, value = 0)
+          } else ()
+        } else {
+          Array::truncate(stack_node, length = top)
+          Array::truncate(stack_next, length = top)
+          Array::push(order, value = node)
+        }
+      }
+    } else ()
+    root = root + 1
+  }
+  order
 }
 
 /// Greatest fixed point of the existing per-parameter ownership judgment.
@@ -202,9 +253,16 @@ fn bp_fixpoint_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], v
     pi = pi + 1
   }
   let names = sorted_names_of(unique_names)
+  let slot_of: MutMap[String, Int] = MutMap::new_string()
+  let mut ni = 0
+  while ni < Array::length(names) {
+    MutMap::set(slot_of, k = Array::get(names, at = ni), v = ni)
+    ni = ni + 1
+  }
   let functions: Array[Expr] = []
   let masks: Array[Int] = []
   let callers: Array[Array[Int]] = []
+  let callees: Array[Array[Int]] = []
   let shadows: Array[Array[Int]] = []
   let seen_calls: Array[Int] = []
   let seen_shadows: Array[Int] = []
@@ -216,6 +274,7 @@ fn bp_fixpoint_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], v
     Array::push(functions, value = EUnit)
     Array::push(masks, value = 0)
     Array::push(callers, value = [])
+    Array::push(callees, value = [])
     Array::push(shadows, value = [])
     Array::push(seen_calls, value = -1)
     Array::push(seen_shadows, value = -1)
@@ -264,25 +323,31 @@ fn bp_fixpoint_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], v
   while i < Array::length(names) {
     if Array::get(masks, at = i) != 0 {
       let value = Array::get(functions, at = i)
-      bp_index_callers(e = value, caller = i, names = names, callers = callers, seen = seen_calls)
+      bp_index_callers(e = value, caller = i, slots = slot_of, callers = callers, callees = callees, seen = seen_calls)
       // The outer parameters are binders too. Cache shadowed slots once;
       // re-analysis must use the latest callee masks, not a stale copied row.
       md_collect_shadow_names(e = value, out = shadow_names)
       let slots = Array::get(shadows, at = i)
       let mut j = 0
       while j < Array::length(shadow_names) {
-        let slot = bsearch_leftmost(sorted = names, name = Array::get(shadow_names, at = j))
-        if slot >= 0 && Array::get(seen_shadows, at = slot) != i {
-          Array::set(seen_shadows, at = slot, value = i)
-          Array::push(slots, value = slot)
+        match MutMap::get(slot_of, k = Array::get(shadow_names, at = j)) {
+          Some(slot) => if Array::get(seen_shadows, at = slot) != i {
+            Array::set(seen_shadows, at = slot, value = i)
+            Array::push(slots, value = slot)
+          },
+          None => ()
         }
         j = j + 1
       }
       Array::truncate(shadow_names, length = 0)
-      Array::push(work, value = i)
-      Array::set(queued, at = i, value = true)
     }
     i = i + 1
+  }
+  // The answer is the greatest fixed point whatever the order; the order only
+  // decides how many judgments reach it.
+  for seed in bp_callees_first(callees = callees, masks = masks) {
+    Array::push(work, value = seed)
+    Array::set(queued, at = seed, value = true)
   }
   let param_names: Array[String] = []
   let hits: Array[Int] = []
