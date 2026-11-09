@@ -14,8 +14,12 @@
 // spelling first: each argument with the module's own `type` aliases
 // expanded. Both the checker and the desugar run this before they read a key,
 // so they compare the same strings, and running it twice changes nothing. A
-// name a declaration binds as a type parameter is never expanded, and an alias
-// imported from another module is left as written.
+// name a declaration binds as a type parameter is never expanded. An alias
+// imported from another module is expanded when the caller passes it in
+// (`canonicalize_trait_ref_aliases_with`, #3953): the checker's import-aware
+// entry reads them from its projected environment, so `impl Value[Alias]`
+// beside `import ./defs.vibe { Alias }` names the instantiation the checker
+// resolves a bound to.
 //
 // An impl's methods are parsed into top-level bindings named after the impl's
 // key (`impl_method_binding_name`), so an impl whose key changes has its
@@ -41,7 +45,27 @@ import @vibe/ast {
 /// type-parameter bounds, a trait's supertraits and method bounds -- with the
 /// module's own type aliases expanded in the trait's arguments.
 export fn canonicalize_trait_ref_aliases(_ stmts: Array[Stmt]) -> Unit {
+  canonicalize_trait_ref_aliases_with(stmts = stmts, imported = array_empty())
+}
+
+/// `canonicalize_trait_ref_aliases` with the aliases the module imports as
+/// well, `(name, params, body)` under the name this module sees. A type the
+/// module declares itself -- an alias, a struct, an enum -- wins over an import
+/// of the same name, as it does when the checker seeds imported type
+/// definitions (`seed_imported_type_defs`): expanding the imported alias in a
+/// module whose own `struct Alias` it names rewrote `impl Value[Alias]` to
+/// `Value[Int]` and refused its methods (Codex on #3961).
+export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[(String, Array[String], TypeExpr)]) -> Unit {
   let aliases = trait_ref_local_aliases(stmts)
+  let local_types = trait_ref_local_type_names(stmts)
+  for alias in imported {
+    let (name, _, _) = alias
+    if !trait_ref_names_contain(names = local_types, name = name) {
+      Array::push(aliases, value = alias)
+    } else {
+      ()
+    }
+  }
   if Array::length(aliases) > 0 {
     // (old method-owner prefix, new one) for each impl whose key changed.
     let renames: Array[(String, String)] = array_empty()
@@ -96,6 +120,21 @@ fn trait_ref_renamed(name: String, renames: Array[(String, String)]) -> Option[S
       out = Some(String::concat(new_prefix, String::substring(name, start = String::length(old_prefix), end = String::length(name))))
     } else {
       ()
+    }
+  }
+  out
+}
+
+/// Every type name the module declares itself.
+fn trait_ref_local_type_names(_ stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(_, name, _, _) => Array::push(out, value = name),
+      SStruct(_, name, _, _, _, _) => Array::push(out, value = name),
+      SEnum(_, name, _, _, _) => Array::push(out, value = name),
+      SSuberror(_, name, _) => Array::push(out, value = name),
+      _ => ()
     }
   }
   out

@@ -1,0 +1,85 @@
+//# #3953: an applied trait reference spelled through an IMPORTED type alias
+//# names the same instantiation as its expansion, as one through the
+//# module's own alias does since #3947. `impl Value[Alias]` beside
+//# `import ./defs.vibe { Alias }` used to answer ``no impl `Value[Int]` `` at
+//# a bound spelled `Value[Int]`.
+
+import ./_trait_ref_alias_defs.vibe { Alias, Pair }
+
+import ./_trait_ref_alias_reexport.vibe { Alias as Again }
+
+trait Value[A] {
+  value(Self) -> A
+}
+
+struct Note {
+  n: Int
+}
+
+impl Value[Alias] for Note {
+  value(self) -> Alias {
+    self.n
+  }
+}
+
+struct Plain {
+  n: Int
+}
+
+impl Value[Int] for Plain {
+  value(self) -> Int {
+    self.n + 1
+  }
+}
+
+struct Echo {
+  n: Int
+}
+
+impl Value[Again] for Echo {
+  value(self) -> Int {
+    self.n + 2
+  }
+}
+
+fn int_value_of[V: Value[Int]](_ v: V) -> Int {
+  V::value(v)
+}
+
+fn alias_value_of[V: Value[Alias]](_ v: V) -> Int {
+  V::value(v)
+}
+
+test "an impl through an imported alias, a bound with the expansion" {
+  inspect(int_value_of(Note::{ n: 6 }), content = "6")
+}
+
+test "an impl with the expansion, a bound through an imported alias" {
+  inspect(alias_value_of(Plain::{ n: 6 }), content = "7")
+}
+
+test "an impl through a re-exported alias renamed by the import" {
+  inspect(int_value_of(Echo::{ n: 6 }), content = "8")
+}
+
+trait Both[A] {
+  both(Self) -> A
+}
+
+struct Twin {
+  n: Int
+}
+
+impl Both[Pair[Int]] for Twin {
+  both(self) -> (Int, Int) {
+    (self.n, self.n + 1)
+  }
+}
+
+fn both_of[V: Both[(Int, Int)]](_ v: V) -> (Int, Int) {
+  V::both(v)
+}
+
+test "a parameterized imported alias expands with its arguments" {
+  inspect(both_of(Twin::{ n: 2 }), content = "(2, 3)")
+}
