@@ -1,0 +1,31 @@
+// #3200, the side that must still trap. The body's `recv` now resumes parked
+// suspendable tasks while it waits, so this checks that a wait nothing can
+// satisfy is still a deadlock and not a livelock: the producer sleeps, then
+// waits on `rx2`, which only the body sends to, after its own `recv` returns.
+// Executed by tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh,
+// which wants the deadlock message and a failing exit.
+import @vibe/concurrent/experimental {
+  TaskGroup, Channel, Sender, Receiver, sleep_wait
+}
+
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 1)
+    let (tx2, rx2) = Channel::bounded(n = g, capacity = 1)
+    let _ = TaskGroup::spawn_suspend(g, f = () -> {
+      sleep_wait(5)
+      let got = Receiver::recv_wait(rx2)
+      let x = match got {
+        Some(v) => v,
+        None => 0
+      }
+      Sender::send_wait(tx, v = x)
+    })
+    let r = match Receiver::recv(rx) {
+      Some(v) => v,
+      None => 0
+    }
+    Sender::send(tx2, v = 1)
+    r
+  })
+}

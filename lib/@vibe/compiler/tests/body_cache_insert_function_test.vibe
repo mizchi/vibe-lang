@@ -14,11 +14,15 @@
 //# compile.
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+  codegen_body_cache_artifact_key, compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
 }
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, persistent_artifact_cache_path
+  persistent_artifact_cache_path
+}
+
+import @vibe/compiler/core {
+  set_reloc_slot_width
 }
 
 fn bif_bytes(_ s: String) -> Bytes {
@@ -88,7 +92,7 @@ fn bif_main(before: String, after: String, use: String) -> String {
 }
 
 fn bif_probe(label: String, before: String, after: String, use: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bif_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bif_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -126,7 +130,24 @@ fn bif_probe_twice(label: String, after: String, use: String) -> String with Env
   "\{first} stable=\{Array::get(second_counts, at = 1) == Array::get(third_counts, at = 1)} again_equal=\{bif_bytes_eq(a = second, b = fresh)}"
 }
 
-test "a function added downstream keeps the upstream bodies" {
+//# #3941: every row runs at slot width 0 and at slot width 3. A relocation
+//# that wrote a padded slot back minimal, or a cache slot shared between the
+//# widths, answers differently at 3 than the same row at 0.
+
+/// Run `row` at relocatable-slot width `width`, restoring width 0 after it.
+fn bif_at_slot_width(width: Int, row: () -> Unit with Console + Env + Exception + Fs) -> Unit with Console + Env + Exception + Fs {
+  set_reloc_slot_width(width)
+  handle {
+    row()
+    set_reloc_slot_width(0)
+  } with { Exception::Throw(m) => {
+    set_reloc_slot_width(0)
+    throw(m)
+  } }
+}
+
+/// The row behind the test "a function added downstream keeps the upstream bodies"; run at slot widths 0 and 3.
+fn bif_row_1() -> Unit with Console + Env + Exception + Fs {
   // A helper appended to the edited file: every upstream body sits below it
   // and none spells its name.
   inspect(bif_probe(label = "append", before = "", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(n = 1)"), content = "append replayed=true equal=true")
@@ -138,7 +159,16 @@ test "a function added downstream keeps the upstream bodies" {
   inspect(bif_probe(label = "with-lambda", before = "", after = "let helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", use = " + helper(n = 1)"), content = "with-lambda replayed=true equal=true")
 }
 
-test "an added function recompiles exactly what it changes" {
+test "a function added downstream keeps the upstream bodies" {
+  bif_row_1()
+}
+
+test "a function added downstream keeps the upstream bodies, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_1)
+}
+
+/// The row behind the test "an added function recompiles exactly what it changes"; run at slot widths 0 and 3.
+fn bif_row_2() -> Unit with Console + Env + Exception + Fs {
   // A new global spelled like the local `bif_cap` captures. The upstream body
   // spells `base`, so it is recompiled rather than replayed; the rest replay.
   inspect(bif_probe(label = "captured-name", before = "", after = "let base: () -> Int = () -> { 7 }", use = " + base()"), content = "captured-name replayed=true equal=true")
@@ -149,8 +179,25 @@ test "an added function recompiles exactly what it changes" {
   inspect(bif_probe(label = "with-type", before = "", after = "enum BifTag { BifA; BifB }\nlet helper: () -> Int = () -> { match BifA { BifA => 1, BifB => 2 } }", use = " + helper()"), content = "with-type replayed=true equal=true")
 }
 
-test "the refreshed artifact keeps what the insertion lane replayed" {
+test "an added function recompiles exactly what it changes" {
+  bif_row_2()
+}
+
+test "an added function recompiles exactly what it changes, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_2)
+}
+
+/// The row behind the test "the refreshed artifact keeps what the insertion lane replayed"; run at slot widths 0 and 3.
+fn bif_row_3() -> Unit with Console + Env + Exception + Fs {
   inspect(bif_probe_twice(label = "append-twice", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(n = 1)"), content = "append-twice replayed=true equal=true stable=true again_equal=true")
+}
+
+test "the refreshed artifact keeps what the insertion lane replayed" {
+  bif_row_3()
+}
+
+test "the refreshed artifact keeps what the insertion lane replayed, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_3)
 }
 
 //# The edit in a MIDDLE file: the unchanged file after it calls into the
@@ -199,7 +246,7 @@ fn bim_main() -> String {
 /// file kept: fewer recompiled than that means the unchanged file after the
 /// edit was reused.
 fn bim_probe(label: String, top: String, extra: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bim_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -217,7 +264,8 @@ fn bim_probe(label: String, top: String, extra: String) -> String with Env + Exc
   "\{label} offered=\{Array::get(warm_counts, at = 0)} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "a function added in a middle file keeps the files after it" {
+/// The row behind the test "a function added in a middle file keeps the files after it"; run at slot widths 0 and 3.
+fn bif_row_4() -> Unit with Console + Env + Exception + Fs {
   // `saved` is how many fewer bodies the warm build compiled than the cold
   // one. The upstream file holds 2 functions and the downstream one 2
   // (`apply`, `run`); the added helper takes a pad's slot, so it costs
@@ -228,6 +276,14 @@ test "a function added in a middle file keeps the files after it" {
   // A helper with a closure moves every lambda after it too, so the
   // downstream closures' table slots are rewritten as well.
   inspect(bim_probe(label = "helper-with-lambda", top = "let bim_helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", extra = " + bim_helper(n = 0)"), content = "helper-with-lambda offered=4 saved=4 equal=true")
+}
+
+test "a function added in a middle file keeps the files after it" {
+  bif_row_4()
+}
+
+test "a function added in a middle file keeps the files after it, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_4)
 }
 
 //# Width bands. A cached body is rebuilt, not patched, because a moved index
@@ -283,7 +339,7 @@ fn biw_main() -> String {
 }
 
 fn biw_probe(label: String, top: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(biw_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(biw_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -301,7 +357,8 @@ fn biw_probe(label: String, top: String) -> String with Env + Exception + Fs {
   "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "moved indices that cross a LEB width band are rebuilt" {
+/// The row behind the test "moved indices that cross a LEB width band are rebuilt"; run at slot widths 0 and 3.
+fn bif_row_5() -> Unit with Console + Env + Exception + Fs {
   // Two helpers at the top, one of them called, so every one of the 200
   // functions moves by two. `saved=4`: the upstream file's 2 and the
   // downstream file's 2 (`apply`, `run`). Non-vacuity, measured: with every
@@ -311,6 +368,14 @@ test "moved indices that cross a LEB width band are rebuilt" {
   inspect(biw_probe(label = "width-band", top = "let biw_h1: (Int) -> Int = (n) -> { n }\nlet biw_h2: (Int) -> Int = (n) -> { biw_h1(n = n) }"), content = "width-band saved=4 equal=true")
 }
 
+test "moved indices that cross a LEB width band are rebuilt" {
+  bif_row_5()
+}
+
+test "moved indices that cross a LEB width band are rebuilt, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_5)
+}
+
 //# Removals, renames, reorders and closures in the middle file. Each is a
 //# change the per-function rows absorb: the names both builds hold are
 //# compared row by row, and every moved index is relocated.
@@ -318,7 +383,7 @@ test "moved indices that cross a LEB width band are rebuilt" {
 /// The middle file with `bim_two` replaced: `defs` are its declarations,
 /// which must still export `bim_two` and `bim_three` for the downstream file.
 fn bim_probe_defs(label: String, base_defs: String, defs: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bim_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -341,7 +406,8 @@ let bim_two_line: String = "export let bim_two: (Int) -> Int = (n) -> { n + bim_
 
 let bim_three_line: String = "export let bim_three: (Int) -> Int = (n) -> { bim_two(n = n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
 
-test "a function removed, renamed or moved in a middle file keeps the files after it" {
+/// The row behind the test "a function removed, renamed or moved in a middle file keeps the files after it"; run at slot widths 0 and 3.
+fn bif_row_6() -> Unit with Console + Env + Exception + Fs {
   let helper = "let bim_helper: (Int) -> Int = (n) -> { n + 7 }"
   let with_helper = String::join([
     helper,
@@ -373,6 +439,14 @@ test "a function removed, renamed or moved in a middle file keeps the files afte
   inspect(String::join([r1, r2, r3], sep = " | "), content = "rename saved=4 equal=true | reorder saved=4 equal=true | add-closure saved=4 equal=true")
 }
 
+test "a function removed, renamed or moved in a middle file keeps the files after it" {
+  bif_row_6()
+}
+
+test "a function removed, renamed or moved in a middle file keeps the files after it, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_6)
+}
+
 //# Types. Constructor tags are `(type_index << 16) | variant`, and
 //# `type_index` counts type declarations in merge order, so a type added in
 //# a middle file moves the tag of every type declared after it. Every tag a
@@ -399,7 +473,7 @@ fn bim_main_typed(_ with_type: Bool) -> String {
 }
 
 fn bim_probe_type(label: String, downstream_type: Bool) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bim_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -427,7 +501,8 @@ fn bim_probe_type(label: String, downstream_type: Bool) -> String with Env + Exc
   "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "a type added in a middle file relocates the tags it moves" {
+/// The row behind the test "a type added in a middle file relocates the tags it moves"; run at slot widths 0 and 3.
+fn bif_row_7() -> Unit with Console + Env + Exception + Fs {
   // No type after the middle file: every existing tag is where it was, and
   // both the upstream and downstream bodies are reused.
   let tolerated = bim_probe_type(label = "no-later-type", downstream_type = false)
@@ -438,6 +513,14 @@ test "a type added in a middle file relocates the tags it moves" {
   inspect(String::join([tolerated, moved], sep = " | "), content = "no-later-type saved=4 equal=true | later-type-moves saved=4 equal=true")
 }
 
+test "a type added in a middle file relocates the tags it moves" {
+  bif_row_7()
+}
+
+test "a type added in a middle file relocates the tags it moves, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_7)
+}
+
 //# A new module. Importing one inserts a file into the merge order, so every
 //# file after it moves to another position: the file table matches files by
 //# path, and the function indices that moved with them are relocated.
@@ -445,7 +528,7 @@ test "a type added in a middle file relocates the tags it moves" {
 let bim_c_path: String = "/tmp/vibe_body_cache_bim_c.vibe"
 
 fn bim_probe_new_module(label: String, import_first: Bool) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bim_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -481,7 +564,8 @@ fn bim_probe_new_module(label: String, import_first: Bool) -> String with Env + 
   "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "a newly imported module keeps the unchanged files' bodies" {
+/// The row behind the test "a newly imported module keeps the unchanged files' bodies"; run at slot widths 0 and 3.
+fn bif_row_8() -> Unit with Console + Env + Exception + Fs {
   let after = bim_probe_new_module(label = "new-module-last", import_first = false)
   let before = bim_probe_new_module(label = "new-module-first", import_first = true)
   // Listed first, the new module enters the merge order AHEAD of the
@@ -490,6 +574,14 @@ test "a newly imported module keeps the unchanged files' bodies" {
   // to different bytes from a fresh build -- a moved file's rows named
   // another file.
   inspect(String::join([after, before], sep = " | "), content = "new-module-last saved=4 equal=true | new-module-first saved=4 equal=true")
+}
+
+test "a newly imported module keeps the unchanged files' bodies" {
+  bif_row_8()
+}
+
+test "a newly imported module keeps the unchanged files' bodies, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_8)
 }
 
 //# Effects. A declared effect routes through exception tag `3 + its index`,
@@ -560,7 +652,7 @@ let bie_main_path: String = "/tmp/vibe_body_cache_bie_main.vibe"
 /// `BieLog` in the first file (moving its tag, which the downstream handler
 /// names); otherwise the middle file gains an effect after it.
 fn bie_probe(label: String, ahead: Bool) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bie_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bie_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -583,7 +675,8 @@ fn bie_probe(label: String, ahead: Bool) -> String with Env + Exception + Fs {
   "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "an added effect relocates the tags it moves" {
+/// The row behind the test "an added effect relocates the tags it moves"; run at slot widths 0 and 3.
+fn bif_row_9() -> Unit with Console + Env + Exception + Fs {
   let r1 = handle {
     bie_probe(label = "effect-in-middle", ahead = false)
   } with { Exception::Throw(m) => String::concat("THROW ", m) }
@@ -597,13 +690,22 @@ test "an added effect relocates the tags it moves" {
   inspect(String::join([r1, r2], sep = " | "), content = "effect-in-middle saved=4 equal=true | effect-ahead saved=1 equal=true")
 }
 
+test "an added effect relocates the tags it moves" {
+  bif_row_9()
+}
+
+test "an added effect relocates the tags it moves, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_9)
+}
+
 //# Structs. A field access dispatches over every struct holding the field,
 //# and a bare record literal is matched against every struct's fields, so a
 //# struct added in a middle file reaches the bodies that read one of its
 //# fields. Those recompile -- they spell the field, and their codegen logged
 //# reading it (#3771) -- and every other body is reused.
 
-test "an added struct is tolerated whether or not its fields are new" {
+/// The row behind the test "an added struct is tolerated whether or not its fields are new"; run at slot widths 0 and 3.
+fn bif_row_10() -> Unit with Console + Env + Exception + Fs {
   let pt = "struct BimPt { x: Int }"
   let base = String::join([
     pt,
@@ -627,20 +729,29 @@ test "an added struct is tolerated whether or not its fields are new" {
   inspect(String::join([r1, r2], sep = " | "), content = "disjoint-fields saved=4 equal=true | shared-field saved=4 equal=true")
 }
 
+test "an added struct is tolerated whether or not its fields are new" {
+  bif_row_10()
+}
+
+test "an added struct is tolerated whether or not its fields are new, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_10)
+}
+
 //# Thunks. A module-level non-function `let` is memoized in two globals,
 //# `base + 2k` and `base + 2k + 1`, where `k` is its position in the thunk
 //# list. A thunk added ahead of a cached one moves its globals; replayed as
 //# it was, the cached thunk would read the new thunk's memo cell. (Codex P1
 //# on #3765.)
 
-test "a thunk added ahead of a cached one moves its memo globals with it" {
+/// The row behind the test "a thunk added ahead of a cached one moves its memo globals with it"; run at slot widths 0 and 3.
+fn bif_row_11() -> Unit with Console + Env + Exception + Fs {
   let base = String::join([bim_two_line, bim_three_line], sep = "\n")
   let with_thunk = String::join([
     "let bim_pre: Array[Int] = [9, 9, 9]",
     "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + Array::length(bim_pre) }",
     bim_three_line
   ], sep = "\n")
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bim_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -663,6 +774,14 @@ test "a thunk added ahead of a cached one moves its memo globals with it" {
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
   inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}", content = "saved=4 equal=true")
+}
+
+test "a thunk added ahead of a cached one moves its memo globals with it" {
+  bif_row_11()
+}
+
+test "a thunk added ahead of a cached one moves its memo globals with it, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_11)
 }
 
 //# Every tag-bearing form, downstream of a type inserted ahead: every tag
@@ -690,8 +809,9 @@ fn bit_main() -> String {
   ], sep = "\n")
 }
 
-test "every tag-bearing form is relocated across a type inserted ahead" {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+/// The row behind the test "every tag-bearing form is relocated across a type inserted ahead"; run at slot widths 0 and 3.
+fn bif_row_12() -> Unit with Console + Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bim_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -718,8 +838,17 @@ test "every tag-bearing form is relocated across a type inserted ahead" {
   inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}", content = "saved=9 equal=true")
 }
 
-test "a type removed from a middle file relocates the tags it moved" {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+test "every tag-bearing form is relocated across a type inserted ahead" {
+  bif_row_12()
+}
+
+test "every tag-bearing form is relocated across a type inserted ahead, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_12)
+}
+
+/// The row behind the test "a type removed from a middle file relocates the tags it moved"; run at slot widths 0 and 3.
+fn bif_row_13() -> Unit with Console + Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bim_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -745,6 +874,14 @@ test "a type removed from a middle file relocates the tags it moved" {
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
   inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}", content = "saved=9 equal=true")
+}
+
+test "a type removed from a middle file relocates the tags it moved" {
+  bif_row_13()
+}
+
+test "a type removed from a middle file relocates the tags it moved, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_13)
 }
 
 //# The pin capacity. Source functions sit in `[0, src_n)` padded to a
@@ -786,7 +923,7 @@ fn bic_main() -> String {
 }
 
 fn bic_probe(before: Int, after: Int) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bic_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(bic_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -804,7 +941,8 @@ fn bic_probe(before: Int, after: Int) -> String with Env + Exception + Fs {
   "cold=\{Array::get(cold_counts, at = 1)} warm=\{Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "a source region that crosses a pin-capacity boundary is relocated" {
+/// The row behind the test "a source region that crosses a pin-capacity boundary is relocated"; run at slot widths 0 and 3.
+fn bif_row_14() -> Unit with Console + Env + Exception + Fs {
   // 1010 source functions pad to a capacity of 1024; 1030 pad to 2048. The
   // cold build compiles the 1024-slot region plus the synthesized one (1025);
   // after the edit a full recompile would be 2049, and the two unchanged
@@ -812,4 +950,12 @@ test "a source region that crosses a pin-capacity boundary is relocated" {
   // instead -- `run` builds a closure, so its lambda slot moved with the
   // base.
   inspect(bic_probe(before = 1010, after = 1030), content = "cold=1025 warm=2045 equal=true")
+}
+
+test "a source region that crosses a pin-capacity boundary is relocated" {
+  bif_row_14()
+}
+
+test "a source region that crosses a pin-capacity boundary is relocated, at slot width 3 (#3941)" {
+  bif_at_slot_width(width = 3, row = bif_row_14)
 }

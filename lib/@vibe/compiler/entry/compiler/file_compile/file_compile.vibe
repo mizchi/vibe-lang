@@ -54,6 +54,7 @@ import @vibe/compiler/core {
   mark_private_builtin_references,
   merged_offset_space_reset,
   namespace_private_value_stmts,
+  reloc_slot_width,
   resolution_env_seed,
   sorted_names_of
 }
@@ -388,6 +389,18 @@ fn artifact_kind_for_mode(_ mode: String) -> String with Exception {
 /// this is defence in depth rather than the only separator -- but a kind per
 /// mode keeps the two caches reading the same way.
 fn persistent_artifact_kind_for_mode(_ mode: String) -> String with Exception {
+  // #3941: a module emitted at a slot width is a different artifact; width 0
+  // keeps the historical kinds.
+  let w = reloc_slot_width()
+  let base = persistent_artifact_kind_for_mode_minimal(mode)
+  if w == 0 {
+    base
+  } else {
+    String::concat(base, String::concat("-rsw", __to_string(w)))
+  }
+}
+
+fn persistent_artifact_kind_for_mode_minimal(_ mode: String) -> String with Exception {
   if mode == "mvp" {
     "file-compile-wasi-mvp"
   } else if mode == "no-dce" {
@@ -1317,6 +1330,24 @@ export fn prepare_file_fs_mode_rc_body(entry_path: String, entry_name: String) -
   ])
 }
 
+/// The persisted codegen-body-cache slot of a root: scoped to the entry PATH,
+/// independent of source content (the point is to hit after an edit). Two
+/// roots that share an entry name (`run`, `main`) must not share one slot, or
+/// their concurrent stores race on the same temp file.
+///
+/// #3941: a body emitted at a relocatable-slot width is not interchangeable
+/// with a minimal one, so the width scopes the slot; width 0 keeps the
+/// historical key. Exported so a test that clears the slot clears the one the
+/// compile will read, at whatever width it runs.
+export fn codegen_body_cache_artifact_key(_ entry_path: String) -> String {
+  let slot_width = reloc_slot_width()
+  if slot_width == 0 {
+    String::concat("self-describing-", compact_string_fingerprint(entry_path))
+  } else {
+    String::concat("self-describing-rsw", String::concat(__to_string(slot_width), String::concat("-", compact_string_fingerprint(entry_path))))
+  }
+}
+
 fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, source_groups: Array[(String, Array[(String, String)])], cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
   let prepared = prepare_file_body_inputs_fs(source_groups = source_groups, use_split = use_split)
   let merged_stmts = prepared.stmts
@@ -1330,11 +1361,8 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
   let eq_keys = prepared.eq_keys
   let lane_prov = prepared.prov
   let lane_split = prepared.split
-  // The key is independent of source CONTENT (the point is to hit after an
-  // edit) but scoped to the entry PATH: two roots that share a conventional
-  // entry name (`run`, `main`) must not share one artifact slot, or their
-  // concurrent stores race on the same temp file and one aborts.
-  let artifact_key = String::concat("self-describing-", compact_string_fingerprint(entry_path))
+  // Scoped to the entry path and the slot width (`codegen_body_cache_artifact_key`).
+  let artifact_key = codegen_body_cache_artifact_key(entry_path)
   // `"off"` IS OFF (#2647 Codex round 5). It used to load the artifact, compile
   // against it and store the result -- only `"verify"` was special-cased, so
   // every other value behaved like `"on"` while reading as a bypass. The
