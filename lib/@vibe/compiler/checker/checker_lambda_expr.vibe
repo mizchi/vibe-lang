@@ -9,7 +9,7 @@ import ./checker_int32.vibe {
 }
 
 import ./checker_retaining_write.vibe {
-  retaining_write_argument_mask
+  retaining_write_argument_mask, retaining_write_call_mask
 }
 
 import @vibe/compiler/checker/annotations {
@@ -403,7 +403,7 @@ export fn retaining_write_region_check(name: String, operation: Int, args: Array
   // lookup. Asking the ladder first keeps the lookup off every call site
   // whose callee retains nothing -- nearly all of them -- and the check
   // itself does nothing for those either way.
-  let retained = retaining_write_argument_mask(source_name = name, operation = operation)
+  let retained = retaining_write_call_mask(env = env, name = name, operation = operation)
   if Array::length(args) > 0 && retained != 0 && env_has_active_region(env) {
     let mut value_index = 1
     while value_index <= 2 {
@@ -596,8 +596,14 @@ fn lapw_scan(e: Expr, pname: String, pty: Type, bound: Array[String], env: TypeE
   match e {
     ECall(EIdent(callee, _), args, _, _) => {
       // A program function of a builtin's spelling stays the builtin here:
-      // this scan does not re-check a program callee's body.
-      let mask = retaining_write_argument_mask(source_name = callee, operation = resolved_builtin_operation_from_source(callee))
+      // this scan does not re-check a program callee's body. An alias the
+      // call's scope binds is followed; one bound inside the literal is not.
+      let operation = resolved_builtin_operation_from_source(callee)
+      let mask = if lapw_has(names = bound, name = callee) {
+        retaining_write_argument_mask(source_name = callee, operation = operation)
+      } else {
+        retaining_write_call_mask(env = env, name = callee, operation = operation)
+      }
       if param_visible && mask != 0 && Array::length(args) > 0 && lapw_target_outer(target = Array::get(args, at = 0), bound = bound) {
         let mut vi = 1
         while vi <= 2 && vi < Array::length(args) {

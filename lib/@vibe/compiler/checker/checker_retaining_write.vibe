@@ -2,7 +2,34 @@
 // region write checks (`retaining_write_region_check`, `lapw_scan`).
 
 import @vibe/compiler/core {
-  builtin_array_push, builtin_array_set, builtin_mutlist_push, builtin_mutlist_truncate, canonical_builtin_name
+  Type,
+  TypeEnv,
+  builtin_array_push,
+  builtin_array_set,
+  builtin_mutlist_push,
+  builtin_mutlist_truncate,
+  canonical_builtin_name,
+  resolved_builtin_operation_from_source
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  builtin_resolves_at
+}
+
+import @vibe/compiler/checker/traits {
+  env_marker_before
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  env_has_active_region
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_decls
+}
+
+import ./checker_region_retention.vibe {
+  retention_alias_source, retention_closure_scope, retention_marker, retention_name_scope
 }
 
 /// Argument positions retained by a mutable operation, encoded as a two-bit
@@ -49,4 +76,96 @@ fn retaining_write_operation_mask(_ operation: Int) -> Int {
   } else {
     0
   }
+}
+
+/// The retained-argument mask of a call by `name` inside an active region,
+/// with the checker's `operation` for it. A spelling with no answer of its own
+/// is asked through the aliases it may name (`retaining_write_alias_operation`).
+export fn retaining_write_call_mask(env: TypeEnv, name: String, operation: Int) -> Int {
+  let named = retaining_write_argument_mask(source_name = name, operation = operation)
+  if named == 0 && operation == 0 && env_has_active_region(env) {
+    retaining_write_operation_mask(retaining_write_alias_operation(env = env, name = name))
+  } else {
+    named
+  }
+}
+
+/// #3255 (Codex on #3984): the builtin operation a call by `name` reaches
+/// through function aliases -- a local `let put = Array::push`, an alias of an
+/// alias, or a top-level `let` -- or 0 when `name` is no alias of a builtin.
+/// A call through such an alias stores into its receiver what the builtin
+/// does, but its spelling named no retaining operation, so a region value it
+/// wrote into an outer binding was not seen (`let put = Array::push; put(sink,
+/// cell)`, directly or inside a function the retention recheck reads).
+///
+/// Each local alias is followed in the scope it was written in, through the
+/// marker `retention_bind_let` lays in front of it; a local binding without
+/// one (a parameter, a closure) ends the chain, as does any value that is not
+/// a bare name.
+export fn retaining_write_alias_operation(env: TypeEnv, name: String) -> Int {
+  let mut scope = env
+  let mut current = name
+  let mut local = true
+  let mut operation = 0
+  let mut depth = 0
+  let mut done = false
+  while !done && depth <= 8 {
+    let marker = if local {
+      env_marker_before(env = scope, marker = retention_marker(current), name = current)
+    } else {
+      None
+    }
+    match marker {
+      Some(CtNamed(text, _)) => if String::starts_with(text, prefix = "a:") {
+        match retention_closure_scope(env = scope, bound_name = current, text = text) {
+          Some(def_env) => {
+            scope = def_env
+            current = String::substring(text, start = 2, end = String::length(text))
+          },
+          None => {
+            done = true
+          }
+        }
+      } else {
+        done = true
+      },
+      Some(_) => {
+        done = true
+      },
+      None => if local && retention_name_scope(env = scope, name = current) == 1 {
+        done = true
+      } else {
+        let source = retaining_write_top_level_alias(current)
+        if source != "" {
+          local = false
+          current = source
+        } else {
+          if depth > 0 && builtin_resolves_at(env = scope, name = current, ident_off = 0 - 1) {
+            operation = resolved_builtin_operation_from_source(current)
+          } else {
+            ()
+          }
+          done = true
+        }
+      }
+    }
+    depth = depth + 1
+  }
+  operation
+}
+
+/// The name a top-level `let` of `name` aliases, or "".
+fn retaining_write_top_level_alias(_ name: String) -> String {
+  let mut source = ""
+  let mut found = false
+  for decl in retention_decls {
+    let (decl_name, value) = decl
+    if !found && String::equals(decl_name, name) {
+      found = true
+      source = retention_alias_source(value)
+    } else {
+      ()
+    }
+  }
+  source
 }
