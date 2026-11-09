@@ -25,7 +25,8 @@ import @vibe/compiler/checker/effects {
   set_call_callee_types,
   set_throw_site_kinds,
   standard_provider_owns_operation,
-  stmt_type_rows
+  stmt_type_rows,
+  strip_authority_grade
 }
 
 import @vibe/compiler/checker/type_relations {
@@ -780,6 +781,14 @@ fn resource_rows_in_stmts(stmts: Array[Stmt], res: ResourceRowCtx, errors: Array
       STest(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
       SBench(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
       SExample(_, body) => resource_rows_in_expr(e = body, res = res, errors = errors),
+      // An effectset member is a row label too: `with Reads` grants what
+      // `effectset Reads = { Kv[Logs] }` lists (Codex review on #4020).
+      SEffectSet(_, _, members) => {
+        for member in members {
+          resource_label_check(label = member, res = res, errors = errors)
+        }
+        ()
+      },
       // A declaration-owned function type -- a struct field, an enum or
       // suberror payload, a type alias body, a trait or effect signature,
       // an extern binding (Codex review on #4020).
@@ -847,8 +856,11 @@ fn resource_rows_in_texpr(te: TypeExpr, res: ResourceRowCtx, errors: Array[Strin
   }
 }
 
+/// The one place a row label's resource argument is read. The Optional
+/// grade is a property of the grant, not of the label, so `Fs[Missing]?` is
+/// checked as `Fs[Missing]` (Codex review on #4020).
 fn resource_label_check(label: String, res: ResourceRowCtx, errors: Array[String]) -> Unit {
-  let text = String::trim(label)
+  let text = strip_authority_grade(String::trim(label))
   let bi = String::index_of(text, needle = "[")
   if bi > 0 && String::ends_with(text, suffix = "]") {
     let base = text[0: bi]
