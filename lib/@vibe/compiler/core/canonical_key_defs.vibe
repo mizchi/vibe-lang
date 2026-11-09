@@ -132,7 +132,10 @@ let canonical_key_alias_size_cap = 65537
 
 /// An upper bound on the size each of `aliases` expands to, in their order.
 fn canonical_key_alias_sizes(_ aliases: Array[(String, Array[String], TypeExpr)]) -> Array[Int] {
-  // 0 = not visited, -1 = in progress (a cycle counts as one node), else size.
+  // 0 = not visited, -1 = in progress, else size. A cycle saturates: a
+  // recursive alias (`type A[T] = (A[T], A[T])`) names no type, and resolving
+  // it once per round doubled it each time (Codex on #3995). It is left out,
+  // with every alias that names it, and the checker reports it with the edit.
   let memo: Array[Int] = []
   for _ in aliases {
     Array::push(memo, value = 0)
@@ -150,7 +153,7 @@ fn canonical_key_alias_size(aliases: Array[(String, Array[String], TypeExpr)], m
   if known > 0 {
     known
   } else if known < 0 {
-    1
+    canonical_key_alias_size_cap
   } else {
     Array::set(memo, at = at, value = 0 - 1)
     let (_, _, target) = Array::get(aliases, at = at)
