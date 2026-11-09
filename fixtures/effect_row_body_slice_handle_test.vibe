@@ -1,0 +1,85 @@
+// #3707: a string slice in a body whose row carries a user effect left
+// that effect's handle uncompilable. `xs[a:b]` parses to `__slice` and
+// `xs[a:]` adds `__len`, and neither was on the pure-builtin table the
+// evidence and suspend lowerings read, so the handle could not see past
+// the call and was refused.
+
+effect Probe {
+  Exists(String) -> Bool
+}
+
+// Both slice spellings, before and after the perform.
+fn nearest(_ path: String) -> String with Probe {
+  let head = path[0: 2]
+  let found = perform Probe::Exists(head)
+  let rest = path[1:]
+  if found {
+    "\{head}|\{rest}"
+  } else {
+    rest
+  }
+}
+
+// A loop that slices on each step and performs on each step.
+fn trim_until(_ path: String) -> String with Probe {
+  let mut cur = path
+  let mut going = true
+  while going && String::length(cur) > 0 {
+    if perform Probe::Exists(cur) {
+      going = false
+    } else {
+      cur = cur[1:]
+    }
+  }
+  cur
+}
+
+// An arm that leaves with `throw` puts the handle on the suspend driver,
+// which clones `nearest` and `trim_until` into steps.
+fn guarded(_ path: String) -> String with Exception {
+  handle {
+    let a = nearest(path)
+    let b = trim_until(path)
+    "\{a}/\{b}"
+  } with {
+    Probe::Exists(p) => if p == "" {
+      throw("empty probe")
+    } else {
+      resume(String::starts_with(p, prefix = "ab") || p == "cd")
+    }
+  }
+}
+
+fn guarded_or(_ path: String) -> String {
+  handle { guarded(path) } with {
+    Exception::Throw(m) => "threw: \{m}"
+  }
+}
+
+test "a slice in an effect-row body compiles under a tail-resumptive handle" {
+  let r = handle { nearest("abcd") } with {
+    Probe::Exists(p) => resume(p == "ab")
+  }
+  inspect(r, "ab|bcd")
+  let miss = handle { nearest("xyz") } with {
+    Probe::Exists(p) => resume(p == "ab")
+  }
+  inspect(miss, "yz")
+}
+
+test "a slicing loop performs on each step" {
+  let seen: Array[String] = []
+  let r = handle { trim_until("abcd") } with {
+    Probe::Exists(p) => {
+      Array::push(seen, value = p)
+      resume(p == "cd")
+    }
+  }
+  inspect(r, "cd")
+  inspect(seen, "[abcd, bcd, cd]")
+}
+
+test "a slice in an effect-row body compiles under the suspend driver" {
+  inspect(guarded_or("abcd"), "ab|bcd/abcd")
+  inspect(guarded_or("xxcd"), "xcd/cd")
+}
