@@ -1,0 +1,203 @@
+// RC leak guard: an early exit ahead of a branch consume no longer keeps the
+// consume's dup on the paths that skip it.
+//
+// A plain `let`'s or a parameter's planned dups are taken at its declaration
+// (a parameter's at function entry), on every path. pe_dup_merge budgets a
+// branch's larger arm and marks it, so a guarded path drop releases the
+// reference on a path that ran none of the marks (#1980). Any early exit that
+// released the binding declined that merge -- a parameter's whenever the body
+// had an exit at all -- so the guard-clause shape `if bad { return d }` ahead
+// of `if c { sink(v) }` leaked the dup on every call that took neither.
+//
+// An exit taken before every occurrence the dups were planned for leaves on a
+// path that ran no mark, so it holds the initial reference plus the merged
+// budget, which is what its row releases (`pe_dsplit_ok`, `pf_exit_late`).
+// An exit after such an occurrence still declines.
+//
+// Measured at N=20000 on the compiler before this change:
+//
+//   | shape                                          |      before | after |
+//   |------------------------------------------------|------------:|------:|
+//   | `let`, guard return, consume on one branch     |   754,356 B | 112 B |
+//   | parameter, guard return, the same              |   754,356 B | 112 B |
+//   | loop `let`, `continue` before the consume      | 2,640,020 B | 112 B |
+//
+// A parameter whose exit comes AFTER the consume merges too, but is not in
+// the bounded loop: a path that exits without consuming holds one reference
+// more than the row releases (`1 + B - cons`, `cons` from the consuming
+// path), so it still leaks that value -- 880,020 B before, 125,772 B after,
+// one array per odd `i % 7 == 0` call. `kept_param_exit_after` runs the shape
+// under VIBE_RC=shadow, which is what proves its exit releases nothing a
+// path still holds.
+//
+// The controls keep the consumed values in an array past the call -- behind
+// a guard, inside the arm the exit leaves from, and with the exit after the
+// consume -- so a release on a path still holding the value would free it
+// under the array: VIBE_RC=shadow traps on that. The gate compiles this
+// under VIBE_RC=1 and bounds __heap_ptr growth, and runs it under
+// VIBE_RC=shadow (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh,
+// 40e8). `main` returns 0: every shape adds 0, so the answer cannot drift
+// with the allocation behaviour being measured.
+struct H {
+  inner: Array[Int]
+}
+
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+// Takes its argument: stores it into a record that it then drops.
+fn sink(_ v: Array[Int]) -> Int {
+  let h = H::{ inner: v }
+  Array::get(h.inner, at = 0)
+}
+
+fn let_guard(_ i: Int) -> Int {
+  let v = mka(i)
+  if i % 7 == 0 {
+    return 0
+  }
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+fn param_guard(_ v: Array[Int], _ i: Int) -> Int {
+  if i % 7 == 0 {
+    return 0
+  }
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// A `continue` leaves a binding of the loop body before its consume.
+fn loop_continue(_ i: Int) -> Int {
+  let mut k = 0
+  let mut s = 0
+  while k < 4 {
+    let v = mka(i + k)
+    k = k + 1
+    if k == 2 {
+      continue
+    }
+    let a = if (i + k) % 2 == 0 {
+      sink(v) - (i + k - 1)
+    } else {
+      0
+    }
+    s = s + (a + Array::get(v, at = 2) - (i + k + 1)) * 0
+  }
+  s
+}
+
+// The exit is an arm of the merge itself, walked before the consuming arm.
+fn exit_arm(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 7 == 0 {
+    return 0
+  } else if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 1) - (i + 1)) * 0
+}
+
+// Controls: the consumed value outlives the call.
+fn kept_guard(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  if i % 3 == 2 {
+    return 0
+  }
+  if i % 2 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  Array::get(v, at = 2) - (i + 2)
+}
+
+// `v` is `mka(i + 10)`.
+fn kept_param_guard(ks: Array[Array[Int]], v: Array[Int], i: Int) -> Int {
+  if i % 3 == 2 {
+    return 0
+  }
+  if i % 2 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  Array::get(v, at = 2) - (i + 12)
+}
+
+fn kept_exit_arm(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  if i % 3 == 2 {
+    return Array::get(v, at = 0) - i
+  } else if i % 2 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  Array::get(v, at = 1) - (i + 1)
+}
+
+// `v` is `mka(i + 10)`; the exit comes after the consume.
+fn kept_param_exit_after(ks: Array[Array[Int]], v: Array[Int], i: Int) -> Int {
+  if i % 2 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  if i % 3 == 2 {
+    return Array::get(v, at = 0) - (i + 10)
+  }
+  Array::get(v, at = 2) - (i + 12)
+}
+
+// The exit comes after the consume, so a `let`'s merge still declines.
+fn kept_exit_after(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  if i % 2 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  if i % 3 == 2 {
+    return Array::get(v, at = 0) - i
+  }
+  Array::get(v, at = 2) - (i + 2)
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + let_guard(i) + param_guard(mka(i), i) + loop_continue(i) + exit_arm(i)
+    i = i + 1
+  }
+  let ks: Array[Array[Int]] = []
+  let mut j = 0
+  while j < 6 {
+    acc = acc + kept_guard(ks = ks, i = j) + kept_param_guard(ks = ks, v = mka(j + 10), i = j) + kept_exit_arm(ks = ks, i = j + 20) + kept_exit_after(ks = ks, i = j + 30) + kept_param_exit_after(ks = ks, v = mka(j + 40), i = j + 30)
+    j = j + 1
+  }
+  // Kept: the even calls that take no exit -- 0, 4 (kept_guard), 10, 14
+  // (kept_param_guard), 22, 24 (kept_exit_arm) -- and every even call of the
+  // two that push before their exit: 30, 32, 34 (kept_exit_after) and 40, 42,
+  // 44 (kept_param_exit_after). 12 arrays.
+  let mut s = 0
+  let mut m = 0
+  while m < Array::length(ks) {
+    s = s + Array::get(Array::get(ks, at = m), at = 0)
+    m = m + 1
+  }
+  acc + s - 296 + Array::length(ks) - 12
+}

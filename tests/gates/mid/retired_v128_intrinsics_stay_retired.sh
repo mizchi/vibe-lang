@@ -514,6 +514,46 @@ fi
 rm -rf "$psdir"
 echo "[compiler-gate] RC parameter-branch, field-arm and truncate-tally guard ok (heap_used=$ps_used B at N=20000)"
 
+# 40e8. #1980: an early exit no longer declines a branch-dup merge it cannot
+# disturb. Every exit that released a binding declined pe_dup_merge for it --
+# for a parameter, any exit in the body -- so `if bad { return d }` ahead of
+# `if c { sink(v) }` kept the consume's dup on every call that took neither
+# (pe_dsplit_ok). An exit row reads the merged budget and releases what the
+# path that consumed the most still holds; a parameter's exit release reads
+# no path flag, and a `let`'s exit before every consume runs no mark. The
+# fixture measured 4,905,100 B at N=20000 before and 1,652 B after; the bound
+# is 4,000. Its controls keep the consumed values past the call -- behind the
+# guard, in the arm the exit leaves from, and with the exit after the consume
+# -- so the shadow run is what proves no exit or path drop released a value
+# still held.
+echo "[compiler-gate] 40e8/40 RC branch-dup early-exit guard"
+gate_workdir bxdir "_build/_gate_rc_branch_dup_exit"
+for bx_mode in 1 shadow; do
+  VIBE_RC="$bx_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/rc_branch_dup_exit_leak_test.vibe" "$bxdir/rc_$bx_mode.wasm" main >/dev/null 2>&1 || true
+  gate_require_artifact "$bxdir/rc_$bx_mode.wasm" "rc_branch_dup_exit fixture did not compile under VIBE_RC=$bx_mode"
+done
+bx_shadow_json="$(node scripts/measure_heap.mjs "$bxdir/rc_shadow.wasm" main 2>&1 || true)"
+bx_shadow_result="$(printf '%s' "$bx_shadow_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ "$bx_shadow_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit under VIBE_RC=shadow did not return 0 (an exit or a path drop released a value a path still held): $bx_shadow_json" >&2; exit 1
+fi
+bx_json="$(node scripts/measure_heap.mjs "$bxdir/rc_1.wasm" main 2>/dev/null)"
+bx_used="$(printf '%s' "$bx_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+bx_result="$(printf '%s' "$bx_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$bx_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_branch_dup_exit heap ($bx_json)" >&2; exit 1
+fi
+if [ "$bx_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit wrong result $bx_result (want 0)" >&2; exit 1
+fi
+if [ "$bx_used" -ge 4000 ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit heap_used=$bx_used >= 4000 (an early exit declines a branch-dup merge, so the consume's dup is held on the paths that skip it; measured 4905100 at N=20000 when it did)" >&2; exit 1
+fi
+rm -rf "$bxdir"
+echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a

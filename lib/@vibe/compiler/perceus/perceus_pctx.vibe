@@ -329,6 +329,14 @@ export let pf_drm: Int = 256
 // treats it like one; codegen gives its path drop at the epilogue.
 export let pf_param: Int = 512
 
+// An early exit and `pe_dup_merge`. PF_DMARK_SEEN: the walk has recorded an
+// occurrence a dup of this binding was planned for (`pe_note_dup_occurrence`).
+// PF_EXIT_LATE: an exit row for it was taken after such an occurrence, so a
+// path reaching that exit may have run a consume mark (`pe_dsplit_ok`).
+let pf_dmark_seen: Int = 1024
+
+let pf_exit_late: Int = 2048
+
 /// Is `id` a binding whose planned dups codegen takes up front, on every path
 /// -- a plain `let`, or a parameter?
 fn pe_dup_upfront(ctx: PCtx, id: Int) -> Bool {
@@ -424,6 +432,7 @@ export fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offse
 /// not recorded -- which is what makes a merge over it decline.
 export fn pe_note_dup_occurrence(ctx: PCtx, id: Int, name: String, use_offset: Int) -> Unit {
   if pe_dup_upfront(ctx = ctx, id = id) && use_offset >= 0 && id >= ctx.loop_floor {
+    pe_flag_or(ctx = ctx, id = id, bit = pf_dmark_seen)
     Array::push(ctx.dmark_ids, value = id)
     Array::push(ctx.dmark_offs, value = use_offset)
     Array::push(ctx.dmark_names, value = name)
@@ -615,12 +624,29 @@ export fn pe_dup_merge_arms(ctx: PCtx, n: Int, bounds: Array[Int], owed: (Int) -
 
 /// May binding `id`'s `pe_dup_merge` decisions be applied? Not when any merge
 /// declined it, when the #2389 split already guards it (one flag cannot serve
-/// both), or when an early exit releases it: an exit row's count reads the
-/// dup budget these decisions change. A parameter is declined when the body
-/// has any exit at all: codegen releases parameters at an exit from its own
-/// table, which knows nothing of a path flag.
+/// both), or when it is a `let` an early exit releases after an occurrence
+/// its dups were planned for (`pf_exit_late`).
+///
+/// An exit row is resolved after the redundant rows are dropped
+/// (`pe_emit_exit_rows` reads the reduced budget `B`), and its count is at
+/// most `1 + B - cons`, `cons` the most any path reaching the exit consumed.
+/// A path there holds `1 + B` less what it consumed, so the row never
+/// releases a reference the path still needs, wherever the exit is. That is
+/// all a parameter's exit release reads: codegen's table for it carries no
+/// path flag (`linked_compile_function_bodies`), so a parameter merges
+/// whatever exits its body has. Where a path consumed less than `cons`, the
+/// exit leaks the difference, as the declined plan did.
+///
+/// A `let`'s exit release is guarded on its path flag as well, so on a path
+/// that ran a consume mark it releases nothing, where the declined plan
+/// released the row's count. An exit taken before every occurrence the dups
+/// were planned for is reached by no such path: every mark is one of those
+/// occurrences, and none sits in a loop the binding is declared outside of.
+/// Only an exit after one declines the merge. The guard-clause shape `if bad
+/// { return d }` ahead of a branch that consumes the binding used to decline
+/// it, leaking one dup per call that skipped the consume (#1980).
 export fn pe_dsplit_ok(ctx: PCtx, id: Int) -> Bool {
-  !pe_flag_has(ctx = ctx, id = id, bit = pf_dsplit_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_int_array_has(xs = ctx.exit_ids, v = id) && !(pe_flag_has(ctx = ctx, id = id, bit = pf_param) && ctx.exit_ord > 0)
+  !pe_flag_has(ctx = ctx, id = id, bit = pf_dsplit_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_split) && (pe_flag_has(ctx = ctx, id = id, bit = pf_param) || !pe_flag_has(ctx = ctx, id = id, bit = pf_exit_late))
 }
 
 /// May binding `id` get a path drop of its own? Codegen gives a `PaPathDrop`
@@ -1106,6 +1132,11 @@ export fn pe_exit(ctx: PCtx, scope: PScope, kind: Int, floor: Int, operand: Expr
           // #3175: a split binding (see `pe_emit_exit_rows`) is a candidate
           // with nothing remaining, too.
           if id >= floor && id < Array::length(ctx.remaining) && pe_flag_has(ctx = ctx, id = id, bit = pf_exit_owner) && (Array::get(ctx.remaining, at = id) > 0 || pe_flag_has(ctx = ctx, id = id, bit = pf_split)) && !Array::get(ctx.scalar, at = id) && !Array::get(ctx.view_call_let, at = id) {
+            if pe_flag_has(ctx = ctx, id = id, bit = pf_dmark_seen) {
+              pe_flag_or(ctx = ctx, id = id, bit = pf_exit_late)
+            } else {
+              ()
+            }
             Array::push(ctx.exit_ids, value = id)
             Array::push(ctx.exit_ords, value = ord)
             Array::push(ctx.exit_rems, value = Array::get(ctx.remaining, at = id))
