@@ -26,10 +26,10 @@
 //     `cli_main` and the `__test_*` / `__bench_*` blocks and drops the rest
 //     of an executable's exports; a flat module source marks every function
 //     `export`, so without this every function would be external and the
-//     pass would fold nothing there). The CLI announces that decision with
-//     `set_executable_exports_stripped` (core/executable_exports.vibe, the
-//     one spelling of the keep list) before it compiles; the default, for
-//     every other caller, is that an export stays callable;
+//     pass would fold nothing there). The compile receives that decision as
+//     its own `exports_stripped` argument (core/executable_exports.vibe holds
+//     the one spelling of the keep list); a caller that does not strip
+//     passes `false`, under which an export stays callable;
 //   - the name is referenced as a VALUE anywhere (`let g = f`, a lane
 //     table, a callback) -- that call goes through a function reference
 //     the scan cannot follow;
@@ -76,7 +76,7 @@ import ./expr_children.vibe {
 }
 
 import ./executable_exports.vibe {
-  executable_export_kept, executable_exports_stripped
+  executable_export_kept
 }
 
 import @vibe/core {
@@ -146,15 +146,15 @@ fn cbf_mark_bad(t: CbfTable, name: String) -> Unit {
 /// Index every top-level `fn` the pass may fold. A name that is external,
 /// generic, or declared twice is entered as `bad` (or not at all) so a call
 /// scan can never promote it.
-fn cbf_export_is_external(name: String, entry_name: String) -> Bool {
-  if executable_exports_stripped() {
+fn cbf_export_is_external(name: String, entry_name: String, exports_stripped: Bool) -> Bool {
+  if exports_stripped {
     executable_export_kept(name = name, entry_name = entry_name)
   } else {
     true
   }
 }
 
-fn cbf_collect_candidates(stmts: Array[Stmt], entry_name: String) -> CbfTable {
+fn cbf_collect_candidates(stmts: Array[Stmt], entry_name: String, exports_stripped: Bool) -> CbfTable {
   let t = cbf_table_new()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -170,7 +170,7 @@ fn cbf_collect_candidates(stmts: Array[Stmt], entry_name: String) -> CbfTable {
               Array::push(t.stmt_idx, value = i)
               Array::push(t.arity, value = Array::length(params))
               Array::push(t.base, value = Array::length(t.state))
-              Array::push(t.bad, value = name == entry_name || (exported && cbf_export_is_external(name = name, entry_name = entry_name)) || Array::length(tparams) > 0)
+              Array::push(t.bad, value = name == entry_name || (exported && cbf_export_is_external(name = name, entry_name = entry_name, exports_stripped = exports_stripped)) || Array::length(tparams) > 0)
               let mut pi = 0
               while pi < Array::length(params) {
                 Array::push(t.state, value = if cbf_is_bool_param(Array::get(params, at = pi)) {
@@ -592,8 +592,8 @@ fn cbf_rewritable_stmts(_ t: CbfTable) -> Array[Int] {
 
 /// The index, the WAT texts, and every statement outside `rewritable`,
 /// scanned once. `rewritable` is ascending.
-fn cbf_base_table(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -> (CbfTable, Array[Int]) {
-  let t = cbf_collect_candidates(stmts = stmts, entry_name = entry_name)
+fn cbf_base_table(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], exports_stripped: Bool) -> (CbfTable, Array[Int]) {
+  let t = cbf_collect_candidates(stmts = stmts, entry_name = entry_name, exports_stripped = exports_stripped)
   let rewritable = cbf_rewritable_stmts(t)
   let mut wi = 0
   while wi < Array::length(wat_texts) {
@@ -691,11 +691,12 @@ fn cbf_round(stmts: Array[Stmt], base_table: CbfTable, rewritable: Array[Int], s
 
 /// Fold the constant Bool parameters of `stmts` in place (see the header).
 /// `entry_name` is callable from outside the program, as is every export
-/// that outlives the strip; `wat_texts` are the inline-wasm bodies the
-/// prelude extracted. Returns the total number of parameter reads replaced;
+/// that outlives the strip -- all of them when `exports_stripped` is false,
+/// the keep list's when the caller will strip the executable's exports;
+/// `wat_texts` are the inline-wasm bodies the prelude extracted. Returns the total number of parameter reads replaced;
 /// 0 means nothing changed.
-export fn fold_const_bool_params(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -> Int {
-  fold_const_bool_params_signed(stmts = stmts, entry_name = entry_name, wat_texts = wat_texts, sig_names = array_empty(), sig_values = array_empty())
+export fn fold_const_bool_params(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], exports_stripped: Bool) -> Int {
+  fold_const_bool_params_signed(stmts = stmts, entry_name = entry_name, wat_texts = wat_texts, sig_names = array_empty(), sig_values = array_empty(), exports_stripped = exports_stripped)
 }
 
 /// `fold_const_bool_params`, also reporting WHAT it did to each function, so a
@@ -716,13 +717,13 @@ export fn fold_const_bool_params(stmts: Array[Stmt], entry_name: String, wat_tex
 /// cache keys a rewritten body on (#2818): a cached body is replayed only into
 /// a compile whose signature for that function is the one it was compiled
 /// under.
-export fn fold_const_bool_params_signed(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], sig_names: Array[String], sig_values: Array[String]) -> Int {
+export fn fold_const_bool_params_signed(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], sig_names: Array[String], sig_values: Array[String], exports_stripped: Bool) -> Int {
   let sigs = CbfSigs::{
     names: array_empty(),
     values: array_empty(),
     idx: MutMap::new_string()
   }
-  let (base_table, rewritable) = cbf_base_table(stmts = stmts, entry_name = entry_name, wat_texts = wat_texts)
+  let (base_table, rewritable) = cbf_base_table(stmts = stmts, entry_name = entry_name, wat_texts = wat_texts, exports_stripped = exports_stripped)
   let mut total = 0
   let mut rounds = 0
   let mut again = true

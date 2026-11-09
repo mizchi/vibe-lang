@@ -445,7 +445,7 @@ fn validate_source_exports_if_user(stmts: Array[Stmt], env: Option[TypeEnv], tru
   }
 }
 
-fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
+fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_generated: Bool, exports_stripped: Bool) -> Bytes with Exception {
   // #3126 review: one source, no recorded files -- drop what a previous
   // FS compile in this process left, so no site is placed in its files.
   merged_offset_space_reset()
@@ -465,15 +465,15 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   desugar_after_check(stmts = stmts, eq_offsets = eq_offsets, eq_keys = eq_keys)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts = stmts, entry_name = entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(bytes = compile_wasi_module_impl_with_typed_offsets(stmts = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys), wrap_async = wrap_async, user_exits = user_exits)
+  maybe_wrap_async_component(bytes = compile_wasi_module_impl_with_typed_offsets(stmts = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys, exports_stripped = exports_stripped), wrap_async = wrap_async, user_exits = user_exits)
 }
 
-export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_impl(source = source, entry_name = entry_name, trusted_generated = false)
+export fn compile_source_wasi_only(source: String, entry_name: String, exports_stripped: Bool) -> Bytes with Exception {
+  compile_source_wasi_only_impl(source = source, entry_name = entry_name, trusted_generated = false, exports_stripped = exports_stripped)
 }
 
-export fn compile_generated_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_impl(source = source, entry_name = entry_name, trusted_generated = true)
+export fn compile_generated_source_wasi_only(source: String, entry_name: String, exports_stripped: Bool) -> Bytes with Exception {
+  compile_source_wasi_only_impl(source = source, entry_name = entry_name, trusted_generated = true, exports_stripped = exports_stripped)
 }
 
 /// Coverage (#cov): same source pipeline as compile_source_wasi_only but routes
@@ -523,7 +523,7 @@ export fn compile_generated_source_wasi_only_coverage(source: String, entry_name
 /// selfbuild / bootstrap / e2e gates compile real programs (incl. the whole
 /// compiler) under RC via an env toggle in cli_main — the full-scale validity +
 /// correctness signal the memory-limited test probes cannot produce.
-fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_generated: Bool, cfg_flags: Option[Array[String]]) -> Bytes with Exception {
+fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_generated: Bool, cfg_flags: Option[Array[String]], exports_stripped: Bool) -> Bytes with Exception {
   // #3126 review: one source, no recorded files -- drop what a previous
   // FS compile in this process left, so no site is placed in its files.
   merged_offset_space_reset()
@@ -546,22 +546,22 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   desugar_after_check(stmts = stmts, eq_offsets = eq_offsets, eq_keys = eq_keys)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts = stmts, entry_name = entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(bytes = compile_wasi_module_rc_impl_with_typed_offsets(stmts_in = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys), wrap_async = wrap_async, user_exits = user_exits)
+  maybe_wrap_async_component(bytes = compile_wasi_module_rc_impl_with_typed_offsets(stmts_in = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys, exports_stripped = exports_stripped), wrap_async = wrap_async, user_exits = user_exits)
 }
 
 export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = false, cfg_flags = None)
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = false, cfg_flags = None, exports_stripped = false)
 }
 
 export fn compile_generated_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = true, cfg_flags = None)
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = true, cfg_flags = None, exports_stripped = false)
 }
 
 /// Invocation-scoped RC lane (#1953). Target flags are the only authority
 /// supplied by Config. Generated-source trust remains an explicit caller input.
-export fn compile_source_wasi_only_rc_configured(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Config + Exception {
+export fn compile_source_wasi_only_rc_configured(source: String, entry_name: String, trusted_generated: Bool, exports_stripped: Bool) -> Bytes with Config + Exception {
   let cfg_flags = cfg_flags_from_csv(perform Config::CfgFlags())
-  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = trusted_generated, cfg_flags = Some(cfg_flags))
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = trusted_generated, cfg_flags = Some(cfg_flags), exports_stripped = exports_stripped)
 }
 
 /// #715 recurrence guard: same RC pipeline, but the produced module carries
@@ -610,8 +610,8 @@ export {
 
 /// CLI boundary for one RC invocation. The immutable snapshot is scoped here
 /// so the dispatcher and unrelated compiler modes need no Config authority.
-export fn compile_source_wasi_only_rc_with_cfg(source: String, entry_name: String, trusted_generated: Bool, cfg_csv: String) -> Bytes with Exception {
+export fn compile_source_wasi_only_rc_with_cfg(source: String, entry_name: String, trusted_generated: Bool, cfg_csv: String, exports_stripped: Bool) -> Bytes with Exception {
   handle {
-    compile_source_wasi_only_rc_configured(source = source, entry_name = entry_name, trusted_generated = trusted_generated)
+    compile_source_wasi_only_rc_configured(source = source, entry_name = entry_name, trusted_generated = trusted_generated, exports_stripped = exports_stripped)
   } with { Config::CfgFlags() => resume(cfg_csv) }
 }

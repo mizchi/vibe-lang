@@ -1,9 +1,6 @@
 import @vibe/compiler/codegen/wasi {
   lc_prepare_section_facts
 }
-import @vibe/compiler/core {
-  set_executable_exports_stripped
-}
 import @vibe/compiler/syntax {
   lex, parse_program
 }
@@ -11,12 +8,10 @@ import @vibe/compiler/syntax {
 test "section facts survive discarding syntax and snapshot export policy" {
   let stmts = parse_program(lex("fn main() -> Unit { () }\nlet constant = 7\nfn helper(a: Int, b?: Int) -> Int { a }\n"))
   let indices = [0, 1, 2]
-  set_executable_exports_stripped(true)
   let facts = lc_prepare_section_facts(stmts = stmts, entry_name = "main", entry_user_idx = 0, fn_stmt_indices = indices, num_user_funcs = 3, effect_names = [
-  ], debug_break = true, dbgargs_cap = 8)
+  ], debug_break = true, dbgargs_cap = 8, exports_stripped = true)
   Array::truncate(stmts, length = 0)
   Array::truncate(indices, length = 0)
-  set_executable_exports_stripped(false)
   inspect(facts.entry_returns_unit, content = "true")
   inspect(facts.uses_exceptions, content = "false")
   inspect(facts.strip_executable_exports, content = "true")
@@ -30,12 +25,12 @@ test "debug metadata is bounded and absent outside break builds" {
   let stmts = parse_program(lex("fn main(a: Int, b: Int) -> Int { a - b }"))
   let capped = lc_prepare_section_facts(stmts = stmts, entry_name = "main", entry_user_idx = 0, fn_stmt_indices = [
     0
-  ], num_user_funcs = 1, effect_names = [], debug_break = true, dbgargs_cap = 1)
+  ], num_user_funcs = 1, effect_names = [], debug_break = true, dbgargs_cap = 1, exports_stripped = false)
   inspect(String::join(Array::get(capped.debug_param_names, at = 0), sep = ","), content = "a")
   // The ordinary lane must not read debug-only syntax indices at all.
   let plain = lc_prepare_section_facts(stmts = stmts, entry_name = "main", entry_user_idx = 0, fn_stmt_indices = [
     -1
-  ], num_user_funcs = 1, effect_names = [], debug_break = false, dbgargs_cap = 8)
+  ], num_user_funcs = 1, effect_names = [], debug_break = false, dbgargs_cap = 8, exports_stripped = false)
   inspect(Array::length(plain.debug_param_names), content = "0")
   inspect(plain.entry_returns_unit, content = "false")
 }
@@ -43,9 +38,9 @@ test "debug metadata is bounded and absent outside break builds" {
 test "section facts distinguish entry annotations and a missing entry" {
   let stmts = parse_program(lex("let main: () -> Unit = () -> { () }"))
   let unit = lc_prepare_section_facts(stmts = stmts, entry_name = "main", entry_user_idx = 0, fn_stmt_indices = [
-  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8)
+  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8, exports_stripped = false)
   let absent = lc_prepare_section_facts(stmts = stmts, entry_name = "main", entry_user_idx = -1, fn_stmt_indices = [
-  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8)
+  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8, exports_stripped = false)
   inspect(unit.entry_returns_unit, content = "true")
   inspect(absent.entry_returns_unit, content = "false")
 }
@@ -54,11 +49,11 @@ test "exception facts retain both syntax and declared-effect requirements" {
   let throwing = parse_program(lex("fn main() -> Int allows Exception { throw(\"boom\") }"))
   let pure = parse_program(lex("fn main() -> Int { 7 }"))
   let syntax = lc_prepare_section_facts(stmts = throwing, entry_name = "main", entry_user_idx = 0, fn_stmt_indices = [
-  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8)
+  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8, exports_stripped = false)
   let declared = lc_prepare_section_facts(stmts = pure, entry_name = "main", entry_user_idx = 0, fn_stmt_indices = [
-  ], num_user_funcs = 0, effect_names = ["Ask"], debug_break = false, dbgargs_cap = 8)
+  ], num_user_funcs = 0, effect_names = ["Ask"], debug_break = false, dbgargs_cap = 8, exports_stripped = false)
   let none = lc_prepare_section_facts(stmts = pure, entry_name = "main", entry_user_idx = 0, fn_stmt_indices = [
-  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8)
+  ], num_user_funcs = 0, effect_names = [], debug_break = false, dbgargs_cap = 8, exports_stripped = false)
   inspect(syntax.uses_exceptions, content = "true")
   inspect(declared.uses_exceptions, content = "true")
   inspect(none.uses_exceptions, content = "false")

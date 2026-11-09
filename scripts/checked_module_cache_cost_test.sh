@@ -35,9 +35,10 @@ trap 'rm -rf "$work" "$mutant"' EXIT
 failures=0
 
 # $1 case name, $2 expected substring of the refusal, $3 python literal to
-# replace, $4 its replacement.
+# replace, $4 its replacement; any further arguments go to the measurement.
 expect_red() {
   local name="$1" expected="$2" from="$3" to="$4"
+  shift 4
   rm -f "$mutant"
   # A mutation that matched nothing would leave the measurement intact and the
   # case would "pass" having proved nothing (#2248).
@@ -51,7 +52,7 @@ if count != 1:
 pathlib.Path(os.environ["MUTANT"]).write_text(text.replace(frm, to, 1))
 PY
   local log="$work/$name.log"
-  if node "$mutant" "$stage2" --rounds 1 --cases closure --out "$work/$name" >"$log" 2>&1; then
+  if node "$mutant" "$stage2" --rounds 1 --cases closure --out "$work/$name" "$@" >"$log" 2>&1; then
     echo "[checked-module-cost-test] FAIL: $name was accepted; the rule cannot fire" >&2
     failures=$((failures + 1))
     return
@@ -89,17 +90,27 @@ expect_red lane-is-not-the-lane "expected 5 on the on lane" \
   'VIBE_CHECKED_MODULE_CACHE: lane,' \
   'VIBE_CHECKED_MODULE_CACHE: "off",'
 
-# The green control. Without it a measurement that always refused would pass
-# every case above while measuring nothing at all.
+# 4. The frontend boundary (`--cache ast`, #2507): an `on` lane whose AST
+#    cache is not actually on publishes no binary AST on its cold run, and must
+#    be refused for that rather than reported as a lane that costs nothing.
+expect_red ast-lane-is-not-the-lane "published no ast artifact" \
+  'VIBE_EXPERIMENTAL_AST_CACHE: lane === "on" ? "1" : "0"' \
+  'VIBE_EXPERIMENTAL_AST_CACHE: "0"' \
+  --cache ast
+
+# The green controls, one per measured cache. Without them a measurement that
+# always refused would pass every case above while measuring nothing at all.
 rm -f "$mutant"
-if ! node scripts/checked_module_cache_cost.mjs "$stage2" --rounds 1 --cases closure \
-     --out "$work/green" >"$work/green.log" 2>&1; then
-  echo "[checked-module-cost-test] FAIL: an unmutated run was refused" >&2
-  tail -n 12 "$work/green.log" >&2
-  failures=$((failures + 1))
-else
-  echo "[checked-module-cost-test] green ok: unmutated run"
-fi
+for kind in checked-module ast; do
+  if ! node scripts/checked_module_cache_cost.mjs "$stage2" --rounds 1 --cases closure \
+       --cache "$kind" --out "$work/green-$kind" >"$work/green-$kind.log" 2>&1; then
+    echo "[checked-module-cost-test] FAIL: an unmutated --cache $kind run was refused" >&2
+    tail -n 12 "$work/green-$kind.log" >&2
+    failures=$((failures + 1))
+  else
+    echo "[checked-module-cost-test] green ok: unmutated --cache $kind run"
+  fi
+done
 
 if [ "$failures" -ne 0 ]; then
   echo "[checked-module-cost-test] FAIL: $failures case(s)" >&2
