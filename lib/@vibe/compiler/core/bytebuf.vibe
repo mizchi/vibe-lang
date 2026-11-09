@@ -100,6 +100,182 @@ export fn leb128_encode_u32(buf: Bytes, value: Int) -> Unit {
   }
 }
 
+//# Fixed-width relocatable slots (#3941)
+//
+// A `call` target is the immediate the body-cache relocator rewrites when a
+// function is added, removed or reordered (#2669). Minimal LEB128 makes its
+// byte count track the index's magnitude, so a callee crossing 127 -> 128
+// grows every caller by a byte -- including bodies in modules the edit never
+// touched. With a slot width set, those immediates are emitted at least that
+// wide (a non-minimal LEB128 is valid wasm up to ceil(32 / 7) = 5 bytes), so
+// a body's length no longer depends on where the index assignment put its
+// callees. 0 is minimal, the production default.
+//
+// A compile-wide cell, set once where the lane is requested
+// (`fs_lane_request` / `ss_lane_request`), like `set_inline_wat_int_tagged`.
+// Every writer of a function index in a body (`call`, `ref.func`) -- the
+// emitters, the body-cache relocator and late-DCE renumbering -- goes through
+// `leb128_encode_u32_slot`, which is what keeps a replayed body
+// byte-identical to a fresh one.
+let reloc_slot_width_cell: Array[Int] = [0]
+
+export fn set_reloc_slot_width(_ width: Int) -> Unit {
+  let w = if width < 0 {
+    0
+  } else if width > 5 {
+    5
+  } else {
+    width
+  }
+  Array::set(reloc_slot_width_cell, at = 0, value = w)
+}
+
+export fn reloc_slot_width() -> Int {
+  Array::get(reloc_slot_width_cell, at = 0)
+}
+
+/// The number of bytes minimal unsigned LEB128 takes for `value` (>= 0).
+export fn leb128_u32_min_width(_ value: Int) -> Int {
+  let mut v = value
+  let mut n = 1
+  while v >= 128 {
+    v = v>>7
+    n = n + 1
+  }
+  n
+}
+
+/// `value` as unsigned LEB128 of exactly `max(width, minimal)` bytes: the
+/// padding bytes are `0x80` continuations carrying zero bits.
+export fn leb128_encode_u32_padded(buf: Bytes, value: Int, width: Int) -> Unit {
+  let min = leb128_u32_min_width(value)
+  let w = if width > min {
+    width
+  } else {
+    min
+  }
+  let mut v = value
+  let mut i = 0
+  while i < w {
+    let byte = v&127
+    v = v>>7
+    if i + 1 < w {
+      Bytes::push(buf, value = byte|128)
+    } else {
+      Bytes::push(buf, value = byte)
+    }
+    i = i + 1
+  }
+}
+
+/// A RELOCATABLE function index (`call` / `ref.func`), at the compile's slot
+/// width. Byte-identical to `leb128_encode_u32` while the width is 0.
+export fn leb128_encode_u32_slot(buf: Bytes, value: Int) -> Unit {
+  let w = reloc_slot_width()
+  if w == 0 {
+    leb128_encode_u32(buf = buf, value = value)
+  } else {
+    leb128_encode_u32_padded(buf = buf, value = value, width = w)
+  }
+}
+
+/// The number of bytes minimal signed LEB128 takes for `value`.
+export fn leb128_s_min_width(_ value: Int) -> Int {
+  let mut v = value
+  let mut n = 1
+  let mut done = false
+  while !done {
+    let byte = v&127
+    v = v>>7
+    if (v == 0 && (byte&64) == 0) || (v == 0 - 1 && (byte&64) != 0) {
+      done = true
+    } else {
+      n = n + 1
+    }
+  }
+  n
+}
+
+/// `value` as signed LEB128 of exactly `max(width, minimal)` bytes. After
+/// `w - 1` arithmetic shifts the rest fits one byte's 7 bits with its sign
+/// in bit 6, so the last byte needs no special case.
+export fn leb128_encode_s_padded(buf: Bytes, value: Int, width: Int) -> Unit {
+  let min = leb128_s_min_width(value)
+  let w = if width > min {
+    width
+  } else {
+    min
+  }
+  let mut v = value
+  let mut i = 0
+  while i < w {
+    let byte = v&127
+    v = v>>7
+    if i + 1 < w {
+      Bytes::push(buf, value = byte|128)
+    } else {
+      Bytes::push(buf, value = byte)
+    }
+    i = i + 1
+  }
+}
+
+/// A funcref TABLE SLOT carried by a constant (#3941): the function value
+/// `i64.const ((slot << 2) | 2)` and the closure header's `i32.const slot`.
+/// Same compile-wide width as a function index; minimal while it is 0.
+export fn leb128_encode_s_slot(buf: Bytes, value: Int) -> Unit {
+  let w = reloc_slot_width()
+  if w == 0 {
+    leb128_encode_s32(buf = buf, value = value)
+  } else {
+    leb128_encode_s_padded(buf = buf, value = value, width = w)
+  }
+}
+
+/// #3941: the width of a pooled STRING address in a body, at the compile's
+/// slot width. `blind_kind_str_ref` carries the bare offset, so it takes the
+/// slot width itself (W = 3 keeps offsets below 2^20 fixed). The fat form
+/// carries `(offset << 32) | length`, 32 bits wider, so it takes five bytes
+/// more (W = 3 gives 8 bytes, fixed below offset 2^23). 0 while the width is 0.
+export fn reloc_str_width(fat: Bool) -> Int {
+  let w = reloc_slot_width()
+  if w == 0 {
+    0
+  } else if fat {
+    // Capped at nine: nine signed-LEB bytes hold every 63-bit `Int`, so a
+    // tenth carries nothing, and the relocation scanner (like every reader
+    // of an `Int`) refuses a tenth byte as wider than 63 bits. Nine keeps an
+    // offset below 2^30 fixed, past any wasm32 data segment in practice.
+    if w + 5 > 9 {
+      9
+    } else {
+      w + 5
+    }
+  } else {
+    w
+  }
+}
+
+/// #3941: the width of a constructor tag `(type_index << 16) | variant` in a
+/// body, at the compile's slot width. A user tag is at least 2 << 16, already
+/// three bytes, and grows to four at type index 16, so it takes one byte more
+/// than the slot width (W = 3 gives 4 bytes, fixed below type index 2048),
+/// capped at the five bytes an `i32.const` immediate may take.
+/// 0 while the width is 0.
+export fn reloc_ctor_tag_width() -> Int {
+  let w = reloc_slot_width()
+  if w == 0 {
+    0
+  } else if w + 1 > 5 {
+    // An `i32.const` immediate is at most five LEB128 bytes, padded or not:
+    // a six-byte one is rejected by validation ("length overflow while
+    // decoding immi32"). Five already holds every tag an `i32` can.
+    5
+  } else {
+    w + 1
+  }
+}
+
 export fn bytebuf_push_string(buf: Bytes, s: String) -> Unit {
   let slen = String::length(s)
   leb128_encode_u32(buf = buf, value = slen)

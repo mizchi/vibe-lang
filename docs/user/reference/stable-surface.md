@@ -548,8 +548,10 @@ that.
   `sleep_wait`, `Sender::send_wait` / `Receiver::recv_wait`,
   `TaskHandle::result_wait`, the task-level `Async::Suspend` effect, and the
   lower-level `adopt` / `park` / `wake` / `settle`. Their spelling is expected
-  to change once continuations are native (one `spawn` rather than two, no
-  hand-driven `pump_all`), so they stay outside the promise. The stable core
+  to change once one `spawn` covers both lanes, so they stay outside the
+  promise. No program needs `pump` / `pump_all`: a waiting `join`, `send` or
+  `recv` and the group's close resume parked tasks themselves (#3200), and the
+  two are not planned for the stable contract. The stable core
   they extend is §3.1. JSPI/Worker, the WASI Component Model, and
   shared-everything threads are interchangeable lowerings of both.
 

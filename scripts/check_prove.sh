@@ -119,7 +119,8 @@ $dir/unproved.vibe:288:72: unproved: ensures result of \`word_join\` -- countere
 $dir/unproved.vibe:298:58: unproved: ensures Array::all(xs, f=(x) -> { (x >= 0) }) of \`claims_nonneg\` -- counterexample: <model>
 $dir/unproved.vibe:305:12: unproved: ensures (result >= 0) of \`any_is_not_first\` -- counterexample: <model>
 $dir/unproved.vibe:312:31: unproved: overflow in (x + 1) in \`succ_any\` -- counterexample: <model>
-$dir/unproved.vibe:317:53: unproved: ensures (result > 0) of \`boxed_positive\` -- counterexample: <model>"
+$dir/unproved.vibe:317:53: unproved: ensures (result > 0) of \`boxed_positive\` -- counterexample: <model>
+$dir/unproved.vibe:327:18: unproved: invariant ((((0 <= i) && (i <= n)) && (Array::length(xs) == i)) && Array::all(xs, f=(x) -> { (x == 0) })) holds again after each iteration, in \`not_all_zero\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
@@ -132,8 +133,8 @@ $dir/unsupported.vibe:73:1: unsupported: a contract clause that leaves the funct
 $dir/unsupported.vibe:88:5: unsupported: \`==\` on arrays: their contents past the length are not modelled, so equality is not encoded (in \`same_arrays\`)
 $dir/unsupported.vibe:98:3: unsupported: \`Array::length\` has no \`where\` contract, so the call cannot be checked modularly; give it one (\`ensures: true\` at least), and its body is proved too (in \`own_length\`)
 $dir/unsupported.vibe:103:1: unsupported: a write to the parameter \`xs\`, which its caller holds: only a local array is written (in \`param_write\`)
-$dir/unsupported.vibe:109:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`aliased\`)
-$dir/unsupported.vibe:117:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`iterated\`)
+$dir/unsupported.vibe:109:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\`, \`Array::push\`, \`Array::all\` or \`Array::any\` (in \`aliased\`)
+$dir/unsupported.vibe:117:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\`, \`Array::push\`, \`Array::all\` or \`Array::any\` (in \`iterated\`)
 $dir/unsupported.vibe:126:1: unsupported: a write to \`xs\`, which is not bound exactly once, by \`let\`, to an array literal (in \`rebound\`)
 $dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\`, which is not modelled; test the range and use \`Int::wrap_int32\` (in \`checked_word\`)
 $dir/unsupported.vibe:147:3: unsupported: \`Array::all\`'s predicate must be a lambda written at the call (in \`named_pred\`)
