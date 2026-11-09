@@ -174,11 +174,26 @@ which decision 7 requires measuring.
   at a normal close. A job that fails there raises its `TaskError::Failed`
   from `run`, as a cooperative child does.
 - **Cancellation is fail-fast, `TaskHandle::cancel`, or the body unwinding
-  with an exception.** Cancelling a job drops it if it has not started. A
-  running job is interrupted through Wasmtime epoch interruption, its Store
-  is dropped, and its result is discarded. A CPU job performs no host effect
-  (decision 1), so interrupting it leaves nothing half-done outside its own
-  Store.
+  with an exception.** Its outcome must be one the cooperative scheduler can
+  produce. That scheduler runs one task at a time, so when the parent body
+  (or a failing sibling) cancels, a child that never suspends -- every CPU job
+  -- is either still waiting to be dispatched, and is resolved `Cancelled`
+  without running, or has already finished, and keeps its outcome.
+  `concurrency.md`'s "a running task is not interrupted" concerns a task that
+  is running *as observed by the scheduler*; a cooperative CPU-job child is
+  never in that state when another task cancels it. So:
+  - a job whose outcome has been recorded keeps it: cancelling it changes
+    nothing, as for a finished cooperative child, and a recorded failure
+    still reaches the group;
+  - a job that has not finished is resolved `Cancelled`, whether it is still
+    a descriptor, queued, or running. A running one is interrupted through
+    Wasmtime epoch interruption, its Store is dropped, and any result it
+    produces afterwards is discarded. It performs no host effect
+    (decision 1), so nothing observable distinguishes it from a job that was
+    never dispatched -- the cooperative trace this outcome corresponds to.
+  The executor records an outcome and resolves a cancellation for the same
+  job in one critical section, so a job is never both reported and
+  cancelled.
 - **"No group closes while a child is live"** holds on the executor too. The
   group's `run` returns only after every job of the group has been consumed,
   drained, discarded or interrupted, and no worker thread retains the group's
@@ -212,7 +227,8 @@ All of the following are true at once:
   - one input larger than Q;
   - a module-level value whose initializer traps, read only on a branch the
     job does not take, which must not abort the program;
-  - cancellation of a running job;
+  - cancellation of a running job, and of one whose outcome is already
+    recorded;
   - a worker trap aborting the program;
   - repeated jobs;
   - two consecutive groups with different inputs, to prove no state leaks
@@ -228,4 +244,5 @@ All of the following are true at once:
   - a spawn that blocks on Q or R;
   - an executor that skips R;
   - a trap turned into a `TaskError`;
-  - a normal close that cancels a failing job instead of draining it.
+  - a normal close that cancels a failing job instead of draining it;
+  - a cancellation that discards an outcome already recorded.
