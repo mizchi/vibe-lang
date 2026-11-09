@@ -444,6 +444,13 @@ fn lx_string(_ lx: LX) -> LTok {
   let raw = StringBuilder::new()
   let mut has_interp = false
   let mut bad_escape = false
+  // #3713: `\u{hex}`, `\0` and `\'` are escapes the compiler's lexer
+  // accepts. The decoded text cannot be re-escaped back to the spelling the
+  // author wrote (a NUL, a non-ASCII codepoint), so a literal holding one keeps
+  // its source text verbatim, the way an interpolated literal does. Before,
+  // all three read as a bad escape: the token became `k_error`, and a list
+  // laid out around it re-emitted text that no longer parsed.
+  let mut keep_raw = false
   let mut going = true
   while going {
     let c = lx_peek(lx)
@@ -506,6 +513,29 @@ fn lx_string(_ lx: LX) -> LTok {
           } else if e == 'r' {
             StringBuilder::push(buf, value = "\r")
             StringBuilder::push(raw, value = "\\r")
+          } else if e == '0' || e == '\'' {
+            keep_raw = true
+            StringBuilder::push(buf, value = String::from_char_code(e))
+            StringBuilder::push(raw, value = String::concat("\\", String::from_char_code(e)))
+          } else if e == 'u' && lx_peek(lx) == '{' {
+            keep_raw = true
+            StringBuilder::push(raw, value = "\\u")
+            let mut scanning = true
+            while scanning {
+              let uc = lx_peek(lx)
+              if uc == -1 || uc == '"' {
+                scanning = false
+              } else {
+                lx.pos = lx.pos + 1
+                StringBuilder::push(raw, value = String::from_char_code(uc))
+                StringBuilder::push(buf, value = String::from_char_code(uc))
+                if uc == '}' {
+                  scanning = false
+                } else {
+                  ()
+                }
+              }
+            }
           } else {
             bad_escape = true
             StringBuilder::push(buf, value = String::from_char_code(e))
@@ -526,7 +556,7 @@ fn lx_string(_ lx: LX) -> LTok {
         kind: k_error,
         text: StringBuilder::freeze(buf)
       }
-    } else if has_interp {
+    } else if has_interp || keep_raw {
       LTok::{
         kind: k_string_interp,
         text: StringBuilder::freeze(raw)

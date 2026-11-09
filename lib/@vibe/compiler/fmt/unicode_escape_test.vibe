@@ -1,0 +1,37 @@
+import @vibe/compiler/fmt {
+  format_script
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+// #3713: a string literal holding `\u{hex}`, `\0` or `\'` -- escapes the
+// compiler's lexer accepts -- inside a call's arguments, an array or a tuple
+// was refused ("the formatted output does not parse"): the formatter's own
+// lexer read each as a bad escape, the literal became an error token, and the
+// list laid out around it re-emitted text that no longer parsed. Each source
+// below is already in canonical form, so formatting it must give it back
+// unchanged, and the result must parse.
+test "a string escape the compiler accepts formats in place inside a list" {
+  let sources = [
+    "test \"x\" {\n  let _ = f(\"a\\u{41}b\", 1)\n}\n",
+    "test \"x\" {\n  let _ = f(\"a\\u{41}b\")\n}\n",
+    "test \"x\" {\n  let _ = f((n: Int) -> Int {\n    8\n  }, \"a\\u{41}b\")\n}\n",
+    "test \"x\" {\n  let _ = [\"a\\u{41}b\", \"c\"]\n}\n",
+    "test \"x\" {\n  let _ = (\"a\\u{41}b\", 1)\n}\n",
+    "let _x: Int = f(\"a\\u{41}b\", 1)\n",
+    "test \"x\" {\n  let _ = f(\"a\\0b\", \"it\\'s\", \"\\u{1F600}\")\n}\n",
+    "test \"x\" {\n  let s = \"a\\u{0}b\"\n}\n"
+  ]
+  let mut same = 0
+  for source in sources {
+    let formatted = format_script(source)
+    let _ = parse_program(lex(formatted))
+    if formatted == source {
+      same = same + 1
+    } else {
+      ()
+    }
+  }
+  inspect(same, content = "8")
+}
