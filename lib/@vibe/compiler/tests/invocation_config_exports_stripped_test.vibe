@@ -1,0 +1,70 @@
+//# Two compiles in one process cannot see each other's export strip (#1953)
+//
+// Whether the finished executable's exports will be stripped decides what the
+// constant-Bool fold and the module pruner may treat as unreachable from
+// outside. It used to live in a process-global cell the CLI set before a
+// compile and reset to `false` after it, so a compile that asked for nothing
+// inherited the strip of whichever compile had set it, an inner compile's
+// reset took the strip away from the outer one, and a compile that threw
+// left it set for the next. Now each compile receives the answer as its own
+// `exports_stripped` argument; these blocks pin the three ways the cell
+// leaked, against a control that shows the answer does decide the bytes.
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only_rc_with_cfg
+}
+
+// An exported function whose only caller passes a constant Bool: when the
+// executable's exports are stripped it is not callable from outside, so its
+// parameter folds and the artifact changes.
+fn probe_source() -> String {
+  "export fn pick(flag: Bool) -> Int { if flag { 11 } else { 22 } }\nfn main() -> Int { pick(flag = true) }"
+}
+
+fn probe_compile(_ exports_stripped: Bool) -> Bytes with Exception {
+  compile_source_wasi_only_rc_with_cfg(source = probe_source(), entry_name = "main", trusted_generated = false, cfg_csv = "", exports_stripped = exports_stripped)
+}
+
+fn same_bytes(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while same && i < Bytes::length(a) {
+      same = Bytes::get(a, at = i) == Bytes::get(b, at = i)
+      i = i + 1
+    }
+    same
+  }
+}
+
+test "control: the strip decides the artifact" {
+  assert(!same_bytes(a = probe_compile(false), b = probe_compile(true)))
+}
+
+test "a compile that strips nothing is the same inside another compile's strip" {
+  let alone = probe_compile(false)
+  let nested = {
+    let _outer = probe_compile(true)
+    probe_compile(false)
+  }
+  assert(same_bytes(a = alone, b = nested))
+}
+
+test "an inner compile does not take the strip away from the outer one" {
+  let before = probe_compile(true)
+  let _inner = probe_compile(false)
+  let after = probe_compile(true)
+  assert(same_bytes(a = before, b = after))
+}
+
+test "a compile that throws leaves nothing for the next compile" {
+  let alone = probe_compile(false)
+  let message = handle {
+    let _ = compile_source_wasi_only_rc_with_cfg(source = "fn main() -> Int { missing_name }", entry_name = "main", trusted_generated = false, cfg_csv = "", exports_stripped = true)
+    "compiled"
+  } with { Exception::Throw(msg) => msg }
+  assert(message != "compiled")
+  assert(same_bytes(a = alone, b = probe_compile(false)))
+}

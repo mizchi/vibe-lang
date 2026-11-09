@@ -1,18 +1,15 @@
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_gc
 }
-import @vibe/compiler/core {
-  set_executable_exports_stripped
-}
 import @vibe/process {
   process_sh_capture
 }
 
 fn gc_reachability_fs_run(label: String, source: String, expected: String) -> Unit with Exception + Fs + Env + Process + Console {
-  gc_reachability_fs_run_entry(label = label, source = source, entry = "main", strip = false, expected = expected)
+  gc_reachability_fs_run_entry(label = label, source = source, entry = "main", expected = expected)
 }
 
-fn gc_reachability_fs_run_entry(label: String, source: String, entry: String, strip: Bool, expected: String) -> Unit with Exception + Fs + Env + Process + Console {
+fn gc_reachability_fs_run_entry(label: String, source: String, entry: String, expected: String) -> Unit with Exception + Fs + Env + Process + Console {
   Fs::mkdir_p("_build/vibe_test/gc_source_reachability_fs")
   let extension = if entry == "__no_entry__" {
     ".vibe"
@@ -21,15 +18,9 @@ fn gc_reachability_fs_run_entry(label: String, source: String, entry: String, st
   }
   let input = "_build/vibe_test/gc_source_reachability_fs/" + label + extension
   Fs::write_file(input, contents = source)
-  // GC is an instrumented CLI lane: neither regular nor test builds announce
-  // an executable export strip. Retain entry-source publications in both.
-  set_executable_exports_stripped(strip)
-  let wasm = handle {
-    compile_file_fs_mode_gc(entry_path = input, entry_name = entry)
-  } with { Exception::Throw(msg) => {
-    set_executable_exports_stripped(false); throw(msg)
-  } }
-  set_executable_exports_stripped(false)
+  // GC is an instrumented CLI lane: neither regular nor test builds strip
+  // executable exports. Retain entry-source publications in both.
+  let wasm = compile_file_fs_mode_gc(entry_path = input, entry_name = entry)
   let output = "_build/vibe_test/gc_source_reachability_fs/" + label + ".wasm"
   Fs::write_bytes(output, bytes = wasm)
   let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh " + output)
@@ -50,24 +41,23 @@ test "GC keeps the builtin Iterator implementation used by a for loop" {
 }
 
 test "GC test artifacts ignore unused dependency exports without an export strip" {
-  gc_reachability_fs_run_entry(label = "test-mode", source = "import @vibe/builtin { trait Iterator } test \"only\" { println(\"ok:gc-test\") }", entry = "__no_entry__", strip = false, expected = "ok:gc-test\n0\n")
+  gc_reachability_fs_run_entry(label = "test-mode", source = "import @vibe/builtin { trait Iterator } test \"only\" { println(\"ok:gc-test\") }", entry = "__no_entry__", expected = "ok:gc-test\n0\n")
 }
 
 test "GC test artifacts retain the Iterator implementation their loop calls" {
-  gc_reachability_fs_run_entry(label = "test-iterator", source = "import @vibe/builtin { trait Iterator } test \"loop\" { for x in [1, 2] { println(\"\\{x}\") }; () }", entry = "__no_entry__", strip = false, expected = "1\n2\n0\n")
+  gc_reachability_fs_run_entry(label = "test-iterator", source = "import @vibe/builtin { trait Iterator } test \"loop\" { for x in [1, 2] { println(\"\\{x}\") }; () }", entry = "__no_entry__", expected = "1\n2\n0\n")
 }
 
 test "GC test artifacts follow used dependency functions without rooting all exports" {
   Fs::mkdir_p("_build/vibe_test/gc_source_reachability_fs")
   Fs::write_file("_build/vibe_test/gc_source_reachability_fs/test-provider.vibe", contents = "export fn greeting() -> String { \"ok:dependency\" } export fn unused() -> Future[Int] { Future::ready(7) }")
-  gc_reachability_fs_run_entry(label = "test-dependency", source = "import ./test-provider.vibe { greeting } test \"call\" { println(greeting()) }", entry = "__no_entry__", strip = false, expected = "ok:dependency\n0\n")
+  gc_reachability_fs_run_entry(label = "test-dependency", source = "import ./test-provider.vibe { greeting } test \"call\" { println(greeting()) }", entry = "__no_entry__", expected = "ok:dependency\n0\n")
 }
 
 fn gc_reachability_fs_future_refused(label: String, source: String) -> Unit with Exception + Fs + Env {
   Fs::mkdir_p("_build/vibe_test/gc_source_reachability_fs")
   let input = "_build/vibe_test/gc_source_reachability_fs/" + label + ".vibe"
   Fs::write_file(input, contents = source)
-  set_executable_exports_stripped(false)
   let msg = handle {
     let _ = compile_file_fs_mode_gc(entry_path = input, entry_name = "__no_entry__")
     ""
