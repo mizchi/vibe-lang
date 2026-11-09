@@ -274,9 +274,10 @@ failures. They end the instance.
 The scheduler is deterministic, so a wait that nothing in the group can satisfy
 never resolves. Such a wait traps instead of hanging:
 
-- a stack-driving `join`, `send` or `recv` with no ready task to run, and
-  `pump_all`, `join` on a parked task, or a group close, when every task left
-  waits on something no task in the group can produce, trap with one message:
+- a stack-driving `join`, `send` or `recv` with no ready task to run and no
+  parked task to resume, and a stack-driving wait, `pump_all` or a group close
+  whose parked tasks all wait on something no task in the group can produce,
+  trap with one message:
   ``vibe: deadlock in TaskGroup::run: every task left is waiting on something
   no task in the group can produce ...``.
 
@@ -367,11 +368,12 @@ multi-consumer channel owned by group `n`:
   lose backpressure.
 - `Sender::send` returns once the message is linearized: buffered, handed to a
   receiver, or consumed by a receiver it drove. While the buffer is full (or,
-  at capacity 0, no receiver has taken the message) it drives the group's
-  ready tasks on the caller's stack.
+  at capacity 0, no receiver has taken the message) it drives the group on the
+  caller's stack: it runs a ready task when there is one, and otherwise
+  resumes a parked suspendable task, under the deadlock rule below (#3200).
 - `Receiver::recv` returns `Some(message)` in linearization order, or `None`
   once the channel is closed and drained. While the channel is open and empty
-  it drives the group's ready tasks.
+  it drives the group the same way.
 - Messages from one `Sender` arrive in the order they were sent. Messages from
   different senders arrive in their linearization order, which a program must
   not depend on.
@@ -902,7 +904,6 @@ fn main() -> Int allows Async + Exception {
     let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       5
     })
-    TaskGroup::pump_all(g)
     TaskHandle::join(h) + 1
   })
 }
@@ -935,8 +936,16 @@ be refused as "cannot see through ... the call to 'println'"). Pinned by
 Pinned by `fixtures/err_spawn_suspend_{alias,ascribed,rebound,wrapper,wrapper_rebound}_plain.vibe`
 and `fixtures/spawn_suspend_wrapper_inline.vibe`, whose gate rows in
 `tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh` assert the
-messages. Whether a named task closure becomes acceptable, or the inline rule
-becomes part of the frozen surface, is decided with #3200.
+messages.
+
+The inline rule is a refusal, not frozen surface (#3200). It comes from the
+lowering: the step-returning convention is chosen where the closure literal is
+written, not from the closure's type. The stable `spawn` already accepts a
+named local closure, so freezing the rule would leave the unified `spawn`
+accepting a name for a task that never waits and refusing it for one that
+does, a difference the closure's type does not show. A refusal can be lifted
+in a compatible release, so it does not block promoting the lane; lifting it
+means choosing the convention from the closure's type wherever it is created.
 
 ### Waiting inside a suspendable task
 
@@ -946,7 +955,7 @@ stack-driving forms do not.
 | waits by | siblings | operations |
 |---|---|---|
 | blocking the instance | nothing runs | `sleep_blocking` |
-| driving on the caller's stack | ready siblings run to completion | `join`, `send`, `recv` |
+| driving on the caller's stack | ready siblings run to completion, parked ones resume | `join`, `send`, `recv` |
 | suspending the task | siblings interleave with it | `sleep`, `sleep_wait`, `send_wait`, `recv_wait`, `result_wait`, `await` |
 
 An entry whose row carries `Async` is a place to suspend too: `sleep` and
@@ -1000,11 +1009,22 @@ waits for. A waiting task that nothing in the group can wake makes `pump_all`,
 
 ### Driving the lane
 
+No program has to drive the scheduler by hand. Every wait on the group's own
+stack resumes parked tasks itself: `join` on a parked task pumps until that
+task settles, a blocked `send` or `recv` resumes parked tasks until its message
+is taken or arrives (#3200), and the group's close pumps every parked child.
+Before #3200, `send` and `recv` ran only ready tasks, so a body receiving from
+a parked producer had to call `pump_all` first, and a body sending into a
+rendezvous channel whose receiver was parked before its `recv_wait` had no
+spelling at all (`pump_all` deadlocked on that receiver). The answers are
+pinned in `lib/@vibe/concurrent/experimental/suspend_test.vibe`, and
+`fixtures/conc_blocked_{recv,send}_deadlock.vibe` pin that a wait nothing can
+satisfy still traps.
+
 `TaskGroup::pump(g)` resumes one parked task, round-robin, and answers whether
-anything ran. `TaskGroup::pump_all(g)` pumps until no task is parked. Neither
-is required for correctness any more: `join` on a parked task pumps until that
-task settles, and the group's close pumps every parked child. They remain the
-way to interleave tasks before the body's own next step.
+anything ran. `TaskGroup::pump_all(g)` pumps until no task is parked. They stay
+in the experimental contract, for a program that wants to interleave tasks
+before the body's own next step, and are not planned for the stable one.
 
 ### Exceptions in a suspendable body
 
