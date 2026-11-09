@@ -752,7 +752,7 @@ echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
 #         counted a field read (`ctx.n`) as a consume, so such a parameter was
 #         owned, took its dups at entry on every path, and leaked them on the
 #         paths that ran none of its uses -- recursion included. Unfixed, the
-#         bounded fixture grew __heap_ptr by 239,996 B over its 2000 rounds.
+#         bounded fixture grew __heap_ptr by 119,996 B over its 2000 rounds.
 #         The answer is checked on bump, rc, shadow and gc; the shadow lane
 #         traps on a read of a freed block, which is what a field escaping a
 #         borrowed parameter without its own reference would hit.
@@ -770,7 +770,7 @@ for pb_lane in bump rc shadow gc; do
       echo "[compiler-gate] FAIL: could not measure rc_projection_param_borrow_bounded heap ($pb_json)" >&2; exit 1
     fi
     if [ "$pb_used" -ge 20000 ]; then
-      echo "[compiler-gate] FAIL: rc_projection_param_borrow_bounded heap_used=$pb_used >= 20000 (#2827 regressed: a parameter read only through its fields is owned again and leaks its entry dups; unfixed, this fixture measured 239,996 B)" >&2; exit 1
+      echo "[compiler-gate] FAIL: rc_projection_param_borrow_bounded heap_used=$pb_used >= 20000 (#2827 regressed: a parameter read only through its fields is owned again and leaks its entry dups; unfixed, this fixture measured 119,996 B)" >&2; exit 1
     fi
   fi
 done
