@@ -1,0 +1,88 @@
+// #3938: a cached body is replayable unless it spells a changed name
+// (`lc_src_edit_replayable`). The check walks with the shared child stack and
+// matches a field without building `.field`; it must answer as the spelled-out
+// check does: an identifier, a qualified name by its tail, a constructor or
+// struct pattern, a record literal, a field access, and a name nested deep in
+// a body.
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import ./linked_body_cache_edit.vibe {
+  LcSrcEdit, lc_src_edit_replayable
+}
+
+let program = "fn plain(x: Int) -> Int {\n  x + 1\n}\n\nfn calls(x: Int) -> Int {\n  helper(x)\n}\n\nfn deep(x: Int) -> Int {\n  if x > 0 {\n    let y = [1, 2]\n    match y {\n      _ => helper(x)\n    }\n  } else {\n    0\n  }\n}\n\nfn ctor(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => v,\n    None => 0\n  }\n}\n\nfn qualified(x: Int) -> Shape {\n  Shape::Circle(x)\n}\n\nfn field(p: Pt) -> Int {\n  p.x\n}\n\nfn record(n: Int) -> Pt {\n  Pt::{ x: n, y: n }\n}\n\nfn pattern(p: Pt) -> Int {\n  match p {\n    Pt::{ y } => y\n  }\n}\n"
+
+fn bodies() -> Array[Expr] with Exception {
+  let out: Array[Expr] = []
+  for stmt in parse_program(lex(program)) {
+    match stmt {
+      SLet(_, _, _, _, EFn(_, _, _, _, _, body)) => Array::push(out, value = body),
+      _ => ()
+    }
+  }
+  out
+}
+
+/// The functions that stay replayable when `touched` and `extra` change.
+fn replayable(touched: Array[String], extra: Array[String]) -> String with Exception {
+  let e = LcSrcEdit::{
+    ok: true,
+    added: [],
+    removed: [],
+    touched: touched,
+    o2n: [],
+    first_old: 0,
+    old_src_n: 0
+  }
+  let names = [
+    "plain",
+    "calls",
+    "deep",
+    "ctor",
+    "qualified",
+    "field",
+    "record",
+    "pattern"
+  ]
+  let bs = bodies()
+  let flags = lc_src_edit_replayable(e = e, extra_touched = extra, bodies = bs, num_user_funcs = Array::length(bs))
+  let kept: Array[String] = []
+  let mut i = 0
+  while i < Array::length(flags) {
+    if Array::get(flags, at = i) == 1 {
+      Array::push(kept, value = Array::get(names, at = i))
+    } else ()
+    i = i + 1
+  }
+  String::join(kept, sep = ",")
+}
+
+test "an identifier is found wherever it is" {
+  inspect(replayable(touched = ["helper"], extra = []), content = "plain,ctor,qualified,field,record,pattern")
+}
+
+test "nothing changed, everything replays" {
+  inspect(replayable(touched = [], extra = []), content = "plain,calls,deep,ctor,qualified,field,record,pattern")
+}
+
+test "a constructor matches by its tail in either spelling" {
+  inspect(replayable(touched = [], extra = ["Option::Some"]), content = "plain,calls,deep,qualified,field,record,pattern")
+  inspect(replayable(touched = [], extra = ["Circle"]), content = "plain,calls,deep,ctor,field,record,pattern")
+}
+
+test "a field matches an access, a record literal and a struct pattern" {
+  inspect(replayable(touched = [], extra = [".x"]), content = "plain,calls,deep,ctor,qualified,pattern")
+  inspect(replayable(touched = [], extra = [".y"]), content = "plain,calls,deep,ctor,qualified,field")
+  inspect(replayable(touched = [".x"], extra = []), content = "plain,calls,deep,ctor,qualified,pattern")
+}
+
+test "a struct name matches its literal and its pattern" {
+  inspect(replayable(touched = [], extra = ["Pt"]), content = "plain,calls,deep,ctor,qualified,field")
+}

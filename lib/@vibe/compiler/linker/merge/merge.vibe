@@ -29,8 +29,11 @@ import @vibe/compiler/core {
   builtin_iterator_serialized_boundary_markers,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
+  colliding_type_alias_names,
+  colliding_type_alias_renames_enabled,
   dir_of_path,
   export_plan_renames_for,
+  exported_type_alias_names,
   import_value_rename_locals,
   linked_unit_in,
   loader_prepended_prefix_bytes,
@@ -42,13 +45,19 @@ import @vibe/compiler/core {
   namespace_private_value_stmts_after_renames,
   namespace_rename_originals_reset,
   refuse_linked_impl_overlaps,
+  rename_exported_type_alias_stmts,
   resolve_import_path,
   resolve_known_import_path,
   resolved_callee_row_rebase,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep,
+  swap_colliding_type_alias_renames,
   trait_import_local_operation_renames,
   trait_import_local_operation_renames_preserving_exports
+}
+
+import @vibe/ast {
+  impl_method_owner
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -252,6 +261,31 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
     trait_import_local_operation_renames(stmts = stmts, path = path)
   }
   let collision_renamed = apply_export_renames_stmts(stmts = stmts, renames = collision_renames)
+  // #3929: rename this file's colliding exported aliases before the private
+  // namespacing, which reads an alias named in `export { .. }` as exported
+  // only while its declaration still matches the renamed export item
+  // (Codex on #3942).
+  let collision_renamed = if colliding_type_alias_renames_enabled() && !is_entry_source {
+    let alias_renamed = rename_exported_type_alias_stmts(stmts = collision_renamed, renames = exported_type_alias_renames(plan = plan, path = path, stmts = stmts))
+    apply_export_renames_stmts(stmts = alias_renamed, renames = impl_owner_renames(before = collision_renamed, after = alias_renamed))
+  } else {
+    collision_renamed
+  }
+  // #3929: an importer's own declarations name an imported colliding alias
+  // too (`struct Holder { value: Alias }`); the import-alias rewrite has no
+  // arm for struct, enum, trait or effect declarations, so they take the
+  // same binder-aware walk under this file's import renames (Codex on #3942).
+  let collision_renamed = if colliding_type_alias_renames_enabled() && Array::length(import_renames) > 0 {
+    let alias_imports = imported_type_alias_renames(import_renames)
+    if Array::length(alias_imports) == 0 {
+      collision_renamed
+    } else {
+      let alias_renamed = rename_exported_type_alias_stmts(stmts = collision_renamed, renames = alias_imports)
+      apply_export_renames_stmts(stmts = alias_renamed, renames = impl_owner_renames(before = collision_renamed, after = alias_renamed))
+    }
+  } else {
+    collision_renamed
+  }
   let namespaced_stmts = if is_entry_source {
     namespace_entry_import_shadows(path = path, stmts = collision_renamed)
   } else {
@@ -269,6 +303,82 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
   // #3544: this file's share of the linked program, for the impl-overlap check.
   Array::push(units, value = linked_unit_in(sources = sources, path = path, start = unit_start, end = Array::length(merged)))
+}
+
+/// The import renames whose target is a renamed colliding alias
+/// (`<Alias>_exp_<path>`).
+fn imported_type_alias_renames(_ renames: Array[(String, String)]) -> Array[(String, String)] {
+  let names = colliding_type_alias_names()
+  let out: Array[(String, String)] = []
+  for row in renames {
+    let (_, target) = row
+    let mut hit = false
+    for name in names {
+      if !hit && String::starts_with(target, prefix = String::concat(name, "_exp_")) {
+        hit = true
+      } else {
+        ()
+      }
+    }
+    if hit {
+      Array::push(out, value = row)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// #3929: an impl whose trait arguments or target the alias rename changed
+/// owns its methods under a binding name that encodes both
+/// (`impl_method_owner`), so each method binding of the old owner is renamed
+/// to the new one, references included (Codex on #3942).
+fn impl_owner_renames(before: Array[Stmt], after: Array[Stmt]) -> Array[(String, String)] {
+  let owners: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(before) && i < Array::length(after) {
+    match (Array::get(before, at = i), Array::get(after, at = i)) {
+      (SImpl(tparams, _, old_trait, old_target), SImpl(_, _, new_trait, new_target)) => {
+        let old_owner = impl_method_owner(tparams = tparams, trait_name = old_trait, target = old_target)
+        let new_owner = impl_method_owner(tparams = tparams, trait_name = new_trait, target = new_target)
+        if old_owner != new_owner {
+          Array::push(owners, value = (String::concat(old_owner, "::"), String::concat(new_owner, "::")))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[(String, String)] = []
+  if Array::length(owners) > 0 {
+    for stmt in after {
+      let name = match stmt {
+        SLet(_, _, n, _, _) => n,
+        SFnDecl(_, n, _, _, _) => n,
+        _ => ""
+      }
+      for owner in owners {
+        let (old_prefix, new_prefix) = owner
+        if String::starts_with(name, prefix = old_prefix) {
+          Array::push(out, value = (name, String::concat(new_prefix, String::substring(name, start = String::length(old_prefix), end = String::length(name)))))
+        }
+      }
+    }
+  }
+  out
+}
+
+/// #3929: the plan's renames of the type aliases this file exports.
+fn exported_type_alias_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] {
+  let aliases = exported_type_alias_names(stmts)
+  let out: Array[(String, String)] = []
+  for pair in export_plan_renames_for(plan = plan, path = path) {
+    let (name, _) = pair
+    if merge_path_listed(paths = aliases, path = name) {
+      Array::push(out, value = pair)
+    }
+  }
+  out
 }
 
 fn merge_path_listed(paths: Array[String], path: String) -> Bool {
@@ -445,6 +555,20 @@ export fn build_grouped_merged_source_configured(_ source_groups: Array[(String,
 }
 
 export fn build_grouped_merged_stmts_gc(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
+  // #3929: this merge is checked again as one program, so an exported type
+  // alias two files publish is renamed per provider.
+  let prev = swap_colliding_type_alias_renames(true)
+  let merged = handle {
+    build_grouped_merged_stmts_gc_impl(source_groups)
+  } with { Exception::Throw(message) => {
+    swap_colliding_type_alias_renames(prev)
+    throw(message)
+  } }
+  swap_colliding_type_alias_renames(prev)
+  merged
+}
+
+fn build_grouped_merged_stmts_gc_impl(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
   build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = array_empty(), flat_bases_out = array_empty(), clone_float_offsets_out = array_empty(), stmt_file_id_out = array_empty(), collect_stmt_ids = false, file_fps_out = [
   ], file_counts_out = [], collect_file_counts = false, cfg = target_cfg_ambient(), lowering_inputs = None)
 }

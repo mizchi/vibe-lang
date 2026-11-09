@@ -1,0 +1,173 @@
+//# #3947: an applied trait's argument spelled through a type alias names the
+//# same impl as the expanded spelling, in a function bound and in a generic
+//# impl's bound. A bound is judged with the alias expanded, while the impl
+//# kept its written key, so `[V: Value[Alias]]` beside `impl Value[Alias]`
+//# reported ``no impl `Value[Int]` for `Note` ``.
+
+type Alias = Int
+
+trait Value[A] {
+  value(Self) -> A
+}
+
+struct Note {
+  n: Int
+}
+
+impl Value[Alias] for Note {
+  value(self) -> Alias {
+    self.n
+  }
+}
+
+struct Cell {
+  n: Int
+}
+
+impl Value[Int] for Cell {
+  value(self) -> Int {
+    self.n * 2
+  }
+}
+
+fn through_alias[V: Value[Alias]](_ v: V) -> Int {
+  V::value(v)
+}
+
+fn through_int[V: Value[Int]](_ v: V) -> Int {
+  V::value(v)
+}
+
+trait Scaled {
+  scaled(Self) -> Int
+}
+
+struct Wrap[T] {
+  inner: T
+}
+
+impl [T: Value[Int]] Scaled for Wrap[T] {
+  scaled(self) -> Int {
+    T::value(self.inner) * 10
+  }
+}
+
+fn via[U: Scaled](_ u: U) -> Int {
+  U::scaled(u)
+}
+
+// A trait method's own binder bound, spelled through the alias in the trait
+// and either way in the impls.
+trait Run {
+  run[T: Value[Alias]](Self, T) -> Int
+}
+
+struct Runner {
+  k: Int
+}
+
+impl Run for Runner {
+  run[U: Value[Alias]](self, t: U) -> Int {
+    self.k + U::value(t)
+  }
+}
+
+struct Doubler {
+  k: Int
+}
+
+impl Run for Doubler {
+  run[U: Value[Int]](self, t: U) -> Int {
+    self.k * U::value(t)
+  }
+}
+
+// `Unit` and `()` are one type, so an alias of `Unit` in an impl's key names
+// the impl a `()` bound asks for (Codex on #3956).
+type Nothing = Unit
+
+struct Blank {
+  n: Int
+}
+
+impl Value[Nothing] for Blank {
+  value(self) -> Nothing {
+    ()
+  }
+}
+
+fn through_unit[V: Value[()]](_ v: V) -> Int {
+  V::value(v)
+  1
+}
+
+// `StringMap[V]` is `Map[String, V]`: an impl spelled through an alias of it,
+// or spelled with it directly, names the impl a `Map[String, Int]` bound asks
+// for (Codex on #3956).
+type Counts = StringMap[Int]
+
+struct Tally {
+  n: Int
+}
+
+impl Value[Counts] for Tally {
+  value(self) -> Counts {
+    Map::new()
+  }
+}
+
+struct Ledger {
+  n: Int
+}
+
+impl Value[StringMap[Int]] for Ledger {
+  value(self) -> StringMap[Int] {
+    Map::new()
+  }
+}
+
+fn through_map[V: Value[Map[String, Int]]](_ v: V) -> Int {
+  V::value(v)
+  2
+}
+
+// A local generic lambda's bound (Codex on #3956).
+fn local_generic() -> Int {
+  let inner = [V: Value[Alias]](v: V) -> Int {
+    V::value(v)
+  }
+  inner(Note::{ n: 8 })
+}
+
+test "a function bound through the alias" {
+  inspect(through_alias(Note::{ n: 6 }), content = "6")
+  inspect(through_alias(Cell::{ n: 6 }), content = "12")
+}
+
+test "a function bound through the expanded type" {
+  inspect(through_int(Note::{ n: 7 }), content = "7")
+  inspect(through_int(Cell::{ n: 7 }), content = "14")
+}
+
+test "a generic impl's bound" {
+  inspect(via(Wrap::{ inner: Note::{ n: 3 } }), content = "30")
+  inspect(via(Wrap::{ inner: Cell::{ n: 3 } }), content = "60")
+}
+
+test "a trait method's binder bound" {
+  inspect(Runner::{ k: 1 }.run(t = Note::{ n: 2 }), content = "3")
+  inspect(Doubler::{ k: 5 }.run(t = Cell::{ n: 2 }), content = "20")
+}
+
+test "a local generic lambda's bound" {
+  inspect(local_generic(), content = "8")
+}
+
+test "an alias of Unit against a () bound" {
+  inspect(through_unit(Blank::{ n: 1 }), content = "1")
+}
+
+test "StringMap against a Map[String, _] bound" {
+  inspect(through_map(Tally::{ n: 1 }), content = "2")
+  inspect(through_map(Ledger::{ n: 1 }), content = "2")
+}

@@ -34,6 +34,8 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   apply_type_constructor,
+  canonical_trait_arg_type_expr,
+  canonical_trait_key,
   compiler_owned_type_arity,
   env_bind,
   env_lookup,
@@ -1572,105 +1574,25 @@ fn replace_trait_bound_self_type(ty: Type, self_ty: Type) -> Type {
 }
 
 fn trait_bound_type_expr(_ ty: Type) -> Option[TypeExpr] {
-  match ty {
-    CtInt => Some(TyName("Int")),
-    // #3730: a bound is judged by the checker, which keeps the nominal type.
-    CtInt32 => Some(TyName("Int32")),
-    CtUInt32 => Some(TyName("UInt32")),
-    CtDouble => Some(TyName("Float64")),
-    CtFloat => Some(TyName("Float32")),
-    CtBool => Some(TyName("Bool")),
-    CtString => Some(TyName("String")),
-    CtChar => Some(TyName("Char")),
-    CtBytes => Some(TyName("Bytes")),
-    CtUnit => Some(TyUnit),
-    CtArray(elem) => match trait_bound_type_expr(elem) {
-      Some(arg) => Some(TyApp("Array", [arg])),
-      None => None
-    },
-    CtOption(elem) => match trait_bound_type_expr(elem) {
-      Some(arg) => Some(TyApp("Option", [arg])),
-      None => None
-    },
-    CtTuple(items) => {
-      let out = array_empty()
-      let mut ok = true
-      for item in items {
-        match trait_bound_type_expr(item) {
-          Some(mapped) => Array::push(out, value = mapped),
-          None => {
-            ok = false
-          }
-        }
-      }
-      if ok {
-        Some(TyTuple(out))
-      } else {
-        None
-      }
-    },
-    CtFn(params, ret, effect) => {
-      let out = array_empty()
-      let mut ok = true
-      for param in params {
-        match trait_bound_type_expr(param) {
-          Some(mapped) => Array::push(out, value = mapped),
-          None => {
-            ok = false
-          }
-        }
-      }
-      match trait_bound_type_expr(ret) {
-        Some(mapped_ret) => if ok {
-          Some(TyFn(out, mapped_ret, effect))
-        } else {
-          None
-        },
-        None => None
-      }
-    },
-    CtNamed(name, args) => {
-      let out = array_empty()
-      let mut ok = true
-      for arg in args {
-        match trait_bound_type_expr(arg) {
-          Some(mapped) => Array::push(out, value = mapped),
-          None => {
-            ok = false
-          }
-        }
-      }
-      if !ok {
-        None
-      } else if Array::length(out) == 0 {
-        Some(TyName(name))
-      } else {
-        Some(TyApp(name, out))
-      }
-    },
-    CtConstructor(name, _) => Some(TyName(name)),
-    CtApplied(head, args) => {
-      let name = type_constructor_name(head)
-      let out = array_empty()
-      let mut ok = name != ""
-      for arg in args {
-        match trait_bound_type_expr(arg) {
-          Some(mapped) => Array::push(out, value = mapped),
-          None => {
-            ok = false
-          }
-        }
-      }
-      if ok {
-        Some(TyApp(name, out))
-      } else {
-        None
-      }
-    },
-    CtEnum(name) => Some(TyName(name)),
-    CtStruct(name) => Some(TyName(name)),
-    _ => None
+  canonical_trait_arg_type_expr(ty)
+}
+
+/// #3953: the type aliases `env` imports, `(name, params, body)`, with each
+/// body written back as a type expression the way a bound's argument is. An
+/// alias whose body has no such spelling (a still-open variable) is left out,
+/// so a key through it stays as written.
+export fn imported_trait_ref_aliases(_ env: TypeEnv) -> Array[(String, Array[String], TypeExpr)] {
+  let out: Array[(String, Array[String], TypeExpr)] = array_empty()
+  for def in env_type_defs(env) {
+    match def {
+      TDAlias(name, params, body) => match trait_bound_type_expr(body) {
+        Some(te) => Array::push(out, value = (name, params, te)),
+        None => ()
+      },
+      _ => ()
+    }
   }
+  out
 }
 
 fn resolve_trait_bound_arg_expr(arg: TypeExpr, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> Option[TypeExpr] {
@@ -1746,6 +1668,17 @@ fn resolve_trait_bound_arg_expr(arg: TypeExpr, self_ty: Type, s: Subst, defs: Ar
     },
     TyUnit => Some(TyUnit)
   }
+}
+
+/// #3947: the key an impl is registered under, with each type argument that
+/// names none of the impl's own parameters resolved the way a bound's key is
+/// (`resolve_trait_bound_self_reference`). A bound `[V: Value[Alias]]` is
+/// judged as `Value[Int]` once `type Alias = Int` expands, so an impl written
+/// `impl Value[Alias] for Note` has to be found under that same key; before,
+/// it stayed `Value[Alias]` and the bound reported no impl. An argument that
+/// does not resolve to a type a key can spell keeps its written form.
+export fn canonical_impl_trait_key(key: String, tparams: Array[String], defs: Array[TypeDef]) -> String {
+  canonical_trait_key(key = key, binders = tparams, defs = defs)
 }
 
 export fn resolve_trait_bound_self_reference(key: String, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> String {

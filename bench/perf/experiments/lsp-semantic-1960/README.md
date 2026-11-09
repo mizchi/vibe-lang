@@ -129,11 +129,65 @@ to semantic guarantees:
 
 ## Next implementation boundary
 
-First give the production query preparation a coherent current-buffer overlay:
-resolve the current entry's imports before planning, layer all open dependency
-buffers over source reads, and preserve original module paths and ingestion
-mapping. Capture configuration once with the session/request rather than
-letting a retained environment outlive its compiler or target namespace.
+The shared filesystem query preparation now ingests the current `.vibe` or
+`.vibex` entry before collecting its import graph. This also fixes the label
+codemod's replacement recheck: added imports are collected, removed imports
+are no longer walked, and shared import prefixes are recomputed. An ordinary
+entry can be queried before its first save. Original paths and physical source
+mapping remain intact; source edits are never written to the user's file.
+Unedited disk queries retain the existing closure-cache path. A replacement
+reads the actual original bytes before authorizing the edit, including when
+timestamps and size are preserved; even a no-op replacement collects its own
+text. An unsaved package contract is explicitly refused. The bootstrap gate
+runs the project-context and label recheck suites with its own stage2.
+
+Compiler-cost check for this preparation step, using the same input snapshot
+and 24 isolated serial A/B compiles (three rounds, cold and warm):
+
+| Closure | Cache | Wall seconds, before / after | Heap-pointer delta |
+| --- | --- | ---: | ---: |
+| Compiler KPI | cold | 8.238 / 8.275 | +2,344 B |
+| Compiler KPI | warm | 4.312 / 4.371 | -664 B |
+| CLI | cold | 17.357 / 17.505 | -2,720 B |
+| CLI | warm | 9.577 / 9.622 | -5,976 B |
+
+All generated Wasm outputs match across compilers and temperatures. Absolute
+heap-pointer differences are below 0.001%; wall changes range from +0.45% to
++1.37% and do not establish a speedup. This is cumulative bump allocation plus
+static base, not RSS or live/peak memory. [Exact source/artifact identities and
+samples](current-entry-results.json) record this step separately from the
+earlier editor workload above.
+
+The unedited-query disk comparison shares the loader's stat-validated source-text memo to
+avoid another whole-file allocation. A typed grep over a 1,048,633-byte input
+keeps one non-empty typed result and two actual host reads of the entry, the
+same as the base compiler. An extra-read control records three. Twelve serial
+cold/warm query samples (three alternating A/B rounds, fresh Node processes,
+identical literal paths) keep the same result. This prevents added copying,
+not a claimed editor speedup. See read_probe.py for the executable protocol.
+
+The read probe requires two explicit compiler artifacts and a new output
+directory under `_build`. Set `BASELINE_STAGE2` to the compiler built from
+`a497c68ea911ecf3a261253498308a0f5f753bcc` in a clean base checkout; the
+candidate below is built by the reproduction commands later in this file:
+
+```bash
+python3 bench/perf/experiments/lsp-semantic-1960/read_probe.py \
+  "$BASELINE_STAGE2" _build/lsp1960/stage2.wasm _build/query-entry-read-check
+```
+
+It pins a non-empty `Array[Int]` capture and its physical range, compares exact
+answers, counts actual host reads in separate debug runs, and times three
+cold/warm A/B rounds. An artifact with an extra entry read fails before timing;
+the failed receipt records the actual three reads. The committed extra-read
+control uses an unmerged draft artifact, not a released performance baseline.
+
+Next, layer all open dependency buffers over source reads and propagate that
+provider through nested ingestion and import validation. This entry-only
+boundary is not yet connected to the LSP transport and does not make imported
+hover or unsaved dependency diagnostics complete. Capture configuration once
+with the session/request rather than letting a retained environment outlive
+its compiler or target namespace.
 
 Then use a resident query provider behind the default transport and measure the
 same workload. Keep filesystem diagnostics and workspace features. Only retain

@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/codegen/expr/compile_call.vibe — cc ladder names.
 
 import ./compile_lambda.vibe {
-  cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
+  cl_pat_binds, cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
 }
 
 import @vibe/core {
@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  ascription_call_annotation,
   bsearch_leftmost,
   builtin_returns_bool,
   builtin_returns_string,
@@ -75,7 +76,6 @@ import @vibe/compiler/codegen/common_extractors {
   get_ebinop_rhs,
   get_ecall_args,
   get_ecall_callee,
-  get_efn_params,
   get_eident_name,
   get_eletmut_body,
   get_eletmut_name,
@@ -599,6 +599,127 @@ fn cc_retain_view_tails_logged(e: Expr, local_names: Array[String], ctx: Compile
   }
 }
 
+/// #3919: is every result-path leaf (`rs_map`) of the compound `for`
+/// iterable `e` either a fresh owned value (`cc_is_owned_temp`), a view that
+/// `cc_retain_view_tails_unlogged` retains (`cc_tail_is_view`), or a name
+/// whose innermost binder on that path is a `let` of a fresh owned value
+/// (`{ let k = [n]; k }`)? Then the value `e` produces, with those views
+/// retained, is the loop's to release once it is done. Such a name is the
+/// binding's last use, so the plan moves its reference into the block's
+/// value and nothing else releases it. A leaf that leaves the iterable
+/// instead of producing a value (`break`, `continue`, `return`) produces
+/// nothing to release. Any other leaf -- a name bound to a view, a `let mut`,
+/// a pattern binder, a call that may return a view the retain does not
+/// recognize -- has an owner this lowering cannot see, so the iterable stays
+/// unreleased, as before (a leak, never a double free).
+export fn cc_iter_tails_owned(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  cc_iter_tails_owned_in(e = e, env = array_empty(), local_names = local_names, ctx = ctx)
+}
+
+/// `cc_iter_tails_owned` along the result path `rs_map` walks. `env` holds
+/// the names bound between the iterable's root and here, innermost last,
+/// each with whether its binder is a `let` of a fresh owned value.
+fn cc_iter_tails_owned_in(e: Expr, env: Array[(String, Bool)], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EIf(_, t, f) => cc_iter_tails_owned_in(e = t, env = env, local_names = local_names, ctx = ctx) && cc_iter_tails_owned_in(e = f, env = env, local_names = local_names, ctx = ctx),
+    EMatch(_, arms) => cc_iter_arms_owned(arms = arms, env = env, local_names = local_names, ctx = ctx),
+    EHandle(body, arms) => cc_iter_tails_owned_in(e = body, env = env, local_names = local_names, ctx = ctx) && cc_iter_arms_owned(arms = arms, env = env, local_names = local_names, ctx = ctx),
+    ELet(n, v, b, _) => cc_iter_tails_owned_in(e = b, env = cc_iter_env_with(env = env, n = n, fresh = cc_is_owned_temp(e = v, ctx = ctx)), local_names = local_names, ctx = ctx),
+    ELetMut(n, _, b, _) => cc_iter_tails_owned_in(e = b, env = cc_iter_env_with(env = env, n = n, fresh = false), local_names = local_names, ctx = ctx),
+    ELetRec(n, _, b) => cc_iter_tails_owned_in(e = b, env = cc_iter_env_with(env = env, n = n, fresh = false), local_names = local_names, ctx = ctx),
+    ESeq(_, b) => cc_iter_tails_owned_in(e = b, env = env, local_names = local_names, ctx = ctx),
+    EAssign(_, _, b, _) => cc_iter_tails_owned_in(e = b, env = env, local_names = local_names, ctx = ctx),
+    EAssignOp(_, _, _, b, _) => cc_iter_tails_owned_in(e = b, env = env, local_names = local_names, ctx = ctx),
+    ELabeledArg(_, _, v) => cc_iter_tails_owned_in(e = v, env = env, local_names = local_names, ctx = ctx),
+    ELoop(_, _) => cc_iter_leaves_owned(e = e, shadow = cc_iter_env_names(env), local_names = local_names, ctx = ctx),
+    EIdent(n, _) => {
+      let at = cc_iter_env_find(env = env, n = n)
+      if at >= 0 {
+        Array::get(env, at = at).1
+      } else {
+        cc_iter_leaf_owned(x = e, shadow = cc_iter_env_names(env), local_names = local_names, ctx = ctx)
+      }
+    },
+    _ => cc_iter_leaf_owned(x = e, shadow = cc_iter_env_names(env), local_names = local_names, ctx = ctx)
+  }
+}
+
+/// The arms of a `match` / `handle` on the result path: each arm's pattern
+/// binders are not `let`s of a fresh value.
+fn cc_iter_arms_owned(arms: Array[(Pat, Expr)], env: Array[(String, Bool)], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(arms) {
+    let (p, ab) = Array::get(arms, at = i)
+    let binds = array_empty()
+    cl_pat_binds(p = p, out = binds)
+    let mut env2 = env
+    for b in binds {
+      env2 = cc_iter_env_with(env = env2, n = b, fresh = false)
+    }
+    ok = cc_iter_tails_owned_in(e = ab, env = env2, local_names = local_names, ctx = ctx)
+    i = i + 1
+  }
+  ok
+}
+
+/// `env` with `n` bound innermost.
+fn cc_iter_env_with(env: Array[(String, Bool)], n: String, fresh: Bool) -> Array[(String, Bool)] {
+  let out = Array::slice(env, start = 0, end = Array::length(env))
+  Array::push(out, value = (n, fresh))
+  out
+}
+
+/// The innermost entry of `env` binding `n`, or -1.
+fn cc_iter_env_find(env: Array[(String, Bool)], n: String) -> Int {
+  let mut i = Array::length(env) - 1
+  let mut at = 0 - 1
+  while at < 0 && i >= 0 {
+    if Array::get(env, at = i).0 == n {
+      at = i
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  at
+}
+
+/// The names `env` binds, as the `shadow` list the leaf tests take.
+fn cc_iter_env_names(_ env: Array[(String, Bool)]) -> Array[String] {
+  let out = array_empty()
+  for b in env {
+    Array::push(out, value = b.0)
+  }
+  out
+}
+
+/// The leaf test of `cc_iter_tails_owned` for a leaf no binder on the path
+/// names: an exit, a fresh owned value, or a view the retain recognizes.
+fn cc_iter_leaf_owned(x: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match x {
+    EBreak(_) => true,
+    EContinue(_) => true,
+    EReturn(_) => true,
+    _ => cc_is_owned_temp(e = x, ctx = ctx) || cc_tail_is_view(x = x, shadow = shadow, local_names = local_names, ctx = ctx)
+  }
+}
+
+/// A `loop` on the result path: its `break` payloads are the leaves
+/// (`rs_map`). A name bound inside them is not followed to its binder.
+fn cc_iter_leaves_owned(e: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let ok = [true]
+  let _ = rs_map(e = e, shadow = shadow, leaf = (x: Expr, sh: Array[String]) -> Expr {
+    if !cc_iter_leaf_owned(x = x, shadow = sh, local_names = local_names, ctx = ctx) {
+      Array::set(ok, at = 0, value = false)
+    } else {
+      ()
+    }
+    x
+  }, bind = rs_keep_bind)
+  Array::get(ok, at = 0)
+}
+
 /// The leaf test of `cc_retain_view_tails`. `shadow` holds the names bound
 /// between the argument's root and this leaf.
 fn cc_tail_is_view(x: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
@@ -1105,18 +1226,9 @@ export fn cc_expr_is_stringish(raw_e: Expr, local_names: Array[String], ctx: Com
   } else if tag == 8 {
     let bcallee = get_ecall_callee(e)
     if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
-      // `let s: String = e` ascription marker `((__asc: String) -> __asc)(e)`
-      // — honor the annotation (same shapes as the Bool arm in
-      // cc_expr_is_boolish below, incl. the uniquify-renamed form).
-      let fparams = get_efn_params(bcallee)
-      if Array::length(fparams) == 1 {
-        let (asc_name, asc_ty) = Array::get(fparams, at = 0)
-        (asc_name == "__asc" || (String::starts_with(asc_name, prefix = "__shadow_") && String::ends_with(asc_name, suffix = "___asc"))) && (match asc_ty {
-          Some(TyName(tn)) => tn == "String",
-          _ => false
-        })
-      } else {
-        false
+      match ascription_call_annotation(callee = bcallee, args = get_ecall_args(e)) {
+        Some(TyName(tn)) => tn == "String",
+        _ => false
       }
     } else {
       cc_builtin_call_ret_kind(e = e, local_names = local_names, ctx = ctx) == 2
@@ -1239,24 +1351,11 @@ export fn cc_expr_is_boolish(raw_e: Expr, local_names: Array[String], ctx: Compi
       let bcn = get_eident_name(bcallee)
       String::starts_with(bcn, prefix = "__arr_equals__") || (String::ends_with(bcn, suffix = "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(names = local_names, name = "not") < 0 && func_table_user_index_of(ft = ctx.func_table, name = "not", num_user_funcs = ctx.num_user_funcs) < 0 && cc_expr_is_boolish(raw_e = Array::get(get_ecall_args(e), at = 0), local_names = local_names, ctx = ctx)) || cc_builtin_call_ret_kind(e = e, local_names = local_names, ctx = ctx) == 1
     } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
-      // #815: `let x: Bool = e` parses to the ascription marker
-      // `((__asc: Bool) -> __asc)(e)` (see parser_expr_dispatch's
-      // ascribe_wrap) — honor the annotation so the binding's slot is logged
-      // boolish even when `e` itself is opaque.
-      // The SECOND and later ascriptions in one function arrive with the
-      // param renamed to `__shadow_<n>___asc` (normalize's
-      // uniquify_shadowed_bindings; per-function `seen` de-dup), so match
-      // that renamed form too — otherwise only the first annotated let per
-      // function was classified (#825 follow-up).
-      let fparams = get_efn_params(bcallee)
-      if Array::length(fparams) == 1 {
-        let (asc_name, asc_ty) = Array::get(fparams, at = 0)
-        (asc_name == "__asc" || (String::starts_with(asc_name, prefix = "__shadow_") && String::ends_with(asc_name, suffix = "___asc"))) && (match asc_ty {
-          Some(TyName(tn)) => tn == "Bool",
-          _ => false
-        })
-      } else {
-        false
+      // Keep the checked marker's annotation, including its uniquified form,
+      // but never treat an ordinary lambda's input type as its result type.
+      match ascription_call_annotation(callee = bcallee, args = get_ecall_args(e)) {
+        Some(TyName(tn)) => tn == "Bool",
+        _ => false
       }
     } else {
       false

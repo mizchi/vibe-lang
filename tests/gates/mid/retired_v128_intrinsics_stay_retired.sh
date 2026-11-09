@@ -1524,6 +1524,67 @@ done
 rm -rf "$laidir"
 echo "[compiler-gate] loop aggregate item guard ok (96000 on bump/rc/shadow/gc, rc heap_used=$lai_used B)"
 
+# 40f0n. #3919: compile_forin_loop released a `for` iterable after the loop
+#        only when the iterable expression itself was a fresh value; a block
+#        or an `if` / `match` producing one was never released, so every run
+#        of the loop leaked the array it built. It is released now when each
+#        result leaf is a fresh value or a view (retained first); a leaf
+#        naming a still-live enclosing local is such a view, retained for the
+#        loop and given back after it. Unfixed, the bounded fixture grew
+#        __heap_ptr by 2,375,996 B over its 2000 rounds. The answer is
+#        checked on bump, rc, shadow and gc; the shadow lane traps on the
+#        drop of a freed block, which is what releasing that local early
+#        would hit.
+echo "[compiler-gate] 40f0n/40 a block or branch for iterable is released after the loop (#3919)"
+gate_workdir fcidir "_build/_gate_rc_forin_compound_iterable"
+for fci_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$fci_lane" "fixtures/rc_forin_compound_iterable_bounded_test.vibe" "$fcidir/fci.wasm" main
+  gate_require_artifact "$fcidir/fci.wasm" "rc_forin_compound_iterable_bounded fixture did not compile on the $fci_lane lane (#3919)"
+  gate_run fci_out last "$fcidir/fci.wasm"
+  gate_require_eq "$fci_out" "80000" "rc_forin_compound_iterable_bounded got '$fci_out' on the $fci_lane lane (want 80000). A trap means a binding a for iterable names was released while still live (#3919)."
+  if [ "$fci_lane" = rc ]; then
+    fci_json="$(node scripts/measure_heap.mjs "$fcidir/fci.wasm" main 2>/dev/null)"
+    fci_used="$(printf '%s' "$fci_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$fci_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_forin_compound_iterable_bounded heap ($fci_json)" >&2; exit 1
+    fi
+    if [ "$fci_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_forin_compound_iterable_bounded heap_used=$fci_used >= 20000 (#3919 regressed: a block or branch for iterable is left unreleased again; unfixed, this fixture measured 2,375,996 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$fcidir"
+echo "[compiler-gate] compound for iterable guard ok (80000 on bump/rc/shadow/gc, rc heap_used=$fci_used B)"
+
+# 40f0o. #3919: a `for` iterable whose block returns a name it bound to a
+#        fresh value (`{ let k = [n + i, 1]; k }`) was left unreleased by
+#        40f0n's rule, which accepted only fresh values and views as result
+#        leaves. The name is the binding's last use, so the block's value owns
+#        the array and nothing released it. Unfixed, the bounded fixture grew
+#        __heap_ptr by 2,112,036 B over its 2000 rounds. The answer is checked
+#        on bump, rc, shadow and gc; the shadow lane traps on the drop of a
+#        freed block, which is what releasing the array twice would hit.
+echo "[compiler-gate] 40f0o/40 a block iterable returning a fresh let binding is released after the loop (#3919)"
+gate_workdir fnmdir "_build/_gate_rc_forin_block_name_tail"
+for fnm_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$fnm_lane" "fixtures/rc_forin_block_name_tail_bounded_test.vibe" "$fnmdir/fnm.wasm" main
+  gate_require_artifact "$fnmdir/fnm.wasm" "rc_forin_block_name_tail_bounded fixture did not compile on the $fnm_lane lane (#3919)"
+  gate_run fnm_out last "$fnmdir/fnm.wasm"
+  gate_require_eq "$fnm_out" "-11913000" "rc_forin_block_name_tail_bounded got '$fnm_out' on the $fnm_lane lane (want -11913000). A trap means a for iterable's array was released twice (#3919)."
+  if [ "$fnm_lane" = rc ]; then
+    fnm_json="$(node scripts/measure_heap.mjs "$fnmdir/fnm.wasm" main 2>/dev/null)"
+    fnm_used="$(printf '%s' "$fnm_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$fnm_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_forin_block_name_tail_bounded heap ($fnm_json)" >&2; exit 1
+    fi
+    if [ "$fnm_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_forin_block_name_tail_bounded heap_used=$fnm_used >= 20000 (#3919 regressed: a block iterable returning a fresh let binding is left unreleased again; unfixed, this fixture measured 2,112,036 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$fnmdir"
+echo "[compiler-gate] block-name for iterable guard ok (-11913000 on bump/rc/shadow/gc, rc heap_used=$fnm_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"

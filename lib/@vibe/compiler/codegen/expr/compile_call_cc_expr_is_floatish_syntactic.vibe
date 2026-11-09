@@ -9,7 +9,15 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_returns_int, canonical_builtin_name, typed_lowering_arg_offset, typed_lowering_float_key
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  ascription_call_annotation,
+  builtin_returns_int,
+  canonical_builtin_name,
+  typed_lowering_arg_offset,
+  typed_lowering_float_key
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -401,53 +409,10 @@ fn cc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
         false
       }
     } else if is_efn(callee) && Array::length(get_ecall_args(e)) == 1 {
-      // #1153/#1185 (+ #1207 Codex review P2): `let x: Double = e` / `let x:
-      // Float = e` parses to the ascription marker `((__asc: Double) ->
-      // __asc)(e)` (parser_expr_dispatch's ascribe_wrap) -- mirrors
-      // expr_is_boolish's identical `is_efn(callee)` case for `Bool` (#815),
-      // just never extended to Float/Double. Without this, an explicitly-
-      // annotated Double/Float `let` is invisible to float_local_slots:
-      // under RC a float is a BOXED heap value (#704), so a `==`/`!=`
-      // between two such misclassified slots falls through emit_eq_value's
-      // generic `eq` fallback, which compares the two DISTINCT boxes by
-      // pointer rather than unboxing and comparing values -- silently
-      // `false` for equal doubles. The same misclassification also feeds
-      // `__to_string`/string interpolation, which then reads the boxed
-      // pointer as if it were a plain Int (#1153: garbage output).
-      // Matches the COMPLETE synthetic identity-lambda shape (no type
-      // params, no declared return type, no effect row, body exactly
-      // `EIdent(<the param's own name>, _)`) -- the same precision
-      // checker.vibe's `ascription_lambda_ann` uses for this identical
-      // marker -- so a hand-written IIFE that merely happens to name its
-      // param `__asc`/`__shadow_*___asc` (e.g. `((__asc: Double) -> String
-      // { "hello" })(1.0)`) isn't misread as this marker.
-      match callee {
-        EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
-          None => true,
-          Some(_) => false
-        }) && (match effect {
-          None => true,
-          Some(_) => false
-        }) {
-          let (asc_name, asc_ty) = Array::get(params, at = 0)
-          if asc_name == "__asc" || (String::starts_with(asc_name, prefix = "__shadow_") && String::ends_with(asc_name, suffix = "___asc")) {
-            match body {
-              EIdent(bname, _) => if bname == asc_name {
-                match asc_ty {
-                  Some(TyName(tn)) => tn == "Float64" || tn == "Float32",
-                  _ => false
-                }
-              } else {
-                false
-              },
-              _ => false
-            }
-          } else {
-            false
-          }
-        } else {
-          false
-        },
+      // Only a strict identity marker can use its input annotation as a
+      // result fact. Other calls retain the existing typed-result channels.
+      match ascription_call_annotation(callee = callee, args = get_ecall_args(e)) {
+        Some(TyName(tn)) => tn == "Float64" || tn == "Float32",
         _ => false
       }
     } else {

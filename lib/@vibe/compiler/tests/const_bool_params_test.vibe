@@ -161,6 +161,51 @@ test "a wrapper that forwards its parameter is folded first, then its callee: fi
   }
 }
 
+test "a value reference the fold removes stops refusing in the next round" {
+  // outer(flag) = if flag { let g = inner; g(true) } else { inner(false) };
+  // main = outer(false). Round 1: `inner` is referenced as a value, so it
+  // refuses, and outer folds to `inner(false)`. Round 2 rescans outer's new
+  // body, finds only that call, and folds inner (#3938: a rewritten body is
+  // rescanned every round; the rest is scanned once).
+  let inner = fn_stmt(exported = false, name = "inner", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let taken = ELet("g", EIdent("inner", -1), call1(name = "g", arg = EBool(true)), -1)
+  let outer = fn_stmt(exported = false, name = "outer", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), taken, call1(name = "inner", arg = EBool(false))))
+  let stmts = [
+    helper_stmt(),
+    inner,
+    outer,
+    main_stmt(call1(name = "outer", arg = EBool(false)))
+  ]
+  let n = fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat())
+  assert(eq(n, 2))
+  assert(is_int_one(body_of(stmts = stmts, name = "inner")))
+}
+
+test "a method-style call the fold removes stops refusing in the next round" {
+  // As above, with `x.inner(true)` in the arm the fold drops.
+  let inner = fn_stmt(exported = false, name = "inner", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let dotted = ECall(EDot(EIdent("x", -1), "inner", -1, -1), [EBool(true)], -1, [
+  ])
+  let outer = fn_stmt(exported = false, name = "outer", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), dotted, call1(name = "inner", arg = EBool(false))))
+  let stmts = [
+    helper_stmt(),
+    inner,
+    outer,
+    main_stmt(call1(name = "outer", arg = EBool(false)))
+  ]
+  let n = fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat())
+  assert(eq(n, 2))
+  assert(is_int_one(body_of(stmts = stmts, name = "inner")))
+}
+
 //# Fold signatures (#2818)
 
 test "the fold signature names each rewritten function's substitutions, and nothing else" {

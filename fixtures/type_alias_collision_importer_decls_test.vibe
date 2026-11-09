@@ -1,0 +1,51 @@
+//# #3929: the importer's own declarations name an imported alias whose name
+//# another dependency also exports. On the wasm-gc lane the provider's alias is
+//# renamed for the merged program, and a struct field, an enum payload, a trait
+//# signature and an effect operation written against it follow (Codex on
+//# #3942).
+
+import ./modules/type_alias_collision_e.vibe {
+  Alias, one
+}
+
+import ./modules/type_alias_collision_d.vibe {
+  greet
+}
+
+struct Holder {
+  value: Alias
+}
+
+enum Choice {
+  Pick(Alias);
+  Skip
+}
+
+trait Get {
+  get(Self) -> Alias
+}
+
+impl Get for Holder {
+  get(self) -> Alias {
+    self.value
+  }
+}
+
+effect Ask {
+  Num() -> Alias
+}
+
+test "the importer's declarations through the alias" {
+  let h = Holder::{ value: one() }
+  inspect(h.get(), content = "1")
+  let picked = match Pick(one() + 1) {
+    Pick(n) => n;
+    Skip => 0
+  }
+  inspect(picked, content = "2")
+  let n = handle {
+    perform Ask::Num()
+  } with { Ask::Num() => resume(3) }
+  inspect(n, content = "3")
+  inspect(greet(), content = "hi")
+}

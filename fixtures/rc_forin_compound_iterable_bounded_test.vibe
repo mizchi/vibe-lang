@@ -1,0 +1,132 @@
+// #3919: a `for` iterable that is a block or a branch value -- `for x in {
+// let k = n; [k] }`, `for x in if c { [2] } else { [1] }`, a `match` -- keeps
+// the RC heap frontier bounded.
+//
+// compile_forin_loop released the iterable after the loop only when the
+// iterable expression itself was a fresh value (`cc_is_owned_temp`: a call, a
+// literal); a block or branch producing one was never released, so every run
+// of the loop leaked the array it built. Such an iterable is now released when
+// each result leaf is a fresh value or a view, the views retained first
+// (`cc_iter_tails_owned`). A leaf naming an enclosing local is such a view --
+// the enclosing locals are loop-borrowed while the iterable is compiled -- so
+// `live_tail` retains `d` there, the release gives that retain back, and `d`
+// stays alive for the reads after the loop. The plan reads that leaf as a
+// borrow (`pe_iter_carried_tails`).
+//
+// Measured on a stage2 built from main at 368fe52f, VIBE_RC=1, this fixture
+// grew __heap_ptr by 2,375,996 B over its 2000 rounds. The gate compiles it
+// under VIBE_RC=1 and bounds the growth (tests/gates/mid/run.sh, 40f0n); the
+// same gate checks the answer on the bump, rc, shadow and gc lanes, and the
+// shadow lane traps on the drop of a freed block -- what releasing `d` while
+// it is still live would hit.
+//
+// `main` sums, per round i, the Int results below; see `round`.
+
+// The #3919 shape: a block whose tail is a fresh array.
+fn block_fresh(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in {
+      let k = n + i
+      [k]
+    } {
+      acc = acc + x - n
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// An `if` / `else` iterable.
+fn if_else(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in if (n + i) % 2 == 0 {
+      [2]
+    } else {
+      [1, 1]
+    } {
+      acc = acc + x
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// A `match` iterable.
+fn match_iter(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in match (n + i) % 3 {
+      0 => [1],
+      1 => [2, 2],
+      _ => [3, 3, 3]
+    } {
+      acc = acc + x
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// A leaf naming a still-live enclosing local: retained for the loop, given
+// back after it, and `d` is read again afterwards.
+fn live_tail(_ n: Int) -> Int {
+  let d = [n, n + 1]
+  let mut acc = 0
+  let mut i = 0
+  while i < 3 {
+    for x in if (n + i) % 2 == 0 {
+      d
+    } else {
+      [n + 5]
+    } {
+      acc = acc + x - n
+    }
+    i = i + 1
+  }
+  acc + Array::length(d) + Array::get(d, at = 1) - n
+}
+
+// A `continue` and a `break` inside the block iterable leave the enclosing
+// `while`; the paths that reach the tail build the array the loop releases.
+fn exits_in_block(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 6 {
+    i = i + 1
+    for x in {
+      if i % 2 == 0 {
+        continue
+      } else {
+        ()
+      }
+      if i == 5 {
+        break
+      } else {
+        ()
+      }
+      [i, n % 2]
+    } {
+      acc = acc + x
+    }
+  }
+  acc
+}
+
+fn round(_ i: Int) -> Int {
+  block_fresh(i) + if_else(i) + match_iter(i) + live_tail(i) + exits_in_block(i)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

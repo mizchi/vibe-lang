@@ -1123,6 +1123,35 @@ let edp_mf_counted: Array[Int] = [-1]
 /// recounting every candidate and building the set of sole spellings first.
 let edp_mf_cand_counts: Array[EdpBinderCounts] = []
 
+/// #3950: the candidate positions `edp_mf_base` last built for the live
+/// table, with the version of the candidate names they were built from. The
+/// positions are a function of the candidate names, in statement order, alone.
+/// A migration rewrites lambda bodies far more often than the names its `let`s
+/// bind, so a refresh bumps the version only when a statement's candidate
+/// names change or a statement with candidates is appended, and the base
+/// before each later migration reuses the map. `edp_mf_new` bumps it too, so a
+/// new table never reads an older table's map.
+let edp_mf_names_version: Array[Int] = [0]
+let edp_mf_positions: Array[(Int, MutMap[String, Array[Int]])] = []
+
+fn edp_mf_names_bump() -> Unit {
+  Array::set(edp_mf_names_version, at = 0, value = Array::get(edp_mf_names_version, at = 0) + 1)
+}
+
+fn edp_same_names(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while same && i < Array::length(a) {
+      same = Array::get(a, at = i) == Array::get(b, at = i)
+      i = i + 1
+    }
+    same
+  }
+}
+
 /// Undo one `edp_tally`. A count that reaches zero answers like an absent
 /// one: `edp_binder_count` is the only reader.
 fn edp_untally(bcount: EdpBinderCounts, nm: String) -> Unit {
@@ -1576,7 +1605,7 @@ export fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Arr
     edp_lambda_candidates_stmt(stmt = Array::get(stmts, at = i), names = names, bodies = bodies, bcount = bcount)
     i = i + 1
   }
-  edp_append_visible_pure_from_candidates(stmts = stmts, pure_fns = pure_fns, names = names, bodies = bodies, bcount = bcount, cand = None)
+  edp_append_visible_pure_from_candidates(stmts = stmts, pure_fns = pure_fns, names = names, bodies = bodies, bcount = bcount, cand = None, positions = None)
 }
 
 /// One statement's share of the candidate walk. It only appends and tallies,
@@ -1602,7 +1631,8 @@ fn edp_lambda_candidates_stmt(stmt: Stmt, names: Array[String], bodies: Array[Ex
 
 /// `cand` is the candidate count of each spelling when the caller keeps one
 /// (`edp_mf_base`); without it the sole spellings are counted here.
-fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[String], names: Array[String], bodies: Array[Expr], bcount: EdpBinderCounts, cand: Option[EdpBinderCounts]) -> Unit {
+/// `positions` is `edp_candidate_positions(names)` when the caller has it.
+fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[String], names: Array[String], bodies: Array[Expr], bcount: EdpBinderCounts, cand: Option[EdpBinderCounts], positions: Option[MutMap[String, Array[Int]]]) -> Unit {
   let sole = match cand {
     Some(_) => MutSet::new_string(),
     None => edp_lambda_only_spellings(cand_names = names, bcount = bcount)
@@ -1617,7 +1647,10 @@ fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[S
   for name in pure_fns {
     MutSet::insert(pure_names, x = name)
   }
-  let at = edp_candidate_positions(names)
+  let at = match positions {
+    Some(known) => known,
+    None => edp_candidate_positions(names)
+  }
   let mut grew = true
   while grew {
     grew = edp_append_renamed_inert_params(stmts = stmts, pure_fns = pure_fns, inert = pure_names, bcount = bcount)
@@ -2091,6 +2124,8 @@ export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[String], Arra
   Array::truncate(edp_mf_cand_counts, length = 0)
   Array::push(edp_mf_cand_counts, value = edp_binder_counts_new())
   Array::set(edp_mf_counted, at = 0, value = 0)
+  edp_mf_names_bump()
+  Array::truncate(edp_mf_positions, length = 0)
   []
 }
 
@@ -2124,6 +2159,11 @@ export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String]
     if i >= 0 && i < known && !MutSet::has(walked, x = i) {
       MutSet::insert(walked, x = i)
       let fresh = edp_mf_stmt_facts(Array::get(stmts, at = i))
+      let (was_names, _, _, _, _, _, _, _) = Array::get(facts, at = i)
+      let (now_names, _, _, _, _, _, _, _) = fresh
+      if !edp_same_names(a = was_names, b = now_names) {
+        edp_mf_names_bump()
+      } else ()
       if counted {
         let counts = Array::get(edp_mf_counts, at = 0)
         let cand = Array::get(edp_mf_cand_counts, at = 0)
@@ -2149,6 +2189,10 @@ export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String]
   let mut i = known
   while i < Array::length(stmts) {
     let fresh = edp_mf_stmt_facts(Array::get(stmts, at = i))
+    let (appended_names, _, _, _, _, _, _, _) = fresh
+    if Array::length(appended_names) > 0 {
+      edp_mf_names_bump()
+    } else ()
     if counted {
       let (new_names, _, new_tallies, _, _, _, _, _) = fresh
       for nm in new_tallies {
@@ -2213,11 +2257,36 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
       }
     } else ()
   }
+  // The live table's positions are reused while its candidate names stand.
+  let positions = if running {
+    let version = Array::get(edp_mf_names_version, at = 0)
+    let cached = if Array::length(edp_mf_positions) == 1 {
+      let (at_version, known) = Array::get(edp_mf_positions, at = 0)
+      if at_version == version {
+        Some(known)
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+    match cached {
+      Some(known) => Some(known),
+      None => {
+        let built = edp_candidate_positions(names)
+        Array::truncate(edp_mf_positions, length = 0)
+        Array::push(edp_mf_positions, value = (version, built))
+        Some(built)
+      }
+    }
+  } else {
+    None
+  }
   edp_append_visible_pure_from_candidates(stmts = stmts, pure_fns = fresh, names = names, bodies = bodies, bcount = bcount, cand = if running {
     Some(Array::get(edp_mf_cand_counts, at = 0))
   } else {
     None
-  })
+  }, positions = positions)
   fresh
 }
 
@@ -2263,11 +2332,60 @@ fn edp_row_lit_shape(expr: Expr, row_efn: Array[Bool], ident_lets: Array[String]
   expr_children_pop(mark)
 }
 
-fn edp_names_any(names: Array[String], wanted: MutSet[String]) -> Bool {
+/// A name set that rejects most names without hashing them (#3950).
+///
+/// `shapes[b]` has bit `n` set when some name in `set` starts with byte `b`
+/// and is `n` bytes long, with every length from 61 up sharing bit 61. A
+/// name whose (first byte, length) no member has is not a member, so only
+/// the names that pass reach the hash lookup. The answer is
+/// `MutSet::has(set, name)` in every case. The empty name has no first byte
+/// and is looked up directly.
+struct EdpWanted {
+  set: MutSet[String];
+  shapes: Array[Int]
+}
+
+fn edp_wanted_shape_bit(_ n: Int) -> Int {
+  if n < 61 {
+    1<<n
+  } else {
+    1<<61
+  }
+}
+
+fn edp_wanted(_ names: Array[String]) -> EdpWanted {
+  let shapes: Array[Int] = []
+  let mut b = 0
+  while b < 256 {
+    Array::push(shapes, value = 0)
+    b = b + 1
+  }
+  for name in names {
+    let n = String::length(name)
+    if n > 0 {
+      let first = String::char_code_at(name, at = 0)
+      Array::set(shapes, at = first, value = Array::get(shapes, at = first)|edp_wanted_shape_bit(n))
+    } else ()
+  }
+  EdpWanted::{ set: edp_name_set(names), shapes: shapes }
+}
+
+fn edp_wanted_has(w: EdpWanted, name: String) -> Bool {
+  let n = String::length(name)
+  if n == 0 {
+    MutSet::has(w.set, x = name)
+  } else if (Array::get(w.shapes, at = String::char_code_at(name, at = 0))&edp_wanted_shape_bit(n)) == 0 {
+    false
+  } else {
+    MutSet::has(w.set, x = name)
+  }
+}
+
+fn edp_names_any(names: Array[String], wanted: EdpWanted) -> Bool {
   let mut hit = false
   let mut k = 0
   while !hit && k < Array::length(names) {
-    hit = MutSet::has(wanted, x = Array::get(names, at = k))
+    hit = edp_wanted_has(w = wanted, name = Array::get(names, at = k))
     k = k + 1
   }
   hit
@@ -2280,7 +2398,7 @@ fn edp_names_any(names: Array[String], wanted: MutSet[String]) -> Bool {
 export fn edp_mf_statements_naming(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], needing: Array[String], lets: Bool) -> Array[Int] {
   edp_mf_refresh(facts = facts, stmts = stmts)
   // Every identifier of every statement is looked up, so `needing` is a set.
-  let wanted = edp_name_set(needing)
+  let wanted = edp_wanted(needing)
   let out: Array[Int] = []
   let mut i = 0
   while Array::length(needing) > 0 && i < Array::length(facts) {
@@ -2301,7 +2419,7 @@ export fn edp_mf_row_lit_scan(facts: Option[Array[(Array[String], Array[Expr], A
   match facts {
     Some(known) => {
       edp_mf_refresh(facts = known, stmts = stmts)
-      let wanted = edp_name_set(needing)
+      let wanted = edp_wanted(needing)
       let candidates: Array[Int] = []
       let mut i = 0
       while i < Array::length(known) {

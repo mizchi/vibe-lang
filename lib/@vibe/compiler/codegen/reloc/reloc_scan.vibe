@@ -256,6 +256,40 @@ fn read_sleb_at(body: Bytes, pos: Int) -> (Int, Int) with Exception {
   (result, p)
 }
 
+/// The position just past the LEB128 at `pos`, without its value: what
+/// `read_uleb_at` and `read_sleb_at` answer as their second half, and refused
+/// on exactly the inputs they refuse. Both encodings end at the first byte
+/// whose high bit is clear, and both allow the same width. The decoder skips
+/// far more immediates than it records (every local index, memarg and
+/// constant), so a skip that builds no `(value, position)` pair is the common
+/// case (#3938).
+fn skip_leb_at(body: Bytes, pos: Int, what: String) -> Int with Exception {
+  let len = Bytes::length(body)
+  let mut shift = 0
+  let mut p = pos
+  let mut done = false
+  while !done {
+    if p >= len {
+      throw("reloc_scan: \{what} runs past the end of the body")
+    } else {
+      ()
+    }
+    let b = Bytes::get(body, at = p)
+    shift = shift + 7
+    p = p + 1
+    if (b&128) == 0 {
+      done = true
+    } else {
+      if shift > 56 {
+        throw("reloc_scan: \{what} wider than a 63-bit Int")
+      } else {
+        ()
+      }
+    }
+  }
+  p
+}
+
 /// Minimal-width uleb128, matching `leb128_encode_u32` in
 /// `@vibe/compiler/core`'s bytebuf -- the rebuild must produce what the
 /// emitter would have produced, or an identity rebuild would not be
@@ -350,9 +384,8 @@ fn op_has_no_immediate(_ op: Int) -> Bool {
 
 /// Skip a `memarg`: alignment then offset, both uleb128.
 fn skip_memarg(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p1) = read_uleb_at(body = body, pos = pos)
-  let (_, p2) = read_uleb_at(body = body, pos = p1)
-  p2
+  let p1 = skip_leb_at(body = body, pos = pos, what = "uleb128")
+  skip_leb_at(body = body, pos = p1, what = "uleb128")
 }
 
 /// Walk ONE instruction. Returns the position just past it, appending any
@@ -562,18 +595,15 @@ fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
 /// So: if you add an instruction, every immediate in it must be spelled with
 /// one of these. `_` is not an option the shape of this code offers.
 fn skip_local_index(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p) = read_uleb_at(body = body, pos = pos)
-  p
+  skip_leb_at(body = body, pos = pos, what = "uleb128")
 }
 
 fn skip_literal_uleb(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p) = read_uleb_at(body = body, pos = pos)
-  p
+  skip_leb_at(body = body, pos = pos, what = "uleb128")
 }
 
 fn skip_literal_sleb(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p) = read_sleb_at(body = body, pos = pos)
-  p
+  skip_leb_at(body = body, pos = pos, what = "sleb128")
 }
 
 /// Read an index at `pos`, record it as a relocation site of `kind`, and

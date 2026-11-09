@@ -1075,7 +1075,19 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
   while i < Array::length(items) {
     let item = Array::get(items, at = i)
     match item.kind {
-      None => (),
+      // #3769: a bare `import @vibe/builtin { Iterator }` names the builtin
+      // trait, but the `Iterator::map` / `Iterator::filter` operations are
+      // bound only by the `trait Iterator` spelling (the alias rewrite keys
+      // on it). The bare spelling still satisfied the unknown-name check, so
+      // `Iterator::map` checked clean and reached code generation unbound.
+      // One spelling binds the trait; the other is refused with that edit.
+      // `(from '<path>')` and the `import kind mismatch` prefix are what
+      // `engine_locate_import_kind_msg` anchors on.
+      None => if builtin_authority && item.name == "Iterator" {
+        Array::push(errors, value = "import kind mismatch: `Iterator` is a trait: write `import @vibe/builtin { trait Iterator }` to import it with its `Iterator::...` operations, or import an operation by name (`Iterator::map`) (from '\{path}')")
+      } else {
+        ()
+      },
       Some(expected) => match imported_decl_kind(item = item, expected = expected, initial_env = initial_env, builtin_authority = builtin_authority) {
         None => (),
         Some(actual) => {

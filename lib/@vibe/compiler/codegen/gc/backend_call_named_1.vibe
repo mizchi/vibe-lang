@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  builtin_frame_jump, builtin_frame_scope
+  ascription_call_value, builtin_frame_jump, builtin_frame_scope
 }
 import @vibe/compiler/codegen/common_base {
   emit_frame_check_payload, emit_frame_scope_epilogue, emit_frame_scope_prologue
@@ -338,6 +338,14 @@ fn compile_call_gc_unresolved(buf: Bytes, callee: Expr, args: Array[Expr], local
 }
 
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  // Checked annotations remain available to the type/layout analyses. Their
+  // identity callee needs neither a closure nor a table slot at runtime.
+  // GC records lambdas when it emits them, so skipping this callee also skips
+  // its table entry; linear planning and emission use this same predicate.
+  match ascription_call_value(callee = callee, args = args) {
+    Some(value) => return ce(buf, value, local_names, next_local, ld),
+    None => ()
+  }
   let operation = resolved_callee_operation(resolution)
   if operation == builtin_frame_scope && Array::length(args) == 2 {
     let frame = next_local

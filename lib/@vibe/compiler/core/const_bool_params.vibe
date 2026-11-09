@@ -52,6 +52,14 @@
 // Runs to a fixpoint: a wrapper that forwards its own parameter becomes a
 // literal-passing caller once its parameter is folded, which then decides
 // the callee's parameter in the next round.
+//
+// A round rewrites only a foldable candidate's body, so every other statement
+// observes the same calls in every round. Those are scanned once, into a base
+// table; a round copies it and scans only the rewritable bodies (#3938). That
+// is the same table a scan of the whole program builds, because every
+// observation is a join: a parameter's state only climbs (no call, then one
+// literal, then "varies"), `bad` is or-ed, and the dot-call methods are a set.
+// So the order in which statements are scanned cannot change the outcome.
 
 //# Imports
 
@@ -91,6 +99,9 @@ import ./sorted_index.vibe {
 //    1 every call so far passed `true`
 //    2 every call so far passed `false`
 //    3 a call passed something else, or the literals disagree
+//
+// `dot_base` holds the dot-call methods the base scan saw; a round's own scan
+// adds to `dot_methods`, and a method is seen when either holds it.
 struct CbfTable {
   names: Array[String];
   stmt_idx: Array[Int];
@@ -99,7 +110,8 @@ struct CbfTable {
   bad: Array[Bool];
   state: Array[Int];
   idx: MutMap[String, Int];
-  dot_methods: MutMap[String, Int]
+  dot_methods: MutMap[String, Int];
+  dot_base: MutMap[String, Int]
 }
 
 fn cbf_table_new() -> CbfTable {
@@ -111,7 +123,8 @@ fn cbf_table_new() -> CbfTable {
     bad: array_empty(),
     state: array_empty(),
     idx: MutMap::new_string(),
-    dot_methods: MutMap::new_string()
+    dot_methods: MutMap::new_string(),
+    dot_base: MutMap::new_string()
   }
 }
 
@@ -528,12 +541,18 @@ fn cbf_subst(expr: Expr, name: String, value: Bool, count: Array[Int]) -> Expr {
 
 //# Driver
 
-fn cbf_method_named(t: CbfTable, name: String) -> Bool {
-  let mut hit = match MutMap::get(t.dot_methods, k = name) {
+fn cbf_dot_seen(t: CbfTable, name: String) -> Bool {
+  match MutMap::get(t.dot_methods, k = name) {
     Some(_) => true,
-    None => false
+    None => match MutMap::get(t.dot_base, k = name) {
+      Some(_) => true,
+      None => false
+    }
   }
-  if hit {
+}
+
+fn cbf_method_named(t: CbfTable, name: String) -> Bool {
+  if cbf_dot_seen(t = t, name = name) {
     true
   } else {
     // A method binding `Type::m` is called as `x.m(..)`: refuse when its
@@ -541,29 +560,82 @@ fn cbf_method_named(t: CbfTable, name: String) -> Bool {
     let sep = String::last_index_of(name, needle = "::")
     if sep >= 0 {
       let tail = String::substring(name, start = sep + 2, end = String::length(name))
-      match MutMap::get(t.dot_methods, k = tail) {
-        Some(_) => true,
-        None => false
-      }
+      cbf_dot_seen(t = t, name = tail)
     } else {
       false
     }
   }
 }
 
-/// One round: index, scan, substitute. The number of parameter reads
-/// replaced (0 = the program is at its fixpoint).
-fn cbf_round(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], sigs: CbfSigs) -> Int {
+/// The statements a round can rewrite: each candidate that is not refused
+/// before any scan (`bad` from the index alone) and has a `Bool` parameter.
+fn cbf_rewritable_stmts(_ t: CbfTable) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut ci = 0
+  while ci < Array::length(t.names) {
+    if !Array::get(t.bad, at = ci) {
+      let base = Array::get(t.base, at = ci)
+      let mut has_bool = false
+      let mut pi = 0
+      while !has_bool && pi < Array::get(t.arity, at = ci) {
+        has_bool = Array::get(t.state, at = base + pi) >= 0
+        pi = pi + 1
+      }
+      if has_bool {
+        Array::push(out, value = Array::get(t.stmt_idx, at = ci))
+      } else ()
+    } else ()
+    ci = ci + 1
+  }
+  out
+}
+
+/// The index, the WAT texts, and every statement outside `rewritable`,
+/// scanned once. `rewritable` is ascending.
+fn cbf_base_table(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -> (CbfTable, Array[Int]) {
   let t = cbf_collect_candidates(stmts = stmts, entry_name = entry_name)
+  let rewritable = cbf_rewritable_stmts(t)
   let mut wi = 0
   while wi < Array::length(wat_texts) {
     cbf_note_wat(t = t, wat = Array::get(wat_texts, at = wi))
     wi = wi + 1
   }
+  let mut ri = 0
   let mut si = 0
   while si < Array::length(stmts) {
-    cbf_scan_stmt(t = t, stmt = Array::get(stmts, at = si))
+    if ri < Array::length(rewritable) && Array::get(rewritable, at = ri) == si {
+      ri = ri + 1
+    } else {
+      cbf_scan_stmt(t = t, stmt = Array::get(stmts, at = si))
+    }
     si = si + 1
+  }
+  (t, rewritable)
+}
+
+/// A round's table: the base's observations, to be joined with this round's
+/// scan of the rewritable bodies. The index is shared; it is never written
+/// after `cbf_collect_candidates`.
+fn cbf_round_table(_ base: CbfTable) -> CbfTable {
+  CbfTable::{
+    names: base.names,
+    stmt_idx: base.stmt_idx,
+    arity: base.arity,
+    base: base.base,
+    bad: Array::slice(base.bad, start = 0, end = Array::length(base.bad)),
+    state: Array::slice(base.state, start = 0, end = Array::length(base.state)),
+    idx: base.idx,
+    dot_methods: MutMap::new_string(),
+    dot_base: base.dot_methods
+  }
+}
+
+/// One round: scan the rewritable bodies over the base, then substitute. The
+/// number of parameter reads replaced (0 = the program is at its fixpoint).
+fn cbf_round(stmts: Array[Stmt], base_table: CbfTable, rewritable: Array[Int], sigs: CbfSigs) -> Int {
+  let t = cbf_round_table(base_table)
+  for si in rewritable {
+    cbf_scan_stmt(t = t, stmt = Array::get(stmts, at = si))
   }
   let count = [0]
   let mut ci = 0
@@ -650,11 +722,12 @@ export fn fold_const_bool_params_signed(stmts: Array[Stmt], entry_name: String, 
     values: array_empty(),
     idx: MutMap::new_string()
   }
+  let (base_table, rewritable) = cbf_base_table(stmts = stmts, entry_name = entry_name, wat_texts = wat_texts)
   let mut total = 0
   let mut rounds = 0
   let mut again = true
   while again && rounds < 16 {
-    let n = cbf_round(stmts = stmts, entry_name = entry_name, wat_texts = wat_texts, sigs = sigs)
+    let n = cbf_round(stmts = stmts, base_table = base_table, rewritable = rewritable, sigs = sigs)
     total = total + n
     again = n > 0
     rounds = rounds + 1

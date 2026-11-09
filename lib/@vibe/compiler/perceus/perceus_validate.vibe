@@ -130,6 +130,9 @@ struct RvState {
   // retain context but still exits the enclosing loop (#3879 review).
   mut exit_depth: Int;
   mut decl_exit: Int;
+  // #3919: walking a `for` iterable, whose result leaves codegen retains
+  // when they name a loop-carried binding.
+  mut iter_tail: Bool;
   mut loop_sites: Int
 }
 
@@ -354,19 +357,70 @@ fn rv_carried(_ st: RvState) -> Bool {
 /// value `e` produces is consumed (an argument, a stored item, a binding's
 /// value, the function result) or discarded (the head of a sequence, a
 /// `while` body); a bare `x` there is consuming or a read in place.
+///
+/// #3933 review: `iter_tail` holds only along a `for` iterable's RESULT path
+/// -- block and `let` bodies, sequence tails, `if` / `match` / `handle`
+/// branches, assignment continuations -- which is the path
+/// `cc_iter_tails_owned` and `pe_iter_carried_tails` follow. Any other node
+/// is entered with it cleared, and so is every non-result child of a node on
+/// the path (`rv_walk_off`).
 fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
+  if st.iter_tail && !rv_result_path_node(e) {
+    rv_walk_off(st = st, e = e, consume = consume)
+  } else {
+    rv_walk_node(st = st, e = e, consume = consume)
+  }
+}
+
+/// `rv_walk` with the iterable result context cleared: a child that is not
+/// on the iterable's result path.
+fn rv_walk_off(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
+  let saved = st.iter_tail
+  st.iter_tail = false
+  let out = rv_walk_node(st = st, e = e, consume = consume)
+  st.iter_tail = saved
+  out
+}
+
+/// The node kinds a result path passes through (the leaf itself included).
+fn rv_result_path_node(_ e: Expr) -> Bool {
+  match e {
+    EIdent(_, _) => true,
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    EHandle(_, _) => true,
+    ELet(_, _, _, _) => true,
+    ELetMut(_, _, _, _) => true,
+    ELetRec(_, _, _) => true,
+    ESeq(_, _) => true,
+    EAssign(_, _, _, _) => true,
+    EAssignOp(_, _, _, _, _) => true,
+    _ => false
+  }
+}
+
+fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
   match e {
     EIdent(n, off) => if n == st.x && consume {
       Array::push(st.cons_offs, value = off)
-      if rv_carried(st) {
-        // Not one of the positions codegen retains a loop-carried value at.
-        rv_note(st = st, reason = "loop: consumed through a branch or block value")
+      if rv_carried(st) && st.iter_tail {
+        // #3919: a result leaf of a compound `for` iterable. compile_forin_loop
+        // retains it and releases the iterable after the loop, or leaves both
+        // undone; either way the binding's own reference is untouched.
+        [
+          rv_out(c = 0, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+        ]
       } else {
-        ()
+        if rv_carried(st) {
+          // Not one of the positions codegen retains a loop-carried value at.
+          rv_note(st = st, reason = "loop: consumed through a branch or block value")
+        } else {
+          ()
+        }
+        [
+          rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+        ]
       }
-      [
-        rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
-      ]
     } else {
       rv_unit()
     },
@@ -401,7 +455,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
     EIf(c, t, f) => {
       st.if_ord = st.if_ord + 1
       let tag = "if" + __to_string(st.if_ord)
-      let co = rv_walk(st = st, e = c, consume = true)
+      let co = rv_walk_off(st = st, e = c, consume = true)
       let to = rv_walk(st = st, e = t, consume = consume)
       let fo = rv_walk(st = st, e = f, consume = consume)
       rv_seq(a = co, b = rv_branch(sets = [to, fo], steps = [
@@ -415,7 +469,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       // A named scrutinee is read in place.
       let so = match scrut {
         EIdent(_, _) => rv_unit(),
-        _ => rv_walk(st = st, e = scrut, consume = true)
+        _ => rv_walk_off(st = st, e = scrut, consume = true)
       }
       let sets: Array[Array[RvOut]] = []
       let steps: Array[String] = []
@@ -450,7 +504,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
     },
     ELet(n, v, b, _) => rv_let(st = st, n = n, v = v, b = b, consume = consume),
     ELetMut(n, v, b, _) => {
-      let vo = rv_walk(st = st, e = v, consume = true)
+      let vo = rv_walk_off(st = st, e = v, consume = true)
       Array::push(st.bound, value = n)
       let bo = rv_scope(st = st, n = n, b = b, consume = consume)
       Array::truncate(st.bound, length = Array::length(st.bound) - 1)
@@ -463,7 +517,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
         ()
       }
       Array::push(st.bound, value = n)
-      let vo = rv_walk(st = st, e = v, consume = true)
+      let vo = rv_walk_off(st = st, e = v, consume = true)
       let bo = rv_walk(st = st, e = b, consume = consume)
       Array::truncate(st.bound, length = Array::length(st.bound) - 1)
       rv_seq(a = vo, b = bo)
@@ -471,12 +525,14 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
     EAssign(n, v, b, _) => if n == st.x {
       rv_slot_store(st = st, v = v, b = b, consume = consume)
     } else {
-      rv_seq(a = rv_walk(st = st, e = v, consume = true), b = rv_walk(st = st, e = b, consume = consume))
+      rv_seq(a = rv_walk_off(st = st, e = v, consume = true), b = rv_walk(st = st, e = b, consume = consume))
     },
-    EAssignOp(_, _, v, b, _) => rv_seq(a = rv_walk(st = st, e = v, consume = true), b = rv_walk(st = st, e = b, consume = consume)),
+    EAssignOp(_, _, v, b, _) => rv_seq(a = rv_walk_off(st = st, e = v, consume = true), b = rv_walk(st = st, e = b, consume = consume)),
     // The head of a sequence is discarded without a release.
-    ESeq(a, b) => rv_seq(a = rv_walk(st = st, e = a, consume = false), b = rv_walk(st = st, e = b, consume = consume)),
+    ESeq(a, b) => rv_seq(a = rv_walk_off(st = st, e = a, consume = false), b = rv_walk(st = st, e = b, consume = consume)),
     EWhile(c, body) => {
+      let saved_tail = st.iter_tail
+      st.iter_tail = false
       st.loop_depth = st.loop_depth + 1
       st.exit_depth = st.exit_depth + 1
       let co = rv_walk(st = st, e = c, consume = true)
@@ -484,6 +540,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       let bo = rv_walk(st = st, e = body, consume = false)
       st.loop_depth = st.loop_depth - 1
       st.exit_depth = st.exit_depth - 1
+      st.iter_tail = saved_tail
       rv_loop(st = st, iter = rv_seq(a = co, b = bo), stop = co)
     },
     EForIn(vn, ix, it, fb) => {
@@ -495,7 +552,10 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       // iterable still exits the ENCLOSING loop: the `for` installs its exit
       // boundary only after the iterable (#3879 review).
       st.loop_depth = st.loop_depth + 1
+      let saved_tail = st.iter_tail
+      st.iter_tail = true
       let io = rv_operand(st = st, e = it)
+      st.iter_tail = false
       st.exit_depth = st.exit_depth + 1
       let mark = Array::length(st.bound)
       Array::push(st.bound, value = vn)
@@ -514,6 +574,7 @@ fn rv_walk(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       Array::truncate(st.bound, length = mark)
       st.loop_depth = st.loop_depth - 1
       st.exit_depth = st.exit_depth - 1
+      st.iter_tail = saved_tail
       rv_seq(a = io, b = rv_loop(st = st, iter = bo, stop = rv_unit()))
     },
     ELoop(params, lb) => {
@@ -742,7 +803,7 @@ fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOu
     } else {
       rv_unit()
     },
-    _ => rv_walk(st = st, e = v, consume = true)
+    _ => rv_walk_off(st = st, e = v, consume = true)
   }
   Array::push(st.bound, value = n)
   let bo = rv_scope(st = st, n = n, b = b, consume = consume)
@@ -783,7 +844,7 @@ fn rv_slot_store(st: RvState, v: Expr, b: Expr, consume: Bool) -> Array[RvOut] {
   } else {
     ()
   }
-  let vo = rv_walk(st = st, e = v, consume = true)
+  let vo = rv_walk_off(st = st, e = v, consume = true)
   let stored = rv_seq(a = vo, b = [
     rv_out(c = 0, marked = false, brk = 0, acq = 1, path = "")
   ])
@@ -1036,6 +1097,7 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
     decl_loop: 0,
     exit_depth: 0,
     decl_exit: 0,
+    iter_tail: false,
     loop_sites: 0
   }
 }

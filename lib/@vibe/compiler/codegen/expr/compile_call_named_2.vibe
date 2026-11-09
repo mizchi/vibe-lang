@@ -59,6 +59,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_global_get,
   emit_global_set,
   emit_i32_add,
+  emit_i32_and,
   emit_i32_const,
   emit_i32_load,
   emit_i32_store,
@@ -347,6 +348,14 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_set(buf = buf, idx = ptr_local)
     emit_local_get(buf = buf, idx = ptr_local)
     emit_i32_wrap_i64(buf)
+    // #3735: an RC Array value is `block + 8 | 1`; read its header word at
+    // the even address. Unmasked, the load started one byte in and took the
+    // low byte of the LENGTH as its top byte, so an Array whose length's low
+    // byte was 128 or more read as a negated Bytes capacity and was handed
+    // to the Bytes builtin. A Bytes pointer and a bump-lane Array pointer are
+    // even, so the mask changes nothing for them.
+    emit_i32_const(buf = buf, value = 0 - 2)
+    emit_i32_and(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
     emit_i64_extend_i32_u(buf)
     emit_local_set(buf = buf, idx = cap_local)

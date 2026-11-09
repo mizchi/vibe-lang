@@ -38,7 +38,7 @@ import ./equality_shape_queries.vibe {
 }
 
 import ./formal_scope.vibe {
-  formal_in_scope, is_marked_formal_name, subst_scope_formals_ty
+  formal_in_scope, formals_contain_source_name, is_marked_formal_name, subst_scope_formals_ty
 }
 
 import ./shape_environment.vibe {
@@ -608,18 +608,38 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
           ctor_enum_of_name(fn_returns = fn_returns, name = fname)
         }
       },
-      // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
-      // recover the operand's type head from the annotation so an annotated
-      // `let a: Option[Int] = None` records `a -> "Option"` for `==` dispatch.
-      EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
-        let (_, ann) = Array::get(params, at = 0)
-        match ann {
+      // A callee-local result formal is not a type identity in the caller.
+      // Enclosing formals ARE caller identities: preserve their names so
+      // witness resolution can use the bound already in scope. An ordinary
+      // unary identity also returns its parameter's type, regardless of the
+      // parameter's spelling. This result inference does not classify the
+      // lambda as a synthetic marker or remove its runtime call/table slot.
+      EFn(type_params, _, params, ret, _, body) => {
+        let ann = match ret {
+          None => if Array::length(params) == 1 {
+            let (param_name, param_ty) = Array::get(params, at = 0)
+            match body {
+              EIdent(name, _) => if name == param_name {
+                param_ty
+              } else None,
+              _ => None
+            }
+          } else None,
+          _ => ret
+        }
+        let head = match ann {
           Some(TyName(n)) => Some(n),
           Some(TyApp(n, _)) => Some(n),
           _ => None
         }
-      } else {
-        None
+        match head {
+          Some(n) => if formals_contain_source_name(formals = type_params, n = n) {
+            None
+          } else {
+            Some(n)
+          },
+          None => None
+        }
       },
       // #864: a UFCS method-chain call `x.method(args)` as the callee here means
       // `arg` itself IS `x.method(args)` (e.g. the receiver of an outer
