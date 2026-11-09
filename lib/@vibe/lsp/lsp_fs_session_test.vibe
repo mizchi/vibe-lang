@@ -261,3 +261,36 @@ test "#1960: an absolute, percent-escaped file URI inside the project is typed t
   inspect(hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri, line0 = 53, char0 = 6), docs = docs)), content = "ShResult")
   inspect(type_at_fs(path = path, source = text, line = 54, col = 7), content = "ShResult")
 }
+
+test "#1960: the package's index.vpkg edited on disk is typed again" {
+  // A sibling's directory-shared imports come from its owning contract, which
+  // no import names, so the contract is tracked on its own. Here it changes
+  // what `pick` is, with no file event sent.
+  let dir = "_build/lsp_fs_session_1960/contract_edit/pkg"
+  Fs::mkdir_p(dir)
+  Fs::write_file(String::concat(dir, "/index.vpkg"), contents = "import @vibe/random { seed as pick }\n\nfn use_it(_ x: Int) -> Int\n")
+  let impl_text = "export fn use_it(_ x: Int) -> Int {\n  let r = pick(x)\n  0\n}\n"
+  let impl_path = String::concat(dir, "/impl.vibe")
+  Fs::write_file(impl_path, contents = impl_text)
+  let docs = open_doc(path = impl_path, text = impl_text)
+  inspect(hover(docs = docs, path = impl_path, line0 = 1, char0 = 6), content = "Int")
+  Fs::write_file(String::concat(dir, "/index.vpkg"), contents = "import @vibe/random { next as pick }\n\nfn use_it(_ x: Int) -> Int\n")
+  inspect(hover(docs = docs, path = impl_path, line0 = 1, char0 = 6), content = "(Int, Int)")
+  inspect(type_at_fs(path = impl_path, source = impl_text, line = 2, col = 7), content = "(Int, Int)")
+}
+
+test "#1960: a dependency deleted on disk is typed again rather than trusted" {
+  // The node runner raises a guest error for the stat of a missing path, so
+  // the freshness check asks whether the file exists first. With the import
+  // gone the file no longer checks on the import-resolving lane, and the
+  // hover falls back to the buffer typed alone.
+  let main = project("deleted_dep")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Int")
+  let dep = String::concat(main[0: String::length(main) - String::length("main.vibe")], "dep.vibe")
+  Fs::remove(dep)
+  let walks = lsp_hover_fs_walks()
+  let after = hover(docs = docs, path = main, line0 = 5, char0 = 10)
+  inspect(after == "(Int) -> Int", content = "false")
+  inspect(lsp_hover_fs_walks() - walks, content = "1")
+}
