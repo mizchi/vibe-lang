@@ -97,3 +97,62 @@ contained the pattern: recompiling
 the compiler before and after the change gave byte-identical output
 (4,376,075 B either way). The elision emits nothing when the pattern is
 absent; re-run this bench after a change that could introduce it.
+
+## Compiler Size
+
+The compiler's own artifacts are tracked, not capped, except where a cap
+cannot fight ordinary growth (#1109-4, #2506).
+
+- **Tracked series.** `scripts/compiler_size_metrics.mjs` (#3646) records the
+  CLI stage2's bytes, code-section bytes and defined-function count, bound to
+  its generation receipt, in the perf report.
+- **Compile-only budget.** `scripts/check_compile_only_size.sh` (CI, in the
+  `compile-only` contracts group; `pkf run check-compile-only-size`) holds the
+  compile-only artifact (`scripts/build_compile_only.sh`) to
+  `CLI bytes - separation floor`. The CLI is the one built from the same
+  source, and both sizes are taken without the name section. The floor is
+  `bench/perf/compile_only_size_baseline.txt` minus 5%. Compiler growth is in
+  both artifacts and cancels out; growth only the CLI carries widens the
+  separation. So what fails is CLI-only code becoming reachable from
+  `main_compile_only`. Both artifacts must match their receipts, and the
+  compile-only artifact must have been built by that same stage2 from this
+  checkout's generated sources, or the gate refuses to measure.
+  `scripts/check_compile_only_size_test.sh` proves it fails on a one-byte
+  overrun and on each provenance mismatch.
+
+### The `wasm-opt -Oz` floor is measured on demand, not tracked
+
+Not a series: neither CI nor the dev container has binaryen, and the -Oz
+ratio adds little that the code-section bytes do not already show, at about
+two minutes of CPU and a 94 MB install per run. When a floor is wanted,
+measure it with the binaryen that `scripts/build_z3_wasi.sh` already pins
+(`binaryen@125.0.0` from npm), using this feature set (it validates both
+artifacts; `-O4` and `--all-features` are not used):
+
+```bash
+npm install --prefix /tmp/binaryen binaryen@125.0.0
+node --max-old-space-size=6144 /tmp/binaryen/node_modules/binaryen/bin/wasm-opt \
+  --enable-exception-handling --enable-reference-types --enable-bulk-memory \
+  --enable-multivalue --enable-mutable-globals --enable-sign-ext \
+  --enable-nontrapping-float-to-int --enable-tail-call --enable-simd \
+  -Oz stage2.wasm -o stage2.oz.wasm
+```
+
+Measured 2026-11-09 on main be778cd15:
+
+| artifact | bytes | after `-Oz` | functions after |
+|---|---:|---:|---:|
+| CLI stage2 | 5,753,034 | 4,582,140 (-20.4%) | 7,742 (from 12,545) |
+| compile-only | 5,112,143 | 4,066,444 (-20.5%) | 7,045 (from 11,466) |
+
+Both optimized compilers were checked by rebuilding themselves, and each
+result was byte-identical to the unoptimized build:
+
+- the -Oz stage2 compiled `cli_adapter_module_source.vibe` to the same bytes
+  as stage2;
+- the -Oz compile-only artifact compiled its own module source to the same
+  bytes as the compile-only artifact, and passed the refusal, acceptance, cfg,
+  unstable and trusted-source checks of `check_compile_only_lanes.sh`.
+
+The self-compile took the same time with and without -Oz (about 45 s each, one
+run).

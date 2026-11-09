@@ -47,7 +47,7 @@ export function withoutNames(bytes) {
   return Buffer.concat(output);
 }
 
-function tool(name, bytes) {
+export function tool(name, bytes) {
   // Analyze the exact bytes whose hash was checked, even if a caller later
   // replaces its artifact path while another generation is being built.
   const directory = mkdtempSync(resolve(tmpdir(), "vibe-compiler-geometry-"));
