@@ -22,6 +22,7 @@ import ./walk.vibe {
   decl_offset,
   expr_kids,
   expr_off,
+  is_array_literal,
   reaches_cycle,
   shown_index_reads,
   strip_label
@@ -1928,7 +1929,9 @@ fn is_array_op_name(ctx: Ctx, fname: String, callee_off: Int) -> Bool {
   if fname == "__index" {
     index_site_offset(callee_off) >= 0
   } else {
-    (fname == "Array::get" || fname == "Array::length" || fname == "Array::set" || fname == "Array::push") && (is_builtin_ref_offset(callee_off) || match find_sig(fns = ctx.fns, name = fname) {
+    // `Array::all` / `Array::any` read the array's current value, as a quantifier
+    // over its elements: a written local may be the subject (#3719).
+    (fname == "Array::get" || fname == "Array::length" || fname == "Array::set" || fname == "Array::push" || fname == "Array::all" || fname == "Array::any") && (is_builtin_ref_offset(callee_off) || match find_sig(fns = ctx.fns, name = fname) {
       Some(_) => false,
       None => true
     })
@@ -1957,8 +1960,8 @@ fn writable_arrays(ctx: Ctx, params: Array[(String, Option[TypeExpr])], body: Ex
     let inits: Array[Option[Expr]] = []
     binder_inits(e = body, name = n, out = inits)
     let literal = Array::length(inits) == 1 && match Array::get(inits, at = 0) {
-      Some(EArray(_)) => true,
-      _ => false
+      Some(v) => is_array_literal(v),
+      None => false
     }
     if !literal {
       unsupported(off = 0 - 1, reason = "a write to `\{n}`, which is not bound exactly once, by `let`, to an array literal")
@@ -1966,7 +1969,7 @@ fn writable_arrays(ctx: Ctx, params: Array[(String, Option[TypeExpr])], body: Ex
       ()
     }
     match array_use_violation(ctx = ctx, e = body, name = n) {
-      Some(why) => unsupported(off = 0 - 1, reason = "`\{n}` is written, and \{why}: a written array is named only as the array of `Array::get`, `Array::length`, `xs[i]`, `Array::set` or `Array::push`"),
+      Some(why) => unsupported(off = 0 - 1, reason = "`\{n}` is written, and \{why}: a written array is named only as the array of `Array::get`, `Array::length`, `xs[i]`, `Array::set`, `Array::push`, `Array::all` or `Array::any`"),
       None => ()
     }
   }
