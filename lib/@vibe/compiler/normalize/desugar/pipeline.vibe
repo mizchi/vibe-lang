@@ -43,12 +43,13 @@ import @vibe/compiler/core {
   typed_int32_row_head,
   typed_map_key_row_head,
   typed_map_scalar_key_verdict,
+  typed_method_row_head,
   typed_render_row_head,
   typed_scalar_local_row_head
 }
 
 import @vibe/ast {
-  impl_target_key
+  impl_target_from_key, impl_target_key
 }
 
 import @vibe/core {
@@ -166,7 +167,9 @@ import ./state.vibe {
   dtd_typed_forin_offs,
   dtd_typed_forin_verdicts,
   dtd_typed_index_offs,
-  dtd_typed_index_verdicts
+  dtd_typed_index_verdicts,
+  dtd_typed_method_heads,
+  dtd_typed_method_offs
 }
 
 import ./trait_bounds.vibe {
@@ -533,6 +536,13 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
   ]))
   let render_head_len = String::index_of(render_prefix, needle = impl_target_key(TyName("Int")))
   let render_head = String::substring(render_prefix, start = 0, end = render_head_len)
+  // #2501: the dot-method rows, split off the same way; each names its head.
+  let method_prefix = impl_target_key(TyApp(typed_method_row_head(), [
+    TyName("Int")
+  ]))
+  let method_head = String::substring(method_prefix, start = 0, end = String::index_of(method_prefix, needle = impl_target_key(TyName("Int"))))
+  let method_offs: Array[Int] = []
+  let method_heads: Array[String] = []
   // #3133: the index-receiver rows, split off the same way.
   let index_offs: Array[Int] = []
   let index_verdicts: Array[String] = []
@@ -665,6 +675,16 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
       dtd_typed_row_insert(dtd_typed_index_offs = forin_offs, dtd_typed_index_verdicts = forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
     } else if tkey == index_seq_key {
       dtd_typed_row_insert(dtd_typed_index_offs = index_offs, dtd_typed_index_verdicts = index_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
+    } else if String::starts_with(tkey, prefix = method_head) {
+      match impl_target_from_key(tkey) {
+        Some(TyApp(_, args)) => if Array::length(args) == 1 {
+          match Array::get(args, at = 0) {
+            TyName(head) => dtd_typed_row_insert(dtd_typed_index_offs = method_offs, dtd_typed_index_verdicts = method_heads, off = Array::get(typed_eq_offsets, at = teq_i), verdict = head),
+            _ => ()
+          }
+        },
+        _ => ()
+      }
     } else if render_head_len > 0 && String::starts_with(tkey, prefix = render_head) {
       dtd_typed_render_insert_into(offs = render_offs, keys = render_keys, off = Array::get(typed_eq_offsets, at = teq_i), key = tkey)
     } else {
@@ -697,7 +717,9 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
     i32_neg: i32_neg_offs,
     u32_not: u32_not_offs,
     scalar_local: scalar_local_offs,
-    map_scalar: map_scalar_offs
+    map_scalar: map_scalar_offs,
+    method_offs: method_offs,
+    method_heads: method_heads
   }
 }
 
@@ -721,6 +743,10 @@ fn dtd_typed_rows_install(_ rows: DtdTypedRows) -> Unit {
   dtd_append_strings(dst = dtd_typed_index_verdicts, src = rows.index_verdicts)
   dtd_append_ints(dst = dtd_typed_forin_offs, src = rows.forin_offs)
   dtd_append_strings(dst = dtd_typed_forin_verdicts, src = rows.forin_verdicts)
+  Array::truncate(dtd_typed_method_offs, length = 0)
+  Array::truncate(dtd_typed_method_heads, length = 0)
+  dtd_append_ints(dst = dtd_typed_method_offs, src = rows.method_offs)
+  dtd_append_strings(dst = dtd_typed_method_heads, src = rows.method_heads)
   dtd_add32_reset()
   let mut i = 0
   while i < Array::length(rows.add32_offs) {
