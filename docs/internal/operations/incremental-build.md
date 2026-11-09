@@ -884,6 +884,25 @@ to main.
 | +1 used enum (the same, plus a function) | 31 | 26 | 26 | 26 | 26 | **1** | 1 |
 | +1 30-parameter function (types 35 → 41, four reordered) | 6 | — | — | — | — | 1 | 1 |
 
+The table was measured with main at `a497c68` as the base. It was re-run
+whole after merging main at `616d2e2`. W=0 is still byte-identical to that
+main on all twelve builds, and the fully padded column answers the same in
+every row. The W=0 counts moved with main's own codegen changes:
+
+| edit | W=0 at `616d2e2` |
+|---|---:|
+| below band | 8 |
+| reorder | 11 |
+| literal | 105 |
+| +400 fn | 12 |
+| thunk | 10 |
+| effect | 8 |
+| used enum | 33 |
+| unused enum | 25 |
+| arity | 8 |
+
+The total cost at `616d2e2` is +5.94% (6,726,147 → 7,125,553).
+
 In every row the 1 is the edited body. A dash was not measured. Five rows
 need a note:
 
