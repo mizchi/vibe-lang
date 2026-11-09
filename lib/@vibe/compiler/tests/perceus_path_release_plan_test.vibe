@@ -157,10 +157,41 @@ test "a parameter consumed on one branch gets a mark and a path drop" {
   assert(String::contains(plan, needle = "keep t path_drop 1"))
 }
 
-test "a parameter of a body with an exit gets no path drop" {
-  // Codegen releases parameters at an exit from a table of its own.
+// #1980: an exit taken BEFORE every occurrence a binding's dups were planned
+// for leaves on a path that ran no consume mark, holding the initial
+// reference plus the merged budget -- what the exit's row releases. The guard
+// clause ahead of the branch no longer declines the merge.
+test "a parameter whose exit precedes its branch dups gets a mark and a path drop" {
   let src = String::concat(prelude, String::concat("let keep: (Node, Bool) -> Node = (t, c) -> {\n  if !c {\n    return Leaf(9)\n  } else {\n    ()\n  }\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}\nlet run: (Bool) -> Node = (c) -> keep(Pair(Leaf(1), Leaf(2)), c)", epilogue))
   let plan = plan_of(src)
-  assert(!String::contains(plan, needle = "keep t path_drop"))
-  assert(!String::contains(plan, needle = "keep t consume_mark:"))
+  assert(String::contains(plan, needle = "keep t dup 1"))
+  assert(String::contains(plan, needle = "keep t consume_mark:"))
+  assert(String::contains(plan, needle = "keep t path_drop 1"))
+}
+
+test "a let whose exit precedes its branch dups gets a mark and a path drop" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if !c {\n    return Leaf(9)\n  } else {\n    ()\n  }\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "run t dup 1"))
+  assert(String::contains(plan, needle = "run t consume_mark:"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+}
+
+test "a parameter with an exit after its branch dups still gets its path drop" {
+  // Its exit release reads no path flag, and the row's count is what the
+  // path that consumed the most still holds, so a path through `own(t)`
+  // cannot over-release there.
+  let src = String::concat(prelude, String::concat("let keep: (Node, Bool) -> Node = (t, c) -> {\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  if !c {\n    return u\n  } else {\n    ()\n  }\n  match t {\n    _ => u\n  }\n}\nlet run: (Bool) -> Node = (c) -> keep(Pair(Leaf(1), Leaf(2)), c)", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "keep t consume_mark:"))
+  assert(String::contains(plan, needle = "keep t path_drop 1"))
+}
+
+// A `let`'s exit release is guarded on the path flag too, so a path that ran
+// the mark would release nothing at the exit: the merge declines.
+test "a let with an exit after its branch dups gets no path drop" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  if !c {\n    return u\n  } else {\n    ()\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "run t path_drop"))
+  assert(!String::contains(plan, needle = "run t consume_mark:"))
 }

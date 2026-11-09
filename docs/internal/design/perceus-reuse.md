@@ -238,23 +238,32 @@ and a missing one a premature release.
 
 A merge declines (the binding keeps today's rows) when an arm took the
 initial reference (the split above owns that), when an occurrence has no
-source offset or sits in a loop the binding is declared outside of. The
-whole binding declines when it has an early-exit row, whose count reads the
-dup budget, and its marks are withheld when another binding of the plan has
-its name: codegen gives a `PaPathDrop` to every `let` of the row's name. A
-path short by two or more still leaks the rest.
+source offset or sits in a loop the binding is declared outside of. Its
+marks are withheld when another binding of the plan has its name: codegen
+gives a `PaPathDrop` to every `let` of the row's name. A path short by two
+or more still leaks the rest.
+
+An early exit's row is resolved after the redundant rows are dropped, so it
+reads the merged budget `B`: it releases at most `1 + B - cons`, `cons` the
+most any path reaching the exit consumed, which no path holds less than. A
+`let`'s exit release is also guarded on its path flag, so a path that ran a
+mark releases nothing there; the whole binding declines when an exit row is
+taken after an occurrence its dups were planned for (`pf_exit_late`), where
+the declined plan released the row's count. An exit before every such
+occurrence -- the guard clause `if bad { return d }` ahead of the branch --
+is reached by no path that ran a mark, and merges.
 
 A parameter is the same case: its planned dups are taken at function entry
 (`pf_param`), so `fn f(v) { if c { keep(v) }; use(v) }` leaked one per call
 that skipped the consume. It merges like a `let` whose scope is the whole
 body, and its path drop is a flag local the function epilogue reads
 (`linked_compile_function_bodies`, `compile_lambda`), for an owned heap
-parameter only -- a borrowed one's reference is the caller's. A body with any
-exit declines its parameters, because codegen releases parameters at an exit
-from its own table, which reads no path flag. So does a parameter consumed
-inside a loop: codegen retains it at each such call site and gives the
-epilogue a drop for the loop sites (#725, #1085), which the merge's budget
-does not model.
+parameter only -- a borrowed one's reference is the caller's. Codegen
+releases a parameter at an exit from a table of its own, which reads no path
+flag, so its exits never decline the merge: each releases the row's count
+on every path. A parameter consumed inside a loop declines: codegen retains
+it at each such call site and gives the epilogue a drop for the loop sites
+(#725, #1085), which the merge's budget does not model.
 
 Freeing a parameter on every path exposed a gap that its leak had hidden: a
 collected `for` retained its body value only when the whole body was a view,
