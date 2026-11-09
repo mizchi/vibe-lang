@@ -72,7 +72,7 @@
 // caught in general -- only the literal aggregates are cross-checked.
 
 import @vibe/compiler/codegen/common_analysis {
-  md_borrow_mask_of
+  collect_free_vars, md_borrow_mask_of
 }
 
 import @vibe/compiler/core {
@@ -1753,13 +1753,17 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
 /// included. Codegen gives the closure its own reference to the captured
 /// cell and the cell holds the closure, so neither count reaches zero
 /// (measured: 40 B per evaluation; the `let rec` spelling of the same
-/// recursion leaks nothing, its self slot being weak, #3234). A closure with
-/// a parameter of that name does not capture it.
+/// recursion leaks nothing, its self slot being weak, #3234). What the
+/// closure captures is codegen's own answer (`collect_free_vars`, the walk
+/// compile_lambda's capture set comes from), so a closure that only
+/// ASSIGNS the cell counts, and one whose parameter shadows it does not.
 fn rv_cycle_cells(_ body: Expr) -> Array[String] {
   let out: Array[String] = []
+  // A `let mut` is local, so no top-level name needs excluding.
+  let no_fns: Array[String] = []
   let _ = expr_any_node(expr = body, pred = (n: Expr) -> Bool {
     match n {
-      EAssign(target, EFn(_, _, ps, _, _, fb), _, _) => if !rv_has_str(xs = out, s = target) && !rv_param_named(params = ps, name = target) && rv_mentions(e = fb, x = target) {
+      EAssign(target, EFn(_, _, ps, _, _, fb), _, _) => if !rv_has_str(xs = out, s = target) && rv_has_str(xs = collect_free_vars(body = fb, param_names = rv_param_names(ps), fn_names = no_fns), s = target) {
         Array::push(out, value = target)
       } else {
         ()
@@ -1771,12 +1775,12 @@ fn rv_cycle_cells(_ body: Expr) -> Array[String] {
   out
 }
 
-fn rv_param_named(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
-  let mut found = false
+fn rv_param_names(_ params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let out: Array[String] = []
   let mut i = 0
-  while i < Array::length(params) && !found {
-    found = rv_strip_label((Array::get(params, at = i)).0) == name
+  while i < Array::length(params) {
+    Array::push(out, value = rv_strip_label((Array::get(params, at = i)).0))
     i = i + 1
   }
-  found
+  out
 }

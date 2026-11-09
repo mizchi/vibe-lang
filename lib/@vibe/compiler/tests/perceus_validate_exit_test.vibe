@@ -42,6 +42,18 @@ fn edited(body: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAct
   rc_validate_source_edited(source = program(body), fn_filter = "run", edit = edit)
 }
 
+/// `out` under `tag`, with an empty answer spelled `clean`: each snapshot
+/// gets an expected literal of its own, so `vibe test --update` can tell
+/// which call a failing answer belongs to.
+fn tagged(tag: String, out: String) -> String {
+  let body = if out == "" {
+    "clean"
+  } else {
+    out
+  }
+  tag + ": " + body
+}
+
 /// The plan with every row `pick` accepts rewritten by `change`.
 fn rewrite(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool, change: (PerceusAction) -> PerceusAction) -> Array[PerceusAction] {
   let out: Array[PerceusAction] = []
@@ -91,11 +103,11 @@ let consumed_both = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c
 
 test "a binding live across a return is released by its exit row" {
   inspect(plan(held_across), content = "run e exit_site:0:0 1\nrun e dup 1\nrun __seq0 drop 1\nrun e drop 1\nrun e exit_drop:0:2 1")
-  inspect(validate(held_across), content = "")
+  inspect(tagged(tag = "held across", out = validate(held_across)), content = "held across: clean")
 }
 
 test "a break out of the declaring loop body is released by its exit row" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let mut k = 0\n  while k < 3 {\n    let d = A([k])\n    if c {\n      break\n    }\n    k = k + keep(d)\n  }\n  k\n}"), content = "")
+  inspect(tagged(tag = "break", out = validate("let run: (Bool) -> Int = (c) -> {\n  let mut k = 0\n  while k < 3 {\n    let d = A([k])\n    if c {\n      break\n    }\n    k = k + keep(d)\n  }\n  k\n}")), content = "break: clean")
 }
 
 //# Known leaks
@@ -150,7 +162,7 @@ test "an exit row at an exit that does not leave the scope is not checked" {
 // A throw outside every `handle` body leaves the function like a `return`;
 // `d`'s exit row releases it there.
 test "an uncaught throw is released by its exit row" {
-  inspect(validate("let run: (Bool) -> Int with Exception = (c) -> {\n  let d = A([1])\n  if c {\n    throw(\"x\")\n  } else {\n    ()\n  }\n  keep(d)\n}"), content = "")
+  inspect(tagged(tag = "uncaught throw", out = validate("let run: (Bool) -> Int with Exception = (c) -> {\n  let d = A([1])\n  if c {\n    throw(\"x\")\n  } else {\n    ()\n  }\n  keep(d)\n}")), content = "uncaught throw: clean")
 }
 
 test "a throw a handle body may catch is not checked" {
@@ -164,6 +176,13 @@ test "a throw a handle body may catch is not checked" {
 // (no cycle since #3234: its self slot is weak).
 test "a closure stored into the let mut it captures is a reference cycle" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let mut f = (n: Int) -> n\n  f = (n: Int) -> if n > 9 {\n    n\n  } else {\n    f(n + 5)\n  }\n  f(7)\n}"), content = "run * -: not checked: 0 pattern binders, 1 let mut\nrun * -: not checked: lambda body\nrun f -: warning: reference cycle (a closure stored into the let mut it captures); RC cannot free it")
+}
+
+// The closure only assigns the cell, so no identifier in its body names it,
+// but codegen captures an assignment target all the same (40 B per
+// evaluation when the closure is never called, measured).
+test "a closure that only assigns the let mut it is stored into is a reference cycle" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let mut f = () -> ()\n  f = () -> {\n    f = () -> ()\n  }\n  0\n}"), content = "run * -: not checked: 0 pattern binders, 1 let mut\nrun * -: not checked: lambda body\nrun f -: warning: reference cycle (a closure stored into the let mut it captures); RC cannot free it")
 }
 
 test "a let rec closure's self-reference is not a cycle" {
