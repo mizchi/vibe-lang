@@ -1519,7 +1519,58 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
       let type_am = aliasidx_without_names(am = am, names = tparams)
       SImpl(tparams, rewrite_alias_bounds(bounds = bounds, am = type_am), rewrite_alias_trait_ref(trait_ref = trait_name, am = type_am), rewrite_alias_type_expr(te = target, am = type_am))
     },
+    // #3954: an importer's own declarations name an `as`-renamed import
+    // (`struct Holder { value: CA }` under `import { Alias as CA }`). With no
+    // arm here the name outlived the import: on linear the derived
+    // `Holder::equals` called `CA::equals`, which nothing binds, and the gc
+    // lane's merged re-check reported an unknown type. A declaration's own
+    // type parameters are bound names and stay as written.
+    SStruct(exported, name, fields, derives, mut_fields, tparams) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      SStruct(exported, name, for field in fields {
+        let (field_name, field_ty) = field
+        (field_name, rewrite_alias_type_expr(te = field_ty, am = type_am))
+      }, derives, mut_fields, tparams)
+    },
+    SEnum(exported, name, params, ctors, derives) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      SEnum(exported, name, params, rewrite_alias_ctor_payloads(ctors = ctors, am = type_am), derives)
+    },
+    SSuberror(exported, name, ctors) => SSuberror(exported, name, rewrite_alias_ctor_payloads(ctors = ctors, am = am)),
+    STrait(exported, name, supers, methods, method_tparams, tparams) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      STrait(exported, name, for sup in supers {
+        rewrite_alias_trait_ref(trait_ref = sup, am = type_am)
+      }, for m in methods {
+        let (mname, params, ret) = m
+        let method_am = aliasidx_without_names(am = type_am, names = trait_method_tparam_names(method_tparams = method_tparams, method = mname))
+        (mname, for param in params {
+          rewrite_alias_type_expr(te = param, am = method_am)
+        }, rewrite_alias_type_expr(te = ret, am = method_am))
+      }, for row in method_tparams {
+        let (mname, mtparams, mbounds) = row
+        (mname, mtparams, rewrite_alias_bounds(bounds = mbounds, am = aliasidx_without_names(am = type_am, names = mtparams)))
+      }, tparams)
+    },
+    SEffectDef(exported, name, params, ops) => {
+      let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
+      SEffectDef(exported, name, params, for op in ops {
+        let (op_name, op_params, ret_ty) = op
+        (op_name, for param in op_params {
+          rewrite_alias_type_expr(te = param, am = type_am)
+        }, rewrite_alias_type_expr(te = ret_ty, am = type_am))
+      })
+    },
     _ => stmt
+  }
+}
+
+fn rewrite_alias_ctor_payloads(ctors: Array[(String, Array[TypeExpr])], am: AliasIdx) -> Array[(String, Array[TypeExpr])] {
+  for ctor in ctors {
+    let (ctor_name, args) = ctor
+    (ctor_name, for arg in args {
+      rewrite_alias_type_expr(te = arg, am = am)
+    })
   }
 }
 
