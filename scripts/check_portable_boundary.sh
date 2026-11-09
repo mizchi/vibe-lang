@@ -890,7 +890,7 @@ require_line \
   "compile_source_wasi_mode stays in-memory"
 require_line \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
-  '^export fn compile_source_wasi_only\(source: String, entry_name: String\) -> Bytes with Exception' \
+  '^export fn compile_source_wasi_only\(source: String, entry_name: String, exports_stripped: Bool\) -> Bytes with Exception' \
   "compile_source_wasi_only stays in-memory"
 require_line \
   "lib/@vibe/compiler/entry/compiler/fs_compile/index.vpkg" \

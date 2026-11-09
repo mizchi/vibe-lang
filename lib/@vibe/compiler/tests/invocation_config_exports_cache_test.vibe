@@ -1,0 +1,36 @@
+//# Cached compiles must retain the invocation's export roots (#1953)
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode, compile_file_fs_mode_cached_artifact_input_trace
+}
+
+fn kept_status(_ path: String) -> String with Env + Exception + Fs {
+  handle {
+    let _ = compile_file_fs_mode(entry_path = path, entry_name = "main", mode = "no-dce", exports_stripped = false)
+    "compiled"
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn cached(path: String, strip: Bool) -> (Bytes, String) with Env + Exception + Fs {
+  compile_file_fs_mode_cached_artifact_input_trace(entry_path = path, entry_name = "main", mode = "no-dce", run_nonce = "export-cache-isolation", checked_error_row_mode = "checked", diagnostics_mode = "fail-fast", dep_order_seed = "0", exports_stripped = strip)
+}
+
+test "a cached stripped compile cannot bypass a kept export's effect refusal" {
+  let path = "/tmp/vibe_invocation_exports_cache_main.vibe"
+  // The exported function is an evidence-lowering root only when exports are
+  // kept. Unlike a pure Bool fold, this changes no-dce compilation too.
+  Fs::write_file(path, contents = "effect Ask { Get -> Int }\nfn ident(_ y: Int) -> Int { y }\nfn opaque(n: Int, g: (Int) -> Int) -> Int with e { g(n) }\nfn live() -> Int with Ask { perform Ask::Get }\nexport fn dead() -> Int with Ask { let x = perform Ask::Get; opaque(n = x, g = ident) }\nfn main() -> Int { handle { live() } with { Ask::Get => resume(3) } }\n")
+  let refusal = kept_status(path)
+  assert(String::contains(refusal, needle = "handle of effect 'Ask' cannot be compiled here"))
+  let _ = compile_file_fs_mode(entry_path = path, entry_name = "main", mode = "no-dce", exports_stripped = true)
+  let _ = cached(path = path, strip = true)
+  let (_, warm_trace) = cached(path = path, strip = true)
+  assert(String::contains(warm_trace, needle = "\"persistent_lookup\":\"hit\""))
+  let cached_status = handle {
+    let _ = cached(path = path, strip = false)
+    "compiled"
+  } with { Exception::Throw(msg) => msg }
+  // An uncached compile after warming rules out unrelated process scratch.
+  assert(kept_status(path) == refusal)
+  assert(cached_status == refusal)
+}
