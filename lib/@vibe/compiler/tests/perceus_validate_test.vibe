@@ -96,6 +96,10 @@ let split = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    
 
 let merge = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    keep(d)\n  } else {\n    len(d)\n  }\n}"
 
+// #1980: the `else` path holds both dups the `then` arm spends, so its path
+// drop is two rows.
+let short_two = "let run: (Bool) -> Int = (c) -> {\n  let u = A([1])\n  let n = if c {\n    keep(u) + keep(u)\n  } else {\n    0\n  }\n  n + len(u)\n}"
+
 //# Clean plans
 
 test "two consumes of one binding take one dup" {
@@ -113,6 +117,11 @@ test "a split release balances both branches" {
 
 test "a branch-dependent dup balances both branches" {
   inspect(validate(merge), content = "")
+}
+
+test "a branch two dups short releases both on the other branch" {
+  assert(String::contains(plan(short_two), needle = "run u path_drop 2"))
+  assert(validate(short_two) == "")
 }
 
 test "an alias that transfers and one that dups both balance" {
@@ -164,6 +173,24 @@ test "a deleted path drop leaks on the branch that did not consume" {
     })
   })
   inspect(out, content = "run d if1:else: owned value not consumed")
+}
+
+test "one path drop row short leaks on the branch two dups short" {
+  let out = edited(body = short_two, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_path_drop(a) && a.name == "u"
+    })
+  })
+  inspect(out, content = "run u if1:else: owned value not consumed")
+}
+
+test "a path drop row too many releases one more than held" {
+  let out = edited(body = short_two, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    twice_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_path_drop(a) && a.name == "u"
+    })
+  })
+  inspect(out, content = "run u if1:else: owned value released 1 more than held")
 }
 
 test "a deleted consume mark releases twice on the consuming branch" {

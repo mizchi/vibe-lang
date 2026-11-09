@@ -245,10 +245,16 @@ arm's live occurrences and their maximum `M`:
 - when an arm has fewer than `M`, or an arm already holds a mark from an
   inner merge, the occurrences in the maximal arms become `PaConsumeMark`
   rows and the binding gets a `PaPathDrop`: the guarded drop above releases
-  one reference on a path that ran none of them.
+  `M - S` references on a path that ran none of them, `S` the most
+  occurrences a smaller arm has (0 when every arm is maximal). The drop is
+  one row per reference, and a binding with several marking merges takes the
+  least count any of them gives.
 
 Neither can release a reference a path still needs: a path consumes at most
-its own arm's occurrences, and one that ran no mark consumed fewer than `M`.
+its own arm's occurrences, and one that ran no mark took a smaller arm
+(at most `S` of them) or a maximal arm without reaching one (none). A merge
+enclosing a marking merge marks too, so the outermost one is on every path
+to the scope end, and every path that ran no mark holds the least count.
 The inner-mark rule keeps that true across nesting. In `if a { keep(v) }
 else if b { keep(v) }` the outer merge is symmetric and drops the inner
 arm's row, so the outer `then` path spends its whole budget; without a mark
@@ -261,8 +267,11 @@ A merge declines (the binding keeps today's rows) when an arm took the
 initial reference (the split above owns that), when an occurrence has no
 source offset or sits in a loop the binding is declared outside of. Its
 marks are withheld when another binding of the plan has its name: codegen
-gives a `PaPathDrop` to every `let` of the row's name. A path short by two
-or more still leaks the rest.
+gives a `PaPathDrop` to every `let` of the row's name. A path that runs no
+mark through an arm with fewer than `S` occurrences still leaks the
+difference: `match` arms taking 2, 1 and 0 release one on the `0` arm, which
+held two. `fixtures/rc_branch_dup_short_by_two_test.vibe` (gate row 40e9)
+bounds the shapes the count covers and runs that one under shadow.
 
 An early exit's row is resolved after the redundant rows are dropped, so it
 reads the merged budget `B`: it releases at most `1 + B - cons`, `cons` the

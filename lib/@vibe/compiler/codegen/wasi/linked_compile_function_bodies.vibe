@@ -172,7 +172,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str, get_efn_params, get_efn_tparams, get_eident_name, get_match_scrutinee
+  array_contains_str, array_count_str, get_efn_params, get_efn_tparams, get_eident_name, get_match_scrutinee
 }
 
 import @vibe/compiler/codegen/expr {
@@ -1779,8 +1779,14 @@ export fn LinkedFunctionPlan::emit_with_cache_policy(_ function_plan: LinkedFunc
               emit_local_get(buf = body_buf, idx = Array::get(ppd_flags, at = ppk))
               emit_i64_eqz(body_buf)
               emit_if_void(body_buf)
-              emit_local_get(buf = body_buf, idx = Array::get(ppd_params, at = ppk))
-              emit_call(buf = body_buf, func_idx = rc_drop_idx)
+              // One plan row per reference the path still holds (#1980).
+              let (ppkn, _) = Array::get(lc_norm_params, at = Array::get(ppd_params, at = ppk))
+              let mut pdk = array_count_str(arr = rc_path_drops, s = ppkn)
+              while pdk > 0 {
+                emit_local_get(buf = body_buf, idx = Array::get(ppd_params, at = ppk))
+                emit_call(buf = body_buf, func_idx = rc_drop_idx)
+                pdk = pdk - 1
+              }
               emit_end(body_buf)
               ppk = ppk + 1
             }

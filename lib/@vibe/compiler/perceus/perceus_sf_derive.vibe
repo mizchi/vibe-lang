@@ -1130,10 +1130,48 @@ fn pe_emit_path_release(_ ctx: PCtx) -> Unit {
     }
     si = si + 1
   }
+  // One row per reference released. A #2389 split binding's drop releases
+  // its initial reference; a merged one's releases what every path that ran
+  // none of its marks still holds (`pe_dspare`).
   let mut di = 0
   while di < Array::length(done) {
-    let _ = pe_push_for(ctx = ctx, kind = PaPathDrop, name = Array::get(done_names, at = di), binding_id = Array::get(done, at = di), use_offset = 0 - 1)
+    let id = Array::get(done, at = di)
+    let n = if pe_int_array_has(xs = split_ok, v = id) {
+      1
+    } else {
+      pe_dspare(ctx = ctx, id = id)
+    }
+    let mut r = 0
+    while r < n {
+      let _ = pe_push_for(ctx = ctx, kind = PaPathDrop, name = Array::get(done_names, at = di), binding_id = id, use_offset = 0 - 1)
+      r = r + 1
+    }
     di = di + 1
+  }
+}
+
+/// How many references binding `id`'s merged path drop releases: the least
+/// any of its marking merges recorded (`pe_dup_merge`), and at least one.
+fn pe_dspare(ctx: PCtx, id: Int) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(ctx.dspare_ids) {
+    if Array::get(ctx.dspare_ids, at = i) == id {
+      let c = Array::get(ctx.dspare_counts, at = i)
+      if n == 0 || c < n {
+        n = c
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if n < 1 {
+    1
+  } else {
+    n
   }
 }
 
