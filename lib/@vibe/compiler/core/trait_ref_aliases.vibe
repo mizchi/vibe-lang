@@ -66,6 +66,50 @@ export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Arra
       ()
     }
   }
+  trait_ref_canonicalize_under(stmts = stmts, aliases = aliases)
+}
+
+/// #3958: `canonicalize_trait_ref_aliases` with only the aliases the module
+/// keeps PRIVATE -- declared without `export` and not listed in an
+/// `export { .. }`. The linker namespaces such an alias per file
+/// (`Alias_dep_<path>`) before the merged program's own pass runs, which left
+/// a key naming the alias's old spelling that nothing declared, so the
+/// linked overlap check could not tell `Value[Alias]` was `Value[Int]`. An
+/// exported alias keeps its name through the merge, the linked check resolves
+/// it there, and its key keeps the spelling the author wrote.
+export fn canonicalize_trait_ref_private_aliases(_ stmts: Array[Stmt]) -> Unit {
+  let listed = trait_ref_export_listed_names(stmts)
+  let aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(exported, name, params, target) => if !exported && !trait_ref_names_contain(names = listed, name = name) {
+        Array::push(aliases, value = (name, params, target))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  trait_ref_canonicalize_under(stmts = stmts, aliases = aliases)
+}
+
+/// The names an `export { .. }` statement of `stmts` lists.
+fn trait_ref_export_listed_names(_ stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  for stmt in stmts {
+    match stmt {
+      SExport(names) => for name in names {
+        Array::push(out, value = name)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Rewrite every applied key of `stmts` with `aliases` expanded, and rename
+/// the methods of each impl whose key changed.
+fn trait_ref_canonicalize_under(stmts: Array[Stmt], aliases: Array[(String, Array[String], TypeExpr)]) -> Unit {
   if Array::length(aliases) > 0 {
     // (old method-owner prefix, new one) for each impl whose key changed.
     let renames: Array[(String, String)] = array_empty()
