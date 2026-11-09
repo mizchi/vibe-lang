@@ -1037,7 +1037,9 @@ deadlock.
 
 The tasks themselves are still guest-side continuations scheduled by
 `@vibe/concurrent` inside one component instance. Backing them with Component
-Model subtasks that the host can schedule and cancel is #3147.
+Model subtasks that the host can schedule and cancel is #3147; the measured
+mapping is [component-subtask-taskgroup.md](component-subtask-taskgroup.md)
+(ADR-0125).
 
 ## Effects and authority
 
@@ -1105,7 +1107,7 @@ open.
 | --- | --- | --- | --- | --- |
 | cooperative, in-guest | stack driving, plus stored continuations from ADR-0076's suspend lowering | one heap; `Send` keeps sharing unobservable | none | ships; the reference behaviour |
 | host waitables (Component Model) | a parked task waits on a host future, stream read or timer through the adapter's waitable set | as above | host I/O overlaps; task bodies do not | ships with an entry boundary that settles host futures |
-| Component Model subtasks | async lift/lower, one subtask per task | component / resource boundaries | as the host provides | not implemented (#3147) |
+| Component Model subtasks | an async call into a second instance of the program, one subtask per task | an instance per side; captures and results copied by the canonical ABI | host I/O overlaps; task bodies do not | proposed, not implemented: ADR-0125, [component-subtask-taskgroup.md](component-subtask-taskgroup.md) (#3147) |
 | JSPI with Workers | `WebAssembly.Suspending` / `promising` | an instance and heap per Worker, messages copied | up to the number of Workers | not implemented; JSPI only lowers suspension |
 | shared-everything threads | thread intrinsics over a shared store | task-local arenas inside one store; same message API | host threads | opt-in probe only (#488) |
 
