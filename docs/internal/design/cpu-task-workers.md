@@ -98,15 +98,23 @@ reference behaviour is always one setting away.
   a complete reset proof and stale-state mutation tests, and #3484 asks for
   that to be measured, not assumed.
 - **A worker never runs `_start`.** For an ordinary program, `_start` runs the
-  entry after initializing module-level values, so running it per job would
-  re-run `main` and its effects. The compiler emits a separate init-only
-  export, `__vibe_cpu_init`, which evaluates the module-level values and
-  nothing else. A worker calls that export, then the job export. This is the
-  same separation the function-worker route gets by compiling a
-  `__no_entry__` image
+  entry, so running it per job would re-run `main` and its effects. The
+  compiler emits a separate setup export, `__vibe_cpu_init`, which does the
+  runtime setup `_start` does before the entry and nothing else. A worker
+  calls that export, then the job export. This is the same separation the
+  function-worker route gets by compiling a `__no_entry__` image
   ([function-cpu-workers.md](../compiler/function-cpu-workers.md), "Ownership
-  and transport"). A job therefore sees freshly initialized module-level
-  values, which decision 1 restricts to immutable ones.
+  and transport").
+- **Module-level values stay lazy.** The linear backend evaluates a
+  non-function top-level binding on its first access and memoizes it
+  (`linked_compile_function_bodies.vibe`). `__vibe_cpu_init` does not force
+  them: a job evaluates a module-level value when it first reads one, as the
+  cooperative run does. Forcing them all at setup would run initializers the
+  job never reaches, and one that traps or does not terminate would abort a
+  program the cooperative route completes. `Send` makes a value immutable,
+  not its initializer total. A job therefore sees the value its own first
+  access computes, which decision 1 restricts to immutable values, so it is
+  the parent's value too.
 - Anything else the job needs is an argument. This is the "explicit task-local
   context" lesson of function-cpu-workers.md item 4: a missing source-location
   table was a read-only instance global that the job silently lacked.
@@ -128,9 +136,20 @@ counts against R. Speculative admission (starting a job nobody is waiting on
 yet, in spawn order) stops while R is full, so a slow job the parent awaits
 stalls admission instead of letting every other result accumulate.
 
+**Spawning never waits for admission.** `Parallel::map` spawns every child
+before it joins any, so a spawn that blocked on Q or R would never reach the
+join that frees them. A spawned job therefore stays a descriptor that holds
+its arguments as ordinary values on the parent's heap, the same values a
+cooperative child would capture, and it is encoded only when it is admitted.
+Q bounds the bytes encoded and waiting for a thread, not the number of
+spawned jobs. When the queue is empty, one input larger than Q is admitted
+alone, so Q is exceeded by at most one input and an oversized input still
+runs.
+
 **The job the parent awaits is never held back by R.** A join on a job that
-has not started moves it to the front of the queue, and it starts as soon as
-one of the N threads is free, whatever R holds. Every running job is a
+has not started is encoded if it is still a descriptor, moves to the front of
+the queue, and starts as soon as one of the N threads is free, whatever Q and
+R hold. Every running job is a
 bounded CPU computation with no host wait (decision 1), so a thread always
 frees. A join therefore always makes progress. Without this rule, joining
 the last handle first could deadlock: R is full of earlier results that the
@@ -188,7 +207,11 @@ All of the following are true at once:
   publication order and on failure observations. The tests are:
   - slow-first-job backpressure, with R held at its bound;
   - handles joined in reverse spawn order with R full, which must complete;
-  - Q pressure;
+  - `Parallel::map` with Q and R both saturated before its first join, which
+    must complete;
+  - one input larger than Q;
+  - a module-level value whose initializer traps, read only on a branch the
+    job does not take, which must not abort the program;
   - cancellation of a running job;
   - a worker trap aborting the program;
   - repeated jobs;
@@ -201,6 +224,8 @@ All of the following are true at once:
   - a job made to read a mutable module-level cell, which must stay
     cooperative;
   - a worker that runs `_start`;
+  - a worker setup that forces every module-level initializer;
+  - a spawn that blocks on Q or R;
   - an executor that skips R;
   - a trap turned into a `TaskError`;
   - a normal close that cancels a failing job instead of draining it.
