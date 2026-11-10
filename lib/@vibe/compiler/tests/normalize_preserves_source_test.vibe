@@ -1,0 +1,94 @@
+//# #4027: `vibe normalize` respells dot calls in place and keeps everything else
+
+// `normalize_source` used to re-print the compiler's lowering normalization
+// (DCE from the exports, constant folding, section layout), so an
+// export-less file came back as a single newline and an unexported helper
+// was deleted. These pin the source-to-source contract: the only rewrite is
+// ADR-0081's `Type::method(recv, ..)` spelling, and every other byte stays.
+
+import @vibe/compiler/normalize {
+  normalize_source
+}
+
+fn run_normalize(_ src: String) -> String {
+  handle {
+    normalize_source(src)
+  } with { Exception::Throw(msg) => String::concat("ERROR: ", msg) }
+}
+
+test "an export-less file round-trips byte for byte" {
+  let src = "fn main() -> Int {\n  1 + 2\n}\n"
+  assert_eq(run_normalize(src), src)
+}
+
+test "an unexported helper and an unfolded expression are kept" {
+  let src = "export fn main() -> Int {\n  1 + 2\n}\n\nfn helper(x: Int) -> Int {\n  x\n}\n"
+  assert_eq(run_normalize(src), src)
+}
+
+test "comments, an alias, a test block and declaration order survive a respelling" {
+  let src = "// leading comment\ntype Alias = Int\n\nstruct Cart { items: Int }\n\nfn helper(cart: Cart) -> Int {\n  // call it\n  cart.size() + 1 + 2\n}\n\nfn Cart::size(c: Cart) -> Int {\n  c.items // the field\n}\n\ntest \"t\" {\n  assert(true)\n}\n"
+  let want = "// leading comment\ntype Alias = Int\n\nstruct Cart { items: Int }\n\nfn helper(cart: Cart) -> Int {\n  // call it\n  Cart::size(c = cart) + 1 + 2\n}\n\nfn Cart::size(c: Cart) -> Int {\n  c.items // the field\n}\n\ntest \"t\" {\n  assert(true)\n}\n"
+  assert_eq(run_normalize(src), want)
+}
+
+// `push` labels its receiver parameter and `size` takes it positionally, so
+// the respelled calls are `Cart::push(c = cart, ..)` and `Cart::size(cart)`:
+// the qualified call must label what the declaration labels, or it does not
+// check.
+let cart_decls: String = "struct Cart { items: Int }\n\nfn Cart::push(c: Cart, item: Int) -> Cart {\n  Cart::{ items: c.items + item }\n}\n\nfn Cart::size(_ c: Cart) -> Int {\n  c.items\n}\n\n"
+
+test "a call with arguments, and a chain, respell from the inside out" {
+  let src = String::concat(cart_decls, "fn f(cart: Cart) -> Int {\n  cart.push(item = 1).size()\n}\n")
+  let want = String::concat(cart_decls, "fn f(cart: Cart) -> Int {\n  Cart::size(Cart::push(c = cart, item = 1))\n}\n")
+  assert_eq(run_normalize(src), want)
+}
+
+test "a receiver on its own line joins the call" {
+  let src = String::concat(cart_decls, "fn f(cart: Cart) -> Cart {\n  cart\n    .push(item = 1)\n}\n")
+  let want = String::concat(cart_decls, "fn f(cart: Cart) -> Cart {\n  Cart::push(c = cart, item = 1)\n}\n")
+  assert_eq(run_normalize(src), want)
+}
+
+test "a comment between the receiver and the dot stays a comment" {
+  let src = String::concat(cart_decls, "fn f(cart: Cart) -> Cart {\n  cart // note\n    .push(item = 1)\n}\n")
+  let want = String::concat(cart_decls, "fn f(cart: Cart) -> Cart {\n  Cart::push(c = cart // note\n, item = 1)\n}\n")
+  assert_eq(run_normalize(src), want)
+}
+
+test "a parenthesized receiver is left in dot form rather than guessed at" {
+  let src = String::concat(cart_decls, "fn f(cart: Cart) -> Cart {\n  (cart).push(item = 1)\n}\n")
+  assert_eq(run_normalize(src), src)
+}
+
+test "a piped call keeps dot form while the file's other calls are respelled" {
+  // `2 |> cart.push()` is `cart.push(2)`: respelling the text inside the
+  // parentheses would give `Cart::push(2, cart)`, so that site does not prove.
+  let src = String::concat(cart_decls, "fn f(cart: Cart) -> Cart {\n  2 |> cart.push()\n}\n\nfn g(cart: Cart) -> Int {\n  cart.size()\n}\n")
+  let want = String::concat(cart_decls, "fn f(cart: Cart) -> Cart {\n  2 |> cart.push()\n}\n\nfn g(cart: Cart) -> Int {\n  Cart::size(cart)\n}\n")
+  assert_eq(run_normalize(src), want)
+}
+
+test "a call inside an interpolation is respelled in place" {
+  let src = String::concat(cart_decls, "fn f(cart: Cart) -> String {\n  \"n=\\{cart.size()}\"\n}\n")
+  let want = String::concat(cart_decls, "fn f(cart: Cart) -> String {\n  \"n=\\{Cart::size(cart)}\"\n}\n")
+  assert_eq(run_normalize(src), want)
+}
+
+test "normalizing a respelled file again changes nothing" {
+  let src = String::concat(cart_decls, "fn f(cart: Cart) -> Int {\n  cart.push(item = 1).size()\n}\n")
+  let once = run_normalize(src)
+  assert(once != src)
+  assert_eq(run_normalize(once), once)
+}
+
+test "a #deprecated directive is kept, and its statement still respelled" {
+  let src = String::concat(cart_decls, "#deprecated(\"use g\")\nfn f(cart: Cart) -> Int {\n  cart.size()\n}\n")
+  let want = String::concat(cart_decls, "#deprecated(\"use g\")\nfn f(cart: Cart) -> Int {\n  Cart::size(cart)\n}\n")
+  assert_eq(run_normalize(src), want)
+}
+
+test "a #cfg source is still refused" {
+  let src = "#cfg(target = \"wasi\")\nfn f() -> Int {\n  1\n}\n"
+  assert_eq(run_normalize(src), "ERROR: cannot normalize a source containing #cfg directives")
+}
