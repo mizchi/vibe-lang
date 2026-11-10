@@ -131,16 +131,16 @@ import @vibe/compiler/checker/builtin_sigs {
   builtin_resolves_at
 }
 
-import @vibe/compiler/checker/resolution {
-  subst_type_params
-}
-
 import @vibe/compiler/checker/traits {
   env_marker_before
 }
 
 import ./checker_throw_kind_of_type.vibe {
   railway_expr_off
+}
+
+import ./checker_handle_closure_escape_holds.vibe {
+  hce_add, hce_has, hce_holds_fn, hce_holds_fn_without, hce_row_label, hce_row_labels, hce_spells_fn_without, hce_stores_fn
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -206,7 +206,16 @@ struct HceWalk {
   /// Where the handled body's rows begin in `call_callee_sites`.
   sites_from: Int;
   /// Every name a `let` in the handled body binds, wherever it sits.
-  body_names: Array[String]
+  body_names: Array[String];
+  /// #4051: the parameter names of each `loop` the walk is inside,
+  /// innermost last, which a `continue` assigns.
+  loops: Array[Array[String]];
+  /// #4051: by name, the effect bases of the handle-bound values assigned to
+  /// a mutable binding of the body (`=`, `+=`, a `continue`), kept from one
+  /// walk of the body to the next (see `hce_walk_body`).
+  assigned: Array[(String, String)];
+  /// Whether this walk added to `assigned`.
+  mut grew: Bool
 }
 
 /// Refuse a handle-bound value leaving the handle `body` / `arms` checked
@@ -461,8 +470,8 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
     let defs = hce_defs_with_env(defs = defs0, env = env)
     let body_names: Array[String] = array_empty()
     hce_collect_let_names(e = body, out = body_names)
-    let st = hce_new(labels = labels, find_routes = false, sites_from = sites_from, body_names = body_names)
-    hce_walk(e = body, st = st, env = env, defs = defs, s = s)
+    let assigned: Array[(String, String)] = array_empty()
+    let st = hce_walk_body(body = body, labels = labels, find_routes = false, sites_from = sites_from, body_names = body_names, assigned = assigned, env = env, defs = defs, s = s)
     let mut reach = 0
     let mut pick = 0 - 1
     let mut pi = 0
@@ -480,8 +489,7 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
       let (what, off, label, _) = Array::get(st.producers, at = pick)
       // A route the body spells is named first: a body ending in `return h`
       // has an open type of its own, which the value route would also read.
-      let routes = hce_new(labels = labels, find_routes = true, sites_from = sites_from, body_names = body_names)
-      hce_walk(e = body, st = routes, env = env, defs = defs, s = s)
+      let routes = hce_walk_body(body = body, labels = labels, find_routes = true, sites_from = sites_from, body_names = body_names, assigned = assigned, env = env, defs = defs, s = s)
       let mut route = ""
       let mut roff = 0 - 1
       for r in routes.routes {
@@ -519,7 +527,22 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
   }
 }
 
-fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String]) -> HceWalk {
+/// #4051: walk the handled `body` until the values assigned to its mutable
+/// bindings stop growing. An assignment can come after a use it reaches --
+/// in a loop, or in a closure called later -- so each walk binds those
+/// bindings with every handle-bound value the walks before found assigned
+/// to them; `assigned` only grows, so the walks end.
+fn hce_walk_body(body: Expr, labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(String, String)], env: TypeEnv, defs: Array[TypeDef], s: Subst) -> HceWalk {
+  let mut st = hce_new(labels = labels, find_routes = find_routes, sites_from = sites_from, body_names = body_names, assigned = assigned)
+  hce_walk(e = body, st = st, env = env, defs = defs, s = s)
+  while st.grew {
+    st = hce_new(labels = labels, find_routes = find_routes, sites_from = sites_from, body_names = body_names, assigned = assigned)
+    hce_walk(e = body, st = st, env = env, defs = defs, s = s)
+  }
+  st
+}
+
+fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(String, String)]) -> HceWalk {
   HceWalk::{
     labels: labels,
     scope: array_empty(),
@@ -533,7 +556,10 @@ fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names
     routes: array_empty(),
     keeps: array_empty(),
     sites_from: sites_from,
-    body_names: body_names
+    body_names: body_names,
+    loops: array_empty(),
+    assigned: assigned,
+    grew: false
   }
 }
 
@@ -612,26 +638,6 @@ fn hce_handled_bases(_ arms: Array[(Pat, Expr)]) -> Array[String] {
   out
 }
 
-fn hce_add(out: Array[String], label: String) -> Unit {
-  if !hce_has(items = out, label = label) {
-    Array::push(out, value = label)
-  } else {
-    ()
-  }
-}
-
-fn hce_has(items: Array[String], label: String) -> Bool {
-  let mut found = false
-  for item in items {
-    if item == label {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
-}
-
 /// #3585: the effect bases a handle-bound value performs that the handle
 /// answers, written as one set (`Ask,Log`; "" for none). A destination's row
 /// discharges only the bases it names, and the value stays handle-bound
@@ -703,41 +709,6 @@ fn hce_without(labels: Array[String], row: Array[String]) -> Array[String] {
       }
     }
     out
-  }
-}
-
-/// The first of `labels` a function type's row names, or "".
-fn hce_row_label(ty: Type, labels: Array[String]) -> String {
-  let found = hce_row_labels(ty = ty, labels = labels)
-  if Array::length(found) > 0 {
-    Array::get(found, at = 0)
-  } else {
-    ""
-  }
-}
-
-/// Every one of `labels` a function type's row names.
-fn hce_row_labels(ty: Type, labels: Array[String]) -> Array[String] {
-  let found = array_empty()
-  match ty {
-    CtForAll(_, _, inner) => hce_row_labels(ty = inner, labels = labels),
-    CtFn(_, _, Some(row)) => {
-      for raw in String::split(row, sep = ",") {
-        let l = String::trim(raw)
-        if String::length(l) > 0 && !String::starts_with(l, prefix = "#") && !label_is_effect_var(l) {
-          let base = row_label_base(effect_name_of_op(l))
-          if hce_has(items = labels, label = base) {
-            hce_add(out = found, label = base)
-          } else {
-            ()
-          }
-        } else {
-          ()
-        }
-      }
-      found
-    },
-    _ => found
   }
 }
 
@@ -891,13 +862,126 @@ fn hce_param_base(_ name: String) -> String {
   }
 }
 
-fn hce_bind_pat(st: HceWalk, pat: Pat) -> Unit {
+/// Bind every name `pat` binds to a value holding the handle-bound effect
+/// bases `label` ("" for a plain value).
+fn hce_bind_pat(st: HceWalk, pat: Pat, label: String) -> Unit {
   let names = array_empty()
   collect_pat_binds_into(pat = pat, acc = names)
   for n in names {
-    hce_bind(st = st, name = n, label = "")
+    hce_bind(st = st, name = n, label = label)
   }
   ()
+}
+
+/// #4051: bind the names `pat` binds when it takes apart `src`, which holds
+/// the effect bases `held` and created no handle-bound value of its own (it
+/// only names some). Where `src` is written in the pattern's own shape -- a
+/// tuple, a constructor's call, a struct literal -- each part of the pattern
+/// holds what the matching part names, so the `n` of `match (g, 1) { (_, n)
+/// => .. }` is a plain value; any other binder holds `held`.
+fn hce_bind_pat_from(st: HceWalk, pat: Pat, src: Expr, held: String, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Unit {
+  let src = hce_unwrap_value(src)
+  let parts: Array[Expr] = array_empty()
+  let subs: Array[Pat] = array_empty()
+  let shaped = match (pat, src) {
+    (PTuple(ps), ETuple(es)) => if Array::length(ps) == Array::length(es) {
+      for p in ps {
+        Array::push(subs, value = p)
+      }
+      for e in es {
+        Array::push(parts, value = e)
+      }
+      true
+    } else {
+      false
+    },
+    (PCtor(pc, ps), ECall(EIdent(ec, _), es, _, _)) => if !hce_is_paren(src) && hce_same_ctor(a = pc, b = ec) && Array::length(ps) == Array::length(es) {
+      for p in ps {
+        Array::push(subs, value = p)
+      }
+      for e in es {
+        Array::push(parts, value = call_arg_value(e))
+      }
+      true
+    } else {
+      false
+    },
+    (PStruct(_, pfields), ERecord(_, efields, _)) => {
+      let mut all = true
+      for pf in pfields {
+        let (fname, fp) = pf
+        let mut hit: Option[Expr] = None
+        for ef in efields {
+          let (ename, ev) = ef
+          if ename == fname && hit is None {
+            hit = Some(ev)
+          } else {
+            ()
+          }
+        }
+        match hit {
+          Some(ev) => {
+            Array::push(subs, value = fp)
+            Array::push(parts, value = ev)
+          },
+          None => all = false
+        }
+      }
+      all
+    },
+    _ => false
+  }
+  if shaped {
+    let mut i = 0
+    while i < Array::length(subs) {
+      let part = Array::get(parts, at = i)
+      let part_held = hce_names_held(e = part, st = st, env = env, defs = defs, s = s)
+      if part_held == "" {
+        hce_bind_pat(st = st, pat = Array::get(subs, at = i), label = "")
+      } else {
+        hce_bind_pat_from(st = st, pat = Array::get(subs, at = i), src = part, held = part_held, env = env, defs = defs, s = s)
+      }
+      i = i + 1
+    }
+  } else {
+    hce_bind_pat(st = st, pat = pat, label = held)
+  }
+}
+
+/// `e` without the parentheses or label it is written with.
+fn hce_unwrap_value(_ e: Expr) -> Expr {
+  match e {
+    ELabeledArg(_, _, inner) => hce_unwrap_value(inner),
+    ECall(_, wargs, _, _) => if hce_is_paren(e) {
+      hce_unwrap_value(Array::get(wargs, at = 0))
+    } else {
+      e
+    },
+    _ => e
+  }
+}
+
+/// Do a pattern's constructor `a` and a call's callee `b` name the same
+/// constructor, one possibly qualified (`Wrap::W`, `W`)?
+fn hce_same_ctor(a: String, b: String) -> Bool {
+  a == b || String::ends_with(a, suffix = String::concat("::", b)) || String::ends_with(b, suffix = String::concat("::", a))
+}
+
+/// The effect bases of the handle-bound locals `e` hands on as a value
+/// (read as `hce_arg_bound_label` reads a call's argument).
+fn hce_names_held(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> String {
+  let mut found = ""
+  let mut si = 0
+  while si < Array::length(st.scope) {
+    let (n, label, _) = Array::get(st.scope, at = si)
+    if label != "" && hce_lookup(st = st, name = n) == 2 && hce_name_reach(name = n, e = e, st = st, env = env, defs = defs, s = s) > 0 {
+      found = hce_set_union(a = found, b = label)
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  found
 }
 
 fn hce_count_perform(st: HceWalk, label: String, off: Int) -> Unit {
@@ -955,16 +1039,18 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         ()
       }
     },
-    ELet(name, val, rest, off) => hce_walk_let(name = name, val = val, rest = rest, off = off, st = st, env = env, defs = defs, s = s, recursive = false),
-    ELetMut(name, val, rest, off) => hce_walk_let(name = name, val = val, rest = rest, off = off, st = st, env = env, defs = defs, s = s, recursive = false),
-    ELetRec(name, val, rest) => hce_walk_let(name = name, val = val, rest = rest, off = 0 - 1, st = st, env = env, defs = defs, s = s, recursive = true),
+    ELet(name, val, rest, off) => hce_walk_let(name = name, val = val, rest = rest, off = off, st = st, env = env, defs = defs, s = s, recursive = false, mutable = false),
+    ELetMut(name, val, rest, off) => hce_walk_let(name = name, val = val, rest = rest, off = off, st = st, env = env, defs = defs, s = s, recursive = false, mutable = true),
+    ELetRec(name, val, rest) => hce_walk_let(name = name, val = val, rest = rest, off = 0 - 1, st = st, env = env, defs = defs, s = s, recursive = true, mutable = false),
+    // #4051: a binding of the body assigned a handle-bound value holds it
+    // from then on (`let mut x = plain; x = g; keep(f = x)`).
     EAssign(name, val, rest, off) => {
-      hce_walk(e = val, st = st, env = env, defs = defs, s = s)
+      hce_assign(st = st, name = name, held = hce_walk_source(e = val, st = st, env = env, defs = defs, s = s))
       hce_note_outer_write(st = st, name = name, off = off, env = env, defs = defs, s = s)
       hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
     },
     EAssignOp(name, _, val, rest, off) => {
-      hce_walk(e = val, st = st, env = env, defs = defs, s = s)
+      hce_assign(st = st, name = name, held = hce_walk_source(e = val, st = st, env = env, defs = defs, s = s))
       hce_note_outer_write(st = st, name = name, off = off, env = env, defs = defs, s = s)
       hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
     },
@@ -977,28 +1063,41 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       for arm in harms {
         let (pat, abody) = arm
         let mark = Array::length(st.scope)
-        hce_bind_pat(st = st, pat = pat)
+        hce_bind_pat(st = st, pat = pat, label = "")
         hce_bind(st = st, name = "resume", label = "")
         hce_walk(e = abody, st = st, env = env, defs = defs, s = s)
         Array::truncate(st.scope, length = mark)
       }
       ()
     },
+    // #4051: a binder holds what the value it takes apart holds -- an arm's
+    // pattern (an `is` test, a destructuring `let`) whatever the scrutinee
+    // holds, a `for` variable whatever its iterable holds, a `loop`
+    // parameter whatever its initial value or a `continue` holds -- as
+    // `let x = g` does, so a call handed the binder sees the handle-bound
+    // value. Bound plain, `for x in [g] { keep(f = x) }` checked clean and
+    // the kept closure trapped once the handle was gone.
     EMatch(scrutinee, marms) => {
-      hce_walk(e = scrutinee, st = st, env = env, defs = defs, s = s)
+      let producers_before = Array::length(st.producers)
+      let held = hce_walk_source(e = scrutinee, st = st, env = env, defs = defs, s = s)
+      let fresh = Array::length(st.producers) > producers_before
       for arm in marms {
         let (pat, abody) = arm
         let mark = Array::length(st.scope)
-        hce_bind_pat(st = st, pat = pat)
+        if fresh || held == "" {
+          hce_bind_pat(st = st, pat = pat, label = held)
+        } else {
+          hce_bind_pat_from(st = st, pat = pat, src = scrutinee, held = held, env = env, defs = defs, s = s)
+        }
         hce_walk(e = abody, st = st, env = env, defs = defs, s = s)
         Array::truncate(st.scope, length = mark)
       }
       ()
     },
     EForIn(name, index_name, iter, fbody) => {
-      hce_walk(e = iter, st = st, env = env, defs = defs, s = s)
+      let held = hce_walk_source(e = iter, st = st, env = env, defs = defs, s = s)
       let mark = Array::length(st.scope)
-      hce_bind(st = st, name = name, label = "")
+      hce_bind(st = st, name = name, label = held)
       match index_name {
         Some(n) => hce_bind(st = st, name = n, label = ""),
         None => ()
@@ -1007,17 +1106,40 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       Array::truncate(st.scope, length = mark)
     },
     ELoop(lparams, lbody) => {
+      let held: Array[String] = array_empty()
       for p in lparams {
         let (_, init) = p
-        hce_walk(e = init, st = st, env = env, defs = defs, s = s)
+        Array::push(held, value = hce_walk_source(e = init, st = st, env = env, defs = defs, s = s))
       }
       let mark = Array::length(st.scope)
+      let depth = Array::length(st.loops)
+      let names: Array[String] = array_empty()
+      let mut pi = 0
       for p in lparams {
         let (pname, _) = p
-        hce_bind(st = st, name = pname, label = "")
+        hce_bind(st = st, name = pname, label = hce_set_union(a = Array::get(held, at = pi), b = hce_assigned(st = st, name = pname)))
+        Array::push(names, value = pname)
+        pi = pi + 1
       }
+      Array::push(st.loops, value = names)
       hce_walk(e = lbody, st = st, env = env, defs = defs, s = s)
+      Array::truncate(st.loops, length = depth)
       Array::truncate(st.scope, length = mark)
+    },
+    // A `continue` assigns the innermost `loop`'s parameters.
+    EContinue(cargs) => {
+      let depth = Array::length(st.loops)
+      let mut ci = 0
+      for a in cargs {
+        let held = hce_walk_source(e = call_arg_value(a), st = st, env = env, defs = defs, s = s)
+        if depth > 0 && ci < Array::length(Array::get(st.loops, at = depth - 1)) {
+          hce_assign(st = st, name = Array::get(Array::get(st.loops, at = depth - 1), at = ci), held = held)
+        } else {
+          ()
+        }
+        ci = ci + 1
+      }
+      ()
     },
     ECall(callee, args, off, _) => if hce_is_paren(e) {
       // `$source_span` wraps a parenthesized expression; it is that
@@ -1127,7 +1249,7 @@ fn hce_walk_children(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s
 /// A `let` binds its name to a handle-bound value when its initializer
 /// produced one or names one. A value the initializer itself is (a closure
 /// literal, a call's result) goes where the name's uses take it.
-fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst, recursive: Bool) -> Unit {
+fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst, recursive: Bool, mutable: Bool) -> Unit {
   let mark = Array::length(st.scope)
   if recursive {
     hce_bind(st = st, name = name, label = "")
@@ -1153,6 +1275,11 @@ fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env:
     st.mention_label
   } else {
     ""
+  }
+  let bound = if mutable {
+    hce_set_union(a = bound, b = hce_assigned(st = st, name = name))
+  } else {
+    bound
   }
   st.mention_label = hce_set_union(a = mentioned_before, b = st.mention_label)
   let mut pi = producers_before
@@ -1199,6 +1326,82 @@ fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env:
   Array::push(st.scope, value = (name, bound, decls))
   hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
   Array::truncate(st.scope, length = mark)
+}
+
+/// #4051: walk `e`, a value a binder takes apart (a `match` scrutinee, a
+/// `for` iterable, a `loop` parameter's value), and answer the effect bases
+/// of the handle-bound values it creates or names -- both, read as a `let`
+/// initializer's are (`hce_walk_let`), so the binder holds what `let x = e`
+/// would.
+fn hce_walk_source(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> String {
+  let producers_before = Array::length(st.producers)
+  let mentions_before = st.mentions
+  let mentioned_before = st.mention_label
+  st.mention_label = ""
+  hce_walk(e = e, st = st, env = env, defs = defs, s = s)
+  let mut set = if st.mentions > mentions_before {
+    st.mention_label
+  } else {
+    ""
+  }
+  let mut bi = producers_before
+  while bi < Array::length(st.producers) {
+    let (_, _, blabel, _) = Array::get(st.producers, at = bi)
+    set = hce_set_union(a = set, b = blabel)
+    bi = bi + 1
+  }
+  st.mention_label = hce_set_union(a = mentioned_before, b = st.mention_label)
+  set
+}
+
+/// #4051: `held` was assigned to the body's binding `name`: it holds it
+/// from here on, and every later walk binds it so from the start.
+fn hce_assign(st: HceWalk, name: String, held: String) -> Unit {
+  let i = hce_scope_index(st = st, name = name)
+  if held != "" && i >= 0 {
+    let (n, label, decls) = Array::get(st.scope, at = i)
+    Array::set(st.scope, at = i, value = (n, hce_set_union(a = label, b = held), decls))
+    let mut ai = 0
+    let mut hit = false
+    while ai < Array::length(st.assigned) {
+      let (an, alabel) = Array::get(st.assigned, at = ai)
+      if an == name {
+        hit = true
+        let wider = hce_set_union(a = alabel, b = held)
+        if wider != alabel {
+          Array::set(st.assigned, at = ai, value = (an, wider))
+          st.grew = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+    if !hit {
+      Array::push(st.assigned, value = (name, held))
+      st.grew = true
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// The effect bases the walks so far found assigned to a binding `name`.
+fn hce_assigned(st: HceWalk, name: String) -> String {
+  let mut out = ""
+  for row in st.assigned {
+    let (an, alabel) = row
+    if an == name {
+      out = alabel
+    } else {
+      ()
+    }
+  }
+  out
 }
 
 /// The reach marking a `let` initializer (see `HceWalk.pos`).
@@ -1633,7 +1836,7 @@ fn hce_literal_makes_bound(name: String, label: String, f: Expr, env: TypeEnv, d
     EFn(_, _, params, _, _, fbody) => {
       let names: Array[String] = array_empty()
       hce_collect_let_names(e = fbody, out = names)
-      let st = hce_new(labels = [label], find_routes = false, sites_from = 0, body_names = names)
+      let st = hce_new(labels = [label], find_routes = false, sites_from = 0, body_names = names, assigned = array_empty())
       // #3594: read for a row variable (`label` is `e`), a parameter
       // whose function type's row is `e` performs it when called.
       let declared = if label_is_effect_var(label) {
@@ -2548,213 +2751,9 @@ fn hce_root_name(_ e: Expr) -> Option[(String, Int)] {
   }
 }
 
-/// Can a value of `ty` hold a function? An unsolved variable can.
-fn hce_holds_fn(ty: Type, defs: Array[TypeDef], seen: Array[String]) -> Bool {
-  hce_holds_fn_without(ty = ty, label = "", defs = defs, seen = seen)
-}
-
-/// `hce_holds_fn`, except that a function whose row names `label` does not
-/// count: it carries the effect in its type, so its caller answers it. With
-/// a label, only a function the type spells counts; an unsolved variable
-/// does not.
-fn hce_holds_fn_without(ty: Type, label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
-  match ty {
-    CtFn(_, _, _) => label == "" || hce_row_label(ty = ty, labels = [label]) != label,
-    // A callee whose result is only a type variable (`f: () -> T with E`)
-    // is not taken to return a closure.
-    CtVar(_) => label == "",
-    CtApplied(_, _) => label == "",
-    CtForAll(_, _, inner) => hce_holds_fn_without(ty = inner, label = label, defs = defs, seen = seen),
-    CtArray(inner) => hce_holds_fn_without(ty = inner, label = label, defs = defs, seen = seen),
-    CtOption(inner) => hce_holds_fn_without(ty = inner, label = label, defs = defs, seen = seen),
-    CtTuple(items) => hce_any_holds_fn(items = items, label = label, defs = defs, seen = seen),
-    CtRecord(fields) => {
-      let mut found = false
-      for f in fields {
-        let (_, fty) = f
-        if !found && hce_holds_fn_without(ty = fty, label = label, defs = defs, seen = seen) {
-          found = true
-        } else {
-          ()
-        }
-      }
-      found
-    },
-    CtNamed(name, args) => hce_named_holds(name = name, args = args, label = label, defs = defs, seen = seen, store = false),
-    CtStruct(name) => hce_named_holds(name = name, args = array_empty(), label = label, defs = defs, seen = seen, store = false),
-    CtEnum(name) => hce_named_holds(name = name, args = array_empty(), label = label, defs = defs, seen = seen, store = false),
-    _ => false
-  }
-}
-
 fn ret_or_unit(_ r: Option[Type]) -> Type {
   match r {
     Some(t) => t,
     None => CtUnit
-  }
-}
-
-/// `hce_holds_fn_without` for an exception row: a function type the type
-/// spells, through tuples, arrays, `Option`, records, type arguments and
-/// aliases, but not through the fields or payloads of a declared struct or
-/// enum.
-fn hce_spells_fn_without(ty: Type, label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
-  match ty {
-    CtFn(_, _, _) => hce_row_label(ty = ty, labels = [label]) != label,
-    CtForAll(_, _, inner) => hce_spells_fn_without(ty = inner, label = label, defs = defs, seen = seen),
-    CtArray(inner) => hce_spells_fn_without(ty = inner, label = label, defs = defs, seen = seen),
-    CtOption(inner) => hce_spells_fn_without(ty = inner, label = label, defs = defs, seen = seen),
-    CtTuple(items) => hce_any_spells_fn(items = items, label = label, defs = defs, seen = seen),
-    CtRecord(fields) => {
-      let mut found = false
-      for f in fields {
-        let (_, fty) = f
-        if !found && hce_spells_fn_without(ty = fty, label = label, defs = defs, seen = seen) {
-          found = true
-        } else {
-          ()
-        }
-      }
-      found
-    },
-    CtNamed(name, args) => if hce_has(items = seen, label = name) {
-      false
-    } else {
-      match find_typedef(defs = defs, name = name) {
-        Some(TDAlias(_, tparams, target)) => {
-          let inner_seen = Array::slice(seen, start = 0, end = Array::length(seen))
-          Array::push(inner_seen, value = name)
-          hce_spells_fn_without(ty = subst_type_params(ty = target, params = tparams, args = args), label = label, defs = defs, seen = inner_seen)
-        },
-        _ => hce_any_spells_fn(items = args, label = label, defs = defs, seen = seen)
-      }
-    },
-    _ => false
-  }
-}
-
-fn hce_any_spells_fn(items: Array[Type], label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
-  let mut found = false
-  for t in items {
-    if !found && hce_spells_fn_without(ty = t, label = label, defs = defs, seen = seen) {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-fn hce_any_holds_fn(items: Array[Type], label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
-  let mut found = false
-  for t in items {
-    if !found && hce_holds_fn_without(ty = t, label = label, defs = defs, seen = seen) {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-/// Can a write through a value of `ty` store a function: an array or a map
-/// whose elements can hold one, or a struct with a `mut` field that can?
-fn hce_stores_fn(ty: Type, defs: Array[TypeDef], seen: Array[String]) -> Bool {
-  match ty {
-    CtFn(_, _, _) => false,
-    CtVar(_) => true,
-    CtApplied(_, _) => true,
-    CtForAll(_, _, inner) => hce_stores_fn(ty = inner, defs = defs, seen = seen),
-    CtArray(inner) => hce_holds_fn(ty = inner, defs = defs, seen = array_empty()) || hce_stores_fn(ty = inner, defs = defs, seen = seen),
-    CtOption(inner) => hce_stores_fn(ty = inner, defs = defs, seen = seen),
-    CtTuple(items) => {
-      let mut found = false
-      for t in items {
-        if !found && hce_stores_fn(ty = t, defs = defs, seen = seen) {
-          found = true
-        } else {
-          ()
-        }
-      }
-      found
-    },
-    CtRecord(fields) => {
-      let mut found = false
-      for f in fields {
-        let (_, fty) = f
-        if !found && hce_stores_fn(ty = fty, defs = defs, seen = seen) {
-          found = true
-        } else {
-          ()
-        }
-      }
-      found
-    },
-    CtNamed(name, args) => hce_named_holds(name = name, args = args, label = "", defs = defs, seen = seen, store = true),
-    CtStruct(name) => hce_named_holds(name = name, args = array_empty(), label = "", defs = defs, seen = seen, store = true),
-    CtEnum(name) => hce_named_holds(name = name, args = array_empty(), label = "", defs = defs, seen = seen, store = true),
-    _ => false
-  }
-}
-
-/// A declared type answers through its fields and payloads, read at `args`;
-/// one this module does not declare (`Map`, `MutMap`, an opaque type)
-/// answers through its arguments. A type already being read answers no.
-fn hce_named_holds(name: String, args: Array[Type], label: String, defs: Array[TypeDef], seen: Array[String], store: Bool) -> Bool {
-  if hce_has(items = seen, label = name) {
-    false
-  } else {
-    let inner_seen = Array::slice(seen, start = 0, end = Array::length(seen))
-    Array::push(inner_seen, value = name)
-    match find_typedef(defs = defs, name = name) {
-      Some(TDStruct(_, fields, mut_fields, tparams)) => {
-        let mut found = false
-        for f in fields {
-          let (fname, fty) = f
-          let t = subst_type_params(ty = fty, params = tparams, args = args)
-          let hit = if store {
-            (hce_has(items = mut_fields, label = fname) && hce_holds_fn(ty = t, defs = defs, seen = array_empty())) || hce_stores_fn(ty = t, defs = defs, seen = inner_seen)
-          } else {
-            hce_holds_fn_without(ty = t, label = label, defs = defs, seen = inner_seen)
-          }
-          if !found && hit {
-            found = true
-          } else {
-            ()
-          }
-        }
-        found
-      },
-      Some(TDEnum(_, tparams, variants)) => {
-        let mut found = false
-        for v in variants {
-          let (_, payload) = v
-          for pty in payload {
-            let t = subst_type_params(ty = pty, params = tparams, args = args)
-            let hit = if store {
-              hce_stores_fn(ty = t, defs = defs, seen = inner_seen)
-            } else {
-              hce_holds_fn_without(ty = t, label = label, defs = defs, seen = inner_seen)
-            }
-            if !found && hit {
-              found = true
-            } else {
-              ()
-            }
-          }
-          ()
-        }
-        found
-      },
-      Some(TDAlias(_, tparams, target)) => {
-        let t = subst_type_params(ty = target, params = tparams, args = args)
-        if store {
-          hce_stores_fn(ty = t, defs = defs, seen = inner_seen)
-        } else {
-          hce_holds_fn_without(ty = t, label = label, defs = defs, seen = inner_seen)
-        }
-      },
-      _ => hce_any_holds_fn(items = args, label = label, defs = defs, seen = inner_seen)
-    }
   }
 }

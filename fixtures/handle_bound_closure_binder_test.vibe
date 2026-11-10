@@ -1,0 +1,170 @@
+// #4051: a `for`, `match`, `is`, destructuring `let` or `loop` binder holds
+// what the value it takes apart holds, so a handle-bound closure reaching a
+// function that keeps it through one is refused
+// (fixtures/typecheck/handle_bound_closure_binder_*_reject.vibe). These are
+// the binder shapes that stay accepted: a binder over a closure that performs
+// nothing the handle answers, kept and called after the handle; a binder
+// over a handle-bound closure handed to a parameter whose row takes the
+// effect; and a binder that holds only the plain part of a value written
+// beside a handle-bound closure.
+effect Ask {
+  Get() -> Int
+}
+
+let saved: Array[() -> Int] = []
+
+let ints: Array[Int] = []
+
+fn keep(f: () -> Int) -> Int {
+  Array::push(saved, value = f)
+  0
+}
+
+fn keep_n(n: Int) -> Int {
+  Array::push(ints, value = n)
+  n
+}
+
+fn run_ask(f: () -> Int with Ask) -> Int with Ask {
+  f() + 1000
+}
+
+fn last_kept() -> Int {
+  let k = Array::get(saved, at = Array::length(saved) - 1)
+  k()
+}
+
+fn plain_for() -> Int {
+  handle {
+    let plain = () -> 7
+    for x in [plain] {
+      let _ = keep(f = x)
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn plain_match() -> Int {
+  handle {
+    let plain = () -> 8
+    match Some(plain) {
+      Some(x) => {
+        let _ = keep(f = x)
+      },
+      None => ()
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn plain_let_tuple() -> Int {
+  handle {
+    let plain = () -> 9
+    let (x, _) = (plain, 1)
+    let _ = keep(f = x)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn plain_loop() -> Int {
+  handle {
+    let plain = () -> 10
+    let _ = loop (x = plain, i = 0) {
+      if i > 0 {
+        break 0
+      } else {
+        let _ = keep(f = x)
+        continue (x, i + 1)
+      }
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn bound_for_row_param() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let mut total = 0
+    for x in [g] {
+      total = total + run_ask(f = x)
+    }
+    total
+  } with { Ask::Get() => resume(5) }
+}
+
+fn bound_tuple_plain_part() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    match (g, 11) {
+      (_, n) => keep_n(n = n)
+    }
+  } with { Ask::Get() => resume(5) }
+}
+
+fn bound_tuple_plain_part_rendered() -> String {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    match (g, 12) {
+      (_, n) => "n=\{n}"
+    }
+  } with { Ask::Get() => resume(5) }
+}
+
+fn bound_let_tuple_plain_part() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let (_, n) = (g, 13)
+    keep_n(n = n)
+  } with { Ask::Get() => resume(5) }
+}
+
+fn bound_for_unused() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let mut total = 0
+    for _x in [g, g] {
+      total = total + 1
+    }
+    total
+  } with { Ask::Get() => resume(5) }
+}
+
+fn bound_loop_plain_param() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    loop (x = g, i = 0) {
+      if i > 2 {
+        break i
+      } else {
+        continue (x, i + 1)
+      }
+    }
+  } with { Ask::Get() => resume(5) }
+}
+
+test "a binder over a closure that performs nothing the handle answers may keep it" {
+  inspect(plain_for(), content = "7")
+  inspect(plain_match(), content = "8")
+  inspect(plain_let_tuple(), content = "9")
+  inspect(plain_loop(), content = "10")
+}
+
+test "a binder over a handle-bound closure may hand it to a row that takes the effect" {
+  inspect(bound_for_row_param(), content = "1006")
+}
+
+test "a binder of the plain part beside a handle-bound closure is a plain value" {
+  inspect(bound_tuple_plain_part(), content = "11")
+  inspect(bound_tuple_plain_part_rendered(), content = "n=12")
+  inspect(bound_let_tuple_plain_part(), content = "13")
+  inspect(Array::length(ints), content = "2")
+}
+
+test "a binder over a handle-bound closure it does not keep" {
+  inspect(bound_for_unused(), content = "2")
+  inspect(bound_loop_plain_param(), content = "3")
+}
