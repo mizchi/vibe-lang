@@ -41,14 +41,38 @@
 // itself (#725 / #1085). A parameterized `loop`'s result slot (#3168) holds
 // nothing until a `break v` stores into it and one reference after.
 //
-// A shape outside that model (early exits that leave a binding's scope,
-// closure captures, the rows that change what a release means) is reported
-// as not checked rather than guessed at. A heap value the planner classified
-// as scalar is outside it too and is NOT caught in general -- only the
-// literal aggregates are cross-checked.
+// Early exits (slice 3). A `return`, and a `break` / `continue` at the loop
+// depth a binding was declared at, leave its scope past the scope-end drops;
+// codegen releases what the binding still holds there by the plan's exit
+// rows (#3141). The walk numbers every exit in its own pre-order -- returns,
+// breaks, continues, throws, frame jumps -- and checks each against the
+// plan's `PaExitSite` row of that ordinal (kind, operand fingerprint,
+// innermost `let`), the test codegen applies before it trusts an exit's
+// rows. A `throw` outside every `handle` body leaves like a `return`.
+// A path that leaves the scope that way releases its consuming
+// occurrences plus the `PaExitDrop` count for it (a guarded `-1` row: once,
+// for a plain `let` with a path drop, when no consume mark ran; a borrowed
+// parameter: one fewer, as codegen gives it), and not the scope-end drops.
+// Codegen may keep a binding the exit operand reads through
+// (`rc_exit_operand_ok`), which only releases less than the plan says, so
+// a balanced exit cannot hide an over-release. An exit numbered apart from
+// the plan, a `throw` a `handle` body may catch or a frame jump inside the
+// scope, and an exit row at an exit that does not leave the scope are not
+// checked.
+//
+// Reference cycles. RC cannot free a cycle whatever the plan says. A local
+// `let rec` closure's self-reference is not one: its self slot is weak
+// (#3110, fixed by #3234). A closure stored into a `let mut` it captures is:
+// the closure owns the captured cell and the cell owns the closure. That
+// store is reported as a warning line.
+//
+// A shape outside that model (closure captures, the rows that change what a
+// release means) is reported as not checked rather than guessed at. A heap
+// value the planner classified as scalar is outside it too and is NOT
+// caught in general -- only the literal aggregates are cross-checked.
 
 import @vibe/compiler/codegen/common_analysis {
-  md_borrow_mask_of
+  collect_free_vars, md_borrow_mask_of
 }
 
 import @vibe/compiler/core {
@@ -76,6 +100,7 @@ import ./perceus_pctx.vibe {
   pa_is_drop,
   pa_is_dup,
   pa_is_exit_drop,
+  pa_is_exit_site,
   pa_is_field_release,
   pa_is_path_drop,
   pa_is_reuse_alloc,
@@ -83,7 +108,8 @@ import ./perceus_pctx.vibe {
   pa_is_store_dup,
   pa_is_trunc_release,
   pa_is_view_pin,
-  pat_names
+  pat_names,
+  perceus_exit_fingerprint
 }
 
 //# Path outcomes
@@ -91,14 +117,19 @@ import ./perceus_pctx.vibe {
 /// One way through a binding's scope: how many consuming occurrences of the
 /// binding it reaches, whether one of them is a planned consume mark, how it
 /// left the innermost loop (`brk` 0 not at all, 1 `break`, 2 `continue` --
-/// the rest of the iteration does not run), how many references a store into
-/// a loop-result slot gave the binding (`acq`), and the branch choices that
-/// lead there (`if1:then,loop1:twice`; empty when no branch decided anything).
+/// the rest of the iteration does not run -- and 3 `return`, which leaves
+/// the function), how many references a store into a loop-result slot gave
+/// the binding (`acq`), what the early exit it left the binding's scope by
+/// releases of it (`xr`, the exit's `PaExitDrop` count, and `xg`, the row is
+/// the guarded `-1` one), and the branch choices that lead there
+/// (`if1:then,loop1:twice`; empty when no branch decided anything).
 struct RvOut {
   c: Int;
   marked: Bool;
   brk: Int;
   acq: Int;
+  xr: Int;
+  xg: Bool;
   path: String
 }
 
@@ -133,11 +164,41 @@ struct RvState {
   // #3919: walking a `for` iterable, whose result leaves codegen retains
   // when they name a loop-carried binding.
   mut iter_tail: Bool;
-  mut loop_sites: Int
+  mut loop_sites: Int;
+  // Slice 3: the plan's exit sites (`PaExitSite`: ordinal, kind, operand
+  // fingerprint, innermost `let`), `x`'s exit rows (`PaExitDrop`: ordinal,
+  // count), the innermost-`let` stack this walk numbers its exits against,
+  // the ordinals of the exits that left `x`'s scope, the next ordinal, and
+  // whether a site has disagreed with this walk's numbering.
+  site_ords: Array[Int];
+  site_kinds: Array[Int];
+  site_fps: Array[Int];
+  site_lets: Array[String];
+  xrow_ords: Array[Int];
+  xrow_counts: Array[Int];
+  lets: Array[String];
+  exits_left: Array[Int];
+  mut exit_ord: Int;
+  mut ord_bad: Bool;
+  // How many `handle` bodies enclose the walk: a throw inside one may be
+  // caught there.
+  mut handle_depth: Int
 }
 
 fn rv_out(c: Int, marked: Bool, brk: Int, acq: Int, path: String) -> RvOut {
-  RvOut::{ c: c, marked: marked, brk: brk, acq: acq, path: path }
+  rv_out_x(c = c, marked = marked, brk = brk, acq = acq, xr = 0, xg = false, path = path)
+}
+
+fn rv_out_x(c: Int, marked: Bool, brk: Int, acq: Int, xr: Int, xg: Bool, path: String) -> RvOut {
+  RvOut::{
+    c: c,
+    marked: marked,
+    brk: brk,
+    acq: acq,
+    xr: xr,
+    xg: xg,
+    path: path
+  }
 }
 
 fn rv_unit() -> Array[RvOut] {
@@ -175,7 +236,7 @@ fn rv_join(a: String, b: String) -> String {
 }
 
 fn rv_key_eq(a: RvOut, b: RvOut) -> Bool {
-  a.c == b.c && a.marked == b.marked && a.brk == b.brk && a.acq == b.acq
+  a.c == b.c && a.marked == b.marked && a.brk == b.brk && a.acq == b.acq && a.xr == b.xr && a.xg == b.xg
 }
 
 /// Add `o` unless an outcome with the same count, mark, loop exit and store
@@ -208,7 +269,7 @@ fn rv_seq(a: Array[RvOut], b: Array[RvOut]) -> Array[RvOut] {
       let mut j = 0
       while j < Array::length(b) {
         let ob = Array::get(b, at = j)
-        rv_add(outs = out, o = rv_out(c = oa.c + ob.c, marked = oa.marked || ob.marked, brk = ob.brk, acq = oa.acq + ob.acq, path = rv_join(a = oa.path, b = ob.path)))
+        rv_add(outs = out, o = rv_out_x(c = oa.c + ob.c, marked = oa.marked || ob.marked, brk = ob.brk, acq = oa.acq + ob.acq, xr = oa.xr + ob.xr, xg = oa.xg || ob.xg, path = rv_join(a = oa.path, b = ob.path)))
         j = j + 1
       }
     }
@@ -256,7 +317,7 @@ fn rv_branch(sets: Array[Array[RvOut]], steps: Array[String]) -> Array[RvOut] {
       let mut j = 0
       while j < Array::length(set) {
         let o = Array::get(set, at = j)
-        rv_add(outs = out, o = rv_out(c = o.c, marked = o.marked, brk = o.brk, acq = o.acq, path = rv_join(a = step, b = o.path)))
+        rv_add(outs = out, o = rv_out_x(c = o.c, marked = o.marked, brk = o.brk, acq = o.acq, xr = o.xr, xg = o.xg, path = rv_join(a = step, b = o.path)))
         j = j + 1
       }
       k = k + 1
@@ -266,8 +327,9 @@ fn rv_branch(sets: Array[Array[RvOut]], steps: Array[String]) -> Array[RvOut] {
 }
 
 /// The paths of `outs` that left the iteration the way `want` names (0: ran
-/// to its end or hit `continue`, 1: hit `break`), with the exit cleared --
-/// the loop around them is where it stops mattering.
+/// to its end or hit `continue`, 1: hit `break`, 3: hit `return`). A loop
+/// exit is cleared -- the loop around them is where it stops mattering --
+/// and a `return` is kept: it leaves every enclosing loop too.
 fn rv_exits(outs: Array[RvOut], want: Int) -> Array[RvOut] {
   let out: Array[RvOut] = []
   let mut i = 0
@@ -275,11 +337,18 @@ fn rv_exits(outs: Array[RvOut], want: Int) -> Array[RvOut] {
     let o = Array::get(outs, at = i)
     let hit = if want == 1 {
       o.brk == 1
+    } else if want == 3 {
+      o.brk == 3
     } else {
-      o.brk != 1
+      o.brk == 0 || o.brk == 2
+    }
+    let brk = if want == 3 {
+      3
+    } else {
+      0
     }
     if hit {
-      rv_add(outs = out, o = rv_out(c = o.c, marked = o.marked, brk = 0, acq = o.acq, path = o.path))
+      rv_add(outs = out, o = rv_out_x(c = o.c, marked = o.marked, brk = brk, acq = o.acq, xr = o.xr, xg = o.xg, path = o.path))
     } else {
       ()
     }
@@ -312,7 +381,8 @@ fn rv_loop(st: RvState, iter: Array[RvOut], stop: Array[RvOut]) -> Array[RvOut] 
   let tag = "loop" + __to_string(st.loop_ord)
   let go_on = rv_exits(outs = iter, want = 0)
   let broke = rv_exits(outs = iter, want = 1)
-  let once = rv_union(a = rv_seq(a = go_on, b = stop), b = broke)
+  let gone = rv_exits(outs = iter, want = 3)
+  let once = rv_union(a = rv_union(a = rv_seq(a = go_on, b = stop), b = broke), b = gone)
   let twice = rv_seq(a = go_on, b = once)
   rv_branch(sets = [stop, once, twice], steps = [
     tag + ":never",
@@ -488,7 +558,9 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       } else {
         ()
       }
+      st.handle_depth = st.handle_depth + 1
       let out = rv_walk(st = st, e = hb, consume = consume)
+      st.handle_depth = st.handle_depth - 1
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ab) = Array::get(arms, at = i)
@@ -518,7 +590,23 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
       }
       Array::push(st.bound, value = n)
       let vo = rv_walk_off(st = st, e = v, consume = true)
+      // The plan's innermost-`let` stack names a `let rec` that owns a
+      // closure (pc_emit's ELetRec arm), as codegen's does.
+      let owns_closure = match v {
+        EFn(_, _, _, _, _, _) => true,
+        _ => false
+      }
+      if owns_closure {
+        Array::push(st.lets, value = n)
+      } else {
+        ()
+      }
       let bo = rv_walk(st = st, e = b, consume = consume)
+      if owns_closure {
+        Array::truncate(st.lets, length = Array::length(st.lets) - 1)
+      } else {
+        ()
+      }
       Array::truncate(st.bound, length = Array::length(st.bound) - 1)
       rv_seq(a = vo, b = bo)
     },
@@ -606,25 +694,24 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
     },
     EReturn(v) => {
       let vo = rv_walk(st = st, e = v, consume = true)
-      rv_note(st = st, reason = "early exit: return")
-      vo
+      rv_seq(a = vo, b = rv_exit(st = st, kind = 0, operand = v, brk = 3))
     },
     EBreak(opt) => {
       let vo = match opt {
         Some(v) => rv_walk(st = st, e = v, consume = true),
         None => rv_unit()
       }
-      rv_leave_note(st)
-      rv_seq(a = vo, b = [
-        rv_out(c = 0, marked = false, brk = 1, acq = 0, path = "")
-      ])
+      let operand = match opt {
+        Some(v) => v,
+        None => EUnit
+      }
+      rv_seq(a = vo, b = rv_exit(st = st, kind = 1, operand = operand, brk = 1))
     },
+    // The plan gives a `continue` no operand: codegen compiles none (the
+    // parameterized loop is lowered before the plan).
     EContinue(args) => {
       let ao = rv_items(st = st, items = args)
-      rv_leave_note(st)
-      rv_seq(a = ao, b = [
-        rv_out(c = 0, marked = false, brk = 2, acq = 0, path = "")
-      ])
+      rv_seq(a = ao, b = rv_exit(st = st, kind = 2, operand = EUnit, brk = 2))
     },
     // Creating a closure borrows what it captures; its body is planned on
     // its own.
@@ -656,15 +743,101 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
   }
 }
 
-/// A `break` / `continue` at the loop depth `x` was declared at leaves its
-/// scope, and codegen releases what it holds there by the plan's exit rows,
-/// which this ledger does not model.
-fn rv_leave_note(_ st: RvState) -> Unit {
-  if st.exit_depth == st.decl_exit {
-    rv_note(st = st, reason = "early exit: break or continue leaves its scope")
+//# Early exits
+
+/// Does the plan's exit site `ord` have this kind, operand fingerprint and
+/// innermost `let`? Codegen asks the same of the exit it compiles
+/// (`rc_exit_site_matches`) before it trusts any row of that exit.
+fn rv_site_matches(st: RvState, ord: Int, kind: Int, fp: Int) -> Bool {
+  let nl = Array::length(st.lets)
+  let inner = if nl > 0 {
+    Array::get(st.lets, at = nl - 1)
+  } else {
+    ""
+  }
+  let mut found = false
+  let mut ok = false
+  let mut i = 0
+  while i < Array::length(st.site_ords) && !found {
+    if Array::get(st.site_ords, at = i) == ord {
+      found = true
+      ok = Array::get(st.site_kinds, at = i) == kind && Array::get(st.site_fps, at = i) == fp && Array::get(st.site_lets, at = i) == inner
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// Give the next exit its ordinal, in this walk's pre-order, and check it
+/// against the plan's site of that ordinal. `kind` is the plan's exit kind:
+/// 0 return, 1 break, 2 continue, 3 throw, 4 frame jump, 5 return call site.
+fn rv_number_exit(st: RvState, kind: Int, operand: Expr) -> Int {
+  let ord = st.exit_ord
+  st.exit_ord = ord + 1
+  if !rv_site_matches(st = st, ord = ord, kind = kind, fp = perceus_exit_fingerprint(operand)) {
+    st.ord_bad = true
   } else {
     ()
   }
+  ord
+}
+
+/// `x`'s `PaExitDrop` count at exit `ord` (-1: the guarded row); 0 when the
+/// exit has no row for it.
+fn rv_exit_count(st: RvState, ord: Int) -> Int {
+  let mut out = 0
+  let mut i = 0
+  while i < Array::length(st.xrow_ords) {
+    if Array::get(st.xrow_ords, at = i) == ord {
+      out = Array::get(st.xrow_counts, at = i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// An exit that ends the path: `brk` 3 for a `return` or an uncaught
+/// `throw`, 1 `break`, 2 `continue`. A `return` leaves `x`'s scope, and so does a loop exit at the
+/// loop depth `x` was declared at; such a path releases what `x`'s exit row
+/// says instead of the scope-end drops it skips.
+fn rv_exit(st: RvState, kind: Int, operand: Expr, brk: Int) -> Array[RvOut] {
+  let ord = rv_number_exit(st = st, kind = kind, operand = operand)
+  let leaves = st.active && (brk == 3 || st.exit_depth == st.decl_exit)
+  if leaves {
+    if st.ord_bad {
+      rv_note(st = st, reason = "early exit: the plan numbers its exits apart from this walk")
+    } else {
+      ()
+    }
+    Array::push(st.exits_left, value = ord)
+    let n = rv_exit_count(st = st, ord = ord)
+    let xr = if n > 0 {
+      n
+    } else {
+      0
+    }
+    [
+      rv_out_x(c = 0, marked = false, brk = brk, acq = 0, xr = xr, xg = n < 0, path = "")
+    ]
+  } else {
+    [rv_out(c = 0, marked = false, brk = brk, acq = 0, path = "")]
+  }
+}
+
+/// Does `x` have an exit row at an exit that did not leave its scope in
+/// this walk (a `throw` or frame jump, or one the walk does not reach)?
+fn rv_stray_exit_row(_ st: RvState) -> Bool {
+  let mut stray = false
+  let mut i = 0
+  while i < Array::length(st.xrow_ords) && !stray {
+    stray = !rv_has_int(xs = st.exits_left, v = Array::get(st.xrow_ords, at = i))
+    i = i + 1
+  }
+  stray
 }
 
 /// An operand of an operator is read in place: a bare name there (seen
@@ -745,14 +918,79 @@ fn rv_is_throw(st: RvState, callee: Expr, args: Array[Expr]) -> Bool {
   }
 }
 
-fn rv_call(st: RvState, callee: Expr, args: Array[Expr], resolution: Array[Int]) -> Array[RvOut] {
-  if resolved_callee_operation(resolution) == builtin_frame_jump || return_call_site(resolution) >= 0 {
+/// The payload of `perform Exception::Throw(v)` -- `v`, or `EUnit` for a
+/// payload-less throw -- the one throw shape codegen lowers to a wasm
+/// `throw` and the plan numbers as an exit.
+fn rv_throw_payload(st: RvState, callee: Expr, args: Array[Expr]) -> Option[Expr] {
+  let is_perform = match callee {
+    EIdent(f, _) => f == "perform" && !rv_has_str(xs = st.bound, s = f),
+    _ => false
+  }
+  if is_perform && Array::length(args) > 0 {
+    let op = Array::get(args, at = 0)
+    let head = match op {
+      EIdent(n, _) => n,
+      ECall(EIdent(n, _), _, _, _) => n,
+      _ => ""
+    }
+    if is_exception_throw_operation(head) {
+      match op {
+        ECall(_, op_args, _, _) => if Array::length(op_args) > 0 {
+          Some(Array::get(op_args, at = 0))
+        } else {
+          Some(EUnit)
+        },
+        _ => Some(EUnit)
+      }
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// The exits a call makes after its arguments, numbered in the plan's order
+/// (pc_emit's ECall arm): a frame jump, a return call site, a throw. A
+/// throw outside every `handle` body leaves the function, as a `return`
+/// does (codegen's exit kind 3 releases down to the innermost `handle`
+/// body, else the whole function); its outcome ends the path. A throw a
+/// `handle` body may catch, and a frame jump, are not checked when they
+/// happen inside `x`'s scope.
+fn rv_call_exits(st: RvState, callee: Expr, args: Array[Expr], resolution: Array[Int]) -> Array[RvOut] {
+  if resolved_callee_operation(resolution) == builtin_frame_jump {
+    let _ = rv_number_exit(st = st, kind = 4, operand = EUnit)
     rv_note(st = st, reason = "early exit: frame jump")
-  } else if rv_is_throw(st = st, callee = callee, args = args) {
-    rv_note(st = st, reason = "early exit: throw")
   } else {
     ()
   }
+  let call_site = return_call_site(resolution)
+  if call_site >= 0 {
+    let _ = rv_number_exit(st = st, kind = 5, operand = EInt(call_site))
+    rv_note(st = st, reason = "early exit: frame jump")
+  } else {
+    ()
+  }
+  match rv_throw_payload(st = st, callee = callee, args = args) {
+    Some(payload) => if st.handle_depth == 0 {
+      rv_exit(st = st, kind = 3, operand = payload, brk = 3)
+    } else {
+      let _ = rv_number_exit(st = st, kind = 3, operand = payload)
+      rv_note(st = st, reason = "early exit: throw inside a handle body")
+      rv_unit()
+    },
+    None => {
+      if rv_is_throw(st = st, callee = callee, args = args) {
+        rv_note(st = st, reason = "early exit: throw")
+      } else {
+        ()
+      }
+      rv_unit()
+    }
+  }
+}
+
+fn rv_call(st: RvState, callee: Expr, args: Array[Expr], resolution: Array[Int]) -> Array[RvOut] {
   // A named callee is read in place; a locally bound one borrows nothing
   // (the borrow masks describe top-level functions and builtins).
   let mask = match callee {
@@ -781,7 +1019,7 @@ fn rv_call(st: RvState, callee: Expr, args: Array[Expr], resolution: Array[Int])
     out = rv_seq(a = out, b = ao)
     i = i + 1
   }
-  out
+  rv_seq(a = out, b = rv_call_exits(st = st, callee = callee, args = args, resolution = resolution))
 }
 
 fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOut] {
@@ -806,7 +1044,9 @@ fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOu
     _ => rv_walk_off(st = st, e = v, consume = true)
   }
   Array::push(st.bound, value = n)
+  Array::push(st.lets, value = n)
   let bo = rv_scope(st = st, n = n, b = b, consume = consume)
+  Array::truncate(st.lets, length = Array::length(st.lets) - 1)
   Array::truncate(st.bound, length = Array::length(st.bound) - 1)
   rv_seq(a = vo, b = bo)
 }
@@ -1003,8 +1243,6 @@ fn rv_row_reason(plan: Array[PerceusAction], x: String) -> String {
         "field-release row"
       } else if pa_is_store_dup(a) {
         "store-dup row"
-      } else if pa_is_exit_drop(a) {
-        "early exit: an exit releases it (exit-drop row)"
       } else {
         ""
       }
@@ -1044,6 +1282,8 @@ fn rv_class_bits(names: Array[String], bits: Array[Int], x: String) -> Int {
   out
 }
 
+let rv_stray_reason: String = "early exit: an exit-drop row at an exit that does not leave its scope"
+
 fn rv_line(fname: String, x: String, path: String, msg: String) -> String {
   fname + " " + x + " " + path + ": " + msg
 }
@@ -1052,6 +1292,12 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
   let marks: Array[Int] = []
   let alias_dups: Array[String] = []
   let drops: Array[String] = []
+  let site_ords: Array[Int] = []
+  let site_kinds: Array[Int] = []
+  let site_fps: Array[Int] = []
+  let site_lets: Array[String] = []
+  let xrow_ords: Array[Int] = []
+  let xrow_counts: Array[Int] = []
   let mut i = 0
   while i < Array::length(plan) {
     let a = Array::get(plan, at = i)
@@ -1061,6 +1307,16 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
       Array::push(alias_dups, value = a.name)
     } else if pa_is_drop(a) {
       Array::push(drops, value = a.name)
+    } else if pa_is_exit_site(a) {
+      // `use_offset` the ordinal, `binding_id` the kind, `extra` the
+      // operand's fingerprint, `name` the innermost `let`.
+      Array::push(site_ords, value = a.use_offset)
+      Array::push(site_kinds, value = a.binding_id)
+      Array::push(site_fps, value = a.extra)
+      Array::push(site_lets, value = a.name)
+    } else if pa_is_exit_drop(a) && a.name == x {
+      Array::push(xrow_ords, value = a.use_offset)
+      Array::push(xrow_counts, value = a.extra)
     } else {
       ()
     }
@@ -1075,6 +1331,8 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
     pi = pi + 1
   }
   let cons: Array[Int] = []
+  let lets: Array[String] = []
+  let exits_left: Array[Int] = []
   RvState::{
     x: x,
     slot: slot,
@@ -1098,19 +1356,36 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
     exit_depth: 0,
     decl_exit: 0,
     iter_tail: false,
-    loop_sites: 0
+    loop_sites: 0,
+    site_ords: site_ords,
+    site_kinds: site_kinds,
+    site_fps: site_fps,
+    site_lets: site_lets,
+    xrow_ords: xrow_ords,
+    xrow_counts: xrow_counts,
+    lets: lets,
+    exits_left: exits_left,
+    exit_ord: 0,
+    ord_bad: false,
+    handle_depth: 0
   }
 }
 
 /// The ledger for one binding: on every path, the references it holds
 /// (`init` plus its dups) equal the ones the path releases (its consuming
 /// occurrences, the scope-end drop, and the path drop when no marked
-/// occurrence ran). A loop-result slot holds what its store gave it, with
+/// occurrence ran). A path that left the scope by an early exit releases
+/// its consuming occurrences and the exit's row instead of the scope-end
+/// drops: the count, or for the guarded `-1` row one when no marked
+/// occurrence ran -- codegen releases that one only for a `let` whose scope
+/// end is guarded on a path flag (`rc_exit_release`), so not for a
+/// parameter (`param`) or a binding with no path drop. A borrowed parameter
+/// releases one fewer than its row says, as codegen gives it. A loop-result slot holds what its store gave it, with
 /// its dup budget applied again at that store (compile_expr_tail's EAssign
 /// lowering), and a path that stored nothing holds the `0` placeholder,
 /// whose releases are no-ops, so only the paths that stored are checked. At
 /// most one line per kind, with the first witness.
-fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, plan: Array[PerceusAction], drop_from: Int, out: Array[String]) -> Unit {
+fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, param: Bool, plan: Array[PerceusAction], drop_from: Int, out: Array[String]) -> Unit {
   let x = st.x
   let mut dups = 0
   let mut drop = 0
@@ -1166,7 +1441,23 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, plan: Array[P
     } else {
       0
     }
-    let released = o.c + drop + unguarded
+    let guarded = if o.xg && !o.marked && !param && path_drop == 1 {
+      1
+    } else {
+      0
+    }
+    let exit_release = if !borrowed {
+      o.xr + guarded
+    } else if o.xr > 1 {
+      o.xr - 1
+    } else {
+      0
+    }
+    let released = if o.brk != 0 {
+      o.c + exit_release
+    } else {
+      o.c + drop + unguarded
+    }
     let path = if o.path == "" {
       "-"
     } else {
@@ -1224,13 +1515,17 @@ fn rv_check_slot(fname: String, x: String, params: Array[(String, Option[TypeExp
     let _ = rv_walk(st = st, e = body, consume = true)
     let why = if !st.found {
       "not planned"
-    } else {
+    } else if st.reason != "" {
       st.reason
+    } else if rv_stray_exit_row(st) {
+      rv_stray_reason
+    } else {
+      ""
     }
     if why != "" {
       Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + why))
     } else {
-      rv_check(fname = fname, st = st, init = 0, borrowed = false, plan = plan, drop_from = 0, out = out)
+      rv_check(fname = fname, st = st, init = 0, borrowed = false, param = false, plan = plan, drop_from = 0, out = out)
     }
   }
 }
@@ -1286,9 +1581,11 @@ fn rv_is_aggregate(_ v: Expr) -> Bool {
 /// `FN p PATH: borrowed parameter consumed without a dup`,
 /// `FN x -: consume mark at offset N is not a consuming occurrence`,
 /// `FN x -: heap value planned as scalar`, `FN x -: not checked: REASON`,
-/// and the aggregates `FN * -: not checked: N pattern binders, M let mut`
-/// and `FN * -: not checked: lambda body`. PATH is the branch choices of a
-/// witness, `-` when no branch decided it.
+/// the aggregates `FN * -: not checked: N pattern binders, M let mut` and
+/// `FN * -: not checked: lambda body`, and the warning `FN x -: warning:
+/// reference cycle (a closure stored into the let mut it captures); RC
+/// cannot free it`. PATH is the branch choices of a witness, `-` when no
+/// branch decided it.
 export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeExpr])], body: Expr, plan: Array[PerceusAction], param_drop_start: Int, class_names: Array[String], class_bits: Array[Int], borrow_param_fns: Array[String], masks: Array[Int]) -> Array[String] {
   let out: Array[String] = []
   let own_mask = rv_own_mask(fname = fname, bfns = borrow_param_fns, bmasks = masks)
@@ -1316,6 +1613,8 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         row_reason
       } else if st.reason != "" {
         st.reason
+      } else if rv_stray_exit_row(st) {
+        rv_stray_reason
       } else if st.loop_sites > 0 && (borrowed || !rv_has_drop(plan = plan, x = x, from = param_drop_start)) {
         // linked_compile_function_bodies.vibe's epilogue then adds a drop of
         // its own when every consume is such a site (#725 / #1085).
@@ -1331,7 +1630,7 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         } else {
           1
         }
-        rv_check(fname = fname, st = st, init = init, borrowed = borrowed, plan = plan, drop_from = param_drop_start, out = out)
+        rv_check(fname = fname, st = st, init = init, borrowed = borrowed, param = true, plan = plan, drop_from = param_drop_start, out = out)
       }
     }
     pi = pi + 1
@@ -1403,8 +1702,12 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         row_reason
       } else if !st.found {
         "not planned"
-      } else {
+      } else if st.reason != "" {
         st.reason
+      } else if rv_stray_exit_row(st) {
+        rv_stray_reason
+      } else {
+        ""
       }
       if reason != "" {
         Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + reason))
@@ -1419,7 +1722,7 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         } else {
           1
         }
-        rv_check(fname = fname, st = st, init = init, borrowed = false, plan = plan, drop_from = 0, out = out)
+        rv_check(fname = fname, st = st, init = init, borrowed = false, param = false, plan = plan, drop_from = 0, out = out)
       }
     }
     di = di + 1
@@ -1433,6 +1736,51 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
     Array::push(out, value = rv_line(fname = fname, x = "*", path = "-", msg = "not checked: lambda body"))
   } else {
     ()
+  }
+  let cells = rv_cycle_cells(body)
+  let mut ci = 0
+  while ci < Array::length(cells) {
+    Array::push(out, value = rv_line(fname = fname, x = Array::get(cells, at = ci), path = "-", msg = "warning: reference cycle (a closure stored into the let mut it captures); RC cannot free it"))
+    ci = ci + 1
+  }
+  out
+}
+
+//# Reference cycles
+
+/// The `let mut` names a closure that captures them is stored into (`f =
+/// (..) -> .. f ..`), each once, anywhere in `body` -- lambda bodies
+/// included. Codegen gives the closure its own reference to the captured
+/// cell and the cell holds the closure, so neither count reaches zero
+/// (measured: 40 B per evaluation; the `let rec` spelling of the same
+/// recursion leaks nothing, its self slot being weak, #3234). What the
+/// closure captures is codegen's own answer (`collect_free_vars`, the walk
+/// compile_lambda's capture set comes from), so a closure that only
+/// ASSIGNS the cell counts, and one whose parameter shadows it does not.
+fn rv_cycle_cells(_ body: Expr) -> Array[String] {
+  let out: Array[String] = []
+  // A `let mut` is local, so no top-level name needs excluding.
+  let no_fns: Array[String] = []
+  let _ = expr_any_node(expr = body, pred = (n: Expr) -> Bool {
+    match n {
+      EAssign(target, EFn(_, _, ps, _, _, fb), _, _) => if !rv_has_str(xs = out, s = target) && rv_has_str(xs = collect_free_vars(body = fb, param_names = rv_param_names(ps), fn_names = no_fns), s = target) {
+        Array::push(out, value = target)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    false
+  })
+  out
+}
+
+fn rv_param_names(_ params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, value = rv_strip_label((Array::get(params, at = i)).0))
+    i = i + 1
   }
   out
 }
