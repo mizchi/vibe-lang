@@ -16,6 +16,7 @@ import @vibe/compiler/core {
   expr_children_top,
   is_ascription_call,
   resolve_type_expr_core_shadowed,
+  resolved_builtin_operation_from_source,
   sorted_names_of,
   type_to_string
 }
@@ -587,6 +588,298 @@ export fn borrow_round0_link(local_names: Array[String], local_masks: Array[Int]
 /// Whole-program and per-module entry points share the same fixed point.
 export fn borrow_fixpoint_link_parts(parts: Array[Array[Stmt]], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
   bp_fixpoint_parts(parts = parts, nonident = bp_fold_nonident(nonident_fns = nonident_fns, nonident_pos = nonident_pos), valued = bp_name_set(valued), excluded = bp_name_set(exclude), out_masks = out_masks)
+}
+
+//# #2827: owning thunks for functions used as values
+
+/// The suffix of the owning thunk `borrow_owned_value_thunks` emits. `$`
+/// cannot appear in a source name, so the thunk collides with nothing a
+/// program declares.
+fn bp_thunk_suffix() -> String {
+  "$owned"
+}
+
+/// `bp_rw` over each expression of a list.
+fn bp_rw_list(items: Array[Expr], to: MutMap[String, String]) -> Array[Expr] {
+  let out: Array[Expr] = []
+  for item in items {
+    Array::push(out, value = bp_rw(e = item, to = to))
+  }
+  out
+}
+
+/// `bp_rw` over each value of a list of named fields (record, map or loop
+/// initialiser), keeping the names.
+fn bp_rw_fields(fields: Array[(String, Expr)], to: MutMap[String, String]) -> Array[(String, Expr)] {
+  let out: Array[(String, Expr)] = []
+  for field in fields {
+    let (k, v) = field
+    Array::push(out, value = (k, bp_rw(e = v, to = to)))
+  }
+  out
+}
+
+/// `bp_rw` over each arm body, keeping the patterns: a pattern binds names
+/// and holds no expression to rename.
+fn bp_rw_arms(arms: Array[(Pat, Expr)], to: MutMap[String, String]) -> Array[(Pat, Expr)] {
+  let out: Array[(Pat, Expr)] = []
+  for arm in arms {
+    let (p, body) = arm
+    Array::push(out, value = (p, bp_rw(e = body, to = to)))
+  }
+  out
+}
+
+/// `e` with every VALUE occurrence of a name in `to` renamed: every `EIdent`
+/// except a direct callee, which are exactly the occurrences
+/// `ca_collect_valued_idents` counts. The caller guarantees that no binder in
+/// the program spells a renamed name, so each occurrence is the top-level
+/// function and no scope has to be tracked here.
+fn bp_rw(e: Expr, to: MutMap[String, String]) -> Expr {
+  match e {
+    EIdent(n, off) => match MutMap::get(to, k = n) {
+      Some(t) => EIdent(t, off),
+      None => e
+    },
+    ETuple(items) => ETuple(bp_rw_list(items = items, to = to)),
+    EArray(items) => EArray(bp_rw_list(items = items, to = to)),
+    ERecord(name, fields, targs) => ERecord(name, bp_rw_fields(fields = fields, to = to), targs),
+    EIf(c, t, f) => EIf(bp_rw(e = c, to = to), bp_rw(e = t, to = to), bp_rw(e = f, to = to)),
+    ELet(n, v, b, off) => ELet(n, bp_rw(e = v, to = to), bp_rw(e = b, to = to), off),
+    ELetRec(n, v, b) => ELetRec(n, bp_rw(e = v, to = to), bp_rw(e = b, to = to)),
+    ELetMut(n, v, b, off) => ELetMut(n, bp_rw(e = v, to = to), bp_rw(e = b, to = to), off),
+    EAssign(n, v, b, off) => EAssign(n, bp_rw(e = v, to = to), bp_rw(e = b, to = to), off),
+    EAssignOp(n, op, v, b, off) => EAssignOp(n, op, bp_rw(e = v, to = to), bp_rw(e = b, to = to), off),
+    ESeq(a, b) => ESeq(bp_rw(e = a, to = to), bp_rw(e = b, to = to)),
+    EMatch(s, arms) => EMatch(bp_rw(e = s, to = to), bp_rw_arms(arms = arms, to = to)),
+    EHandle(b, arms) => EHandle(bp_rw(e = b, to = to), bp_rw_arms(arms = arms, to = to)),
+    EWhile(c, b) => EWhile(bp_rw(e = c, to = to), bp_rw(e = b, to = to)),
+    ELoop(inits, b) => ELoop(bp_rw_fields(fields = inits, to = to), bp_rw(e = b, to = to)),
+    EForIn(n, ix, it, b) => EForIn(n, ix, bp_rw(e = it, to = to), bp_rw(e = b, to = to)),
+    ECall(callee, args, off, cell) => match callee {
+      EIdent(_, _) => ECall(callee, bp_rw_list(items = args, to = to), off, cell),
+      _ => ECall(bp_rw(e = callee, to = to), bp_rw_list(items = args, to = to), off, cell)
+    },
+    EBinOp(op, a, b, off) => EBinOp(op, bp_rw(e = a, to = to), bp_rw(e = b, to = to), off),
+    EUnaryOp(op, a) => EUnaryOp(op, bp_rw(e = a, to = to)),
+    EFn(tps, bounds, params, ret, eff, body) => EFn(tps, bounds, params, ret, eff, bp_rw(e = body, to = to)),
+    EDot(o, field, a, b) => EDot(bp_rw(e = o, to = to), field, a, b),
+    ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, bp_rw(e = v, to = to)),
+    EReturn(v) => EReturn(bp_rw(e = v, to = to)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(bp_rw(e = v, to = to))),
+      None => e
+    },
+    EContinue(vs) => EContinue(bp_rw_list(items = vs, to = to)),
+    EMap(fields) => EMap(bp_rw_fields(fields = fields, to = to)),
+    ESpread(v) => ESpread(bp_rw(e = v, to = to)),
+    _ => e
+  }
+}
+
+/// True when some value occurrence in `stmt` is a name in `targets`.
+fn bp_stmt_values_any(stmt: Stmt, targets: MutMap[String, String]) -> Bool {
+  let found = array_empty()
+  let _ = ca_walk_stmts_valued(stmts = [stmt], out = found)
+  let mut hit = false
+  for n in found {
+    if MutMap::get(targets, k = n) is Some(_) {
+      hit = true
+    }
+  }
+  hit
+}
+
+/// True when borrowing some position of `mask` saves reference counting: a
+/// parameter annotated `Int` / `Bool` / `Char` / `Unit` is an immediate that
+/// no dup or drop touches, so a thunk that only borrows those buys nothing and
+/// costs an extra call on every indirect call.
+fn bp_thunk_gains(params: Array[(String, Option[TypeExpr])], mask: Int) -> Bool {
+  let mut gains = false
+  let mut p = 0
+  while p < Array::length(params) && p < bmask_max_param() {
+    let (_, ann) = Array::get(params, at = p)
+    let scalar = match ann {
+      Some(TyName(t)) => t == "Int" || t == "Bool" || t == "Char" || t == "Unit",
+      Some(TyUnit) => true,
+      _ => false
+    }
+    if bmask_has(mask = mask, i = p) && !scalar {
+      gains = true
+    }
+    p = p + 1
+  }
+  gains
+}
+
+/// Whether a value use of `f` can be pointed at an owning thunk: a function
+/// whose parameters the thunk can forward positionally and whose name a call
+/// resolves only to the program's declaration.
+fn bp_thunk_shape_ok(name: String, bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut ok = Array::length(params) > 0 && Array::length(bounds) == 0
+  for p in params {
+    let (raw, _) = p
+    if raw == "" || bp_param_base_name(raw) != raw {
+      ok = false
+    }
+  }
+  ok && md_builtin_borrow_mask(name) == 0 && resolved_builtin_operation_from_source(name) == 0
+}
+
+/// #2827: give a function used as a VALUE the borrowed ABI for its direct
+/// calls, and point every value use at an owning thunk.
+///
+/// ADR-0092 zeroes the borrow mask of any function named in a value position:
+/// an indirect call cannot read a mask, so it hands over owned references and
+/// expects the callee to release them. That disqualified the whole function,
+/// so every DIRECT call consumed too -- the compiler's own `compile_expr`,
+/// passed around as the `ce` callback, took a dup of `ctx` per recursive call
+/// and leaked the up-front ones on the paths that ran none.
+///
+/// For each such `f` that borrows a non-scalar parameter once its value uses
+/// are set aside, this appends
+///
+///     fn f$owned(p0, .., pn) { f(p0, .., pn) }
+///
+/// and renames every value occurrence of `f` to `f$owned`. The thunk is an
+/// ordinary function used as a value: its parameters are owned, it lends them
+/// to `f`'s borrowed positions (moving the owned ones), and its Perceus plan
+/// releases what it lent at scope end. `f` is then named only as a callee, so
+/// the production inference gives it the mask the trial run computed, and its
+/// direct calls stop dup'ing.
+///
+/// Only a function the rename can treat exactly is taken: declared once, not
+/// excluded, no trait bound and no optional parameter (the thunk forwards
+/// every parameter positionally), not a builtin spelling, and -- because the
+/// rename tracks no scope -- a name that no binder anywhere in the program
+/// spells. A program with a nested module is left alone. Returns the renamed
+/// functions, sorted. Run on the RC lanes only, before `cl_own_return_stmts`,
+/// so the thunk takes the owning-return contract a callback has.
+export fn borrow_owned_value_thunks(stmts: Array[Stmt], exclude: Array[String]) -> Array[String] {
+  let valued = array_empty()
+  let _ = ca_walk_stmts_valued(stmts = stmts, out = valued)
+  let valued_set = bp_name_set(valued)
+  let excluded = bp_name_set(exclude)
+  let declared: MutMap[String, Int] = MutMap::new_string()
+  let mut nested = false
+  for stmt in stmts {
+    let name = match stmt {
+      SLet(_, _, n, _, _) => n,
+      SFnDecl(_, n, _, _, _) => n,
+      SModule(_, _, _) => {
+        nested = true
+        ""
+      },
+      _ => ""
+    }
+    if name != "" {
+      match MutMap::get(declared, k = name) {
+        Some(c) => MutMap::set(declared, k = name, v = c + 1),
+        None => MutMap::set(declared, k = name, v = 1)
+      }
+    }
+  }
+  let candidates: Array[String] = []
+  if !nested {
+    for stmt in stmts {
+      match stmt {
+        SLet(_, _, name, _, EFn(_, bounds, params, _, _, _)) => if MutSet::has(valued_set, x = name) && !MutSet::has(excluded, x = name) && MutMap::get(declared, k = name) == Some(1) && !(MutMap::get(declared, k = String::concat(name, bp_thunk_suffix())) is Some(_)) && bp_thunk_shape_ok(name = name, bounds = bounds, params = params) {
+          Array::push(candidates, value = name)
+        },
+        _ => ()
+      }
+    }
+  }
+  if Array::length(candidates) == 0 {
+    array_empty()
+  } else {
+    bp_thunk_candidates(stmts = stmts, valued = valued, candidates = candidates, exclude = exclude)
+  }
+}
+
+/// The half of `borrow_owned_value_thunks` past the shape test: drop the
+/// candidates a binder spells, run the trial inference, and rewrite.
+fn bp_thunk_candidates(stmts: Array[Stmt], valued: Array[String], candidates: Array[String], exclude: Array[String]) -> Array[String] {
+  // No binder may spell a candidate, so every value occurrence of it is the
+  // top-level function and the rename needs no scope.
+  let binders = array_empty()
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, v) => md_collect_shadow_names(e = v, out = binders),
+      SLetMut(_, _, v) => md_collect_shadow_names(e = v, out = binders),
+      SLetPat(_, v) => md_collect_shadow_names(e = v, out = binders),
+      SExpr(v) => md_collect_shadow_names(e = v, out = binders),
+      STest(_, v) => md_collect_shadow_names(e = v, out = binders),
+      SBench(_, v) => md_collect_shadow_names(e = v, out = binders),
+      _ => 0
+    }
+  }
+  let bound = bp_name_set(binders)
+  let trial_set = MutSet::new_string()
+  for c in candidates {
+    if !MutSet::has(bound, x = c) {
+      MutSet::add(trial_set, x = c)
+    }
+  }
+  // The trial: the program's own inference with these value uses set aside.
+  // Once renamed, `f` is named only as a callee and the thunk passes it bare
+  // parameters, so the production run reaches the same mask.
+  let trial_valued = array_empty()
+  for v in valued {
+    if !MutSet::has(trial_set, x = v) {
+      Array::push(trial_valued, value = v)
+    }
+  }
+  let nonident_fns = array_empty()
+  let nonident_pos = array_empty()
+  let _ = ca_walk_stmts_nonident_args(stmts = stmts, out = nonident_fns, out_pos = nonident_pos)
+  let masks = array_empty()
+  let names = borrow_fixpoint_link_parts(parts = [stmts], valued = trial_valued, nonident_fns = nonident_fns, nonident_pos = nonident_pos, exclude = exclude, out_masks = masks)
+  let to: MutMap[String, String] = MutMap::new_string()
+  let thunks: Array[Stmt] = []
+  let renamed: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, ty, EFn(tps, bounds, params, ret, eff, _)) => if MutSet::has(trial_set, x = name) {
+        let at = bsearch_leftmost(sorted = names, name = name)
+        if at >= 0 && at < Array::length(names) && Array::get(names, at = at) == name && bp_thunk_gains(params = params, mask = Array::get(masks, at = at)) {
+          let thunk = String::concat(name, bp_thunk_suffix())
+          MutMap::set(to, k = name, v = thunk)
+          Array::push(renamed, value = name)
+          let args: Array[Expr] = []
+          for p in params {
+            let (raw, _) = p
+            Array::push(args, value = EIdent(raw, -1))
+          }
+          let cell: Array[Int] = []
+          let call = ECall(EIdent(name, -1), args, -1, cell)
+          Array::push(thunks, value = SLet(false, false, thunk, ty, EFn(tps, bounds, params, ret, eff, call)))
+        }
+      },
+      _ => ()
+    }
+  }
+  let mut i = 0
+  while i < Array::length(stmts) && Array::length(thunks) > 0 {
+    let stmt = Array::get(stmts, at = i)
+    if bp_stmt_values_any(stmt = stmt, targets = to) {
+      let next = match stmt {
+        SLet(ex, is_rec, n, ty, v) => SLet(ex, is_rec, n, ty, bp_rw(e = v, to = to)),
+        SLetMut(n, ty, v) => SLetMut(n, ty, bp_rw(e = v, to = to)),
+        SLetPat(p, v) => SLetPat(p, bp_rw(e = v, to = to)),
+        SExpr(v) => SExpr(bp_rw(e = v, to = to)),
+        STest(label, v) => STest(label, bp_rw(e = v, to = to)),
+        SBench(label, v) => SBench(label, bp_rw(e = v, to = to)),
+        _ => stmt
+      }
+      Array::set(stmts, at = i, value = next)
+    }
+    i = i + 1
+  }
+  for t in thunks {
+    Array::push(stmts, value = t)
+  }
+  sorted_names_of(renamed)
 }
 
 //# ADR-0092 borrow-inference: may-return-view analysis
