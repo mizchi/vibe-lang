@@ -405,6 +405,7 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = true, context = context)",
     "parse_type_alias_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
     "parse_trait_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_effect_stmt_owned(tokens = tokens, pos = pos + 2, exported = true, context = context, owner = HostProvided)",
     "parse_import_items(tokens = tokens, pos = br, context = None)",
   ], [
     "parse_let_stmt(tokens,",
@@ -436,7 +437,8 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     '"effect" => parse_effect_stmt_with_binder_context',
     '"effectset" => parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = false, context = context)',
     '"resource" => parse_resource_stmt(tokens = tokens, pos = pos + 1, context = context)',
-    '"extern" => parse_extern_let_stmt(tokens = tokens, pos = pos + 1, context = context)',
+    // ADR-0124 (#2656): `extern effect` and `extern let` both keep the context.
+    '"extern" => if is_extern_effect_head(tokens = tokens, pos = pos + 1) { parse_effect_stmt_owned(tokens = tokens, pos = pos + 2, exported = false, context = context, owner = HostProvided) } else { parse_extern_let_stmt(tokens = tokens, pos = pos + 1, context = context) }',
   ], [
     "parse_let_stmt(tokens,",
     "parse_export_stmt(tokens, starts, pos + 1)",

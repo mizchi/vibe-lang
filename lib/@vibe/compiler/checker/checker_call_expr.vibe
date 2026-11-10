@@ -264,7 +264,13 @@ import ./checker_region_retention.vibe {
 }
 
 import ./checker_throw_kind_of_type.vibe {
-  check_mutbytes_receiver, expr_ident_name_or_empty, prepend_expr, railway_expr_off, report_unknown_type_names
+  check_mutbytes_receiver,
+  expr_ident_name_or_empty,
+  host_effect_operation_misuse,
+  host_effect_operation_type,
+  prepend_expr,
+  railway_expr_off,
+  report_unknown_type_names
 }
 
 // Check call arguments and callee dispatch through the caller's recursive checker.
@@ -425,6 +431,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   // argument types were previously unchecked, so
                   // `perform R::Take("str")` against `Take(Int)` compiled and
                   // produced garbage. Builtin/imported effects (no TDEffect) skip.
+                  match op_callee {
+                    EIdent(op_qname, op_off) => if host_effect_operation_misuse(defs = defs, qname = op_qname, use_kind = "perform") is Some(msg) {
+                      Array::push(errors, value = String::concat(msg, off_marker_len(off = op_off, len = String::length(op_qname))))
+                    },
+                    _ => ()
+                  }
                   let perform_result = match op_callee {
                     EIdent(op_qname, op_off) => match effect_op_sig(defs = defs, qname = op_qname) {
                       Some(sig) => {
@@ -550,7 +562,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 // op that declares parameters cannot be performed bare, and
                 // a usable return type flows out just like the ECall path
                 // (generic effects instantiate their type params with fresh
-                // vars first).
+                // vars first). ADR-0124: an `extern effect`'s operation is
+                // refused here as in the call form.
+                if host_effect_operation_misuse(defs = defs, qname = bare_qname, use_kind = "perform") is Some(msg) {
+                  Array::push(errors, value = String::concat(msg, off_marker_len(off = bare_off, len = String::length(bare_qname))))
+                }
                 match effect_op_sig(defs = defs, qname = bare_qname) {
                   Some(bare_sig) => {
                     let (bare_params_decl, bare_ret_decl) = bare_sig
@@ -2056,9 +2072,13 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   }
                   // #3539: the effects pass charges a call through a binder
                   // it cannot name by this type's row.
+                  // ADR-0124: so is an `extern effect` operation, whose row is
+                  // its effect.
                   match callee_binding {
                     Some(_) => record_call_callee_type(call_off = call_off, callee = callee, ty = ct),
-                    None => ()
+                    None => if host_effect_operation_type(defs = defs, qname = name) is Some(_) {
+                      record_call_callee_type(call_off = call_off, callee = callee, ty = ct)
+                    }
                   }
                   let inferred_param_tys = match ct {
                     CtFn(params, _, _) => params,

@@ -500,10 +500,21 @@ could give.
 
 ### normalize
 
-Canonicalize a source file via the in-compiler normalize engine (#882):
-parse -> module-flatten -> DCE from exported roots -> section layout
-(`//# Imports / Types / Functions / Tests`) re-rendered through the AST
-printer. The default rewrites the file in place.
+Respell each `recv.method(args)` whose receiver type the file itself
+declares as the canonical `Type::method(recv, args)` -- with the receiver
+labeled when the declaration labels that parameter, `Cart::push(c = cart,
+item = 1)` (ADR-0081; the rules are in the cheatsheet's "Canonical on-disk
+form"). That is the only rewrite:
+every other byte of the file -- comments, layout, declaration order,
+unexported declarations, `test` / `bench` blocks -- is kept, and a file with
+nothing to respell is left byte for byte as it was. Layout is `vibe fmt`'s
+job. The default rewrites the file in place.
+
+Each respelling is proved before anything is written: the result must
+re-parse to the program the input means. A call whose text cannot be
+respelled that way (a piped call, `x |> recv.m(a)`; a parenthesized
+receiver) stays in dot form. A source with a `#cfg` directive, or one that
+does not parse, is refused with a message and left untouched (#4027).
 
 ```
 vibe normalize <file.vibe>            # rewrite in place

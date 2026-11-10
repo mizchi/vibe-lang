@@ -843,7 +843,13 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     // header form's `A(_) | B(_)` is. The pattern parser keeps only each
     // later alternative's variant name, so its effect is read back here.
     POr(_, _) => qualify_handler_set_or_arm(tokens = tokens, first = operation_pos, end = pat_next, first_label = effect_label, pat = pat),
-    _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)` at #\{pos}")
+    // ADR-0124 (#2656): a snake_case operation is a host function -- an
+    // `extern effect`'s, or a capability builtin's -- and none is handled.
+    _ => if String::length(operation_name) > 0 && String::char_code_at(operation_name, at = 0) >= 97 && String::char_code_at(operation_name, at = 0) <= 122 {
+      throw("remove this handler arm: `\{effect_label}::\{operation_name}` is a host function (an `extern effect` operation or a capability builtin), and a program cannot handle one -- a handled operation is spelled in CamelCase, `Effect::Op` at #\{pos}")
+    } else {
+      throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)` at #\{pos}")
+    }
   }
   let arrow_pos = expect_tk(tokens = tokens, pos = pat_next, expected = "=>")
   // #2197: a handler body is an arm body too -- same bare-assignment tail,
