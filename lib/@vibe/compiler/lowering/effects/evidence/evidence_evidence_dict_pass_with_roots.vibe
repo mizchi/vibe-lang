@@ -61,7 +61,7 @@ import ./evidence_edp_apply_migration.vibe {
 }
 
 import ./evidence_handler_sets.vibe {
-  edp_handler_set_statements, edp_iso_map, edp_split_handler_sets
+  edp_handler_set_statements, edp_handler_set_statements_among, edp_iso_map, edp_split_handler_sets
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
@@ -85,6 +85,7 @@ import ./evidence_handle_effect_names_expr.vibe {
   edp_mf_effect_sites,
   edp_mf_handle_count,
   edp_mf_handle_statement_index,
+  edp_mf_multi_arm_handles,
   edp_mf_new,
   edp_mf_perform_facts,
   edp_mf_refresh,
@@ -541,8 +542,13 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
 /// for the sets no nesting answers. `suspend_cps_pass` calls it after building
 /// grouped suspend drivers, so evidence migration sees single-effect sites.
 export fn evidence_split_handler_sets(_ stmts: Array[Stmt]) -> Array[String] {
+  evidence_split_handler_sets_in(stmts = stmts, statements = edp_handler_set_statements(stmts))
+}
+
+/// evidence_split_handler_sets over `statements`, the program's
+/// edp_handler_set_statements.
+fn evidence_split_handler_sets_in(stmts: Array[Stmt], statements: Array[Int]) -> Array[String] {
   let errs = empty_str_array()
-  let statements = edp_handler_set_statements(stmts)
   if Array::length(statements) > 0 {
     let fn_defs = edp_collect_fn_defs(stmts)
     let es_names = array_empty()
@@ -571,16 +577,20 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   } else {
     false
   }
+  // Per-statement facts for every inert base and binder census from here on
+  // (handler sets, isolation, vacuity, planning, migrations). Each step that
+  // replaces a statement marks it, and the next refresh walks only those.
+  let statement_facts = edp_mf_new()
+  edp_mf_refresh(facts = statement_facts, stmts = stmts)
   // #3583: before anything reads a handle's effect from its first arm --
   // including the isolation below, which works on nested pairs. The
-  // pipelines have already split in `suspend_cps_pass`; this is a no-op then.
-  for e in evidence_split_handler_sets(stmts) {
+  // pipelines have already split in `suspend_cps_pass`; this is a no-op then,
+  // and the facts say so without a walk of the program (#4040).
+  let set_statements = edp_handler_set_statements_among(stmts = stmts, multi_arm = Some(edp_mf_multi_arm_handles(statement_facts)))
+  for e in evidence_split_handler_sets_in(stmts = stmts, statements = set_statements) {
     Array::push(errs, value = e)
   }
-  // Per-statement facts for every inert base and binder census from here on
-  // (isolation, vacuity, planning, migrations). Each step that replaces a
-  // statement marks it, and the next refresh walks only those.
-  let statement_facts = edp_mf_new()
+  // The split replaced its statements through edp_mf_set_stmt.
   edp_mf_refresh(facts = statement_facts, stmts = stmts)
   // #3540: before the effect list is read -- it may declare fresh copies.
   edp_isolate_nested_arm_handlers(stmts = stmts, facts = statement_facts)
