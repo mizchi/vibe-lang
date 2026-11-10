@@ -1353,6 +1353,10 @@ fn parse_run_flags(_ args: Array[String]) -> (String, Bool, Bool, String, Bool, 
     throw(String::concat("vibe run requires a .vibex executable root: ", src))
   } else if brk && break_spec == "" {
     throw("usage: vibe run --break <fn>[,<fn>...] <file.vibex>")
+  } else if coverage && Array::length(provides) > 0 {
+    // The coverage report comes from the node runner, which cannot bind a
+    // component provider.
+    throw("vibe run: --coverage cannot be combined with --provide; the coverage runner cannot bind a provider")
   } else if coverage && (trace || brk || allocsite) {
     // Each of these selects its own instrumented compile, and one artifact
     // carries one instrumentation.
@@ -1437,7 +1441,16 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     // every other line one further down. A separate kind, not a new line in
     // `run-guest`: a launcher reads `run-guest` positionally, guest argv
     // last, so an extra line there would arrive as a guest argument.
-    if coverage {
+    // ADR-0124 (#2656): a plan that binds extern-effect providers is its own
+    // kind, with the bindings (tab-separated) on line 3 and every `run-guest`
+    // line one further down. `run-guest` keeps its layout byte for byte: a
+    // launcher reads it positionally, guest argv last, and the committed
+    // seed's compiler still writes it.
+    if Array::length(provides) > 0 {
+      StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-guest-provide\n")
+      StringBuilder::push(acc, value = String::join(provides, sep = "\t"))
+      StringBuilder::push(acc, value = "\n")
+    } else if coverage {
       StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-guest-coverage\n")
       StringBuilder::push(acc, value = String::concat(out[0: String::length(out) - 5], ".cov.json"))
       StringBuilder::push(acc, value = "\n")
@@ -1472,10 +1485,6 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     StringBuilder::push(acc, value = guest_profile)
     StringBuilder::push(acc, value = "\n")
     StringBuilder::push(acc, value = guest_interval)
-    StringBuilder::push(acc, value = "\n")
-    // ADR-0124 (#2656): the provider bindings, tab-separated, before the
-    // guest arguments (which are always last).
-    StringBuilder::push(acc, value = String::join(provides, sep = "\t"))
     StringBuilder::push(acc, value = "\n")
     let mut gi = 0
     while gi < Array::length(guest_args) {
