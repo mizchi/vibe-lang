@@ -67,9 +67,17 @@
 // store is reported as a warning line.
 //
 // A shape outside that model (closure captures, the rows that change what a
-// release means) is reported as not checked rather than guessed at. A heap
-// value the planner classified as scalar is outside it too and is NOT
-// caught in general -- only the literal aggregates are cross-checked.
+// release means) is reported as not checked rather than guessed at.
+//
+// Classification (slice 4). The ledger trusts the planner's heap
+// classification, so a heap value the planner called scalar has no ledger
+// and is NOT caught in general. Two cross-checks read the source instead: a
+// `let` of a literal the RC lane always allocates (an aggregate, a `Double`
+// literal), and a parameter whose declared type may be a heap block
+// (`rv_type_may_allocate`). Either one planned scalar is
+// `heap value planned as scalar`: four of the closed leaks were exactly this
+// (#3130's literal, #3135's parameter, #3169's evidence dictionary, #3240's
+// `Option` of a closure), and #3332's was a use-after-free.
 
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars, md_borrow_mask_of
@@ -101,7 +109,6 @@ import ./perceus_pctx.vibe {
   pa_is_dup,
   pa_is_exit_drop,
   pa_is_exit_site,
-  pa_is_field_release,
   pa_is_path_drop,
   pa_is_reuse_alloc,
   pa_is_reuse_token,
@@ -1226,7 +1233,11 @@ fn rv_field_values(_ fields: Array[(String, Expr)]) -> Array[Expr] {
 //# The plan side
 
 /// A row kind that changes what a release of `x` means, so the ledger below
-/// cannot account for it; "" when no row names `x` that way.
+/// cannot account for it; "" when no row names `x` that way. A
+/// `PaFieldRelease(x)` row is not one (#3140): it releases the value a field
+/// of `x` held before a store, a reference the struct owns and no binding
+/// counts, and `__set_field` borrows `x` itself. It leaves `x`'s own ledger
+/// as it is.
 fn rv_row_reason(plan: Array[PerceusAction], x: String) -> String {
   let mut reason = ""
   let mut i = 0
@@ -1239,8 +1250,6 @@ fn rv_row_reason(plan: Array[PerceusAction], x: String) -> String {
         "truncate-release row"
       } else if pa_is_view_pin(a) {
         "view-pin row"
-      } else if pa_is_field_release(a) {
-        "field-release row"
       } else if pa_is_store_dup(a) {
         "store-dup row"
       } else {
@@ -1561,11 +1570,40 @@ fn rv_own_mask(fname: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
   out
 }
 
-fn rv_is_aggregate(_ v: Expr) -> Bool {
+/// Is the `let` value `v` a literal the RC lane always allocates? An
+/// aggregate is a heap block, and so is a `Double` / `Float` literal: codegen
+/// boxes every one (#3130 / #3135), so a plan that called `let x = 1.5`
+/// scalar planned no drop for the box.
+fn rv_allocates(_ v: Expr) -> Bool {
   match v {
     EArray(_) => true,
     ERecord(_, _, _) => true,
     ETuple(_) => true,
+    EFloat(_) => true,
+    _ => false
+  }
+}
+
+/// May a value of the declared parameter type `t` be a heap block? Read from
+/// the annotation alone, not from the planner's classification, so a
+/// parameter the planner called scalar is cross-checked. The list is the
+/// shapes a scalar classification once leaked or freed early, and nothing
+/// that might be an immediate:
+///   - a tuple, `Array`, `Option` or `Map` (#3240: an `Option` or tuple
+///     holding a closure was called scalar, and the callee never dropped the
+///     container it owned);
+///   - a `Double` / `Float` (#3135: the parameter was called scalar, and the
+///     box every caller handed it leaked);
+///   - a compiler-made parameter: an evidence dictionary `__EvDict_<E>`
+///     (#3169: the leading `_` failed the capital-letter test, so each
+///     handled call leaked its dictionary) and an erased formal `__Vfp_<T>`
+///     (#3332: called scalar, it was handed to two owning calls with no
+///     retain, and the first freed it under the second).
+fn rv_type_may_allocate(_ t: TypeExpr) -> Bool {
+  match t {
+    TyTuple(items) => Array::length(items) > 0,
+    TyApp(head, _) => head == "Array" || head == "Option" || head == "Map",
+    TyName(n) => n == "Double" || n == "Float" || n == "Float64" || n == "Float32" || String::starts_with(n, prefix = "__EvDict_") || String::starts_with(n, prefix = "__Vfp_"),
     _ => false
   }
 }
@@ -1594,15 +1632,25 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
   let own_mask = rv_own_mask(fname = fname, bfns = borrow_param_fns, bmasks = masks)
   let mut pi = 0
   while pi < Array::length(params) {
-    let (raw, _) = Array::get(params, at = pi)
+    let (raw, ann) = Array::get(params, at = pi)
     let x = rv_strip_label(raw)
     let bits = if pi < Array::length(class_bits) {
       Array::get(class_bits, at = pi)
     } else {
       0 - 1
     }
-    if bits < 0 || (bits&1) != 0 {
+    if bits < 0 {
       ()
+    } else if (bits&1) != 0 {
+      let boxed = match ann {
+        Some(t) => rv_type_may_allocate(t),
+        None => false
+      }
+      if boxed {
+        Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "heap value planned as scalar"))
+      } else {
+        ()
+      }
     } else if rv_class_count(names = class_names, x = x) > 1 {
       Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: name shared"))
     } else {
@@ -1690,7 +1738,7 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
     } else if (bits&6) != 0 {
       Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: view binding"))
     } else if (bits&1) != 0 {
-      if rv_is_aggregate(Array::get(d.values, at = di)) {
+      if rv_allocates(Array::get(d.values, at = di)) {
         Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "heap value planned as scalar"))
       } else {
         ()
