@@ -29,6 +29,7 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import @vibe/compiler/core {
+  EffectOwner,
   Expr,
   ImportItem,
   ImportKind,
@@ -46,6 +47,7 @@ import @vibe/compiler/core {
   env_selectable_type_defs,
   env_type_defs,
   find_typedef,
+  has_standard_effect_policy,
   resolve_builtin,
   trait_defined
 }
@@ -640,6 +642,28 @@ export fn bind_stmt_imports(env: TypeEnv, names: Array[ImportItem]) -> TypeEnv {
 /// alias named `Float64`, `Float32`, `Double` or `Float` would declare one
 /// spelling and be referenced by another, or collide with the builtin's own
 /// namespace. Refused, naming the rename.
+/// ADR-0124 (#2656): what an `extern effect` declaration may not be yet. Its
+/// name may not be a standard effect's, whose provider the host already
+/// fixes, and it takes no parameters until a provider can be bound per
+/// resource.
+export fn extern_effect_decl_errors(name: String, params: Array[String], owner: EffectOwner, errors: Array[String]) -> Unit {
+  match owner {
+    HostProvided => {
+      if has_standard_effect_policy(name) {
+        Array::push(errors, value = "rename this extern effect: `" + name + "` is a standard effect, whose provider the host already fixes")
+      } else if is_builtin_namespace_name(name) {
+        // `String::length` would still name the builtin, so a call would
+        // check without the effect's row and run the builtin.
+        Array::push(errors, value = "rename this extern effect: `" + name + "` is a builtin namespace, whose `" + name + "::` functions an operation of the effect would be confused with")
+      }
+      if Array::length(params) > 0 {
+        Array::push(errors, value = "drop the parameters of `extern effect " + name + "`: a host-provided effect takes no type or resource parameters yet (#2656)")
+      }
+    },
+    ProgramHandled => ()
+  }
+}
+
 export fn float_width_decl_name_error(kind: String, name: String, errors: Array[String]) -> Unit {
   if name == "Float64" || name == "Float32" || name == "Double" || name == "Float" {
     Array::push(errors, value = "rename this " + kind + ": `" + name + "` is reserved for the builtin float type, which every `" + name + "` in a type or a `" + name + "::` path names")
@@ -872,7 +896,7 @@ fn local_type_def_names(_ stmts: Array[Stmt]) -> Array[String] {
       SSuberror(_, name, _) => Array::push(names, value = name),
       SStruct(_, name, _, _, _, _) => Array::push(names, value = name),
       STypeAlias(_, name, _, _) => Array::push(names, value = name),
-      SEffectDef(_, name, _, _) => Array::push(names, value = name),
+      SEffectDef(_, name, _, _, _) => Array::push(names, value = name),
       SEffectSet(_, name, _) => Array::push(names, value = name),
       _ => ()
     }
@@ -892,7 +916,7 @@ export fn typedef_index_of_from(defs: Array[TypeDef], name: String, from: Int) -
       TDEnum(n, _, _) => n == name,
       TDStruct(n, _, _, _) => n == name,
       TDAlias(n, _, _) => n == name,
-      TDEffect(n, _, _) => n == name,
+      TDEffect(n, _, _, _, _) => n == name,
       TDEffectSet(n, _) => n == name
     }
     if matched {
@@ -1202,7 +1226,7 @@ fn imported_decl_kind(item: ImportItem, expected: ImportKind, initial_env: TypeE
         } else {
           None
         },
-        TDEffect(name, _, _) => if name == item.name {
+        TDEffect(name, _, _, _, _) => if name == item.name {
           Some("effect")
         } else {
           None
@@ -1522,7 +1546,7 @@ export fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs
       TDEnum(n, _, _) => n,
       TDStruct(n, _, _, _) => n,
       TDAlias(n, _, _) => n,
-      TDEffect(n, _, _) => n,
+      TDEffect(n, _, _, _, _) => n,
       TDEffectSet(n, _) => n
     }
     // First declaration wins, matching find_typedef and the import cache's
@@ -1566,8 +1590,8 @@ export fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs
           Array::push(defs, value = TDAlias(alias_name, params, target))
           Array::push(type_def_binders, value = array_empty())
         },
-        TDEffect(effect_name, ops, params) => {
-          Array::push(defs, value = TDEffect(effect_name, ops, params))
+        TDEffect(effect_name, ops, params, kinds, owner) => {
+          Array::push(defs, value = TDEffect(effect_name, ops, params, kinds, owner))
           Array::push(type_def_binders, value = array_empty())
         },
         TDEffectSet(_, _) => ()

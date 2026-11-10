@@ -38,9 +38,15 @@ import @vibe/compiler/normalize {
   collect_trivial_wrapper_names,
   desugar_handled_host_calls,
   desugar_inspect_calls,
+  desugar_module_reports_begin,
+  desugar_module_reports_flush,
+  desugar_module_reports_pending,
+  desugar_stmts_spell_int32,
   desugar_trait_dicts_module,
+  desugar_trait_dicts_module_deferring,
   desugar_trait_dicts_module_with_facts,
   desugar_trait_dicts_with_typed_eq,
+  desugar_typed_rows,
   eq_deferred_requests_list,
   eq_deferred_reset,
   eq_invisible_nominals_list,
@@ -186,6 +192,12 @@ let prelude_module_executors: Array[(Array[Stmt], Array[Stmt], Int, Int, String,
 
 /// Install one independent executor only for this compile. Nested use is
 /// refused, and success or an exception restores the ordinary sequential lane.
+///
+/// The executor lowers one module through passes 4..10 and files what it
+/// produced before returning, the module's trait-dict refusals included
+/// (`desugar_module_reports_merge`, which `@vibe/lowering_worker`'s
+/// `prelude_module_product_merge` calls): the driver reports them once, after
+/// the last module, as the whole program does (#2826).
 export fn prelude_with_module_executor(executor: (Array[Stmt], Array[Stmt], Int, Int, String, Array[Int], Array[String], PreludeEnv, Array[String], PreludeTail, Array[String]) -> Unit with Exception, action: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
   enter_module_executor_scope()
   Array::push(prelude_module_executors, value = executor)
@@ -497,7 +509,7 @@ export fn prelude_split_last_module_count() -> Int {
 /// The un-suffixed name below keeps its arity and passes an empty table, so
 /// every existing caller -- including the ~20 in the split tests -- is
 /// unchanged and still fail-closed.
-export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
+export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)], exports_stripped: Bool) -> Array[String] with Exception {
   Array::set(prelude_split_completed_modules, at = 0, value = 0)
   // #3132: WHOLE-PROGRAM and first, before the program is partitioned and
   // before any pass synthesizes a call by a builtin's name. A module holding
@@ -520,10 +532,10 @@ export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: S
       Array::push(only, value = za_msg)
       only
     } else {
-      effect_lowering_prelude_split_checked(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, split = split, render = render, grants = grants)
+      effect_lowering_prelude_split_checked(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, split = split, render = render, grants = grants, exports_stripped = exports_stripped)
     }
   } else {
-    effect_lowering_prelude_grants(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, grants = grants)
+    effect_lowering_prelude_grants(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, grants = grants, exports_stripped = exports_stripped)
   }
   // #3144 round 4: WHOLE-PROGRAM again, after every pass. A pass that computes
   // a definition's name (a trait witness field is `<Type>::<method>`) writes
@@ -539,12 +551,12 @@ export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: S
 /// the production `_with_split` path for lanes other than `vibe run`, and the
 /// split tests -- need no edit.
 export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
-  effect_lowering_prelude_split_grants(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, split = split, render = render, grants = array_empty())
+  effect_lowering_prelude_split_grants(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, split = split, render = render, grants = array_empty(), exports_stripped = false)
 }
 
 /// The split prelude past the whole-program zero-allocation check, which its
 /// caller has already run.
-fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
+fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)], exports_stripped: Bool) -> Array[String] with Exception {
   {
     let link = prelude_link_state_new()
     // THE WHOLE-PROGRAM FACTS, taken here -- before the program is partitioned
@@ -571,7 +583,7 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
         explicit_ops: collect_explicit_derived_op_names(stmts)
       }
     }
-    let linked = prelude_run_per_module(c = stmts, c_file_id = split.stmt_file_id, file_count = split.file_count, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, import_closure = split.import_closure, render = render, link = link, observations = None, env = env, first_pass = 1, module_paths = lc_fresh_string_array())
+    let linked = prelude_run_per_module(c = stmts, c_file_id = split.stmt_file_id, file_count = split.file_count, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, import_closure = split.import_closure, render = render, link = link, observations = None, env = env, first_pass = 1, module_paths = lc_fresh_string_array(), exports_stripped = exports_stripped)
     // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
     // links with the REPORTING fold, which keeps the first definition and
     // records the conflict -- right for a measurement, which wants to know how
@@ -614,7 +626,7 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
 /// Pre-#2828-rung-2 arity: no launcher grants (fail-closed). Kept for the
 /// ~20 existing callers, tests included.
 export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Array[String] with Exception {
-  effect_lowering_prelude_grants(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, grants = array_empty())
+  effect_lowering_prelude_grants(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, grants = array_empty(), exports_stripped = false)
 }
 
 /// #2828 rung 2: the grant-carrying arity. THIS is the one a small program
@@ -623,7 +635,7 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
 /// `vibe run`. Wiring only the split site left every such program resolving
 /// `NotGranted` while the table travelled the whole chain unread; measured,
 /// that is exactly what happened on the first build of this rung.
-export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Array[String] with Exception {
+export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)], exports_stripped: Bool) -> Array[String] with Exception {
   // #3132: before any pass below synthesizes a call by a builtin's name (see
   // rename_builtin_shadow_defs). Idempotent, so the split path's fallback
   // into here costs one top-level scan.
@@ -754,7 +766,7 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
         // Whole-program-conservative and per-effect all-or-nothing, so it never
         // touches a handle or function this pass cannot prove safe; the Phase 2
         // direct-perform inliner that used to run first was deleted in #2500.
-        let edp_errs = evidence_dict_pass_with_roots(stmts = stmts, roots = lc_late_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = false))
+        let edp_errs = evidence_dict_pass_with_roots(stmts = stmts, roots = lc_late_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = false, exports_stripped = exports_stripped))
         if Array::length(edp_errs) > 0 {
           Array::push(errs, value = Array::get(edp_errs, at = 0))
         } else {
@@ -791,7 +803,7 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
 /// partition cannot classify a heap value returned by an imported function and
 /// omits the annotation the merged run adds -- a different ownership
 /// classification reaching Perceus and codegen.
-fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, link: PreludeLinkState, observations: Option[PreludeObservations], env: PreludeEnv, first_pass: Int, module_paths: Array[String]) -> Array[Stmt] with Exception {
+fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, link: PreludeLinkState, observations: Option[PreludeObservations], env: PreludeEnv, first_pass: Int, module_paths: Array[String], exports_stripped: Bool) -> Array[Stmt] with Exception {
   // WHICH module owns the entry, derived rather than assumed (#2647 Codex
   // round 4). This was `file_count - 1`, which is true of the merge -- a root's
   // dependencies come first -- but nothing in `ModuleSplit` records it and
@@ -860,13 +872,14 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     let mut j = first_pass
     while j < 4 {
-      lc_apply_pass_recording(k = j, part = Array::get(parts, at = fi), part_entry = part_entry, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, synth_keys = synth_keys, tail = link.tail, errs = link.diags, env = env)
+      lc_apply_pass_recording(k = j, part = Array::get(parts, at = fi), part_entry = part_entry, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, synth_keys = synth_keys, tail = link.tail, errs = link.diags, env = env, exports_stripped = exports_stripped)
       j = j + 1
     }
     fi = fi + 1
   }
   let ifaces: Array[Array[Stmt]] = []
   let iface_keys: Array[Array[String]] = []
+  let iface_spells_int32: Array[Bool] = []
   let mut pf = 0
   while pf < file_count {
     let src = Array::get(parts, at = pf)
@@ -889,6 +902,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     Array::push(ifaces, value = dst)
     Array::push(iface_keys, value = keys)
+    // #3976: asked once per interface. Every module that imports this one
+    // used to scan these statements again for `Int32` / `UInt32`.
+    Array::push(iface_spells_int32, value = desugar_stmts_spell_int32(dst))
     pf = pf + 1
   }
   // #2633: which module each mangle tag belongs to, so an unresolved name can
@@ -952,6 +968,14 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     None => prelude_module_batch_active(),
     Some(_) => false
   }
+  // #2826: one report for the program. Each module's trait-dict refusals are
+  // filed with the program's and thrown once, after the last module, in the
+  // whole-program pass's order -- see `desugar_trait_dicts_module_deferring`.
+  // The batch and executor routes lower a module elsewhere -- a worker
+  // instance, or the executor's own -- and send its refusals back with the
+  // module (`@vibe/lowering_worker`'s `prelude_module_product_merge`), filed
+  // here in module order; so the report is opened before either runs.
+  desugar_module_reports_begin()
   if execute_batch {
     let (context_pool, context_indices) = prelude_batch_context_indices(parts = parts, interfaces = ifaces, interface_keys = iface_keys, closure = import_closure)
     prelude_execute_module_batch(PreludeModuleBatch::{
@@ -968,6 +992,10 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       diagnostics: link.diags
     })
   } else ()
+  // #3976: every module is lowered against the same typed rows, and sorting
+  // them by kind reads nothing else, so they are sorted once here instead of
+  // once per module.
+  let shared_rows = desugar_typed_rows(typed_eq_offsets = checker_eq_offsets, typed_eq_keys = checker_eq_type_keys)
   fi = 0
   while fi < file_count && !execute_batch {
     let part_entry = if fi == entry_fid {
@@ -1031,12 +1059,19 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     let visible = Array::get(import_closure, at = fi)
     let ctx: Array[Stmt] = []
+    // Whether an interface this context is drawn from spells `Int32` /
+    // `UInt32`. The context holds a subset of those statements, so false
+    // vouches for every one of them.
+    let mut ctx_spells_int32 = false
     let mut vj = 0
     while vj < Array::length(visible) {
       let cj = Array::get(visible, at = vj)
       if cj == fi || cj < 0 || cj >= file_count {
         ()
       } else {
+        if Array::get(iface_spells_int32, at = cj) {
+          ctx_spells_int32 = true
+        } else ()
         let other = Array::get(ifaces, at = cj)
         // Interface names are fixed before any module is lowered. Reuse
         // their keys while keeping this importer's own-key filter intact.
@@ -1070,7 +1105,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     if execute_module {
       Array::get(prelude_module_executors, at = 0)(part, ctx, fi, file_count, part_entry, checker_eq_offsets, checker_eq_type_keys, env, synth_keys, link.tail, link.diags)
     } else {
-      let synthesized = desugar_trait_dicts_module_with_facts(own = part, ctx = ctx, module_tag = "f\{fi}", typed_eq_offsets = checker_eq_offsets, typed_eq_keys = checker_eq_type_keys, facts = env.trait_facts)
+      let synthesized = desugar_trait_dicts_module_deferring(own = part, ctx = ctx, module_tag = "f\{fi}", rows = shared_rows, ctx_int32_free = !ctx_spells_int32, facts = env.trait_facts)
       match observations {
         Some(st) => {
           lc_union_into(dst = st.requests, src = eq_synthesis_requests_list())
@@ -1115,9 +1150,18 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       //
       // What the split still buys: 0..10 is most of the prelude, and it is the
       // half a per-module cache can reuse.
-      let mut j2 = 5
+      //
+      // Once a module has been refused, so has the program: the whole program
+      // throws at the end of pass 4 and never runs 5..10, so neither does any
+      // module lowered after the refusal. Without this, a later module's pass
+      // could throw first and replace the refusal the whole program reports.
+      let mut j2 = if desugar_module_reports_pending() {
+        11
+      } else {
+        5
+      }
       while j2 < 11 {
-        lc_apply_pass_recording(k = j2, part = part, part_entry = part_entry, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, synth_keys = synth_keys, tail = link.tail, errs = link.diags, env = env)
+        lc_apply_pass_recording(k = j2, part = part, part_entry = part_entry, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, synth_keys = synth_keys, tail = link.tail, errs = link.diags, env = env, exports_stripped = exports_stripped)
         // After pass 5, where production runs it.
         if j2 == 5 {
           lc_collect_stdin_provider_diag(stmts = part, out = link.diags)
@@ -1170,6 +1214,8 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     fi = fi + 1
   }
+  // #2826: the program's trait-dict refusals, once, before the link.
+  desugar_module_reports_flush()
   match observations {
     Some(st) => {
       // Final ownership closes the complete call graph against globally
@@ -1280,7 +1326,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // outlived it kept their order and closed the gap.)
   let mut lj = 11
   while lj < 16 {
-    oracle_apply_pass(k = lj, stmts = trial, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = link.diags, env = env)
+    oracle_apply_pass(k = lj, stmts = trial, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = link.diags, env = env, exports_stripped = exports_stripped)
     lj = lj + 1
   }
   // LINK. Up to here `trial` is the modules concatenated, which holds one copy
@@ -1557,7 +1603,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_ref_w = lc_fresh_string_array()
   let ev_def_w = lc_fresh_string_array()
   while k < 11 {
-    oracle_apply_pass(k = k, stmts = a, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = diag_w, env = prelude_env_none())
+    oracle_apply_pass(k = k, stmts = a, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = diag_w, env = prelude_env_none(), exports_stripped = false)
     // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
     // which is where a container comparator or a generic specialization is
     // requested AND emitted. The per-module side samples at the same point --
@@ -1586,7 +1632,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // same passes; link-only machinery is not attributed to a partition.
   let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
   while k < 17 {
-    oracle_apply_pass(k = k, stmts = a, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = diag_w, env = prelude_env_none())
+    oracle_apply_pass(k = k, stmts = a, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = diag_w, env = prelude_env_none(), exports_stripped = false)
     k = k + 1
   }
   // #2575 item 4: the three whole-program analyses `linked_compile` runs
@@ -1641,7 +1687,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   eq_invisible_nominals_reset()
   let link = prelude_link_state_new()
   let st = prelude_observations_new()
-  let linked = prelude_run_per_module(c = c, c_file_id = c_file_id, file_count = file_count, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, import_closure = import_closure, render = render, link = link, observations = Some(st), env = prelude_env_none(), first_pass = 0, module_paths = module_paths)
+  let linked = prelude_run_per_module(c = c, c_file_id = c_file_id, file_count = file_count, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, import_closure = import_closure, render = render, link = link, observations = Some(st), env = prelude_env_none(), first_pass = 0, module_paths = module_paths, exports_stripped = false)
   let split_invisible = eq_invisible_nominals_list()
   let ev_req_u = st.requests
   let ev_ref_u = st.refusals
@@ -1893,7 +1939,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       Array::push(old_keys, value = oracle_stmt_key(Array::get(c, at = qi)))
       qi = qi + 1
     }
-    oracle_apply_pass(k = j, stmts = c, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none())
+    oracle_apply_pass(k = j, stmts = c, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none(), exports_stripped = false)
     file_of = oracle_realign(old_keys = old_keys, old_file = file_of, new_stmts = c)
     j = j + 1
   }
@@ -1916,7 +1962,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
   // from `a` and limited to keys that existed before the pass (a
   // synthesized statement belongs to its own module's output, not to a
   // sibling's context).
-  oracle_apply_pass(k = k, stmts = a, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none())
+  oracle_apply_pass(k = k, stmts = a, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none(), exports_stripped = false)
   let pre_keys: MutMap[String, Int] = MutMap::new_string()
   let mut pk = 0
   while pk < Array::length(c) {
@@ -2002,7 +2048,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
         sy = sy + 1
       }
     } else if k < 11 {
-      oracle_apply_pass(k = k, stmts = part, entry_name = part_entry, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none())
+      oracle_apply_pass(k = k, stmts = part, entry_name = part_entry, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none(), exports_stripped = false)
     } else ()
     let mut oi = 0
     while oi < Array::length(part) {
@@ -2017,7 +2063,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
     for stmt in trial {
       Array::push(old_keys, value = oracle_stmt_key(stmt))
     }
-    oracle_apply_pass(k = k, stmts = trial, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none())
+    oracle_apply_pass(k = k, stmts = trial, entry_name = entry_name, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, errs = lc_fresh_string_array(), env = prelude_env_none(), exports_stripped = false)
     let realigned = oracle_realign(old_keys = old_keys, old_file = trial_file, new_stmts = trial)
     Array::truncate(trial_file, length = 0)
     for fid in realigned {

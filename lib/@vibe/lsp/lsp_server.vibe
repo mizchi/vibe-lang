@@ -75,10 +75,17 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/compiler/query {
+  TypeAtFsSession,
   TypeAtMemo,
   binding_occurrences,
   doc_at_source,
   symbol_spans,
+  type_at_fs_session_answer,
+  type_at_fs_session_invalidate,
+  type_at_fs_session_new,
+  type_at_fs_session_release,
+  type_at_fs_session_typings,
+  type_at_fs_session_walks,
   type_at_memo_checks,
   type_at_memo_new,
   type_at_memo_source,
@@ -845,8 +852,121 @@ fn lsp_hover_memo_for(_ source: String) -> TypeAtMemo {
   }
 }
 
-fn lsp_type_at(source: String, line: Int, col: Int) -> String {
-  type_at_source_memo(source = source, line = line, col = col, memo = lsp_hover_memo_for(source))
+/// The import-resolving typing of documents that are files on disk (#1960):
+/// the project walk kept for the session, plus one revision's typing keyed by
+/// path, buffer text and the entry's walked fingerprint. Created on first use.
+let lsp_hover_fs: Array[Option[TypeAtFsSession]] = [None]
+
+/// The document the session last typed, as (URI, the path it was typed
+/// under), so `didClose` -- which reads no file -- can release it.
+let lsp_hover_fs_doc: Array[(String, String)] = [("", "")]
+
+fn lsp_hover_fs_session() -> TypeAtFsSession {
+  match Array::get(lsp_hover_fs, at = 0) {
+    Some(session) => session,
+    None => {
+      let session = type_at_fs_session_new()
+      Array::set(lsp_hover_fs, at = 0, value = Some(session))
+      session
+    }
+  }
+}
+
+/// The value of one hex digit, or -1.
+fn lsp_hex_digit(_ b: Int) -> Int {
+  if b >= 48 && b <= 57 {
+    b - 48
+  } else if b >= 65 && b <= 70 {
+    b - 55
+  } else if b >= 97 && b <= 102 {
+    b - 87
+  } else {
+    -1
+  }
+}
+
+/// The ASCII byte a `%XX` escape at `i` of `s` stands for, or -1.
+fn lsp_percent_escape_at(s: String, i: Int) -> Int {
+  if i + 2 < String::length(s) && String::byte_at(s, at = i) == 37 {
+    let hi = lsp_hex_digit(String::byte_at(s, at = i + 1))
+    let lo = lsp_hex_digit(String::byte_at(s, at = i + 2))
+    if hi >= 0 && lo >= 0 && hi < 8 {
+      hi * 16 + lo
+    } else {
+      -1
+    }
+  } else {
+    -1
+  }
+}
+
+/// `s` with its ASCII `%XX` escapes decoded. A `file:` URI escapes reserved
+/// bytes, and editors send `@` as `%40` -- every path under `lib/@vibe` has
+/// one. Any other `%` is kept as written: an escaped non-ASCII byte would
+/// need byte-level decoding, and such a path then names no file, so the
+/// document is typed alone rather than as some other file.
+fn lsp_percent_decode(_ s: String) -> String {
+  let parts: Array[String] = []
+  let n = String::length(s)
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    let b = lsp_percent_escape_at(s = s, i = i)
+    if b >= 0 {
+      Array::push(parts, value = s[start: i])
+      Array::push(parts, value = String::from_char_code(b))
+      i = i + 3
+      start = i
+    } else {
+      i = i + 1
+    }
+  }
+  Array::push(parts, value = s[start: n])
+  String::join(parts, sep = "")
+}
+
+/// The document's file, when it is a `.vibe` file on disk: the one kind of
+/// document whose imports the import-resolving lane can walk. Anything else
+/// -- an unsaved new buffer, a contract, a non-`file:` URI -- is typed alone.
+///
+/// A file inside the project is spelled relative to the project root, the
+/// server's working directory, as every CLI verb reads an in-project
+/// absolute path (`root_rel_of_absolute`, #3948): the loader takes a contract
+/// reached through an absolute path for an external root, and the walk then
+/// fails on the package's own types.
+fn lsp_hover_fs_path(_ uri: String) -> String with Fs {
+  let path = lsp_percent_decode(lsp_uri_to_path(uri))
+  let root = Fs::getcwd()
+  let prefix = String::concat(root, "/")
+  let spelled = if root != "" && root != "/" && String::starts_with(path, prefix = prefix) {
+    path[String::length(prefix): String::length(path)]
+  } else {
+    path
+  }
+  if String::starts_with(uri, prefix = "file://") && String::ends_with(spelled, suffix = ".vibe") && Fs::exists(spelled) {
+    spelled
+  } else {
+    ""
+  }
+}
+
+/// The type at 1-based (`line`, `col`) of the document `uri` holding `source`.
+/// A file on disk is typed with its imports resolved, as `vibe type-at` and
+/// `vibe check` type it (#1960, #3834); the buffer's text is what is typed,
+/// not the file's. When that lane has no typing for it, and for every other
+/// document, the buffer is typed alone from the kept single-file memo.
+fn lsp_type_at(uri: String, source: String, line: Int, col: Int) -> String with Env + Fs {
+  let path = lsp_hover_fs_path(uri)
+  let resolved = if path == "" {
+    None
+  } else {
+    Array::set(lsp_hover_fs_doc, at = 0, value = (uri, path))
+    type_at_fs_session_answer(session = lsp_hover_fs_session(), path = path, source = source, line = line, col = col)
+  }
+  match resolved {
+    Some(ty) => ty,
+    None => type_at_source_memo(source = source, line = line, col = col, memo = lsp_hover_memo_for(source))
+  }
 }
 
 /// Drop the kept typing when the document it was built for closes, so a closed
@@ -862,6 +982,36 @@ fn lsp_hover_memo_release(_ source: String) -> Unit {
   }
 }
 
+/// How many revisions the import-resolving lane has typed this session: the
+/// counter `lsp_fs_session_test.vibe` reads to tell a reused typing from a
+/// fresh one (#1960).
+export fn lsp_hover_fs_typings() -> Int {
+  match Array::get(lsp_hover_fs, at = 0) {
+    Some(session) => type_at_fs_session_typings(session),
+    None => 0
+  }
+}
+
+/// How many times the import-resolving lane has walked the project this
+/// session: once per revision, and again after a dependency's stat token
+/// moved or a file event.
+export fn lsp_hover_fs_walks() -> Int {
+  match Array::get(lsp_hover_fs, at = 0) {
+    Some(session) => type_at_fs_session_walks(session),
+    None => 0
+  }
+}
+
+/// A file event from the editor: a document opened or saved, or watched
+/// files changed. A file may now exist where an import looks, which the kept
+/// dependencies' stat tokens cannot show, so the next hover walks.
+fn lsp_hover_fs_invalidate() -> Unit {
+  match Array::get(lsp_hover_fs, at = 0) {
+    Some(session) => type_at_fs_session_invalidate(session),
+    None => ()
+  }
+}
+
 /// `(revisions typed, checker runs of the kept revision)` for this session --
 /// the deterministic work counters `lsp_session_test.vibe` reads. The second
 /// is 0 when no typing is kept.
@@ -873,8 +1023,8 @@ export fn lsp_hover_reuse_counters() -> (Int, Int) {
   (Array::get(lsp_hover_memo_builds, at = 0), checks)
 }
 
-fn lsp_handle_hover(source: String, line0: Int, char0: Int) -> Json {
-  let ty = lsp_type_at(source = source, line = line0 + 1, col = char0 + 1)
+fn lsp_handle_hover(uri: String, source: String, line0: Int, char0: Int) -> Json with Env + Fs {
+  let ty = lsp_type_at(uri = uri, source = source, line = line0 + 1, col = char0 + 1)
   let doc = doc_at_source(source = source, line = line0 + 1, col = char0 + 1)
   if String::length(ty) == 0 && String::length(doc) == 0 {
     JNull
@@ -1302,7 +1452,7 @@ fn lsp_signature_param_labels(_ ty: String) -> Array[String] {
   }
 }
 
-fn lsp_handle_signature_help(source: String, line0: Int, byte_col: Int) -> Json {
+fn lsp_handle_signature_help(uri: String, source: String, line0: Int, byte_col: Int) -> Json with Env + Fs {
   let cursor = lsp_line_start_offset(source = source, line0 = line0) + byte_col
   let (open_off, commas) = lsp_call_open_paren(source = source, cursor = cursor)
   if open_off < 0 {
@@ -1336,7 +1486,7 @@ fn lsp_handle_signature_help(source: String, line0: Int, byte_col: Int) -> Json 
       } else {
         (l1, c1)
       }
-      let ty = lsp_type_at(source = source, line = tl, col = tc)
+      let ty = lsp_type_at(uri = uri, source = source, line = tl, col = tc)
       if String::length(ty) == 0 {
         JNull
       } else {
@@ -1486,7 +1636,7 @@ fn lsp_op_workspace_symbol() -> Int {
 /// header comment): re-executing the branch on `resume` re-evaluates the
 /// same deterministic `op` comparison and re-reaches the same (memoized)
 /// perform, nothing else.
-fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String]) -> Json {
+fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String]) -> Json with Env + Fs {
   handle {
     if op == lsp_op_hover() {
       perform Lsp::Hover(uri, l, c)
@@ -1509,7 +1659,7 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
     }
   } with { Lsp::Hover(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
-    lsp_handle_hover(source = src, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
+    lsp_handle_hover(uri = u2, source = src, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
   }); Lsp::Definition(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
     lsp_handle_definition(source = src, uri = u2, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
@@ -1521,7 +1671,7 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
     lsp_handle_rename(source = src, uri = u2, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), new_name = nn)
   }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe_for_path(input_path = lsp_uri_to_path(u2), source = lsp_doc_text(docs = docs, uri = u2), allow_unstable = lsp_unstable_opt_in())); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
-    lsp_handle_signature_help(source = src, line0 = l2, byte_col = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
+    lsp_handle_signature_help(uri = u2, source = src, line0 = l2, byte_col = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
   }); Lsp::WorkspaceSymbol(q) => resume(lsp_handle_workspace_symbol(query = q, docs = docs)) }
 }
 
@@ -1567,7 +1717,7 @@ fn lsp_initialize_result() -> Json {
 /// response). Returns Some(result_json) for a request, None for a
 /// notification or an unrecognized method the caller already replied `null`
 /// to.
-fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String]) -> Json {
+fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String]) -> Json with Env + Fs {
   if method == "initialize" {
     lsp_initialize_result()
   } else if method == "textDocument/hover" {
@@ -1616,7 +1766,7 @@ fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String])
 
 /// One request against a document store, exactly as the session loop dispatches
 /// it -- the seam a session test drives without a JSON-RPC transport.
-export fn lsp_request(method: String, params: Json, docs: Map[String, String]) -> Json {
+export fn lsp_request(method: String, params: Json, docs: Map[String, String]) -> Json with Env + Fs {
   lsp_dispatch_request(method = method, params = params, docs = docs)
 }
 
@@ -1630,12 +1780,15 @@ export fn lsp_notify(method: String, params: Json, docs: Map[String, String]) ->
     lsp_apply_did_change(docs = docs, params = params)
   } else if method == "textDocument/didClose" {
     lsp_apply_did_close(docs = docs, params = params)
+  } else if method == "textDocument/didSave" || method == "workspace/didChangeWatchedFiles" {
+    lsp_hover_fs_invalidate()
+    docs
   } else {
     docs
   }
 }
 
-fn lsp_diagnostics_for(uri: String, docs: Map[String, String]) -> Json {
+fn lsp_diagnostics_for(uri: String, docs: Map[String, String]) -> Json with Env + Fs {
   lsp_run_with_handler(op = lsp_op_diagnostics(), uri = uri, l = 0, c = 0, new_name = "", docs = docs)
 }
 
@@ -1643,6 +1796,7 @@ fn lsp_diagnostics_for(uri: String, docs: Map[String, String]) -> Json {
 //# comment for why this is deliberately NOT effect-modeled)
 
 fn lsp_apply_did_open(docs: Map[String, String], params: Json) -> Map[String, String] {
+  lsp_hover_fs_invalidate()
   let uri = jparam_uri(params)
   let text = Json::string(Json::field(Json::field(params, key = "textDocument"), key = "text"))
   Map::set(docs, key = uri, value = text)
@@ -1665,6 +1819,13 @@ fn lsp_apply_did_change(docs: Map[String, String], params: Json) -> Map[String, 
 fn lsp_apply_did_close(docs: Map[String, String], params: Json) -> Map[String, String] {
   let uri = jparam_uri(params)
   lsp_hover_memo_release(lsp_doc_text(docs = docs, uri = uri))
+  let (fs_uri, fs_path) = Array::get(lsp_hover_fs_doc, at = 0)
+  match Array::get(lsp_hover_fs, at = 0) {
+    Some(session) => if fs_uri == uri {
+      type_at_fs_session_release(session = session, path = fs_path)
+    } else (),
+    None => ()
+  }
   Map::delete(docs, key = uri)
 }
 
@@ -1735,7 +1896,7 @@ fn lsp_send_diagnostics_notification(uri: String, diags: Json) -> Unit with Cons
 
 /// One iteration: read a message, act on it, write a response if needed.
 /// Returns (new_docs, should_exit).
-fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Stdin + Console {
+fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Stdin + Console + Env + Fs {
   match lsp_read_message() {
     None => (docs, true),
     Some(body) => {
@@ -1771,6 +1932,7 @@ fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Std
           lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs))
           (new_docs, false)
         } else if method == "textDocument/didSave" {
+          lsp_hover_fs_invalidate()
           let uri = jparam_uri(params)
           lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = docs))
           (docs, false)
@@ -1779,6 +1941,9 @@ fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Std
           let uri = jparam_uri(params)
           lsp_send_diagnostics_notification(uri = uri, diags = JArr([]))
           (new_docs, false)
+        } else if method == "workspace/didChangeWatchedFiles" {
+          lsp_hover_fs_invalidate()
+          (docs, false)
         } else {
           (docs, false)
         }
@@ -1793,9 +1958,11 @@ fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Std
 }
 
 /// `allow_unstable` is read by the CALLER (cli_adapter), once, at server start:
-/// this function has no Env effect, and authority is settled in the earliest
-/// phase rather than re-read per request (ADR-0075/0084/0088).
-export fn lsp_main(_ allow_unstable: Bool) -> Int with Stdin + Console {
+/// authority is settled in the earliest phase rather than re-read per request
+/// (ADR-0075/0084/0088). The `Env + Fs` on the row is the import-resolving
+/// hover's (#1960): it walks the document's imports on disk, reading the
+/// same build configuration `vibe check` reads.
+export fn lsp_main(_ allow_unstable: Bool) -> Int with Stdin + Console + Env + Fs {
   Array::set(lsp_unstable_cell, at = 0, value = allow_unstable)
   let mut docs = Map::new()
   let mut running = true

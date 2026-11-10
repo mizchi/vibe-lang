@@ -1,12 +1,14 @@
 # ADR-0094: Resource-kind parameters — declaration syntax and internal representation
 
-Status: proposed. Steps 0–2 of the implementation order below have landed:
-operation-level authorization of builtins, the standard provider policy, and
-`resource` declarations with the `Process::Root` singleton kind. Steps 3–6 —
-the bounded effect parameter, `TDEffect`'s `param_kinds` slot, and
-resource-qualified authority — have not. [#3143](https://github.com/mizchi/vibe-lang/issues/3143)
-owns the remaining operation-identity and classifier work; this ADR is
-accepted when #3143's done criteria hold, or rewritten to what ships.
+Status: accepted. Steps 0–3 of the implementation order below have landed:
+operation-level authorization of builtins, the standard provider policy,
+`resource` declarations with the `Process::Root` singleton kind, and the
+bounded effect parameter with `TDEffect`'s `param_kinds` slot. A declared
+resource parameter reaches the classifier through `OperationRef`
+(`operation_ref_in`, #3143). Resource-qualified authority -- `Kv[Posts]` and
+`Kv[Logs]` as different grants -- is not enforced: row containment stays
+instantiation-insensitive until rows carry `OperationRef` identities
+(ADR-0071).
 
 Date: 2026-08-02
 
@@ -86,15 +88,20 @@ needs of one break the representation of the other.
 
 ### 1. Declaration syntax: a **bounded parameter** in the type-parameter list
 
-```vibe skip
-// doctest-skip: the decided syntax; effect binders do not accept bounds yet (step 3)
-effect Fs[R: Fs::Root] {
-  read_file(String) -> Bytes
+```vibe
+effect Kv[R: Store::Bucket] {
+  Get(String) -> String
 }
 
 // a singleton resource kind is taken with `_` when the name is not needed
-effect Stdout[_: Process::Root] {
-  write_stream(String) -> Unit
+effect Clock[_: Process::Root] {
+  Now() -> Int
+}
+
+resource Posts: Store::Bucket
+
+fn lookup(key: String) -> String with Kv[Posts] {
+  perform Kv::Get(key)
 }
 ```
 
@@ -105,7 +112,17 @@ effect Stdout[_: Process::Root] {
   has a bound. If `Fs::Root` in `R: Fs::Root` is declared as a resource kind,
   `R` is a resource parameter; if it is a trait, `R` is an ordinary bounded
   type parameter. The distinction is made at registration, not in the syntax.
-- `_` is accepted as a parameter name (an unbound resource parameter).
+- `_` is accepted as a parameter name (an unbound resource parameter), and
+  only as one: `effect E[_]` is refused with the edit.
+- The bound is a single qualified path. `effect E[R: Eq]` is refused at parse
+  time: an effect parameter takes no trait bound, and an unqualified name
+  cannot be told apart from a type. So, as shipped, a bound always names a
+  resource kind; there is no registry of kinds yet, so any `Owner::Kind` path
+  is one (the same rule `resource` declarations follow).
+- In the AST the parameter keeps its kind in its key
+  (`resource_param_key`), the way a kinded binder `F[_]` keeps its arity, so
+  `SEffectDef` keeps its shape; registration splits the keys into `params`
+  and `param_kinds`.
 - **Rejected alternatives**: a separate bracket (`effect Fs[T] for Fs::Root`)
   would spread to the row syntax and double the surface; a sigil (`[%R]`)
   splits resource parameters visually from type parameters and contradicts
@@ -127,15 +144,28 @@ TDEffect(name, ops, params, param_kinds)
   same representation, and an explicit instantiation `E[X, Y]` could not say
   which argument is the resource. `params` stays the ordered list of all
   parameters, and `param_kinds` is indexed the same way.
-- **The consumers must branch on `param_kinds`.** `effect_tparams`,
-  `effect_fresh_targs` and `subst_type_params` keep their signatures, but a
-  resource parameter is not an inference variable: it is a logical resource
-  identity (`SrcTree` in `Fs[SrcTree]`). `effect_fresh_targs` must not give it
-  a fresh `CtVar`; a resource argument resolves to a declared resource whose
-  kind is checked against the declaration. Without that branch `Fs[SrcTree]`
-  and `Fs[AnythingElse]` unify and the kind check does nothing. So step 3
-  below is one unit: the slot, the registration, and the branch in all three
-  consumers.
+- **The consumers branch on `param_kinds`.** A resource parameter is not an
+  inference variable: it is a logical resource identity (`SrcTree` in
+  `Fs[SrcTree]`). The branch is taken once, at the source:
+  `effect_tparams` returns only the type parameters
+  (`effect_type_param_names`), so `effect_fresh_targs` and
+  `subst_type_params` never see a resource parameter, and the generic-effect
+  machinery that tests for exactly one parameter does the same. An
+  operation's signature is resolved with only the type parameters in scope,
+  so naming `R` there is an unknown type.
+- **A resource argument is checked against a declaration.** A row item
+  `Kv[Posts]` must name a resource in scope (the predeclared `Process::Root`,
+  or a `resource` declared in the module) of the effect's kind; the standard
+  providers take their kind from the policy table. Before this, the bracket
+  text was never read, and `with Fs[SrcTree]` checked clean with no
+  `SrcTree` anywhere. A bare `Kv` stays legal and means any resource of the
+  kind, because row containment is instantiation-insensitive.
+- **Two limits, refused at the declaration with the edit.** An effect takes
+  at most one resource parameter (a capability acts on exactly one resource,
+  which is also what the classifier requires), and not a resource parameter
+  and a type parameter together: the row and handler machinery instantiates
+  a generic effect from one positional type argument, so `Kv[Posts, Int]`
+  would read `Posts` as the type.
 - The slot is appended **last**, the convention of `TDStruct` (#829) and
   `TDEffect` (#1340), so existing positional matches keep working.
   `TDEffect` has three slots on main (`core/types_env_cache.vibe`).
@@ -194,7 +224,7 @@ bump.
 | 0 | Builtin calls authorize by operation label too: `with Fs::read_file` / `with Http::request` admit the builtin, so `Http` no longer has to be granted whole | **landed** (#1343, #1359) |
 | 1 | Standard provider / entry-execution policy (`core/standard_effect_policy.vibe`) | **landed** (#1496) |
 | 2 | ADR-0075 Phase 2: `resource Name : Owner::Kind` declarations and the `Process::Root` singleton kind | **landed** (#1343, PR #1465) |
-| 3 | Bounded effect parameters and `_`; `TDEffect`'s `param_kinds` slot and its registration; the kind branch in the three consumers | not started — #3143 |
+| 3 | Bounded effect parameters and `_`; `TDEffect`'s `param_kinds` slot and its registration; the kind branch in the three consumers; resource arguments checked against declared resources; the declared kind read by `OperationRef` | **landed** (#3143): `operation_ref_in` reads a declared effect's bracket argument as its resource, and `effect_catalog_in` classifies it by its declaration |
 | 4 | `wit_gen`'s declaration/provider classification (context item 5) | the entry/runtime filtering uses `is_entry_runtime_managed_effect`; the inversion itself is unchanged, and no open issue owns it |
 | 5 | The entry's closed-row check (ADR-0084 Phase 3) | the entry-row admission rule has landed (ADR-0084, #1683); the exact closed-row check has not — see [vibex-runtime-contract.md](vibex-runtime-contract.md) |
 | 6 | Enforcement, with `Entry.requires ⊆ ComposedHost.provides` as preflight | `vibe run` refuses a required capability its launcher flags withhold (#2828, ADR-0088 L3); resource-qualified requirements wait on step 3 and #3143 |
@@ -255,8 +285,8 @@ default-resource-kind column already pointed at its first definition.
   `Fs[Anything]`. Resource-level least privilege takes effect only with
   ADR-0071's `OperationRef` normalization (#3143); this ADR fixes the
   representation first.
-- The surface does not change, so the compiler's own sources are untouched by
-  steps 0–3.
+- The surface does not change for existing programs, so the compiler's own
+  sources are untouched by steps 0–3.
 
 ## References
 

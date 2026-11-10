@@ -1177,6 +1177,24 @@ for async_refusal_case in "err_async_entry_closure_to_plain_param:cannot see thr
     exit 1
   fi
 done
+# #3200: a `send` / `recv` blocked on the group's stack resumes parked
+# suspendable tasks (suspend_test.vibe pins the answers). The side that must
+# not move: a wait nothing in the group can satisfy still traps with the
+# deadlock message, bounded so that a livelock fails the gate instead of
+# hanging it.
+for blocked_deadlock_case in conc_blocked_recv_deadlock conc_blocked_send_deadlock; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/${blocked_deadlock_case}.vibe" "$ssldir/${blocked_deadlock_case}.wasm" main >/dev/null 2>&1 || true
+  gate_require_artifact "$ssldir/${blocked_deadlock_case}.wasm" "${blocked_deadlock_case}.vibe did not compile (#3200)"
+  blocked_deadlock_rc=0
+  blocked_deadlock_out="$(run_bounded 60 bash -c "VIBE_PREOPEN_DIR='$ROOT_DIR' bash scripts/run_wasm_vibe_host_runner.sh --invoke main '$ssldir/${blocked_deadlock_case}.wasm' 2>&1")" || blocked_deadlock_rc=$?
+  if [ "$blocked_deadlock_rc" -eq 0 ] || ! printf '%s\n' "$blocked_deadlock_out" | grep -qF 'deadlock in TaskGroup::run'; then
+    echo "[compiler-gate] FAIL: ${blocked_deadlock_case}.vibe did not trap with the deadlock message (exit $blocked_deadlock_rc; a livelock or a wrong answer?) (#3200)" >&2
+    printf '%s\n' "$blocked_deadlock_out" | tail -5 >&2
+    exit 1
+  fi
+done
 # #3520: `vibe run` locates a lowering refusal. The run verb printed the
 # compiler's internal `[@off=N:M]` marker instead of `line L:C`, because it
 # skipped the step that resolves markers on the other verbs. A `sleep` in a

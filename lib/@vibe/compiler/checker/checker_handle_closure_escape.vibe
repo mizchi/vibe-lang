@@ -72,7 +72,8 @@
 //     constructor (`Some`, `Ok`, `Err` or a declared enum variant -- never
 //     a function by the case of its name); a builtin that only calls it
 //     (`Array::map`, `filter`, `fold`, `any`, `all`, `find`, a `region`
-//     body); a builtin of a container namespace (`Array::push`), which
+//     body) -- the builtin itself, not a program function of its spelling;
+//     a builtin of a container namespace (`Array::push`), which
 //     keeps a value only in its arguments; and a function
 //     declared at the top of the module, or a closure literal a `let`
 //     bound before the handle, whose body only ever calls that parameter,
@@ -2173,7 +2174,8 @@ fn hce_arg_bound_label(arg: Expr, producers_before: Int, st: HceWalk, env: TypeE
 ///     enum variant, never a function by the case of its name (the value it
 ///     builds is the value, and its reach is read where it goes);
 ///   - the callee is a builtin that only calls the function (`Array::map`,
-///     `filter`, `fold`, `any`, `all`, `find`, a `region` body);
+///     `filter`, `fold`, `any`, `all`, `find`, a `region` body) and the call
+///     reaches that builtin, not a program function of its spelling;
 ///   - the callee is a function declared at the top of this module, or a
 ///     closure literal a `let` before the handle bound, whose body only ever
 ///     calls that parameter, outside any closure of its own.
@@ -2192,7 +2194,7 @@ fn hce_callee_may_keep(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, l
     match callee {
       EIdent(name, noff) => if hce_lookup(st = st, name = name) != 0 {
         true
-      } else if hce_is_ctor(name = name, defs = defs) || hce_is_effect_op(name = name, defs = defs) || hce_calls_only_builtin(name) || hce_container_builtin(env = env, name = name, noff = noff) {
+      } else if hce_is_ctor(name = name, defs = defs) || hce_is_effect_op(name = name, defs = defs) || hce_calls_only_builtin(env = env, name = name, noff = noff) || hce_container_builtin(env = env, name = name, noff = noff) {
         false
       } else {
         let lit = match retention_local_closure(env = env, name = name) {
@@ -2409,7 +2411,7 @@ fn hce_is_effect_op(name: String, defs: Array[TypeDef]) -> Bool {
     let mut found = false
     for d in defs {
       match d {
-        TDEffect(ename, ops, _) => if !found && ename == qual {
+        TDEffect(ename, ops, _, _, _) => if !found && ename == qual {
           for o in ops {
             let (oname, _, _) = o
             if oname == op {
@@ -2435,9 +2437,15 @@ fn hce_container_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
   (String::starts_with(name, prefix = "Array::") || String::starts_with(name, prefix = "MutMap::") || String::starts_with(name, prefix = "Map::") || String::starts_with(name, prefix = "FixedArray::") || String::starts_with(name, prefix = "Option::")) && builtin_resolves_at(env = env, name = name, ident_off = noff)
 }
 
-/// The builtins that call the function they are handed and keep nothing.
-fn hce_calls_only_builtin(_ name: String) -> Bool {
-  name == "Array::map" || name == "Array::filter" || name == "Array::fold" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "__region_run"
+/// The builtins that call the function they are handed and keep nothing,
+/// where the call at `noff` reaches the builtin (#3255). A program's own
+/// `fn Array::map` is a function like any other: it may push the callback
+/// into a module-level array, and the spelling alone used to wave the
+/// handle-bound closure through -- measured, the kept closure later answered
+/// `6` from the dead handler after `vibe check` was clean. Such a callee falls
+/// to the declaration check below, as `keep` does.
+fn hce_calls_only_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
+  (name == "Array::map" || name == "Array::filter" || name == "Array::fold" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "__region_run") && builtin_resolves_at(env = env, name = name, ident_off = noff)
 }
 
 fn hce_fn_params(_ ty: Type) -> Option[Array[Type]] {

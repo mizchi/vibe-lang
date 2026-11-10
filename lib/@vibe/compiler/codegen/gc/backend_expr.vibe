@@ -17,7 +17,9 @@ import @vibe/compiler/core {
   float_operand_unmarked,
   is_exception_throw_handler_name,
   leb128_encode_s64,
-  leb128_encode_u32
+  leb128_encode_u32,
+  leb128_encode_u32_slot,
+  refuse_extern_effect_operation
 }
 
 import @vibe/core {
@@ -1313,6 +1315,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           if fni < 0 {
             // See `resolve_local` in common_base: a checker hole, not a user
             // error. Same wording as the two linear-backend sites.
+            refuse_extern_effect_operation(name)
             throw(String::concat(String::concat(codegen_unresolved_name_prefix(), name), String::concat("` (gc ident", codegen_unresolved_name_suffix())))
           }
           let fidx = Array::get(ctx.func_table.indices, at = fni)
@@ -2399,7 +2402,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         bytebuf_push(buf = buf, byte = 126)
         leb128_encode_u32(buf = buf, value = 1)
         bytebuf_push(buf = buf, byte = 0)
-        leb128_encode_u32(buf = buf, value = 0)
+        // the caught tag, at the slot width (#3941); then the label
+        leb128_encode_u32_slot(buf = buf, value = 0)
         leb128_encode_u32(buf = buf, value = 0)
         let body_ld = if ld >= 0 {
           ld + 3

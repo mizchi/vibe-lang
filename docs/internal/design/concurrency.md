@@ -274,9 +274,10 @@ failures. They end the instance.
 The scheduler is deterministic, so a wait that nothing in the group can satisfy
 never resolves. Such a wait traps instead of hanging:
 
-- a stack-driving `join`, `send` or `recv` with no ready task to run, and
-  `pump_all`, `join` on a parked task, or a group close, when every task left
-  waits on something no task in the group can produce, trap with one message:
+- a stack-driving `join`, `send` or `recv` with no ready task to run and no
+  parked task to resume, and a stack-driving wait, `pump_all` or a group close
+  whose parked tasks all wait on something no task in the group can produce,
+  trap with one message:
   ``vibe: deadlock in TaskGroup::run: every task left is waiting on something
   no task in the group can produce ...``.
 
@@ -367,11 +368,12 @@ multi-consumer channel owned by group `n`:
   lose backpressure.
 - `Sender::send` returns once the message is linearized: buffered, handed to a
   receiver, or consumed by a receiver it drove. While the buffer is full (or,
-  at capacity 0, no receiver has taken the message) it drives the group's
-  ready tasks on the caller's stack.
+  at capacity 0, no receiver has taken the message) it drives the group on the
+  caller's stack: it runs a ready task when there is one, and otherwise
+  resumes a parked suspendable task, under the deadlock rule below (#3200).
 - `Receiver::recv` returns `Some(message)` in linearization order, or `None`
   once the channel is closed and drained. While the channel is open and empty
-  it drives the group's ready tasks.
+  it drives the group the same way.
 - Messages from one `Sender` arrive in the order they were sent. Messages from
   different senders arrive in their linearization order, which a program must
   not depend on.
@@ -872,6 +874,19 @@ one spawn covers both shapes (#3200).
 up to its first suspension; it does not enter the ready queue. A body that
 finishes without suspending settles the task at once.
 
+The library also has the start a unified `spawn` needs (#3200):
+`__conc_spawn_async(g, f)`, a compiler-facing entry with `spawn_suspend`'s
+signature that queues the task Ready like `spawn` does. When `join`, a channel
+`send` / `recv` or the close dispatches it, its first leg runs under the same
+`Async` handle as `spawn_suspend`'s (`conc_first_leg`), and from then on it is
+a suspendable task: it parks, and the pump resumes it. A cancel or a sibling's
+failure before dispatch resolves it Cancelled without running it. No program
+calls it by name yet; it is the target the lowering is to give a
+`TaskGroup::spawn` whose task closure uses `Async`. Pinned by
+`lib/@vibe/concurrent/experimental/spawn_async_test.vibe`, including the mixed
+group whose order differs between the two starts (`plain s1 s2` queued,
+`s1 plain s2` with `spawn_suspend`).
+
 The body is written inline, as a closure literal at the call. A closure passed
 to `spawn_suspend` -- or to any parameter whose row carries `Async`, such as a
 wrapper around it -- must be compiled with the step-returning convention, and
@@ -902,7 +917,6 @@ fn main() -> Int allows Async + Exception {
     let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       5
     })
-    TaskGroup::pump_all(g)
     TaskHandle::join(h) + 1
   })
 }
@@ -935,8 +949,16 @@ be refused as "cannot see through ... the call to 'println'"). Pinned by
 Pinned by `fixtures/err_spawn_suspend_{alias,ascribed,rebound,wrapper,wrapper_rebound}_plain.vibe`
 and `fixtures/spawn_suspend_wrapper_inline.vibe`, whose gate rows in
 `tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh` assert the
-messages. Whether a named task closure becomes acceptable, or the inline rule
-becomes part of the frozen surface, is decided with #3200.
+messages.
+
+The inline rule is a refusal, not frozen surface (#3200). It comes from the
+lowering: the step-returning convention is chosen where the closure literal is
+written, not from the closure's type. The stable `spawn` already accepts a
+named local closure, so freezing the rule would leave the unified `spawn`
+accepting a name for a task that never waits and refusing it for one that
+does, a difference the closure's type does not show. A refusal can be lifted
+in a compatible release, so it does not block promoting the lane; lifting it
+means choosing the convention from the closure's type wherever it is created.
 
 ### Waiting inside a suspendable task
 
@@ -946,7 +968,7 @@ stack-driving forms do not.
 | waits by | siblings | operations |
 |---|---|---|
 | blocking the instance | nothing runs | `sleep_blocking` |
-| driving on the caller's stack | ready siblings run to completion | `join`, `send`, `recv` |
+| driving on the caller's stack | ready siblings run to completion, parked ones resume | `join`, `send`, `recv` |
 | suspending the task | siblings interleave with it | `sleep`, `sleep_wait`, `send_wait`, `recv_wait`, `result_wait`, `await` |
 
 An entry whose row carries `Async` is a place to suspend too: `sleep` and
@@ -1000,11 +1022,22 @@ waits for. A waiting task that nothing in the group can wake makes `pump_all`,
 
 ### Driving the lane
 
+No program has to drive the scheduler by hand. Every wait on the group's own
+stack resumes parked tasks itself: `join` on a parked task pumps until that
+task settles, a blocked `send` or `recv` resumes parked tasks until its message
+is taken or arrives (#3200), and the group's close pumps every parked child.
+Before #3200, `send` and `recv` ran only ready tasks, so a body receiving from
+a parked producer had to call `pump_all` first, and a body sending into a
+rendezvous channel whose receiver was parked before its `recv_wait` had no
+spelling at all (`pump_all` deadlocked on that receiver). The answers are
+pinned in `lib/@vibe/concurrent/experimental/suspend_test.vibe`, and
+`fixtures/conc_blocked_{recv,send}_deadlock.vibe` pin that a wait nothing can
+satisfy still traps.
+
 `TaskGroup::pump(g)` resumes one parked task, round-robin, and answers whether
-anything ran. `TaskGroup::pump_all(g)` pumps until no task is parked. Neither
-is required for correctness any more: `join` on a parked task pumps until that
-task settles, and the group's close pumps every parked child. They remain the
-way to interleave tasks before the body's own next step.
+anything ran. `TaskGroup::pump_all(g)` pumps until no task is parked. They stay
+in the experimental contract, for a program that wants to interleave tasks
+before the body's own next step, and are not planned for the stable one.
 
 ### Exceptions in a suspendable body
 
@@ -1037,7 +1070,9 @@ deadlock.
 
 The tasks themselves are still guest-side continuations scheduled by
 `@vibe/concurrent` inside one component instance. Backing them with Component
-Model subtasks that the host can schedule and cancel is #3147.
+Model subtasks that the host can schedule and cancel is #3147; the measured
+mapping is [component-subtask-taskgroup.md](component-subtask-taskgroup.md)
+(ADR-0125).
 
 ## Effects and authority
 
@@ -1105,7 +1140,7 @@ open.
 | --- | --- | --- | --- | --- |
 | cooperative, in-guest | stack driving, plus stored continuations from ADR-0076's suspend lowering | one heap; `Send` keeps sharing unobservable | none | ships; the reference behaviour |
 | host waitables (Component Model) | a parked task waits on a host future, stream read or timer through the adapter's waitable set | as above | host I/O overlaps; task bodies do not | ships with an entry boundary that settles host futures |
-| Component Model subtasks | async lift/lower, one subtask per task | component / resource boundaries | as the host provides | not implemented (#3147) |
+| Component Model subtasks | an async call into a second instance of the program, one subtask per task | an instance per side; captures and results copied by the canonical ABI | host I/O overlaps; task bodies do not | proposed, not implemented: ADR-0125, [component-subtask-taskgroup.md](component-subtask-taskgroup.md) (#3147) |
 | JSPI with Workers | `WebAssembly.Suspending` / `promising` | an instance and heap per Worker, messages copied | up to the number of Workers | not implemented; JSPI only lowers suspension |
 | shared-everything threads | thread intrinsics over a shared store | task-local arenas inside one store; same message API | host threads | opt-in probe only (#488) |
 

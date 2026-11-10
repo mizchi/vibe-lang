@@ -18,11 +18,15 @@
 //# matches and so never ran the prefix lane.
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+  codegen_body_cache_artifact_key, compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
 }
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, persistent_artifact_cache_path
+  persistent_artifact_cache_path
+}
+
+import @vibe/compiler/core {
+  set_reloc_slot_width
 }
 
 fn dse_bytes(_ s: String) -> Bytes {
@@ -85,7 +89,7 @@ fn dse_main(_ literal: String) -> String {
 /// the file table let through and `replayed` is whether the warm compile
 /// rebuilt fewer bodies than the cold one did.
 fn dse_probe(label: String, literal: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(dse_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(dse_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -94,7 +98,7 @@ fn dse_probe(label: String, literal: String) -> String with Env + Exception + Fs
   Fs::write_bytes(dse_a_path, bytes = dse_bytes(dse_a()))
   Fs::write_bytes(dse_main_path, bytes = dse_bytes(dse_main("m")))
   let cold_counts: Array[Int] = []
-  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = dse_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = dse_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts, exports_stripped = false)
   if Array::get(cold_counts, at = 0) != 0 || Array::get(cold_counts, at = 1) <= 0 {
     throw("downstream-edit fixture: the cold run for \{label} offered \{Array::get(cold_counts, at = 0)} and compiled \{Array::get(cold_counts, at = 1)}")
   } else {
@@ -102,13 +106,30 @@ fn dse_probe(label: String, literal: String) -> String with Env + Exception + Fs
   }
   Fs::write_bytes(dse_main_path, bytes = dse_bytes(dse_main(literal)))
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = dse_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
-  let fresh = compile_file_fs_mode_rc(entry_path = dse_main_path, entry_name = "run")
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = dse_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts, exports_stripped = false)
+  let fresh = compile_file_fs_mode_rc(entry_path = dse_main_path, entry_name = "run", exports_stripped = false)
   let replayed = Array::get(warm_counts, at = 1) < Array::get(cold_counts, at = 1)
   "\{label} offered=\{Array::get(warm_counts, at = 0)} replayed=\{replayed} equal=\{dse_bytes_eq(a = warm, b = fresh)}"
 }
 
-test "a downstream literal edit stays byte-exact under the body cache" {
+//# #3941: every row runs at slot width 0 and at slot width 3. A relocation
+//# that wrote a padded slot back minimal, or a cache slot shared between the
+//# widths, answers differently at 3 than the same row at 0.
+
+/// Run `row` at relocatable-slot width `width`, restoring width 0 after it.
+fn dse_at_slot_width(width: Int, row: () -> Unit with Console + Env + Exception + Fs) -> Unit with Console + Env + Exception + Fs {
+  set_reloc_slot_width(width)
+  handle {
+    row()
+    set_reloc_slot_width(0)
+  } with { Exception::Throw(m) => {
+    set_reloc_slot_width(0)
+    throw(m)
+  } }
+}
+
+/// The row behind the test "a downstream literal edit stays byte-exact under the body cache"; run at slot widths 0 and 3.
+fn dse_row_1() -> Unit with Console + Env + Exception + Fs {
   // CONTROL: the same literal. Nothing moved, so the cache must replay --
   // without this row, the others could pass by replaying nothing ever.
   inspect(dse_probe(label = "same-literal", literal = "m"), content = "same-literal offered=5 replayed=true equal=true")
@@ -123,4 +144,12 @@ test "a downstream literal edit stays byte-exact under the body cache" {
   inspect(dse_probe(label = "new-literal", literal = "a longer downstream literal"), content = "new-literal offered=4 replayed=true equal=true")
   // A literal that SHRINKS the pool moves the same addresses the other way.
   inspect(dse_probe(label = "shorter-literal", literal = ""), content = "shorter-literal offered=4 replayed=true equal=true")
+}
+
+test "a downstream literal edit stays byte-exact under the body cache" {
+  dse_row_1()
+}
+
+test "a downstream literal edit stays byte-exact under the body cache, at slot width 3 (#3941)" {
+  dse_at_slot_width(width = 3, row = dse_row_1)
 }

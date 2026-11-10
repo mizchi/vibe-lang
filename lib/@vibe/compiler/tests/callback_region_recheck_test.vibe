@@ -1,0 +1,71 @@
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_report
+}
+
+// #3255: a closure handed to a call is checked again once the call has typed
+// its parameter (`lambda_arg_elem_write_check` / `lambda_arg_param_write_check`).
+// That re-check used to be a syntactic scan of the closure, which judged a
+// call inside it by the callee's SPELLING and never read a program callee's
+// body. Measured on main d764ee4f6:
+//
+// - a program helper that stores its argument was accepted inside an
+//   `Array::map` callback (the same call in `for c in cells` is refused), so
+//   a region value outlived its region;
+// - a program `fn Array::push` that keeps nothing was refused there as if it
+//   were the builtin (the same call in `for c in cells` is fine);
+// - a program `fn Array::push` that keeps its value, called with a labeled
+//   receiver, was accepted, because the scan matched only the builtin's
+//   positional shape.
+//
+// The callback is now checked again by the checker itself, so it answers as
+// the loop does.
+
+let keep_helper = "fn keep(xs: Array[MutList[Int]], v: MutList[Int]) -> Unit {\n  Array::push(xs, value = v)\n}\n"
+
+test "a program helper that stores the callback's element is refused by its body" {
+  let src = String::concat(keep_helper, "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = (c) -> {\n      keep(xs = sink, v = c)\n      0\n    })\n    0\n  }\n}\n")
+  inspect(check_source_report(src), content = "region escapes its scope: this call to `keep` stores a value that captures this region into an outer binding")
+}
+
+test "the helper reached through a named callback, a filter and a fold is refused too" {
+  let src = String::concat(keep_helper, "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let stash = (c) -> {\n      keep(xs = sink, v = c)\n      true\n    }\n    let _ = Array::filter(cells, f = stash)\n    Array::fold(cells, init = 0, f = (acc, c) -> {\n      keep(xs = sink, v = c)\n      acc\n    })\n  }\n}\n")
+  assert(String::contains(check_source_report(src), needle = "this call to `keep` stores a value that captures this region"))
+}
+
+test "a helper that keeps the element inside the region is fine" {
+  let src = String::concat(keep_helper, "fn build() -> Int {\n  region r {\n    let local: Array[MutList[Int]] = []\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = (c) -> {\n      keep(xs = local, v = c)\n      0\n    })\n    Array::length(local)\n  }\n}\n")
+  assert(check_source_ok(src))
+}
+
+test "a program Array::push that keeps nothing is not judged as the builtin inside a callback" {
+  let src = "fn Array::push(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Int {\n  let _ = xs\n  MutList::length(value)\n}\nfn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = (c) -> Array::push(sink, value = c))\n    Array::length(got)\n  }\n}\n"
+  assert(check_source_ok(src))
+}
+
+test "a program Array::push that keeps its value is refused by its body inside a callback" {
+  let src = "fn Array::push(xs: Array[Array[MutList[Int]]], value: MutList[Int]) -> Unit {\n  let inner = xs[0]\n  inner[0] = value\n}\nfn build() -> Int {\n  let sink: Array[Array[MutList[Int]]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = (c) -> {\n      Array::push(xs = sink, value = c)\n      0\n    })\n    0\n  }\n}\n"
+  inspect(check_source_report(src), content = "region escapes its scope: this call to `Array::push` stores a value that captures this region into an outer binding")
+}
+
+test "the builtin Array::push inside a callback is still refused as a container write" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = (c) -> {\n      Array::push(sink, value = c)\n      0\n    })\n    0\n  }\n}\n"
+  inspect(check_source_report(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+}
+
+// Codex on #4047: a re-check of a callback is keyed by the closure and the
+// shape it is checked at, so a recursive callback re-checked inside its own
+// re-check ends there instead of running into the depth guard, whose answer
+// is a refusal.
+let walk_through_literal = "    let rec walk = (c) -> {\n      let _ = Array::map([c], f = (d) -> walk(d))\n      MutList::length(c)\n    }\n"
+
+test "a recursive callback that stores nothing is accepted, reachable or not" {
+  let reached = String::concat("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n", String::concat(walk_through_literal, "    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"))
+  assert(check_source_ok(reached))
+  let unreached = "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let rec walk = (c) -> {\n      if false {\n        let _ = Array::map([c], f = (d) -> walk(d))\n        0\n      } else {\n        MutList::length(c)\n      }\n    }\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"
+  assert(check_source_ok(unreached))
+}
+
+test "a recursive callback that stores its element outside is refused" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let rec walk = (c) -> {\n      Array::push(sink, value = c)\n      let _ = Array::map([c], f = (d) -> walk(d))\n      0\n    }\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"
+  assert(String::contains(check_source_report(src), needle = "region escapes its scope: a container write stores a value that captures this region"))
+}

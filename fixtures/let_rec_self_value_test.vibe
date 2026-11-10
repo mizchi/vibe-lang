@@ -1,0 +1,146 @@
+// #4054: a local `let rec` lambda that names its own binder as a VALUE
+// inside its own body. Each of these used to stop `vibe check` with a stack
+// overflow: while the value is checked the binder is a free variable `v`, the
+// lambda's row recorded `#capture[v]` for it, and binding `v` to that type
+// made the substitution cyclic. A call `walk(d)` never did this -- it is a
+// callee, not a captured name -- so every shape here also recurses.
+
+struct Holder {
+  f: (Int) -> Int
+}
+
+fn keepf(f: (Int) -> Int) -> Int {
+  f(0)
+}
+
+test "an alias of the binder that is never used" {
+  let rec walk = (c: Int) -> Int {
+    let g = walk
+    c
+  }
+  inspect(walk(3), content = "3")
+}
+
+test "an alias of the binder, called" {
+  let rec walk = (c: Int) -> Int {
+    if c <= 0 {
+      0
+    } else {
+      let g = walk
+      c + g(c - 1)
+    }
+  }
+  inspect(walk(3), content = "6")
+}
+
+test "a discarded mention of the binder" {
+  let rec walk = () -> Unit {
+    walk
+    ()
+  }
+  inspect(walk(), content = "()")
+}
+
+test "the binder passed to Array::map" {
+  let rec walk = (c: Int) -> Int {
+    if c <= 0 {
+      0
+    } else {
+      let xs: Array[Int] = Array::map([c - 1], f = walk)
+      c + Array::get(xs, at = 0)
+    }
+  }
+  inspect(walk(3), content = "6")
+}
+
+test "the binder passed to Array::map, binder annotated" {
+  let rec walk: (Int) -> Int = (c: Int) -> Int {
+    if c <= 0 {
+      0
+    } else {
+      let xs: Array[Int] = Array::map([c - 1, c - 1], f = walk)
+      c + Array::get(xs, at = 0) + Array::get(xs, at = 1)
+    }
+  }
+  inspect(walk(3), content = "11")
+}
+
+test "the binder passed to Array::filter" {
+  let rec keep = (c: Int) -> Bool {
+    if c <= 0 {
+      true
+    } else {
+      Array::length(Array::filter([c - 1], f = keep)) == 1
+    }
+  }
+  inspect(keep(4), content = "true")
+}
+
+test "the binder passed to Array::fold" {
+  let rec add = (a: Int, b: Int) -> Int {
+    if b <= 0 {
+      a
+    } else {
+      Array::fold([b - 1], init = a + b, f = add)
+    }
+  }
+  inspect(add(0, 4), content = "10")
+}
+
+test "the binder returned through a closure" {
+  let rec walk = (c: Int) -> Int {
+    if c <= 0 {
+      0
+    } else {
+      let get = () -> walk
+      let g = get()
+      c + g(c - 1)
+    }
+  }
+  inspect(walk(3), content = "6")
+}
+
+test "the binder stored in a tuple and an array" {
+  let rec walk = (c: Int) -> Int {
+    if c <= 0 {
+      0
+    } else {
+      let t = (walk, 1)
+      let fs = [walk]
+      let g = t.0
+      let h = Array::get(fs, at = 0)
+      c + g(c - 1) + h(c - 1)
+    }
+  }
+  inspect(walk(3), content = "11")
+}
+
+test "the result is a closure that captures the binder" {
+  let rec walk = (c: Int) -> () -> Int {
+    () -> {
+      if c <= 0 {
+        0
+      } else {
+        let g = walk
+        let k = g(c - 1)
+        c + k()
+      }
+    }
+  }
+  let f = walk(3)
+  inspect(f(), content = "6")
+}
+
+test "shapes that already checked keep their answers" {
+  let rec walk = (c: Int) -> Int {
+    if c <= 0 {
+      0
+    } else {
+      let h = Holder::{ f: walk }
+      let g = h.f
+      let a: (Int) -> Int = walk
+      c + g(c - 1) + keepf(f = walk) + a(0)
+    }
+  }
+  inspect(walk(2), content = "3")
+}

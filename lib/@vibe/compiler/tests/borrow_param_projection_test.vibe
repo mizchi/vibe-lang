@@ -1,0 +1,218 @@
+//# Imports
+
+// #2827: a field read of a parameter (`ctx.n`) does not make it owned.
+//
+// ADR-0092's borrow inference walked a projection off a bare name as a
+// consume of the name, while the Perceus plan counts it as a borrow
+// (pc_emit's EDot arm) and codegen treats every name-rooted projection as a
+// borrowed view that a consumer retains. So every function that read a field
+// of a parameter owned it, every caller that passed the parameter along
+// owned it in turn, and the codegen's `ctx: CompileCtx` took a dup per use.
+// The recursion itself was never the obstacle: the masks are a greatest
+// fixed point (`bp_fixpoint_parts`), and a parameter only passed to its own
+// borrowed position already stayed borrowed.
+//
+// The controls keep a parameter owned when it really escapes: returned,
+// stored into an aggregate, captured by a closure, or moved into a call
+// whose result is then projected.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  compute_borrow_param_user_fns
+}
+
+import @vibe/compiler/query {
+  rc_classify_source, rc_plan_source
+}
+
+//# Helpers
+
+fn fn_of(name: String, params: Array[String], body: Expr) -> Stmt {
+  let ps: Array[(String, Option[TypeExpr])] = []
+  for p in params {
+    Array::push(ps, value = (p, None))
+  }
+  SLet(false, false, name, None, EFn([], [], ps, None, None, body))
+}
+
+fn mask_for(stmts: Array[Stmt], name: String) -> Int {
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns(stmts = stmts, exclude = [], out_masks = masks)
+  let mut i = 0
+  let mut found = 0
+  while i < Array::length(names) {
+    if Array::get(names, at = i) == name {
+      found = Array::get(masks, at = i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `name=mask`, so every expectation in this file is a distinct literal.
+fn shown(stmts: Array[Stmt], name: String) -> String {
+  String::concat(name, String::concat("=", __to_string(mask_for(stmts = stmts, name = name))))
+}
+
+fn id(_ n: String) -> Expr {
+  EIdent(n, -1)
+}
+
+fn call(f: String, args: Array[Expr]) -> Expr {
+  ECall(id(f), args, -1, [])
+}
+
+fn dot(x: Expr, f: String) -> Expr {
+  EDot(x, f, -1, -1)
+}
+
+/// `if k <= 0 { <base> } else { <step> }`
+fn rec_body(base: Expr, step: Expr) -> Expr {
+  EIf(EBinOp("<=", id("k"), EInt(0), -1), base, step)
+}
+
+fn k_minus_one() -> Expr {
+  EBinOp("-", id("k"), EInt(1), -1)
+}
+
+fn classify_line(out: String, name: String) -> String {
+  let prefix = String::concat(name, " ")
+  let mut found = ""
+  for line in String::split(out, sep = "\n") {
+    if String::starts_with(line, prefix = prefix) {
+      found = line
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+//# Field reads borrow
+
+test "a parameter that is only read through a field is borrowed" {
+  let get = fn_of(name = "get", params = ["ctx"], body = dot(x = id("ctx"), f = "n"))
+  inspect(shown(stmts = [get], name = "get"), content = "get=1")
+}
+
+test "a projection off a projection is a read of the root" {
+  let nested = fn_of(name = "nested", params = ["ctx"], body = dot(x = dot(x = id("ctx"), f = "inner"), f = "v"))
+  inspect(shown(stmts = [nested], name = "nested"), content = "nested=1")
+}
+
+test "direct recursion that reads a field and passes the parameter on borrows it" {
+  let step = EBinOp("+", call(f = "walk", args = [id("ctx"), k_minus_one()]), dot(x = id("ctx"), f = "n"), -1)
+  let walk = fn_of(name = "walk", params = ["ctx", "k"], body = rec_body(base = dot(x = id("ctx"), f = "n"), step = step))
+  // Bit 0 is `ctx`. `k` is owned: an operator operand still counts as a use
+  // here, which costs nothing for an `Int`.
+  inspect(shown(stmts = [walk], name = "walk"), content = "walk=1")
+}
+
+test "mutual recursion over field reads borrows both members" {
+  let even = fn_of(name = "even", params = ["ctx", "k"], body = rec_body(base = dot(x = id("ctx"), f = "n"), step = call(f = "odd", args = [
+    id("ctx"),
+    k_minus_one()
+  ])))
+  let odd = fn_of(name = "odd", params = ["ctx", "k"], body = rec_body(base = EInt(0), step = EBinOp("+", dot(x = id("ctx"), f = "m"), call(f = "even", args = [
+    id("ctx"),
+    k_minus_one()
+  ]), -1)))
+  inspect(shown(stmts = [even, odd], name = "even") + " " + shown(stmts = [
+    even,
+    odd
+  ], name = "odd"), content = "even=1 odd=1")
+}
+
+test "a field passed to an owning position leaves the parameter borrowed" {
+  // `keep(ctx.xs)`: the consumer retains the field it keeps; the parameter
+  // itself is still only read.
+  let keep = fn_of(name = "keep", params = ["xs"], body = id("xs"))
+  let via = fn_of(name = "via", params = ["ctx"], body = call(f = "Array::length", args = [
+    call(f = "keep", args = [dot(x = id("ctx"), f = "xs")])
+  ]))
+  inspect(shown(stmts = [keep, via], name = "via"), content = "via=1")
+}
+
+//# Escapes stay owned
+
+test "a recursive function that returns its parameter keeps it owned" {
+  let back = fn_of(name = "back", params = ["ctx", "k"], body = rec_body(base = id("ctx"), step = EIf(EBinOp("<", dot(x = id("ctx"), f = "n"), EInt(0), -1), id("ctx"), call(f = "back", args = [
+    id("ctx"),
+    k_minus_one()
+  ]))))
+  inspect(shown(stmts = [back], name = "back"), content = "back=0")
+}
+
+test "a recursive function that stores its parameter in an array keeps it owned" {
+  let boxed = fn_of(name = "boxed", params = ["ctx", "k"], body = rec_body(base = EArray([
+    id("ctx")
+  ]), step = call(f = "boxed", args = [id("ctx"), k_minus_one()])))
+  inspect(shown(stmts = [boxed], name = "boxed"), content = "boxed=0")
+}
+
+test "a recursive function that stores its parameter in a struct keeps it owned" {
+  let wrapped = fn_of(name = "wrapped", params = ["ctx", "k"], body = rec_body(base = ERecord("W", [
+    ("c", id("ctx")),
+    ("n", dot(x = id("ctx"), f = "n"))
+  ], []), step = call(f = "wrapped", args = [id("ctx"), k_minus_one()])))
+  inspect(shown(stmts = [wrapped], name = "wrapped"), content = "wrapped=0")
+}
+
+test "a recursive function that captures its parameter in a closure keeps it owned" {
+  let lam = EFn([], [], [], None, None, dot(x = id("ctx"), f = "n"))
+  let cap = fn_of(name = "cap", params = ["ctx", "k"], body = rec_body(base = lam, step = call(f = "cap", args = [
+    id("ctx"),
+    k_minus_one()
+  ])))
+  inspect(shown(stmts = [cap], name = "cap"), content = "cap=0")
+}
+
+test "a projection of a call that moves the parameter keeps it owned" {
+  let keep = fn_of(name = "keep", params = ["c"], body = id("c"))
+  let moved = fn_of(name = "moved", params = ["ctx"], body = dot(x = call(f = "keep", args = [
+    id("ctx")
+  ]), f = "n"))
+  inspect(shown(stmts = [keep, moved], name = "moved"), content = "moved=0")
+}
+
+test "one escaping member keeps the whole recursive component owned" {
+  // `even` only reads and passes on, but `odd` returns the parameter, so the
+  // position `even` passes it to is owned and so is `even`'s.
+  let even = fn_of(name = "even", params = ["ctx", "k"], body = rec_body(base = dot(x = id("ctx"), f = "n"), step = call(f = "odd", args = [
+    id("ctx"),
+    k_minus_one()
+  ])))
+  let odd = fn_of(name = "odd", params = ["ctx", "k"], body = rec_body(base = dot(x = call(f = "keep", args = [
+    id("ctx")
+  ]), f = "n"), step = call(f = "even", args = [id("ctx"), k_minus_one()])))
+  let keep = fn_of(name = "keep", params = ["c"], body = id("c"))
+  inspect(shown(stmts = [even, odd, keep], name = "even") + " " + shown(stmts = [
+    even,
+    odd,
+    keep
+  ], name = "odd"), content = "even=0 odd=0")
+}
+
+//# The `vibe rc-classify` / `vibe rc-plan` surface
+
+let ctx_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn walk(ctx: Ctx, k: Int) -> Int {\n  if k <= 0 {\n    ctx.n\n  } else {\n    walk(ctx = ctx, k = k - 1) + Array::length(ctx.xs)\n  }\n}\n\nfn use1(ctx: Ctx) -> Int {\n  ctx.n + 1\n}\n\nfn three(ctx: Ctx, c: Bool) -> Int {\n  if c {\n    use1(ctx) + use1(ctx) + use1(ctx)\n  } else {\n    0\n  }\n}\n\nexport fn main() -> Int {\n  let cx = Ctx::{ n: 1, xs: [1, 2] }\n  walk(ctx = cx, k = 3) + three(ctx = cx, c = true)\n}\n"
+
+test "rc-classify reports the self-recursive field reader as borrow_param" {
+  let out = rc_classify_source(ctx_prelude)
+  inspect(classify_line(out = out, name = "walk"), content = "walk borrow_param")
+  inspect(classify_line(out = out, name = "use1"), content = "use1 borrow_param")
+}
+
+test "rc-plan takes no dup of a parameter that is only read and passed on" {
+  // Before: `walk ctx dup 1` and `three ctx dup 2` plus a path drop, which
+  // left two references behind on the path that skips the reads.
+  let plan = rc_plan_source(source = ctx_prelude, fn_filter = "")
+  assert(!String::contains(plan, needle = "walk ctx dup"))
+  assert(!String::contains(plan, needle = "three ctx dup"))
+  assert(!String::contains(plan, needle = "three ctx path_drop"))
+}

@@ -2,6 +2,8 @@
 
 import @vibe/compiler/core {
   BindingOrigin,
+  EffectClass,
+  EffectRequirement,
   Expr,
   Pat,
   Stmt,
@@ -10,6 +12,9 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   canonical_builtin_name,
+  classify_label_in,
+  effect_catalog_in,
+  effect_catalog_lookup_unique,
   erased_exception_covers_kind,
   exception_effect_labels_equal,
   exception_kinds_compatible,
@@ -36,15 +41,18 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import ./checker_effects_mutability_expr_into.vibe {
-  EffectError, append_eff_errs, effect_row_has_label, label_is_effect_var, no_str_labels
+  EffectError, append_eff_errs, effect_row_has_label, label_is_effect_var, no_str_labels, row_label_base
 }
 
 import ./checker_effects_throw_payload_kind.vibe {
   builtin_call_effect,
   builtin_call_op_label,
+  collect_entry_declared_effect_kinds,
   collect_entry_user_effect_operations,
   console_authorizes_legacy,
   effect_name_of_op,
+  entry_declared_effect_kinds,
+  entry_host_provided_effects,
   entry_user_effect_operations,
   erased_covers_only_messages,
   exception_effect_labels,
@@ -271,6 +279,64 @@ export fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
 export fn set_entry_user_effect_operations(_ stmts: Array[Stmt]) -> Unit {
   Array::truncate(entry_user_effect_operations, length = 0)
   collect_entry_user_effect_operations(stmts = stmts, out = entry_user_effect_operations)
+  Array::truncate(entry_declared_effect_kinds, length = 0)
+  Array::truncate(entry_host_provided_effects, length = 0)
+  collect_entry_declared_effect_kinds(stmts = stmts, out = entry_declared_effect_kinds)
+}
+
+/// ADR-0084 / ADR-0094 (#3143): what the entry refusal adds when an effect it
+/// names is a CAPABILITY by its declaration -- it acts on a resource -- rather
+/// than an algebraic effect. The class comes from `classify_label_in` over
+/// the program's declarations, so it is the declared resource kind that
+/// decides, not the effect's name. No host provides a program-declared
+/// effect yet (#2656), so the entry still refuses it; the note says why the
+/// edit is still `handle`. `""` when no named effect is a declared capability.
+export fn entry_declared_capability_note(_ effects: String) -> String {
+  let notes: Array[String] = []
+  for raw in String::split(effects, sep = ",") {
+    let label = String::trim(raw)
+    let base_end = String::index_of(label, needle = "::")
+    let effect = if base_end > 0 {
+      String::substring(label, start = 0, end = base_end)
+    } else {
+      label
+    }
+    let base = row_label_base(effect)
+    let mut declared = false
+    for entry in entry_declared_effect_kinds {
+      if entry.0 == base {
+        declared = true
+      }
+    }
+    if declared {
+      // The operation's own requirement when the label names its resource
+      // (`Kv[Posts]::Get`), else the effect's class: a bare `Kv` of a kind
+      // with no singleton names no one resource.
+      let kind = match classify_label_in(label = label, declared = entry_declared_effect_kinds) {
+        Some(CapabilityRequirement(_, k, _)) => k,
+        _ => match effect_catalog_lookup_unique(catalog = effect_catalog_in(entry_declared_effect_kinds), effect_def = base) {
+          Some(CapabilityClass(k)) => k,
+          _ => ""
+        }
+      }
+      let mut host_provided = false
+      for host in entry_host_provided_effects {
+        if host == base {
+          host_provided = true
+        }
+      }
+      if host_provided {
+        Array::push(notes, value = "`\{base}` is an `extern effect`, but binding a host provider for one is not implemented yet (#2656)")
+      } else if kind != "" {
+        Array::push(notes, value = "`\{base}` acts on a resource of kind `\{kind}`, but no host provides an effect a program declares yet (#2656)")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  String::join(notes, sep = "; ")
 }
 
 export fn user_provider_collision_errors(_ stmts: Array[Stmt]) -> Array[EffectError] {
@@ -278,7 +344,7 @@ export fn user_provider_collision_errors(_ stmts: Array[Stmt]) -> Array[EffectEr
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
-      SEffectDef(_, effect_name, _, operations) => {
+      SEffectDef(_, effect_name, _, operations, _) => {
         let mut oi = 0
         while oi < Array::length(operations) {
           let (op_name, _, _) = Array::get(operations, at = oi)

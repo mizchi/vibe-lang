@@ -1,0 +1,260 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_split
+}
+import @vibe/compiler/codegen/wasi {
+  prelude_split_last_module_count
+}
+
+// #2826 acceptance item 2: closure visibility, production diagnostics and
+// whole-program validator ordering, asked of the per-module split lane
+// against the whole-program lane on real multi-file programs.
+//
+// Every row compiles one program through `compile_file_fs_mode_rc_body_cached_split`
+// with `use_split` off and on, catches the diagnostic each lane throws, runs
+// each module that compiled under wasmtime, and asserts that the two lanes
+// agree EXACTLY: the same diagnostic text, in the same order, or the same
+// bytes and the same output. The rendered line keeps a short form of the
+// answer so a reader sees what was agreed on; `identical` is the full
+// comparison.
+//
+// Two families of rows, which differ in WHY they agree:
+//
+// - Refused before the split exists. The check (`checked_source_groups_fs`)
+//   refuses an import cycle, a type error, a non-exported import and a
+//   privately imported name, all before `ordinary_lane_module_split` builds a
+//   split. The lanes agree by construction, and these rows pin that the split
+//   never gets a say: with the check skipped on the split lane, every one of
+//   them fails -- the three cyclic programs even compile and run there.
+// - Decided by the prelude. `zero_alloc_check` runs on the WHOLE program
+//   before the split partitions it, and the trait-dict desugar's refusals
+//   (`==`, derived renderers, index receivers, 32-bit `Add` rows) are
+//   reported once for the program. Before #2826 the split lane reported them
+//   per module, so the first module's refusal ended the compile: a second
+//   module's `==` refusal went missing, a later module's refusal of an
+//   EARLIER family lost to an earlier module's refusal of a later one, and a
+//   valid program with a 32-bit `Add` call outside the first module was
+//   refused outright, because each module's run saw the call's row and only
+//   the module holding the call consumed it.
+
+/// The answer one lane gives: the diagnostic it throws, or "" and the module.
+fn one_lane(entry: String, split: Bool) -> (String, Bytes) with Env + Fs {
+  handle {
+    let bytes = compile_file_fs_mode_rc_body_cached_split(entry_path = entry, entry_name = "main", cache_mode = "off", use_split = split, exports_stripped = false)
+    ("", bytes)
+  } with { Exception::Throw(msg) => (msg, Bytes::new(0)) }
+}
+
+/// Each diagnostic line of `msg`, reduced to the first of `needles` it
+/// contains (`?` when none), so a row can show WHICH diagnostics came back
+/// and in what order without pinning their full text twice.
+fn labels(msg: String, needles: Array[String]) -> String {
+  let out: Array[String] = []
+  for line in String::split(msg, sep = "\n") {
+    let mut label = "?"
+    let mut k = 0
+    while label == "?" && k < Array::length(needles) {
+      if String::contains(line, needle = Array::get(needles, at = k)) {
+        label = Array::get(needles, at = k)
+      } else ()
+      k = k + 1
+    }
+    Array::push(out, value = label)
+  }
+  String::join(out, sep = ",")
+}
+
+/// One lane's answer, rendered: `refused[labels]`, or `ran[output]` with the
+/// module validated and executed by wasmtime.
+fn rendered(tag: String, lane: String, answer: (String, Bytes), needles: Array[String]) -> String with Console + Exception + Fs + Process {
+  if answer.0 != "" {
+    "refused[" + labels(msg = answer.0, needles = needles) + "]"
+  } else {
+    let path = "/tmp/vibe_psv_" + tag + "_" + lane + ".wasm"
+    Fs::write_bytes(path, bytes = answer.1)
+    // The exported closure takes its hidden env parameter explicitly.
+    let lines = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0")
+    "ran[" + String::join(lines, sep = ",") + "]"
+  }
+}
+
+/// Writes `files` as `/tmp/vibe_psv_<tag>_<name>.vibe`, compiles `main`
+/// through both lanes, and renders what the two have to agree on.
+fn both_lanes(tag: String, files: Array[(String, String)], needles: Array[String]) -> String with Console + Env + Exception + Fs + Process {
+  for file in files {
+    Fs::write_file("/tmp/vibe_psv_" + tag + "_" + file.0 + ".vibe", contents = file.1)
+  }
+  let entry = "/tmp/vibe_psv_" + tag + "_main.vibe"
+  let whole = one_lane(entry = entry, split = false)
+  let split = one_lane(entry = entry, split = true)
+  // Non-vacuity for a program that compiles: the split really partitioned it.
+  let split_modules = prelude_split_last_module_count()
+  let identical = if whole.0 == split.0 && whole.1 == split.1 {
+    "true"
+  } else {
+    "false"
+  }
+  "whole=" + rendered(tag = tag, lane = "whole", answer = whole, needles = needles) + " split=" + rendered(tag = tag, lane = "split", answer = split, needles = needles) + " split_modules=" + Int::to_string(split_modules) + " identical=" + identical
+}
+
+/// `import ./vibe_psv_<tag>_<dep>.vibe { names }`, then a blank line.
+fn import_of(tag: String, dep: String, names: String) -> String {
+  "import ./vibe_psv_" + tag + "_" + dep + ".vibe {\n  " + names + "\n}\n\n"
+}
+
+/// A generic `==` over a derived generic struct whose type argument the site
+/// cannot read: refused by the desugar (#3297), in whichever module holds it.
+fn eq_refused_leaf() -> String {
+  "struct Box[T] {\n  v: T\n} derive (Eq)\n\nexport fn same_box[T: Eq](x: T, y: T) -> Bool {\n  let a = Box::{ v: x }\n  let b = Box::{ v: y }\n  a == b\n}\n"
+}
+
+/// The same refusal, declared in `main` itself.
+fn eq_refused_main_decls() -> String {
+  "struct Cell[T] {\n  v: T\n} derive (Eq)\n\nfn same_cell[T: Eq](x: T, y: T) -> Bool {\n  let a = Cell::{ v: x }\n  let b = Cell::{ v: y }\n  a == b\n}\n\n"
+}
+
+/// No diagnostic is expected, so nothing to label.
+fn no_needles() -> Array[String] {
+  []
+}
+
+//# Refused by the prelude: one report for the program (#2826)
+
+test "two modules each refusing an `==` report both, in program order" {
+  // Red before the fix: `split=refused[Box]`, the leaf's alone.
+  let main = import_of(tag = "eqeq", dep = "leaf", names = "same_box") + eq_refused_main_decls() + "fn main() -> Int {\n  if same_box(x = 1, y = 1) && same_cell(x = 1, y = 1) {\n    1\n  } else {\n    0\n  }\n}\n"
+  inspect(both_lanes(tag = "eqeq", files = [
+    ("main", main),
+    ("leaf", eq_refused_leaf())
+  ], needles = ["Box", "Cell"]), content = "whole=refused[Box,Cell] split=refused[Box,Cell] split_modules=0 identical=true")
+}
+
+test "a later module's `==` refusal outranks an earlier module's renderer refusal" {
+  // The whole program reports `==` refusals before renderer refusals, so the
+  // leaf's `derive (Show)` of a function field loses to `main`'s `==`. Red
+  // before the fix: the split reported the leaf's renderer refusal.
+  let leaf = "struct C {\n  f: (Int) -> Int\n} derive (Show)\n\nfn inc(_ x: Int) -> Int {\n  x + 1\n}\n\nexport fn show_len() -> Int {\n  let c = C::{ f: inc }\n  let s = \"c=\\{c}\"\n  String::length(s)\n}\n"
+  let main = import_of(tag = "showeq", dep = "leaf", names = "show_len") + eq_refused_main_decls() + "fn main() -> Int {\n  if same_cell(x = 1, y = 1) {\n    show_len()\n  } else {\n    0\n  }\n}\n"
+  inspect(both_lanes(tag = "showeq", files = [("main", main), ("leaf", leaf)], needles = [
+    "`==`",
+    "renderer"
+  ]), content = "whole=refused[`==`] split=refused[`==`] split_modules=0 identical=true")
+}
+
+test "a later module's `==` refusal outranks an earlier module's index refusal" {
+  // Same ordering for the index-receiver family. Red before the fix: the
+  // split reported the leaf's `Array::get` refusal.
+  let leaf = "export fn first[T](_ c: T) -> Int {\n  Array::get(c, at = 0)\n}\n"
+  let main = import_of(tag = "indexeq", dep = "leaf", names = "first") + eq_refused_main_decls() + "fn main() -> Int {\n  if same_cell(x = 1, y = 1) {\n    first([7])\n  } else {\n    0\n  }\n}\n"
+  inspect(both_lanes(tag = "indexeq", files = [("main", main), ("leaf", leaf)], needles = [
+    "`==`",
+    "Array::get"
+  ]), content = "whole=refused[`==`] split=refused[`==`] split_modules=0 identical=true")
+}
+
+test "a 32-bit `Add` call in another module than its generic is not refused" {
+  // The checker files the call's row for the whole program; only `main`'s run
+  // consumes it. Red before the fix: the split refused this valid program
+  // because the leaf's run found the row unconsumed.
+  let leaf = "export fn add[T: Add](a: T, b: T) -> T {\n  a + b\n}\n"
+  let main = import_of(tag = "add32", dep = "leaf", names = "add") + "fn main() -> Int {\n  let top: Int32 = 2147483647\n  let one: Int32 = 1\n  Int32::to_int(add(a = top, b = one))\n}\n"
+  inspect(both_lanes(tag = "add32", files = [("main", main), ("leaf", leaf)], needles = no_needles()), content = "whole=ran[-2147483648] split=ran[-2147483648] split_modules=2 identical=true")
+}
+
+test "renderer and index refusals in both modules report the first, as the whole program does" {
+  // One family per program, a refusal in each module: the whole program
+  // reports the first of the family, and so did the split before the fix.
+  let show_leaf = "struct C {\n  f: (Int) -> Int\n} derive (Show)\n\nfn inc(_ x: Int) -> Int {\n  x + 1\n}\n\nexport fn show_len() -> Int {\n  let c = C::{ f: inc }\n  let s = \"c=\\{c}\"\n  String::length(s)\n}\n"
+  let show_main = import_of(tag = "showshow", dep = "leaf", names = "show_len") + "struct D {\n  g: (Int) -> Int\n} derive (Show)\n\nfn dec(_ x: Int) -> Int {\n  x - 1\n}\n\nfn show_len2() -> Int {\n  let d = D::{ g: dec }\n  let s = \"d=\\{d}\"\n  String::length(s)\n}\n\nfn main() -> Int {\n  show_len() + show_len2()\n}\n"
+  let index_leaf = "export fn first[T](_ c: T) -> Int {\n  Array::get(c, at = 0)\n}\n"
+  let index_main = import_of(tag = "indexindex", dep = "leaf", names = "first") + "fn second[T](_ c: T) -> Int {\n  Array::get(c, at = 1)\n}\n\nfn main() -> Int {\n  first([7]) + second([7, 8])\n}\n"
+  let show = both_lanes(tag = "showshow", files = [
+    ("main", show_main),
+    ("leaf", show_leaf)
+  ], needles = ["renderer"])
+  let index = both_lanes(tag = "indexindex", files = [
+    ("main", index_main),
+    ("leaf", index_leaf)
+  ], needles = ["`c`"])
+  inspect(show + " / " + index, content = "whole=refused[renderer] split=refused[renderer] split_modules=0 identical=true / whole=refused[`c`] split=refused[`c`] split_modules=0 identical=true")
+}
+
+//# Refused before the split exists: the lanes agree by construction
+
+test "import cycles are refused identically, direct, through a facade, and between re-exports" {
+  let direct_main = import_of(tag = "cyc", dep = "b", names = "b_val") + "export fn a_val() -> Int {\n  1\n}\n\nfn main() -> Int {\n  b_val()\n}\n"
+  let direct_b = import_of(tag = "cyc", dep = "main", names = "a_val") + "export fn b_val() -> Int {\n  a_val() + 41\n}\n"
+  let facade_main = import_of(tag = "cycf", dep = "facade", names = "b_val") + "export fn a_val() -> Int {\n  1\n}\n\nfn main() -> Int {\n  b_val()\n}\n"
+  let facade = "export ./vibe_psv_cycf_b.vibe {\n  b_val\n}\n"
+  let facade_b = import_of(tag = "cycf", dep = "main", names = "a_val") + "export fn b_val() -> Int {\n  a_val() + 41\n}\n"
+  let re_main = import_of(tag = "recyc", dep = "f1", names = "b_val") + "fn main() -> Int {\n  b_val()\n}\n"
+  let re_f1 = "export ./vibe_psv_recyc_f2.vibe {\n  b_val\n}\n"
+  let re_f2 = "export ./vibe_psv_recyc_f1.vibe {\n  b_val\n}\n\nexport fn b_val() -> Int {\n  42\n}\n"
+  let needles = ["import cycle"]
+  let direct = both_lanes(tag = "cyc", files = [
+    ("main", direct_main),
+    ("b", direct_b)
+  ], needles = needles)
+  let through = both_lanes(tag = "cycf", files = [
+    ("main", facade_main),
+    ("facade", facade),
+    ("b", facade_b)
+  ], needles = needles)
+  let reexports = both_lanes(tag = "recyc", files = [
+    ("main", re_main),
+    ("f1", re_f1),
+    ("f2", re_f2)
+  ], needles = needles)
+  inspect(direct + " / " + through + " / " + reexports, content = "whole=refused[import cycle] split=refused[import cycle] split_modules=0 identical=true / whole=refused[import cycle] split=refused[import cycle] split_modules=0 identical=true / whole=refused[import cycle] split=refused[import cycle] split_modules=0 identical=true")
+}
+
+test "a type error in a leaf is reported identically" {
+  // `main` has one too; the build reports the first, on both lanes.
+  let main = import_of(tag = "tyerr", dep = "leaf", names = "lv") + "fn main() -> Int {\n  let s: String = 3\n  lv()\n}\n"
+  let leaf = "export fn lv() -> Int {\n  let x: Int = \"no\"\n  x\n}\n"
+  inspect(both_lanes(tag = "tyerr", files = [("main", main), ("leaf", leaf)], needles = [
+    "leaf.vibe: line 2:16-20: binding type mismatch"
+  ]), content = "whole=refused[leaf.vibe: line 2:16-20: binding type mismatch] split=refused[leaf.vibe: line 2:16-20: binding type mismatch] split_modules=0 identical=true")
+}
+
+test "importing a name the leaf does not export is reported identically" {
+  let main = import_of(tag = "noexp", dep = "leaf", names = "hidden") + "fn main() -> Int {\n  hidden()\n}\n"
+  let leaf = "fn hidden() -> Int {\n  1\n}\n\nexport fn shown() -> Int {\n  2\n}\n"
+  inspect(both_lanes(tag = "noexp", files = [("main", main), ("leaf", leaf)], needles = [
+    "imported name 'hidden' is not exported"
+  ]), content = "whole=refused[imported name 'hidden' is not exported] split=refused[imported name 'hidden' is not exported] split_modules=0 identical=true")
+}
+
+test "a name only a dependency imports privately is unknown to the importer on both lanes" {
+  let main = import_of(tag = "privuse", dep = "mid", names = "via_mid") + "fn main() -> Int {\n  secret_add(a = via_mid(n = 1), b = 2)\n}\n"
+  let mid = import_of(tag = "privuse", dep = "priv", names = "secret_add") + "export fn via_mid(n: Int) -> Int {\n  secret_add(a = n, b = 1)\n}\n"
+  let priv = "export fn secret_add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
+  inspect(both_lanes(tag = "privuse", files = [
+    ("main", main),
+    ("mid", mid),
+    ("priv", priv)
+  ], needles = ["line 6:3-13: unknown name: secret_add"]), content = "whole=refused[line 6:3-13: unknown name: secret_add] split=refused[line 6:3-13: unknown name: secret_add] split_modules=0 identical=true")
+}
+
+//# The whole-program validator runs before the split partitions the program
+
+/// `hot` is `#zero_alloc` in `main` and calls `helper` in the leaf.
+fn zero_alloc_main(_ tag: String) -> String {
+  import_of(tag = tag, dep = "leaf", names = "helper") + "#zero_alloc\nfn hot(a: Int, b: Int) -> Int {\n  helper(a = a, b = b) * 2\n}\n\nfn main() -> Int {\n  hot(a = 14, b = 7)\n}\n"
+}
+
+test "a `#zero_alloc` caller of an allocation-free callee in another module compiles on both lanes" {
+  // Run per module, the check would see no body for `helper` and reject this.
+  let leaf = "export fn helper(a: Int, b: Int) -> Int {\n  a + b\n}\n"
+  inspect(both_lanes(tag = "zaok", files = [
+    ("main", zero_alloc_main("zaok")),
+    ("leaf", leaf)
+  ], needles = no_needles()), content = "whole=ran[42] split=ran[42] split_modules=2 identical=true")
+}
+
+test "a `#zero_alloc` caller of an allocating callee in another module is refused on both lanes" {
+  let leaf = "export fn helper(a: Int, b: Int) -> Int {\n  let xs = [a, b]\n  Array::length(xs) + a\n}\n"
+  inspect(both_lanes(tag = "zabad", files = [
+    ("main", zero_alloc_main("zabad")),
+    ("leaf", leaf)
+  ], needles = ["zero_alloc: fn 'hot' may allocate"]), content = "whole=refused[zero_alloc: fn 'hot' may allocate] split=refused[zero_alloc: fn 'hot' may allocate] split_modules=0 identical=true")
+}

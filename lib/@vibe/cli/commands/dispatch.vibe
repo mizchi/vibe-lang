@@ -24,7 +24,8 @@ import @vibe/compiler/loader {
   collect_source_groups_fs,
   fill_require_pins_lenient,
   ingest_source_text_fs,
-  ingestion_pipeline_telemetry_json,
+  ingestion_pipeline_telemetry_publish,
+  ingestion_pipeline_telemetry_refusal,
   load_or_parse_module_header_fs,
   set_ingestion_pipeline_telemetry_enabled
 }
@@ -261,6 +262,9 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
       throw("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT requires VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
     } else if ingestion_out != "" && (ingestion_nonce == "" || has_control_char(ingestion_nonce)) {
       throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
+    } else if pipeline_out != "" && ingestion_pipeline_telemetry_refusal() != "" {
+      // #2498: a build without the counters refuses rather than publishing.
+      throw(ingestion_pipeline_telemetry_refusal())
     } else if pipeline_out != "" && (pipeline_nonce == "" || has_control_char(pipeline_nonce)) {
       throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
     } else {
@@ -303,7 +307,7 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
     // Published strictly after the check has been answered: a failure above
     // leaves no pipeline sidecar looking like a successful observation.
     if pipeline_out != "" {
-      Fs::write_file(pipeline_out, contents = ingestion_pipeline_telemetry_json(pipeline_nonce))
+      ingestion_pipeline_telemetry_publish(path = pipeline_out, nonce = pipeline_nonce)
     } else {
       ()
     }
@@ -1316,7 +1320,7 @@ fn rc_plan_help_text() -> String {
 /// `vibe rc-validate --help`, kept in step with runtime/vibe's static copy by
 /// hand like the two above.
 fn rc_validate_help_text() -> String {
-  "usage: vibe rc-validate [--fn NAME] [--mutate drop-dups] <file.vibe>\nChecks each function's Perceus plan against the linear ownership discipline.\nEmpty output = every checked binding balances on every path.\nLines: FN BINDING PATH: owned value not consumed | owned value released N more than held | borrowed parameter consumed without a dup | consume mark at offset N is not a consuming occurrence | heap value planned as scalar | not checked: REASON.\nGaps: the file is checked alone; elaborate_heap_params and return_control_annotate_calls do not run; a heap value planned as scalar is not caught in general.\n--mutate drop-dups: self-test seam only. Validates each plan with every PaDup row deleted, so a gate can show it fails on a wrong plan; the lines then describe a plan the compiler never builds.\n"
+  "usage: vibe rc-validate [--fn NAME] [--mutate drop-dups|inflate-exit-drops] <file.vibe>\nChecks each function's Perceus plan against the linear ownership discipline.\nEmpty output = every checked binding balances on every path and no reference cycle was found.\nLines: FN BINDING PATH: owned value not consumed | owned value released N more than held | borrowed parameter consumed without a dup | consume mark at offset N is not a consuming occurrence | heap value planned as scalar | warning: reference cycle (...); RC cannot free it | not checked: REASON.\nGaps: the file is checked alone; elaborate_heap_params and return_control_annotate_calls do not run; a heap value planned as scalar is not caught in general.\n--mutate drop-dups: self-test seam only. Validates each plan with every PaDup row deleted (inflate-exit-drops: every exit-drop count one higher), so a gate can show it fails on a wrong plan; the lines then describe a plan the compiler never builds.\n"
 }
 
 fn selfhost_cli_user_rc_classify_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
@@ -1401,7 +1405,7 @@ fn selfhost_cli_user_rc_validate_args(_ args: Array[String]) -> Int with Excepti
     i = i + 1
   }
   if src == "" {
-    throw("usage: vibe rc-validate [--fn NAME] [--mutate drop-dups] <file.vibe>")
+    throw("usage: vibe rc-validate [--fn NAME] [--mutate drop-dups|inflate-exit-drops] <file.vibe>")
   } else if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {

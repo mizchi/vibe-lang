@@ -16,7 +16,13 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/perceus {
-  PerceusAction, build_perceus_plan_with_params_split, pa_is_dup, perceus_last_plan_classes, perceus_validate_fn
+  PerceusAction,
+  build_perceus_plan_with_params_split,
+  fn_result_is_immediate,
+  pa_is_dup,
+  pa_is_exit_drop,
+  perceus_last_plan_classes,
+  perceus_validate_fn
 }
 
 import ./rc_query.vibe {
@@ -33,6 +39,27 @@ fn rcv_drop_dups(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAct
   for a in plan {
     if pa_is_dup(a) {
       ()
+    } else {
+      Array::push(out, value = a)
+    }
+  }
+  out
+}
+
+/// `--mutate inflate-exit-drops`: the plan with every counted PaExitDrop row
+/// releasing one reference more than planned (a guarded `-1` row is left as
+/// it is). Rows keep their positions, so the parameter-drop boundary holds.
+fn rcv_inflate_exit_drops(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
+  let out: Array[PerceusAction] = []
+  for a in plan {
+    if pa_is_exit_drop(a) && a.extra > 0 {
+      Array::push(out, value = PerceusAction::{
+        kind: a.kind,
+        name: a.name,
+        binding_id: a.binding_id,
+        use_offset: a.use_offset,
+        extra: a.extra + 1
+      })
     } else {
       Array::push(out, value = a)
     }
@@ -99,7 +126,7 @@ fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction
     match Array::get(fns, at = i) {
       EFn(_, _, params, _, _, body) => {
         let drop_start: Array[Int] = []
-        let plan = build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret, out_param_drop_start = drop_start)
+        let plan = build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret, out_param_drop_start = drop_start, result_immediate = fn_result_is_immediate(sig = None, value = Array::get(fns, at = i)))
         let class_names: Array[String] = []
         let class_bits: Array[Int] = []
         perceus_last_plan_classes(out_names = class_names, out_bits = class_bits)
@@ -188,14 +215,17 @@ export fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow
 
 /// Self-test seam behind `vibe rc-validate --mutate MUTATION`: validate a
 /// DELIBERATELY broken copy of each real plan, so a gate's self-test can show
-/// that a wrong plan in the corpus it sweeps makes the gate fail. The one
-/// mutation is `drop-dups` (every PaDup row deleted); any other name throws.
-/// Not a mode for reading results: the lines describe a plan the compiler
-/// never builds.
+/// that a wrong plan in the corpus it sweeps makes the gate fail. The
+/// mutations are `drop-dups` (every PaDup row deleted) and
+/// `inflate-exit-drops` (every counted PaExitDrop row one higher); any other
+/// name throws. Not a mode for reading results: the lines describe a plan
+/// the compiler never builds.
 export fn rc_validate_source_mutated(source: String, fn_filter: String, mutation: String) -> String with Exception {
   if mutation == "drop-dups" {
     rcv_run(source = source, fn_filter = fn_filter, edit = rcv_drop_dups, split_edit = true, borrow_fn = "", borrow_mask = 0)
+  } else if mutation == "inflate-exit-drops" {
+    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_inflate_exit_drops, split_edit = false, borrow_fn = "", borrow_mask = 0)
   } else {
-    throw("rc-validate: unknown --mutate value: " + mutation + " (expected drop-dups)")
+    throw("rc-validate: unknown --mutate value: " + mutation + " (expected drop-dups or inflate-exit-drops)")
   }
 }

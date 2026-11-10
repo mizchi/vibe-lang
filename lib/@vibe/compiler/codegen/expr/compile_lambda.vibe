@@ -119,6 +119,7 @@ import @vibe/compiler/codegen/common_base {
 
 import @vibe/compiler/codegen/common_extractors {
   array_contains_str,
+  array_count_str,
   emit_assignop_op,
   emit_memory_copy,
   find_catchall_idx,
@@ -210,6 +211,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_header,
   emit_i32_add,
   emit_i32_const,
+  emit_i32_const_slot,
   emit_i32_load,
   emit_i32_load8_u,
   emit_i32_store,
@@ -218,6 +220,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_add,
   emit_i64_and,
   emit_i64_const,
+  emit_i64_const_slot,
   emit_i64_div_s,
   emit_i64_eq,
   emit_i64_eqz,
@@ -1527,8 +1530,14 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       emit_local_get(buf = lam_buf, idx = Array::get(lam_ppd_flags, at = ppk))
       emit_i64_eqz(lam_buf)
       emit_if_void(lam_buf)
-      emit_local_get(buf = lam_buf, idx = Array::get(lam_ppd_params, at = ppk))
-      emit_call(buf = lam_buf, func_idx = ctx.rc_drop_func_idx)
+      // One plan row per reference the path still holds (#1980).
+      let (ppkn, _) = Array::get(norm_params, at = Array::get(lam_ppd_params, at = ppk))
+      let mut pdk = array_count_str(arr = lam_path_drops, s = ppkn)
+      while pdk > 0 {
+        emit_local_get(buf = lam_buf, idx = Array::get(lam_ppd_params, at = ppk))
+        emit_call(buf = lam_buf, func_idx = ctx.rc_drop_func_idx)
+        pdk = pdk - 1
+      }
       emit_end(lam_buf)
       ppk = ppk + 1
     }
@@ -1584,7 +1593,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   Array::push(ctx.table_slots_used, value = table_slot)
   if num_captures == 0 {
     blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_fn_value, sym = table_slot)
-    emit_i64_const(buf = buf, value = (table_slot<<2)|2)
+    emit_i64_const_slot(buf = buf, value = (table_slot<<2)|2)
     next_local
   } else {
     let ptr_local = next_local
@@ -1615,7 +1624,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
       blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_table_slot_i32, sym = table_slot)
-      emit_i32_const(buf = buf, value = table_slot)
+      emit_i32_const_slot(buf = buf, value = table_slot)
       emit_i32_store(buf = buf, align = 2, offset = 8)
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
@@ -1633,7 +1642,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
       blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_table_slot_i32, sym = table_slot)
-      emit_i32_const(buf = buf, value = table_slot)
+      emit_i32_const_slot(buf = buf, value = table_slot)
       emit_i32_store(buf = buf, align = 2, offset = 0)
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)

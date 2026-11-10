@@ -1,7 +1,7 @@
 //# Imports
 
 import .{
-  Obligation, Obligation::report_line, prove_line_col, prove_obligations, prove_verdict
+  Obligation, Obligation::report_line, prove_line_col, prove_obligations, prove_verdict, prove_verdict_in
 }
 
 //# Helpers
@@ -59,6 +59,34 @@ test "#3719: structs and enums of the file are datatypes; match is a case split"
 test "#3719: a generic enum, or one with a field outside the fragment, is unsupported" {
   let src = "enum Box[T] {\n  Full(T)\n}\nenum Named {\n  Tag(String)\n}\nfn f(b: Box[Int]) -> Int where { ensures: true } {\n  0\n}\nfn g(n: Named) -> Int where { ensures: true } {\n  0\n}\n"
   inspect(kinds(src), content = "f:unsupported:parameter `b` is not `Int`, `Bool`, `Array[Int]`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type) | g:unsupported:parameter `n` is not `Int`, `Bool`, `Array[Int]`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type)")
+}
+
+test "#3717: an array counterexample is its length and elements, not the solver's term" {
+  inspect(prove_verdict("sat\n(((|Array[Int].len| |xs|) 2)\n ((select (|Array[Int].data| |xs|) 0) (- 4))\n ((select (|Array[Int].data| |xs|) 1) 7)\n ((select (|Array[Int].data| |xs|) 2) 0)\n (|n| 3))\n"), content = "(unproved, xs = [-4, 7], n = 3)")
+  inspect(prove_verdict("sat\n(((|Array[Int].len| |xs|) 0) ((select (|Array[Int].data| |xs|) 0) 5))\n"), content = "(unproved, xs = [])")
+  inspect(prove_verdict("sat\n(((|Array[Int].len| |xs|) 4611686018427387903) ((select (|Array[Int].data| |xs|) 0) 1) ((select (|Array[Int].data| |xs|) 1) 2))\n"), content = "(unproved, xs = [1, 2, ...] (length 4611686018427387903))")
+  inspect(prove_verdict("sat\n(((|Array[Int].len| |a|) 1) ((select (|Array[Int].data| |a|) 0) 9) ((|Array[Int].len| |b|) 1) ((select (|Array[Int].data| |b|) 0) 8))\n"), content = "(unproved, a = [9], b = [8])")
+}
+
+test "#3717: the query asks for an array's length and leading elements" {
+  let src = "fn first(xs: Array[Int]) -> Int where { requires: Array::length(xs) > 0, ensures: result > 0 } {\n  xs[0]\n}\n"
+  let mut q = ""
+  for o in prove_obligations(src) {
+    if o.kind == "ensures" {
+      q = o.query
+    } else {
+      ()
+    }
+  }
+  let mut asked = ""
+  for line in String::split(q, sep = "\n") {
+    if String::starts_with(line, prefix = "(get-value") {
+      asked = line
+    } else {
+      ()
+    }
+  }
+  inspect(asked, content = "(get-value ((|Array[Int].len| |xs|) (select (|Array[Int].data| |xs|) 0) (select (|Array[Int].data| |xs|) 1) (select (|Array[Int].data| |xs|) 2) (select (|Array[Int].data| |xs|) 3) (select (|Array[Int].data| |xs|) 4) (select (|Array[Int].data| |xs|) 5) (select (|Array[Int].data| |xs|) 6) (select (|Array[Int].data| |xs|) 7)))")
 }
 
 test "#3719: a counterexample is shown as the program spells it" {
@@ -124,4 +152,9 @@ test "#3717: a contracted while owes its invariants and measure on entry and aft
 test "#3717: an array read owes its index inside the length" {
   let src = "fn g(xs: Array[Int], i: Int) -> Int where { requires: i >= 0 && i < Array::length(xs), ensures: true } {\n  xs[i] + Array::get(xs, at = i) - Array::length([1, 2])\n}\n"
   inspect(kinds(src), content = "g:index:xs[i] | g:index:Array::get(xs, at=i) | g:overflow:(Array::get(xs, i) + Array::get(xs, at=i)) | g:overflow:((Array::get(xs, i) + Array::get(xs, at=i)) - Array::length([1, 2])) | g:ensures:true")
+}
+
+test "#3717: a struct counterexample names its fields from the query" {
+  let query = "(set-option :produce-models true)\n(declare-datatypes ((|Point| 0) (|Shape| 0)) (((|Point::{}| (|Point.x| Int) (|Point.y| Int))) ((|Shape::Circle| (|Shape::Circle.r| Int)) (|Shape::Empty|))))\n(check-sat)\n"
+  inspect(prove_verdict_in("sat\n((|p| (|Point::{}| 1 (- 2))) (|s| (|Shape::Circle| 3)))\n", query = query), content = "(unproved, p = Point::{ x: 1, y: -2 }, s = Shape::Circle(3))")
 }

@@ -40,11 +40,20 @@ fallback has no diagnostics path). `install/install.sh` builds that fresh
 compiler by default; if you only have the committed seed, hover/diagnostics
 degrade gracefully to empty rather than erroring.
 
-The embedded server (`vibe lsp --selfhost`) keeps the typing of the buffer it
-last hovered, for that exact text (#1960). Further hovers and signature help on
-the same text reuse it instead of re-checking the whole buffer per request. The
-answer is the same as a fresh hover: hover is single-file there, so the text is
-everything it depends on, and any edit is a new text that gets a fresh check.
+The embedded server (`vibe lsp --selfhost`) types a document that is a `.vibe`
+file on disk the way `vibe type-at` does: the buffer's text, with its imports
+resolved from disk (#1960). It keeps the typing of the revision it last
+hovered. A revision is the document's path, its buffer text, and the walked
+fingerprint of the file, which covers every transitive dependency on disk.
+Further hovers and signature help of that revision reuse the typing without
+walking the project again, as long as every dependency keeps the stat token it
+was read under. When one moved, or after a file event from the editor (a
+document opened or saved, watched files changed), the next hover walks again,
+re-checking only the modules whose source changed. An edit to the buffer, or to
+any dependency on disk, is a new revision and is typed again. Any other
+document (an unsaved new buffer, a contract), and a file that does not check
+with its imports, is typed on its own; that typing is kept per exact text in
+the same way.
 
 ### Extract a function
 
@@ -123,9 +132,12 @@ vibe check --single-file --json <file.vibe>  # same JSON contract without resolv
   file that does not parse (it used to answer nothing, exit 0). **Empty
   stdout with exit 0** therefore means one thing: there is an identifier, and
   no type is known for it (an unused pattern binder, say); stderr names it.
-  LSP hover asks the same question of the unsaved buffer, typed on its own
-  (imports unresolved, like `vibe check --single-file`), and answers `null`
-  for both. Field accesses resolve at BOTH positions of
+  A file in a package whose `index.vpkg` shares imports with its siblings
+  is typed with those import lines in front of it, as `vibe check` types it,
+  and the position is read past them (#1960).
+  LSP hover asks the same question of the unsaved buffer (typed with its
+  imports, as above, when the document is a file on disk), and answers
+  `null` for both. Field accesses resolve at BOTH positions of
   `obj.field` (#645): the base identifier and the field name each yield the
   projection type (EDot carries the field token's own offset).
 - `binding-at` powers rename/references. Each line is a `START END` pair of

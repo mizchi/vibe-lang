@@ -118,7 +118,9 @@ $dir/unproved.vibe:282:58: unproved: ensures result of \`word_unsigned_low\` -- 
 $dir/unproved.vibe:288:72: unproved: ensures result of \`word_join\` -- counterexample: <model>
 $dir/unproved.vibe:298:58: unproved: ensures Array::all(xs, f=(x) -> { (x >= 0) }) of \`claims_nonneg\` -- counterexample: <model>
 $dir/unproved.vibe:305:12: unproved: ensures (result >= 0) of \`any_is_not_first\` -- counterexample: <model>
-$dir/unproved.vibe:312:31: unproved: overflow in (x + 1) in \`succ_any\` -- counterexample: <model>"
+$dir/unproved.vibe:312:31: unproved: overflow in (x + 1) in \`succ_any\` -- counterexample: <model>
+$dir/unproved.vibe:317:53: unproved: ensures (result > 0) of \`boxed_positive\` -- counterexample: <model>
+$dir/unproved.vibe:327:18: unproved: invariant ((((0 <= i) && (i <= n)) && (Array::length(xs) == i)) && Array::all(xs, f=(x) -> { (x == 0) })) holds again after each iteration, in \`not_all_zero\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
@@ -131,14 +133,167 @@ $dir/unsupported.vibe:73:1: unsupported: a contract clause that leaves the funct
 $dir/unsupported.vibe:88:5: unsupported: \`==\` on arrays: their contents past the length are not modelled, so equality is not encoded (in \`same_arrays\`)
 $dir/unsupported.vibe:98:3: unsupported: \`Array::length\` has no \`where\` contract, so the call cannot be checked modularly; give it one (\`ensures: true\` at least), and its body is proved too (in \`own_length\`)
 $dir/unsupported.vibe:103:1: unsupported: a write to the parameter \`xs\`, which its caller holds: only a local array is written (in \`param_write\`)
-$dir/unsupported.vibe:109:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`aliased\`)
-$dir/unsupported.vibe:117:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\` or \`Array::push\` (in \`iterated\`)
+$dir/unsupported.vibe:109:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\`, \`Array::push\`, \`Array::all\` or \`Array::any\` (in \`aliased\`)
+$dir/unsupported.vibe:117:1: unsupported: \`xs\` is written, and is also used as a value: a written array is named only as the array of \`Array::get\`, \`Array::length\`, \`xs[i]\`, \`Array::set\`, \`Array::push\`, \`Array::all\` or \`Array::any\` (in \`iterated\`)
 $dir/unsupported.vibe:126:1: unsupported: a write to \`xs\`, which is not bound exactly once, by \`let\`, to an array literal (in \`rebound\`)
 $dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\`, which is not modelled; test the range and use \`Int::wrap_int32\` (in \`checked_word\`)
 $dir/unsupported.vibe:147:3: unsupported: \`Array::all\`'s predicate must be a lambda written at the call (in \`named_pred\`)
 $dir/unsupported.vibe:152:3: unsupported: a call inside \`Array::all\`'s predicate: its result would be one value for every element (in \`called_pred\`)
 $dir/unsupported.vibe:158:11: unsupported: \`Array::all\`'s predicate assigns \`n\` (in \`counting_pred\`)"
 run_case unknown 1 "$dir/unknown.vibe:9:12: unknown: ensures result of \`fermat3\` -- $unknown_detail"
+
+# A counterexample is spelled as the program would write the arguments: an
+# `Array[Int]` as a literal and a struct with its field names, never the
+# solver's own terms (`(|Array[Int]::mk| ((as const ..)) ..)`), so it can be
+# pasted into a call. The values are the solver's choice; the spelling is not.
+spelled_case() {
+  local name="$1"
+  local out
+  set +e
+  out="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --solver="$solver" "$dir/$name.vibe" 2>&1)"
+  set -e
+  local raw
+  raw="$(printf '%s\n' "$out" | sed -n 's/.*-- counterexample: //p' | grep -E '[|]|\(as |lambda|store' || true)"
+  if [ -n "$raw" ]; then
+    echo "[prove] FAIL ($solver): $name.vibe: a counterexample keeps the solver's terms:" >&2
+    printf '%s\n' "$raw" >&2
+    fail=1
+  fi
+  local want
+  for want in '`second` -- counterexample: xs = [' '`boxed_positive` -- counterexample: b = Boxed::{ n: '; do
+    if ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+      echo "[prove] FAIL ($solver): $name.vibe: no counterexample spelled '$want...'" >&2
+      fail=1
+    fi
+  done
+}
+
+spelled_case unproved
+
+# #3717: each counterexample is replayed against the runtime contract checks.
+# For every unproved obligation the runtime also checks -- an ensures, a
+# callee's requires, an index, a divisor, a `match`'s coverage, a loop's
+# invariant or measure -- the call the counterexample names is made in a
+# `test` block of a copy of the fixture, and it must TRAP with that function
+# on the stack. A counterexample that runs clean means the prover's model of
+# the program and the program disagree. `overflow` obligations are not
+# replayed: an `Int` wraps at run time (#1877), it does not exit. Nor is a
+# counterexample whose array is longer than the elements the model shows
+# (`[a, ..., ...] (length N)`): it is named in a note instead.
+#
+# A counterexample can be spurious by design, where the prover deliberately
+# knows less than the run does. Those are named here, and each must keep
+# running clean -- a listed one that starts trapping fails too, so the list
+# cannot go stale:
+#   plain   a loop-assigned local with no invariant is forgotten after the
+#           loop, so `ensures: result == 0` is unproved though it holds.
+replay_spurious="plain"
+replay_case() {
+  local name="$1"
+  local work="_build/prove_replay.$$.$name"
+  rm -rf "$work"
+  mkdir -p "$work"
+  set +e
+  VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --solver="$solver" --json "$dir/$name.vibe" > "$work/report.json" 2>&1
+  set -e
+  if ! node -e '
+    const fs = require("fs");
+    const [fixture, report, work] = process.argv.slice(1);
+    const src = fs.readFileSync(fixture, "utf8");
+    const MIN = "-4611686018427387904";
+    const split = (s) => {
+      const out = []; let depth = 0, cur = "";
+      for (const c of s) {
+        if ("([{".includes(c)) depth++;
+        if (")]}".includes(c)) depth--;
+        if (c === "," && depth === 0) { out.push(cur.trim()); cur = ""; } else cur += c;
+      }
+      if (cur.trim() !== "") out.push(cur.trim());
+      return out;
+    };
+    const rows = [];
+    const partial = [];
+    for (const d of JSON.parse(fs.readFileSync(report, "utf8"))) {
+      const m = d.message.match(/^unproved: (.*) `([A-Za-z_0-9]+)` -- counterexample: (.*)$/);
+      if (!m || m[1].startsWith("overflow in")) continue;
+      // An array longer than the elements the model was asked for prints as
+      // `[a, b, ..., ...] (length N)`: a true counterexample, but not a value
+      // a call can be written with. It is named, not replayed.
+      if (/, \.\.\.\] \(length /.test(m[3])) { partial.push(m[2]); continue; }
+      const args = m[3].startsWith("none needed") ? [] : split(m[3]).map((p) => {
+        const eq = p.indexOf(" = ");
+        // The least `Int` has no literal: its magnitude is one past the bound.
+        return `${p.slice(0, eq)} = ${p.slice(eq + 3).split(MIN).join("(-4611686018427387903 - 1)")}`;
+      });
+      const file = `${work}/r${rows.length}_${m[2]}_test.vibe`;
+      const call = `${m[2]}(${args.join(", ")})`;
+      fs.writeFileSync(file, `${src}\n// replay of: ${d.message}\ntest "replay" {\n  let _ = ${call}\n}\n`);
+      rows.push(`${file}\t${m[2]}\t${call}`);
+    }
+    fs.writeFileSync(`${work}/plan.tsv`, rows.join("\n") + "\n");
+    fs.writeFileSync(`${work}/partial.txt`, partial.join(" "));
+    if (rows.length === 0) { console.error("no counterexample to replay"); process.exit(1); }
+  ' "$dir/$name.vibe" "$work/report.json" "$work"; then
+    echo "[prove] FAIL ($solver): $name.vibe: could not plan the counterexample replay" >&2
+    fail=1
+    return
+  fi
+  set +e
+  # One file at a time: the verdicts are read back per file from one log, so
+  # nothing may run beside a replay and write into it.
+  VIBE_TEST_JOBS=1 VIBE_TEST_CLI_WASM="$cli" VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$work"/*_test.vibe > "$work/run.log" 2>&1
+  set -e
+  if ! node -e '
+    const fs = require("fs");
+    const [work, spurious, name, partialText] = process.argv.slice(1);
+    const partial = (partialText || "").split(" ").filter((s) => s !== "");
+    const listed = spurious.split(" ").filter((s) => s !== "");
+    // vibe_test.sh reports each file as `ok   PATH`, `FAIL PATH` or
+    // `FAIL (compile) PATH`, followed by its indented detail lines. A block
+    // runs to the next file header or the closing `[vibe-test]` summary; a
+    // blank line inside it does not end it. `raw` keeps the block as printed,
+    // so a verdict this cannot read is shown rather than summarized.
+    const blocks = new Map();
+    let cur = null;
+    for (const line of fs.readFileSync(`${work}/run.log`, "utf8").split("\n")) {
+      const m = line.match(/^(ok|FAIL \(compile\)|FAIL) +(\S+)/);
+      if (m) { cur = { verdict: m[1], detail: [], raw: [line] }; blocks.set(m[2], cur); }
+      else if (line.startsWith("[vibe-test]")) cur = null;
+      else if (cur) { cur.raw.push(line); if (line.trim() !== "") cur.detail.push(line.trim()); }
+    }
+    const errs = [];
+    const seen = new Set();
+    for (const row of fs.readFileSync(`${work}/plan.tsv`, "utf8").split("\n").filter((l) => l !== "")) {
+      const [file, fn, call] = row.split("\t");
+      seen.add(fn);
+      const b = blocks.get(file);
+      if (!b) { errs.push(`replay of \`${fn}\` has no verdict: ${call}`); continue; }
+      if (b.verdict === "FAIL (compile)") { errs.push(`replay of \`${fn}\` does not compile: ${call} -- ${b.detail.join(" / ")}`); continue; }
+      const trapped = b.verdict === "FAIL" && b.detail.some((l) => l.startsWith("trap:")) && b.detail.some((l) => l === `at ${fn}` || l.startsWith(`at ${fn} (`) || l.startsWith(`at ${fn}__`));
+      if (listed.includes(fn)) {
+        if (b.verdict !== "ok") errs.push(`replay of \`${fn}\` is listed as spurious but no longer runs clean: ${call} -- drop it from replay_spurious`);
+      } else if (!trapped) {
+        errs.push(`replay of \`${fn}\` does not trap in \`${fn}\` at run time: ${call} (${b.verdict}${b.detail.length ? ": " + b.detail.join(" / ") : ", with no report: the runner printed " + JSON.stringify(b.raw.join("\n"))})`);
+      }
+    }
+    for (const fn of partial) seen.add(fn);
+    for (const fn of listed) if (name === "unproved" && !seen.has(fn)) errs.push(`\`${fn}\` is listed as spurious but has no counterexample to replay`);
+    if (errs.length) { for (const e of errs) console.error(e); process.exit(1); }
+  ' "$work" "$replay_spurious" "$name" "$(cat "$work/partial.txt")" 2> "$work/judge.err"; then
+    sed "s|^|[prove] FAIL ($solver): $name.vibe: |" "$work/judge.err" >&2
+    fail=1
+  fi
+  # One note per function, so a reader (and the self-test) can match a name
+  # whatever else the solver's models happened to truncate.
+  local skipped
+  for skipped in $(cat "$work/partial.txt"); do
+    echo "[prove] note ($solver): $name.vibe: not replayed, an array longer than the model shows: $skipped" >&2
+  done
+  rm -rf "$work"
+}
+
+replay_case unproved
+replay_case ranges
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per
 # line, at that line's position, with that line's message, and `[]` for a
@@ -188,4 +343,4 @@ refusal_case "is not a solver; use \`--solver=z3\`" --prove --solver=cvc5 "$dir/
 refusal_case "\`--solver\` chooses the solver of \`--prove\`" --solver="$solver" "$dir/proved.vibe"
 
 [ "$fail" = 0 ] || exit 1
-echo "[prove] ok ($solver: proved silent, unproved with counterexamples, unsupported reported, an unknown answer fails, --json carries the same diagnostics, a bad --solver is refused)"
+echo "[prove] ok ($solver: proved silent, unproved with counterexamples in program spelling that trap when replayed, unsupported reported, an unknown answer fails, --json carries the same diagnostics, a bad --solver is refused)"

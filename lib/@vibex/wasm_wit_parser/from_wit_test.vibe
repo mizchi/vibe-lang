@@ -212,7 +212,33 @@ test "a host-future import vibe cannot bind is refused, not skipped" {
     refused("package example:prices@1.0.0;\ninterface api {\n  get-price: func() -> s64;\n}\n"),
     refused("package example:prices@1.0.0;\ninterface a {\n  get: async func() -> s64;\n}\ninterface b {\n  get: async func() -> s64;\n}\n"),
     refused("package example:prices@1.0.0;\ninterface api {\n  resource r {\n    get: async func() -> s64;\n  }\n}\n")
-  ], content = "[REFUSED: wit: `package `example:prices` without a version` has no vibe mapping (the composer imports a versioned interface), REFUSED: wit: `function `get-price` as a host-future import (only `async func() -> s64`, or `async func() -> response` / `async func(<name>: string) -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `get` declared by two interfaces (both would be the binding `get`)` has no vibe mapping (in interface `b`), REFUSED: wit: `function `get` of resource `r` as a host-future import (only a freestanding `async func() -> s64` is admitted)` has no vibe mapping (in interface `api`)]")
+  ], content = "[REFUSED: wit: `package `example:prices` without a version` has no vibe mapping (the composer imports a versioned interface), REFUSED: wit: `function `get-price` as a host-future import (only `async func() -> s64`, or `async func() -> response` / `async func(<name>: string) -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `get` declared by two interfaces (both would be the binding `get`)` has no vibe mapping (in interface `b`), REFUSED: wit: `function `get` of resource `r`` has no vibe mapping (in interface `api`: resources are not bound yet -- reach one through a provider component that exports a freestanding `async func`)]")
+}
+
+// #3142: a `world` is read too. Its imported functions, inline interfaces and
+// resources used to be skipped without a word, so the bindings came back
+// EMPTY for a WIT whose world imports a resource with a constructor and a
+// method, or a world-level `async func() -> s64`.
+test "what a world imports is refused, not skipped" {
+  let refused = (src: String) -> String {
+    handle {
+      from_wit_future_imports(src)
+    } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+  }
+  inspect([
+    refused("package example:counter@1.0.0;\nworld w {\n  import api: interface {\n    resource counter {\n      constructor(start: s64);\n      get: func() -> s64;\n    }\n  }\n}\n"),
+    refused("package example:counter@1.0.0;\nworld w {\n  resource counter {\n    constructor(start: s64);\n  }\n}\n"),
+    refused("package example:counter@1.0.0;\nworld w {\n  import tick: async func() -> s64;\n}\n"),
+    refused("package example:counter@1.0.0;\nworld w {\n  import api: interface {\n    tick: async func() -> s64;\n  }\n}\n")
+  ], content = "[REFUSED: wit: `inline interface `api`` has no vibe mapping (imported by world `w`: declare it as `interface api { .. }` in the package and write `import api;` in the world), REFUSED: wit: `function `constructor` of resource `counter`` has no vibe mapping (in world `w`: resources are not bound yet -- reach one through a provider component that exports a freestanding `async func`), REFUSED: wit: `function `tick`` has no vibe mapping (imported by world `w`: declare it in `interface <name> { .. }` in the package and write `import <name>;` in the world), REFUSED: wit: `inline interface `api`` has no vibe mapping (imported by world `w`: declare it as `interface api { .. }` in the package and write `import api;` in the world)]")
+}
+
+// What a world EXPORTS is what the component provides, not an import, and a
+// world that only names a package interface adds nothing to bind: both derive
+// exactly what the interfaces alone derive.
+test "a world that only names interfaces or exports adds no bindings and no refusal" {
+  let wit = "package example:prices@1.0.0;\ninterface api {\n  get-price: async func() -> s64;\n}\nworld w {\n  import api;\n  export run: async func() -> s64;\n  export svc: interface {\n    resource session {\n      constructor();\n    }\n  }\n}\n"
+  inspect(from_wit_future_imports(wit), content = "/// `example:prices/api@1.0.0#get-price`, imported as a host future (#2064).\nexport fn get_price() -> Future[Int] {\n  host_future_named(\"example:prices/api@1.0.0#get-price\")\n}")
 }
 
 // The committed bindings of fixtures/wit_future_import are exactly the

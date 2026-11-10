@@ -41,11 +41,15 @@
 //# a case that passes by editing nothing.
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+  codegen_body_cache_artifact_key, compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
 }
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, persistent_artifact_cache_path
+  persistent_artifact_cache_path
+}
+
+import @vibe/compiler/core {
+  set_reloc_slot_width
 }
 
 //# Helpers
@@ -244,7 +248,7 @@ fn ec_subs(olds: Array[String], news: Array[String]) -> String with Exception {
 /// `reuse=full` on a build that reused nothing -- and the surrounding prose
 /// had to translate it every time.
 fn ec_probe(label: String, edited: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(ec_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = codegen_body_cache_artifact_key(ec_main_path))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
@@ -254,7 +258,7 @@ fn ec_probe(label: String, edited: String) -> String with Env + Exception + Fs {
   Fs::write_bytes(ec_b_path, bytes = string_to_bytes(ec_base_b()))
   Fs::write_bytes(ec_main_path, bytes = string_to_bytes(ec_base_main()))
   let cold_counts: Array[Int] = []
-  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = ec_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = ec_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts, exports_stripped = false)
   let cold_n = Array::get(cold_counts, at = 1)
   // Non-vacuity for the row itself: a cold run that was offered something, or
   // that compiled nothing, is not a baseline. The artifact was just deleted,
@@ -266,8 +270,8 @@ fn ec_probe(label: String, edited: String) -> String with Env + Exception + Fs {
   }
   Fs::write_bytes(ec_a_path, bytes = string_to_bytes(edited))
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = ec_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
-  let fresh = compile_file_fs_mode_rc(entry_path = ec_main_path, entry_name = "run")
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = ec_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts, exports_stripped = false)
+  let fresh = compile_file_fs_mode_rc(entry_path = ec_main_path, entry_name = "run", exports_stripped = false)
   let reuse = if Array::get(warm_counts, at = 0) == 0 {
     "unoffered"
   } else if Array::get(warm_counts, at = 1) < cold_n {
@@ -280,7 +284,24 @@ fn ec_probe(label: String, edited: String) -> String with Env + Exception + Fs {
 
 //# Tests
 
-test "#2669: every edit class stays byte-exact under the widened body cache" {
+//# #3941: every row runs at slot width 0 and at slot width 3. A relocation
+//# that wrote a padded slot back minimal, or a cache slot shared between the
+//# widths, answers differently at 3 than the same row at 0.
+
+/// Run `row` at relocatable-slot width `width`, restoring width 0 after it.
+fn bec_at_slot_width(width: Int, row: () -> Unit with Console + Env + Exception + Fs) -> Unit with Console + Env + Exception + Fs {
+  set_reloc_slot_width(width)
+  handle {
+    row()
+    set_reloc_slot_width(0)
+  } with { Exception::Throw(m) => {
+    set_reloc_slot_width(0)
+    throw(m)
+  } }
+}
+
+/// The row behind the test "#2669: every edit class stays byte-exact under the widened body cache"; run at slot widths 0 and 3.
+fn bec_row_1() -> Unit with Console + Env + Exception + Fs {
   let report: Array[String] = []
   // CONTROL. A comment moves nothing, so the widened lane must reuse. Without
   // at least one `partial` row this whole file would be vacuous: every other
@@ -371,4 +392,12 @@ test "#2669: every edit class stays byte-exact under the widened body cache" {
   // One line, fixed field order -- the CLI contract, and it keeps the whole
   // table visible in a failure rather than only its first row.
   inspect(String::join(report, sep = " | "), content = "comment reuse=partial equal=true | int-literal reuse=partial equal=true | string-literal reuse=partial equal=true | add-function reuse=partial equal=true | swap-order reuse=partial equal=true | add-closure reuse=partial equal=true | add-type-ahead reuse=partial equal=true | swap-struct-fields reuse=partial equal=true | add-effect-ahead reuse=partial equal=true | render-type reuse=partial equal=true | const-value reuse=partial equal=true")
+}
+
+test "#2669: every edit class stays byte-exact under the widened body cache" {
+  bec_row_1()
+}
+
+test "#2669: every edit class stays byte-exact under the widened body cache, at slot width 3 (#3941)" {
+  bec_at_slot_width(width = 3, row = bec_row_1)
 }

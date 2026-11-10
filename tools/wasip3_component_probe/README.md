@@ -578,3 +578,12 @@ The gate uses 2% for its warmups -- which otherwise ran the probe's full
 ~1.3s of sleeps purely to warm the JIT, costing as much as the measurement
 they exist to protect -- and 100% for the measured runs, so the margin is
 untouched. Raise it above 100 if a loaded machine ever narrows that margin.
+
+## `subtask_taskgroup/` (#3147)
+
+Guest-to-guest subtasks: a Main component calls a Worker component's async
+stackful export through `canon lower ... async`, measuring interleaving,
+`subtask.cancel`, the self-call trap, fan-out and a `stream<u32>` channel.
+`gen_probes.py` writes the components; `stream_channel.wat` is hand-written.
+The results and what they decide are in
+`docs/internal/design/component-subtask-taskgroup.md` (ADR-0125).

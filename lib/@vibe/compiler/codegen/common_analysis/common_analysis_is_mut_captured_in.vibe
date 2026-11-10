@@ -899,9 +899,12 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
 
 /// The `md_consume_count(e, n) == 0` question for every name of a body in ONE
 /// walk. `hits[i]` becomes 1 when `names[i]` has any counted consume in `e`
-/// under exactly md_cc_go's rules: a bare callee is invoked, a bare ident at
-/// a borrowed argument position or as a match/handle scrutinee is read, an
-/// interpolation is opaque, everything else is walked. A slot that is 1 on
+/// under md_cc_go's rules: a bare callee is invoked, a bare ident at a
+/// borrowed argument position or as a match/handle scrutinee is read, an
+/// interpolation is opaque, everything else is walked. One rule is the VIEW
+/// count's (md_view_consume_count_pre), not the owning one's: a projection
+/// off a bare name is a read (#2827), because a borrowed parameter is a view
+/// the caller keeps alive for the whole call. A slot that is 1 on
 /// entry is never queried, so a caller pre-marks the positions it will not
 /// ask about, and the walk stops as soon as no slot is pending. #2386: the
 /// borrow-param inference asks this per parameter of every top-level fn;
@@ -1074,7 +1077,19 @@ fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[In
       },
       EUnaryOp(_, x) => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
       EFn(_, _, _, _, _, body) => md_ca_go(e = body, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
-      EDot(x, _, _, _) => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
+      // #2827: a projection off a bare name reads the field in place and
+      // releases nothing -- the Perceus plan counts it as a borrow of the
+      // name (pc_emit's EDot arm), and codegen treats every name-rooted
+      // projection as a borrowed view (`cc_is_borrowed_projection`): a
+      // consumer that keeps it retains it, whether the name is owned or
+      // borrowed. So it does not make a parameter owned. Counting it as a
+      // consume made every function that reads a field of a parameter --
+      // `ctx.enable_rc` -- own that parameter, and every caller that passes
+      // it along own it too, which took a dup per use across the codegen.
+      EDot(x, _, _, _) => match x {
+        EIdent(_, _) => (),
+        _ => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+      },
       ELabeledArg(_, _, v) => md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
       EReturn(x) => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
       EBreak(opt) => match opt {

@@ -67,13 +67,88 @@ export fn dtd_add32_forced(_ trait_name: String) -> String with Exception {
 /// Refuse a row no call consumed: its call was not lowered through a path
 /// that reads the row, so its `+` would not wrap.
 export fn dtd_add32_report() -> Unit with Exception {
+  dtd_add32_report_rows(offs = dtd_add32_offs, types = dtd_add32_types, used = dtd_add32_used)
+}
+
+fn dtd_add32_report_rows(offs: Array[Int], types: Array[String], used: Array[Bool]) -> Unit with Exception {
   let mut i = 0
-  while i < Array::length(dtd_add32_offs) {
-    if !Array::get(dtd_add32_used, at = i) {
-      throw("this generic call instantiates an `Add`-bounded type parameter at `\{Array::get(dtd_add32_types, at = i)}` through a call form whose witness is not built at that type, so its `+` would not wrap at 32 bits: call the generic function by name at #\{Array::get(dtd_add32_offs, at = i)}")
+  while i < Array::length(offs) {
+    if !Array::get(used, at = i) {
+      throw("this generic call instantiates an `Add`-bounded type parameter at `\{Array::get(types, at = i)}` through a call form whose witness is not built at that type, so its `+` would not wrap at 32 bits: call the generic function by name at #\{Array::get(offs, at = i)}")
     } else {
       ()
     }
     i = i + 1
   }
+}
+
+//# Rows across the modules of one program (#2826)
+
+/// The checker files a row for the WHOLE program, so every module's run holds
+/// every row, and only the module holding the call consumes it. A row is
+/// unconsumed only when no module consumed it; these are the program's rows
+/// with that answer, in the order the first run filed them.
+let dtd_add32_split_offs: Array[Int] = []
+let dtd_add32_split_types: Array[String] = []
+let dtd_add32_split_used: Array[Bool] = []
+
+/// Forget the previous program's rows.
+export fn dtd_add32_split_reset() -> Unit {
+  Array::truncate(dtd_add32_split_offs, length = 0)
+  Array::truncate(dtd_add32_split_types, length = 0)
+  Array::truncate(dtd_add32_split_used, length = 0)
+}
+
+/// Merge this module's rows into the program's: a row the program has is
+/// consumed when either run consumed it.
+export fn dtd_add32_split_collect() -> Unit {
+  dtd_add32_split_merge(offs = dtd_add32_offs, types = dtd_add32_types, used = dtd_add32_used)
+}
+
+/// Merge rows another run filed -- a module lowered in a worker instance,
+/// whose rows travel back as `dtd_add32_split_rows` gave them -- the same way.
+export fn dtd_add32_split_merge(offs: Array[Int], types: Array[String], used: Array[Bool]) -> Unit {
+  let mut i = 0
+  while i < Array::length(offs) {
+    let off = Array::get(offs, at = i)
+    let ty = Array::get(types, at = i)
+    let mut at = -1
+    let mut j = 0
+    while at < 0 && j < Array::length(dtd_add32_split_offs) {
+      if Array::get(dtd_add32_split_offs, at = j) == off && Array::get(dtd_add32_split_types, at = j) == ty {
+        at = j
+      } else ()
+      j = j + 1
+    }
+    if at < 0 {
+      Array::push(dtd_add32_split_offs, value = off)
+      Array::push(dtd_add32_split_types, value = ty)
+      Array::push(dtd_add32_split_used, value = Array::get(used, at = i))
+    } else if Array::get(used, at = i) {
+      Array::set(dtd_add32_split_used, at = at, value = true)
+    } else ()
+    i = i + 1
+  }
+}
+
+/// A copy of the program's merged rows: offsets, types, and whether some run
+/// consumed each.
+export fn dtd_add32_split_rows() -> (Array[Int], Array[String], Array[Bool]) {
+  let offs: Array[Int] = []
+  let types: Array[String] = []
+  let used: Array[Bool] = []
+  let mut i = 0
+  while i < Array::length(dtd_add32_split_offs) {
+    Array::push(offs, value = Array::get(dtd_add32_split_offs, at = i))
+    Array::push(types, value = Array::get(dtd_add32_split_types, at = i))
+    Array::push(used, value = Array::get(dtd_add32_split_used, at = i))
+    i = i + 1
+  }
+  (offs, types, used)
+}
+
+/// Refuse the first of the program's rows no module consumed, with the
+/// whole-program diagnostic.
+export fn dtd_add32_split_report() -> Unit with Exception {
+  dtd_add32_report_rows(offs = dtd_add32_split_offs, types = dtd_add32_split_types, used = dtd_add32_split_used)
 }

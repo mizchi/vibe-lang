@@ -21,6 +21,17 @@ OUT="${VIBE_BUNDLE_OUT:-$COMPILER_DIR/compiler_sources_bundle.vibe}"
 OUT_ADAPTER="${VIBE_ADAPTER_BUNDLE_OUT:-$COMPILER_DIR/cli_adapter_bundle.vibe}"
 OUT_RUNTIME_ENTRY="${VIBE_RUNTIME_ENTRY_BUNDLE_OUT:-$COMPILER_DIR/selfbuild_runtime_entry_bundle.vibe}"
 ADAPTER_MODULE_SOURCE_OUT="${VIBE_ADAPTER_MODULE_SOURCE_OUT:-}"
+# #2498: the `#cfg` flags the COMPILER's own sources are flattened with. The
+# merge flatten below resolves every `#cfg(flag)` / `#cfg(not(flag))` in the
+# compiler against this set, so it decides what the stage2 built from the
+# flat source contains. The default keeps `telemetry` -- the observation
+# sidecars the oracles, the KPI and CI read (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT,
+# ...) -- in the generation's stage2 and every artifact flattened from it.
+# scripts/build_compile_only.sh sets it empty, so the compile-only artifact
+# carries no telemetry code. Pinned here rather than inherited from VIBE_CFG,
+# which is the cfg of the program a compiler COMPILES: a caller exporting
+# VIBE_CFG=dev must not change which compiler gets built.
+COMPILER_CFG="${VIBE_COMPILER_CFG-telemetry}"
 POLICY_RUNNER_SCRIPT="${VIBE_GENERATE_BUNDLE_RUNNER_SCRIPT:-}"
 POLICY_SEED_WASM="${VIBE_GENERATE_BUNDLE_SEED_WASM:-}"
 if [ -n "$POLICY_RUNNER_SCRIPT" ]; then
@@ -753,6 +764,7 @@ run_host_vibe_cmd() {
       (
         cd "$SCRIPT_PROJECT_ROOT" &&
           VIBE_PREOPEN_DIR="$SCRIPT_PROJECT_ROOT" \
+            VIBE_CFG="$COMPILER_CFG" \
             VIBE_EMIT_MODULE_SOURCE=1 \
             VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
             run_bundle_runner "$SCRIPT_PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
@@ -1041,10 +1053,13 @@ bootstrap_merge_flatten_tool() {
   local seed_merged seed_modsrc
   seed_merged="$(mktemp "$PROJECT_ROOT/_build/seed_merged_source.XXXXXX")"
   seed_modsrc="$(mktemp "$PROJECT_ROOT/_build/seed_module_source.XXXXXX")"
-  # Pass 1: the seed flattens the live tree.
+  # Pass 1: the seed flattens the live tree. With no `#cfg` flag (#2498): the
+  # tool only merges, so its output does not depend on what telemetry it
+  # carries, and pinning the flag keeps one tool (and one stamp) for every
+  # COMPILER_CFG instead of rebuilding it whenever a caller switches.
   rm -f "$seed_merged" "$seed_merged.diag"
   (cd "$PROJECT_ROOT" && \
-    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    export VIBE_CFG= VIBE_EMIT_MERGED_SOURCE=1 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
     run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
       lib/@vibe/compiler/cli_adapter.vibe "$seed_merged" cli_main >"$tool_log.seedflat" 2>&1) || true
@@ -1092,8 +1107,10 @@ build_exact_adapter_merged_source() {
     exit 1
   fi
   rm -f "$merged_path.diag"
+  # The flatten resolves the compiler's `#cfg` declarations: COMPILER_CFG
+  # (above) is what the flat source, and so the stage2, contains (#2498).
   (cd "$PROJECT_ROOT" && \
-    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    export VIBE_CFG="$COMPILER_CFG" VIBE_EMIT_MERGED_SOURCE=1 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
     run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$flatten_wasm" \
       lib/@vibe/compiler/cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true

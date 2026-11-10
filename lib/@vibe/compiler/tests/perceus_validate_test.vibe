@@ -35,6 +35,18 @@ fn plan(_ body: String) -> String with Exception {
   rc_plan_source(source = program(body), fn_filter = "run")
 }
 
+/// `out` under `tag`, with an empty answer spelled `clean`: each snapshot
+/// gets an expected literal of its own, so `vibe test --update` can tell
+/// which call a failing answer belongs to.
+fn tagged(tag: String, out: String) -> String {
+  let body = if out == "" {
+    "clean"
+  } else {
+    out
+  }
+  tag + ": " + body
+}
+
 /// The plan without its first row `pick` accepts.
 fn drop_first(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool) -> Array[PerceusAction] {
   let out: Array[PerceusAction] = []
@@ -96,6 +108,10 @@ let split = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    
 
 let merge = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    keep(d)\n  } else {\n    len(d)\n  }\n}"
 
+// #1980: the `else` path holds both dups the `then` arm spends, so its path
+// drop is two rows.
+let short_two = "let run: (Bool) -> Int = (c) -> {\n  let u = A([1])\n  let n = if c {\n    keep(u) + keep(u)\n  } else {\n    0\n  }\n  n + len(u)\n}"
+
 //# Clean plans
 
 test "two consumes of one binding take one dup" {
@@ -113,6 +129,11 @@ test "a split release balances both branches" {
 
 test "a branch-dependent dup balances both branches" {
   inspect(validate(merge), content = "")
+}
+
+test "a branch two dups short releases both on the other branch" {
+  assert(String::contains(plan(short_two), needle = "run u path_drop 2"))
+  assert(validate(short_two) == "")
 }
 
 test "an alias that transfers and one that dups both balance" {
@@ -166,6 +187,24 @@ test "a deleted path drop leaks on the branch that did not consume" {
   inspect(out, content = "run d if1:else: owned value not consumed")
 }
 
+test "one path drop row short leaks on the branch two dups short" {
+  let out = edited(body = short_two, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_path_drop(a) && a.name == "u"
+    })
+  })
+  inspect(out, content = "run u if1:else: owned value not consumed")
+}
+
+test "a path drop row too many releases one more than held" {
+  let out = edited(body = short_two, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    twice_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_path_drop(a) && a.name == "u"
+    })
+  })
+  inspect(out, content = "run u if1:else: owned value released 1 more than held")
+}
+
 test "a deleted consume mark releases twice on the consuming branch" {
   let out = edited(body = split, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
     drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
@@ -194,11 +233,15 @@ test "a binding consumed on one branch and read in place on the other" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  if c {\n    keep(A(t))\n  } else {\n    Array::get(t, at = 0)\n  }\n}"), content = "run t if1:else: owned value not consumed")
 }
 
-//# Not checked
-
-test "an early return is not checked" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d -: not checked: early exit: an exit releases it (exit-drop row)")
+// Slice 3 checks early exits: the plan takes a dup at the declaration for
+// the guard's consume and releases it at the exit, so the path that never
+// reaches the exit keeps it (112 B per call, measured). More exit shapes are
+// in perceus_validate_exit_test.vibe.
+test "an early return that consumes leaks the dup on the path that does not return" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d if1:else: owned value not consumed")
 }
+
+//# Not checked
 
 test "a closure capture is not checked" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let f = () -> keep(d)\n  f()\n}"), content = "run d -: not checked: closure capture\nrun * -: not checked: lambda body")
@@ -228,8 +271,6 @@ let carried_alias = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let 
 let loop_discarded = "let run: (Bool) -> Int = (c) -> {\n  loop (i = 0) {\n    let d = A([i])\n    if i == 2 {\n      break d\n    }\n    continue(i + 1)\n  }\n  0\n}"
 
 let loop_used = "let run: (Bool) -> Int = (c) -> {\n  let r = loop (i = 0) {\n    let d = A([i])\n    if i == 2 {\n      break d\n    }\n    continue(i + 1)\n  }\n  keep(r)\n}"
-
-let loop_skips = "run d -: not checked: early exit: an exit releases it (exit-drop row)\nrun __lt0 -: not checked: early exit: break or continue leaves its scope"
 
 test "a loop-carried binding passed to a consuming call keeps its drop" {
   inspect(plan(carried), content = "run __seq0 drop 1\nrun d drop 1")
@@ -343,8 +384,10 @@ test "a parameter retained in a loop with no planned drop is not checked" {
 }
 
 test "a discarded parameterized loop releases its break value (#3168)" {
-  inspect(validate(loop_discarded), content = loop_skips)
-  inspect(validate(loop_used), content = loop_skips)
+  // Slice 3: `break d` leaves `d`'s scope, and the exit row releases what
+  // the store into the result slot did not take.
+  inspect(tagged(tag = "discarded", out = validate(loop_discarded)), content = "discarded: clean")
+  inspect(tagged(tag = "used", out = validate(loop_used)), content = "used: clean")
 }
 
 test "the #3168 plan without the result slot's drop leaks the break value" {
@@ -355,7 +398,7 @@ test "the #3168 plan without the result slot's drop leaks the break value" {
       pa_is_drop(a) && a.name == "__loop_result"
     })
   })
-  inspect(out, content = "run __loop_result loop1:once,if1:then: owned value not consumed\n" + loop_skips)
+  inspect(out, content = "run __loop_result loop1:once,if1:then: owned value not consumed")
 }
 
 // #3919: a compound `for` iterable whose result leaf names a loop-carried

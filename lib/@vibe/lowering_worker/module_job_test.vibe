@@ -1,8 +1,20 @@
 import ./module_job.vibe {
-  ModuleLoweringDeferred, ModuleLoweringJob, module_lowering_deferred_merge, module_lowering_deferred_snapshot, run_module_lowering_job
+  ModuleLoweringDeferred,
+  ModuleLoweringJob,
+  module_lowering_deferred_merge,
+  module_lowering_deferred_snapshot,
+  run_module_lowering_job,
+  run_module_lowering_job_deferring
 }
 import @vibe/compiler/normalize/desugar {
-  desugar_trait_dicts_module_with_facts, eq_deferred_requests_list, eq_deferred_reset, module_trait_facts_none
+  DesugarModuleReports,
+  desugar_module_reports_begin,
+  desugar_module_reports_merge,
+  desugar_module_reports_take,
+  desugar_trait_dicts_module_with_facts,
+  eq_deferred_requests_list,
+  eq_deferred_reset,
+  module_trait_facts_none
 }
 import @vibe/compiler/core {
   Stmt, TypeExpr, namespace_rename_original, namespace_rename_originals_restore, namespace_rename_originals_snapshot
@@ -92,4 +104,46 @@ test "module job restores boundary state after a refused comparison" {
   inspect(Array::length(product.deferred.requests), content = "0")
   namespace_rename_originals_restore([])
   eq_deferred_reset()
+}
+
+/// A module whose `==` over a derived struct with a function field is refused.
+fn refused_eq_source() -> String {
+  "struct F {\n  f: () -> Int\n} derive (Eq)\n\nfn mk1() -> () -> Int {\n  () -> {\n    1\n  }\n}\n\nexport fn _start() -> Int {\n  let left = []\n  Array::push(left, F::{\n    f: mk1()\n  })\n  let right = []\n  Array::push(right, F::{\n    f: mk1()\n  })\n  if left == right {\n    1\n  } else {\n    0\n  }\n}\n"
+}
+
+test "deferring module job returns its refusal and keeps the coordinator's program reports" {
+  // #2826: a coordinator has filed one module's refusal for the program; the
+  // next module's job, run in the same instance, sends its own back without
+  // throwing and leaves the program's as they were.
+  desugar_module_reports_begin()
+  desugar_module_reports_merge(DesugarModuleReports::{
+    eq: ["earlier module"],
+    show: [],
+    index: [],
+    add32_offs: [7],
+    add32_types: ["Int32"],
+    add32_used: [false]
+  })
+  let product = run_module_lowering_job_deferring(job(src = refused_eq_source(), renames = [
+  ]))
+  let sent = Array::length(product.reports.eq) == 1 && String::contains(Array::get(product.reports.eq, at = 0), needle = "untyped empty-array bindings")
+  let program = desugar_module_reports_take()
+  // Filed after the earlier module, in module order.
+  desugar_module_reports_merge(product.reports)
+  let merged = desugar_module_reports_take()
+  desugar_module_reports_begin()
+  inspect("sent=\{sent} program=\{String::join(program.eq, sep = "|")} rows=\{Array::length(program.add32_offs)} merged=\{Array::length(merged.eq)} first=\{Array::get(merged.eq, at = 0)}", content = "sent=true program=earlier module rows=1 merged=2 first=earlier module")
+}
+
+test "a module job that is not deferring still throws its refusal and sends no reports" {
+  desugar_module_reports_begin()
+  let thrown = handle {
+    let _ = run_module_lowering_job(job(src = refused_eq_source(), renames = []))
+    "accepted"
+  } with { Exception::Throw(msg) => msg }
+  let accepted = run_module_lowering_job(job(src = "fn seven() -> Int { 7 }", renames = [
+  ]))
+  let sent = Array::length(accepted.reports.eq) + Array::length(accepted.reports.add32_offs)
+  let filed = Array::length(desugar_module_reports_take().eq)
+  inspect("thrown=\{String::contains(thrown, needle = "structural `==` cannot be decided here")} sent=\{sent} filed=\{filed}", content = "thrown=true sent=0 filed=0")
 }

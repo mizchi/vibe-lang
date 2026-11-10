@@ -46,7 +46,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Stmt, set_executable_exports_stripped, standard_host_provider_names
+  Stmt, standard_host_provider_names
 }
 
 import @vibe/testrun {
@@ -296,19 +296,18 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
     // `cli_support.vibe` so this door and the `.vibex` CLI's `build
     // --component` cannot drift apart (#2863: the same flag produced 40 MB
     // through one door and 2.6 MB through the other).
-    compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = command_component_compile_mode())
+    compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = command_component_compile_mode(), exports_stripped = false)
   } else {
     // The release artifact is written with its exports stripped to the
     // entry's keep list (`write_user_executable` / `write_user_run_executable`),
-    // so tell codegen first -- as `cli_adapter.vibe` does for the launcher's
-    // own lane -- and the late DCE stops rooting every dependency export.
+    // so tell codegen -- as `cli_adapter.vibe` does for the launcher's own
+    // lane -- and the late DCE stops rooting every dependency export.
     // Without it, an unused export of an imported module was compiled in, and
     // an unused export of an imported `.wasm` binding was also IMPORTED: a
     // program calling 10 of z3.wasm's functions asked the runner for all 853.
-    set_executable_exports_stripped(executable_exports_stripped(entry_name))
-    let bytes = compile_release_lane(input_path = input_path, entry_name = entry_name, grants = grants)
-    set_executable_exports_stripped(false)
-    bytes
+    // #1953: an argument of this compile, so a compile that throws leaves
+    // nothing behind for the next one in this process.
+    compile_release_lane(input_path = input_path, entry_name = entry_name, grants = grants, exports_stripped = executable_exports_stripped(entry_name))
   }
 }
 
@@ -319,21 +318,21 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
 /// `compile_file_fs_mode` alone here was the bump lane for EVERY compile
 /// (Codex review of #2858): a long-running program kept every allocation until
 /// exit, and `VIBE_RC=shadow` silently did nothing.
-fn compile_release_lane(input_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
+fn compile_release_lane(input_path: String, entry_name: String, grants: Array[(String, String)], exports_stripped: Bool) -> Bytes with Exception + Fs + Env {
   let rc_flag = Env::get("VIBE_RC")
   if rc_flag == "0" {
     // #2828 rung 2: every arm carries the grants. When only the rc arm did,
     // `VIBE_RC=0` and `VIBE_RC=shadow` silently answered `NotGranted` for every
     // optional capability -- authority became a function of which allocator was
     // selected, which is the "silently wrong" this project ranks worst.
-    compile_file_fs_mode_grants(entry_path = input_path, entry_name = entry_name, mode = "mvp", grants = grants)
+    compile_file_fs_mode_grants(entry_path = input_path, entry_name = entry_name, mode = "mvp", grants = grants, exports_stripped = exports_stripped)
   } else if rc_flag == "shadow" {
-    compile_file_fs_mode_rc_shadow_grants(entry_path = input_path, entry_name = entry_name, grants = grants)
+    compile_file_fs_mode_rc_shadow_grants(entry_path = input_path, entry_name = entry_name, grants = grants, exports_stripped = exports_stripped)
   } else {
     // #2825: an exact no-op replays the module the last identical compile
     // produced (linked_output_memo.vibe); `VIBE_LINKED_OUTPUT_MEMO=off`
     // compiles anyway, `verify` compiles and compares.
-    compile_file_fs_mode_rc_grants_memo(entry_path = input_path, entry_name = entry_name, grants = grants, memo_mode = linked_output_memo_mode("on"))
+    compile_file_fs_mode_rc_grants_memo(entry_path = input_path, entry_name = entry_name, grants = grants, memo_mode = linked_output_memo_mode("on"), exports_stripped = exports_stripped)
   }
 }
 
@@ -1687,7 +1686,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         // `no functions found to compile`, where scripts/vibe_test.sh and the
         // RC default report it `ok ... (no tests found)` (#948).
         let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
-          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta)
+          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta, exports_stripped = false)
         } else {
           if Fs::exists(meta) {
             Fs::remove(meta)
@@ -2000,7 +1999,7 @@ export fn selfhost_cli_user_profile_args(_ args: Array[String]) -> Int with Exce
 /// The embedded server (`vibe lsp --selfhost`). `VIBE_UNSTABLE=1` is the
 /// server-start policy `lsp_main` documents, the same opt-in the adapter route
 /// passed (Codex review of #2858).
-export fn selfhost_cli_user_lsp_args(_ _args: Array[String]) -> Int with Env + Stdin + Console {
+export fn selfhost_cli_user_lsp_args(_ _args: Array[String]) -> Int with Env + Fs + Stdin + Console {
   lsp_main(unstable_opt_in())
 }
 

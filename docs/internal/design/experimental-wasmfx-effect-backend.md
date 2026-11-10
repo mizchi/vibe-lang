@@ -25,8 +25,11 @@ the current suspend-CPS lowering:
 
 These results establish runtime feasibility only. They do not add a compiler
 backend, change the current effect lowering, or change the default artifact
-format. The probe also does not establish semantics for stored continuations,
-cancellation, failure propagation, or multi-worker scheduling.
+format. How a stored continuation is represented and owned (a handle table
+behind an ordinary closure, with one-shot enforced in the guest) is decided in
+[wasmfx-continuation-ownership.md](wasmfx-continuation-ownership.md). The
+probe does not establish semantics for cancellation, failure propagation, or
+multi-worker scheduling.
 
 The implementation plan and acceptance criteria are tracked in
 [issue #2221](https://github.com/mizchi/vibe-lang/issues/2221).

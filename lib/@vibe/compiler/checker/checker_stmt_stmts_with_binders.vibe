@@ -51,6 +51,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   alias_expansion_node_limit,
+  effect_type_param_names,
   env_bind,
   env_bind_trait_definition_origin,
   env_cache_complete,
@@ -145,7 +146,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_name, type_param_arity, type_param_name
+  effect_param_kinds, effect_param_names, trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -197,6 +198,7 @@ import ./checker_stmt_imported_decl_kind.vibe {
   deferred_names_for_decl,
   duplicate_ctor_errors,
   duplicate_value_decl_errors,
+  extern_effect_decl_errors,
   float_width_decl_name_error,
   own_typedef_slot,
   preclaim_local_type_defs,
@@ -2583,8 +2585,17 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }
         (new_env, s, c)
       },
-      SEffectDef(exported, ename, eparams, ops) => {
+      SEffectDef(exported, ename, ekeys, ops, eowner) => {
         float_width_decl_name_error(kind = "effect", name = ename, errors = errors)
+        extern_effect_decl_errors(name = ename, params = ekeys, owner = eowner, errors = errors)
+        // ADR-0094 (#3143): a resource parameter (`R: Store::Bucket`) is kept
+        // with its kind and is not a type parameter: the operations are
+        // resolved with only the TYPE parameters in scope, so naming `R` in
+        // a signature is an unknown type rather than a rigid name.
+        let all_params = effect_param_names(ekeys)
+        let ekinds = effect_param_kinds(ekeys)
+        let eparams = effect_type_param_names(params = all_params, kinds = ekinds)
+        effect_resource_param_errors(name = ename, params = all_params, kinds = ekinds, ops = ops, errors = errors)
         // #813: register the effect's operation signatures (resolved to
         // checker Types) so perform arguments, handler arm names/arity/
         // payload binds, and resume values can be validated. #1340
@@ -2610,9 +2621,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           Array::push(resolved_ops, value = (opname, rp, resolve_type_expr_shadowed(te = opret, defs = defs, shadow = eparams)))
           oi = oi + 1
         }
-        Array::push(defs, value = TDEffect(ename, resolved_ops, eparams))
+        Array::push(defs, value = TDEffect(ename, resolved_ops, all_params, ekinds, eowner))
         Array::push(type_def_binders, value = array_empty())
-        (EnvTypeDefs([TDEffect(ename, resolved_ops, eparams)], if exported {
+        (EnvTypeDefs([TDEffect(ename, resolved_ops, all_params, ekinds, eowner)], if exported {
           [ename]
         } else {
           array_empty()
@@ -2886,4 +2897,82 @@ fn merged_region_marks_trait_origin(stmts: Array[Stmt], idx: Int, name: String) 
     i = i - 1
   }
   answer
+}
+
+/// ADR-0094 (#3143): what an effect's resource parameters may be for now.
+/// One resource parameter, and no type parameter beside it: the row and
+/// handler machinery instantiates a generic effect positionally from ONE
+/// type argument, so `Kv[Posts]` on an effect that also took a type would be
+/// read as that type. Both are refused at the declaration with the edit.
+fn effect_resource_param_errors(name: String, params: Array[String], kinds: Array[String], ops: Array[(String, Array[TypeExpr], TypeExpr)], errors: Array[String]) -> Unit {
+  let mut resources = 0
+  let mut types = 0
+  let mut i = 0
+  while i < Array::length(kinds) {
+    if Array::get(kinds, at = i) == "" {
+      types = types + 1
+    } else {
+      resources = resources + 1
+      // A signature naming the parameter would otherwise read it as an
+      // undeclared nominal type: an operation signature's names are not
+      // checked against the declarations in scope.
+      let rname = Array::get(params, at = i)
+      for op in ops {
+        let (op_name, op_params, op_ret) = op
+        let mut named = resource_param_named(te = op_ret, name = rname)
+        for pt in op_params {
+          if resource_param_named(te = pt, name = rname) {
+            named = true
+          }
+        }
+        if named && rname != "_" {
+          Array::push(errors, value = "operation \{name}::\{op_name} names `\{rname}`, the resource parameter of effect \{name}; a resource parameter names a resource, not a type, so remove it from the signature")
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  if resources > 1 {
+    Array::push(errors, value = "effect \{name} declares \{resources} resource parameters; an effect acts on one resource, so keep one `R: Owner::Kind` parameter")
+  } else if resources == 1 && types > 0 {
+    Array::push(errors, value = "effect \{name} declares a resource parameter and a type parameter; an effect cannot take both yet, so split the type-parameterized operations into an effect of their own")
+  } else {
+    ()
+  }
+}
+
+fn resource_param_named(te: TypeExpr, name: String) -> Bool {
+  match te {
+    TyName(n) => n == name,
+    TyApp(n, args) => {
+      let mut found = n == name
+      for arg in args {
+        if resource_param_named(te = arg, name = name) {
+          found = true
+        }
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut found = false
+      for item in items {
+        if resource_param_named(te = item, name = name) {
+          found = true
+        }
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut found = resource_param_named(te = ret, name = name)
+      for p in params {
+        if resource_param_named(te = p, name = name) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
 }

@@ -126,6 +126,23 @@ test "a dup planned on one branch gets a mark and a path drop" {
   assert(String::contains(plan, needle = "run t path_drop 1"))
 }
 
+// The path that skips a branch of two consumes holds both dups, so its drop
+// is two rows; against an arm of one, a `0` arm still gets one.
+test "a branch two consumes short gets a path drop of two" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    Pair(own(t), own(t))\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "run t dup 2"))
+  assert(String::contains(plan, needle = "run t path_drop 2"))
+}
+
+test "arms of two, one and none get a path drop of one" {
+  let src = String::concat(prelude, String::concat("let run: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = match k {\n    0 => Pair(own(t), own(t)),\n    1 => own(t),\n    _ => Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(1) {\n    _ => 0\n  }\n}"))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "run t dup 2"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  assert(!String::contains(plan, needle = "run t path_drop 2"))
+}
+
 test "dups planned on both branches are budgeted once" {
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Pair(own(t), Leaf(5))\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
   let plan = plan_of(src)

@@ -1,6 +1,8 @@
 // What the solver's answer means for one query (#3717, ADR-0121): only
 // `unsat` proves, and a model is read back as the parameter values that
 // break the obligation. Split from prove.vibe, which builds the queries.
+// The `Array[Int]` encoding lives here too, because reading a model back
+// needs the same accessor names the queries are written with.
 
 //# Solver output
 
@@ -8,6 +10,13 @@
 /// model's parameter values on `sat`; `unknown` with the reason otherwise
 /// (`unknown`, a timeout, or a solver error). Only `unsat` proves.
 export fn prove_verdict(_ z3_out: String) -> (String, String) {
+  prove_verdict_in(z3_out, query = "")
+}
+
+/// `prove_verdict` for the answer to `query`, whose `declare-datatypes`
+/// names each struct's fields, so a struct in the model is shown with them
+/// (`Point::{ x: 1, y: 2 }`) -- the spelling a call to the function takes.
+export fn prove_verdict_in(_ z3_out: String, query: String) -> (String, String) {
   let lines = String::split(z3_out, sep = "\n")
   let first = if Array::length(lines) > 0 {
     String::trim(Array::get(lines, at = 0))
@@ -20,7 +29,7 @@ export fn prove_verdict(_ z3_out: String) -> (String, String) {
     let rest = String::join(Array::slice(lines, start = 1, end = Array::length(lines)), sep = " ")
     // A function without parameters has no input to show: the obligation
     // fails on every run.
-    let model = model_text(rest)
+    let model = model_text(text = rest, fields = struct_fields(query))
     ("unproved", if model == "" {
       "none needed, the function has no inputs and fails on every run"
     } else {
@@ -35,45 +44,138 @@ export fn prove_verdict(_ z3_out: String) -> (String, String) {
   }
 }
 
-/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`.
-fn model_text(_ text: String) -> String {
+/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`. An array arrives as its
+/// length and its first elements (`model_terms`), one pair each, and is shown
+/// as one `xs = [1, -2]`. An answer of another shape is shown as z3 gave it.
+fn model_text(text: String, fields: Array[(String, Array[String])]) -> String {
+  let toks = smt_tokens(text)
+  let n = Array::length(toks)
   let parts: Array[String] = []
-  let mut i = 0
-  let n = String::length(text)
-  while i < n {
-    if String::byte_at(text, at = i) == '|' {
-      let close = find_byte(text = text, byte = '|', from = i + 1)
-      let name = String::substring(text, start = i + 1, end = close)
-      let mut j = close + 1
-      let mut depth = 0
-      let start = j
-      let mut done = false
-      while j < n && !done {
-        let c = String::byte_at(text, at = j)
-        if c == '(' {
-          depth = depth + 1
-        } else if c == ')' {
-          if depth == 0 {
-            done = true
-          } else {
-            depth = depth - 1
-          }
-        } else {
-          ()
-        }
-        if !done {
-          j = j + 1
-        } else {
-          ()
-        }
-      }
-      Array::push(parts, value = "\{name} = \{smt_value_text(String::trim(String::substring(text, start = start, end = j)))}")
-      i = j
+  let arr = ArrModel::{ name: [""], len: [""], elems: [] }
+  let pos = [1]
+  let mut ok = n >= 2 && Array::get(toks, at = 0) == "("
+  while ok && Array::get(pos, at = 0) < n && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
+    if Array::get(toks, at = Array::get(pos, at = 0)) != "(" {
+      ok = false
     } else {
-      i = i + 1
+      let start = Array::get(pos, at = 0) + 1
+      Array::set(pos, at = 0, value = start)
+      smt_skip(toks = toks, pos = pos)
+      let term = Array::slice(toks, start = start, end = Array::get(pos, at = 0))
+      let value = smt_render(toks = toks, pos = pos, fields = fields)
+      if Array::get(pos, at = 0) < n && Array::get(toks, at = Array::get(pos, at = 0)) == ")" {
+        Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+        model_pair(parts = parts, arr = arr, term = term, value = value)
+      } else {
+        ok = false
+      }
     }
   }
-  String::join(parts, sep = ", ")
+  if ok {
+    flush_array(parts = parts, arr = arr)
+    String::join(parts, sep = ", ")
+  } else {
+    String::trim(text)
+  }
+}
+
+/// The array `model_text` is collecting: its name, the length the model
+/// gave, and the elements read so far.
+struct ArrModel {
+  name: Array[String];
+  len: Array[String];
+  elems: Array[String]
+}
+
+/// One `(term value)` pair of a `get-value` answer: a constant is shown at
+/// once, an array's length starts collecting that array, and an element
+/// joins it.
+fn model_pair(parts: Array[String], arr: ArrModel, term: Array[String], value: String) -> Unit {
+  let k = Array::length(term)
+  if k == 1 {
+    flush_array(parts = parts, arr = arr)
+    Array::push(parts, value = "\{smt_unquote(Array::get(term, at = 0))} = \{value}")
+  } else if k == 4 && Array::get(term, at = 1) == "|Array[Int].len|" {
+    flush_array(parts = parts, arr = arr)
+    Array::set(arr.name, at = 0, value = smt_unquote(Array::get(term, at = 2)))
+    Array::set(arr.len, at = 0, value = value)
+  } else if k == 8 && Array::get(term, at = 1) == "select" && Array::get(term, at = 3) == "|Array[Int].data|" && smt_unquote(Array::get(term, at = 4)) == Array::get(arr.name, at = 0) {
+    Array::push(arr.elems, value = value)
+  } else {
+    flush_array(parts = parts, arr = arr)
+    Array::push(parts, value = "\{String::join(term, sep = " ")} = \{value}")
+  }
+}
+
+/// Emit the array being collected, if any: its first `length` elements, or
+/// the elements asked for and the length when it is longer than that.
+fn flush_array(parts: Array[String], arr: ArrModel) -> Unit {
+  let name = Array::get(arr.name, at = 0)
+  if name != "" {
+    let len_text = Array::get(arr.len, at = 0)
+    let len = small_nat(len_text)
+    let have = Array::length(arr.elems)
+    if len >= 0 && len <= have {
+      let shown = Array::slice(arr.elems, start = 0, end = len)
+      Array::push(parts, value = "\{name} = [\{String::join(shown, sep = ", ")}]")
+    } else {
+      Array::push(parts, value = "\{name} = [\{String::join(arr.elems, sep = ", ")}, ...] (length \{len_text})")
+    }
+    Array::set(arr.name, at = 0, value = "")
+    Array::set(arr.len, at = 0, value = "")
+    Array::truncate(arr.elems, length = 0)
+  } else {
+    ()
+  }
+}
+
+/// A decimal of at most nine digits as its value, and -1 for anything else
+/// (a longer number, a negative one, or not a number).
+fn small_nat(_ t: String) -> Int {
+  let n = String::length(t)
+  if n == 0 || n > 9 {
+    0 - 1
+  } else {
+    let mut v = 0
+    let mut i = 0
+    let mut ok = true
+    while i < n {
+      let c = String::byte_at(t, at = i)
+      if c >= '0' && c <= '9' {
+        v = v * 10 + (c - '0')
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      v
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// Move `pos` past one s-expression: an atom, or a parenthesized list.
+fn smt_skip(toks: Array[String], pos: Array[Int]) -> Unit {
+  let mut depth = 0
+  let mut go = true
+  while go && Array::get(pos, at = 0) < Array::length(toks) {
+    let t = Array::get(toks, at = Array::get(pos, at = 0))
+    Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+    if t == "(" {
+      depth = depth + 1
+    } else if t == ")" {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    if depth <= 0 {
+      go = false
+    } else {
+      ()
+    }
+  }
 }
 
 fn find_byte(text: String, byte: Int, from: Int) -> Int {
@@ -90,7 +192,7 @@ fn find_byte(text: String, byte: Int, from: Int) -> Int {
 fn smt_value_text(_ v: String) -> String {
   let toks = smt_tokens(v)
   let pos = [0]
-  let out = smt_render(toks = toks, pos = pos)
+  let out = smt_render(toks = toks, pos = pos, fields = no_struct_fields())
   if Array::get(pos, at = 0) == Array::length(toks) {
     out
   } else {
@@ -133,7 +235,7 @@ export fn smt_unquote(_ t: String) -> String {
   }
 }
 
-fn smt_render(toks: Array[String], pos: Array[Int]) -> String {
+fn smt_render(toks: Array[String], pos: Array[Int], fields: Array[(String, Array[String])]) -> String {
   let i = Array::get(pos, at = 0)
   if i >= Array::length(toks) {
     ""
@@ -151,17 +253,154 @@ fn smt_render(toks: Array[String], pos: Array[Int]) -> String {
       Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
       let args: Array[String] = []
       while Array::get(pos, at = 0) < Array::length(toks) && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
-        Array::push(args, value = smt_render(toks = toks, pos = pos))
+        Array::push(args, value = smt_render(toks = toks, pos = pos, fields = fields))
       }
       Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
       let name = smt_unquote(head)
       if head == "-" && Array::length(args) == 1 {
         "-\{Array::get(args, at = 0)}"
       } else if String::ends_with(name, suffix = "::{}") {
-        "\{String::substring(name, start = 0, end = String::length(name) - 4)}::{ \{String::join(args, sep = ", ")} }"
+        let sname = String::substring(name, start = 0, end = String::length(name) - 4)
+        let names = struct_field_names(fields = fields, name = sname)
+        if Array::length(names) == Array::length(args) && Array::length(args) > 0 {
+          let named: Array[String] = []
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(named, value = "\{Array::get(names, at = k)}: \{Array::get(args, at = k)}")
+            k = k + 1
+          }
+          "\{sname}::{ \{String::join(named, sep = ", ")} }"
+        } else {
+          "\{sname}::{ \{String::join(args, sep = ", ")} }"
+        }
       } else {
         "\{name}(\{String::join(args, sep = ", ")})"
       }
     }
   }
+}
+
+//# `Array[Int]` (#3717)
+
+/// An `Array[Int]` is one SMT datatype: its contents as an SMT array and its
+/// length. An array stays a value: `Array::set`, an index write and
+/// `Array::push` are admitted only on a local no other name holds
+/// (`writable_arrays`), where a write replaces that binding's value, and a
+/// parameter is never written, so no call changes an array a caller holds.
+/// The contents past the length are unconstrained, so `==` on arrays is not
+/// encoded (SMT `=` would compare them too).
+export fn arr_sort() -> String {
+  "|Array[Int]|"
+}
+
+export fn arr_len(_ t: String) -> String {
+  "(|Array[Int].len| \{t})"
+}
+
+export fn arr_data(_ t: String) -> String {
+  "(|Array[Int].data| \{t})"
+}
+
+export fn arr_datatype_decl() -> String {
+  "(declare-datatypes ((|Array[Int]| 0)) (((|Array[Int]::mk| (|Array[Int].data| (Array Int Int)) (|Array[Int].len| Int)))))"
+}
+
+/// How many leading elements of an `Array[Int]` a counterexample shows.
+fn model_array_prefix() -> Int {
+  8
+}
+
+/// The terms `get-value` asks for to show the constant `name` of `sort`:
+/// the constant itself, or for an `Array[Int]` its length and first
+/// `model_array_prefix()` elements. z3 answers those as numbers, where the
+/// array's own value is a `store` chain or a `lambda` nobody can read.
+export fn model_terms(name: String, sort: String) -> Array[String] {
+  if sort == arr_sort() {
+    let out = [arr_len(name)]
+    let mut k = 0
+    while k < model_array_prefix() {
+      Array::push(out, value = "(select \{arr_data(name)} \{k})")
+      k = k + 1
+    }
+    out
+  } else {
+    [name]
+  }
+}
+
+//# Struct fields
+
+/// No field names known: a struct is shown with its values in order.
+fn no_struct_fields() -> Array[(String, Array[String])] {
+  []
+}
+
+/// Each struct's field names, in declaration order, from the query's
+/// `declare-datatypes`: a constructor `|P::{}|` with selectors `|P.x|`.
+fn struct_fields(_ query: String) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  for line in String::split(query, sep = "\n") {
+    if String::starts_with(line, prefix = "(declare-datatypes") {
+      let toks = smt_tokens(line)
+      let mut i = 0
+      while i + 1 < Array::length(toks) {
+        let t = Array::get(toks, at = i + 1)
+        if Array::get(toks, at = i) == "(" && String::ends_with(t, suffix = "::{}|") && String::length(t) > 6 {
+          let sname = String::substring(t, start = 1, end = String::length(t) - 5)
+          let prefix = "|\{sname}."
+          let names: Array[String] = []
+          // `(|P::{}| (|P.x| Int) (|P.y| Int))`: the selectors are the heads of
+          // the constructor's own sub-lists, up to its closing parenthesis.
+          let mut j = i + 2
+          let mut depth = 0
+          let mut done = false
+          while j < Array::length(toks) && !done {
+            let u = Array::get(toks, at = j)
+            if u == "(" {
+              if depth == 0 && j + 1 < Array::length(toks) {
+                let sel = Array::get(toks, at = j + 1)
+                if String::starts_with(sel, prefix = prefix) && String::ends_with(sel, suffix = "|") {
+                  Array::push(names, value = String::substring(sel, start = String::length(prefix), end = String::length(sel) - 1))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+              depth = depth + 1
+            } else if u == ")" {
+              if depth == 0 {
+                done = true
+              } else {
+                depth = depth - 1
+              }
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+          Array::push(out, value = (sname, names))
+          i = j
+        } else {
+          i = i + 1
+        }
+      }
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+fn struct_field_names(fields: Array[(String, Array[String])], name: String) -> Array[String] {
+  let mut hit: Array[String] = []
+  for f in fields {
+    let (n, names) = f
+    if n == name {
+      hit = names
+    } else {
+      ()
+    }
+  }
+  hit
 }

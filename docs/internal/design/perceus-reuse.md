@@ -47,6 +47,18 @@ mask. `pctx_apply_borrow_retention` adds one owning use to any binding that
 also has a borrow occurrence, so a consuming use sequenced before a later read
 dups instead of moving.
 
+The mask is a greatest fixed point over the direct call graph
+(`bp_fixpoint_parts`): every eligible position starts borrowed and loses its
+bit only when the body consumes the parameter other than by passing it to a
+position that is still borrowed, so a parameter that recursion only hands back
+to itself stays borrowed. A field read off the parameter (`ctx.n`,
+`ctx.inner.v`) is a borrow, as it is for the planner: codegen treats every
+name-rooted projection as a view that a consumer which keeps it retains,
+whether the name is owned or borrowed (#2827). What still makes a parameter
+owned is a real escape -- returned, stored, captured by a closure, moved into
+an owning call -- and a function used as a value, since an indirect call
+cannot read the mask.
+
 ## Dead-alias elision (#1056)
 
 `let a = t`, where `t` still has later owning uses, would dup `t`'s reference
@@ -211,7 +223,13 @@ for an owned heap parameter only. The planner adds what the epilogue needs
 parameter at an exit from a table that reads no path flag; no owning use
 inside a loop; a name no other binding of the plan has; and a body that
 cannot hand back a view of the parameter, since the guarded drop does not
-retain an escaping interior read. A pattern bind is still declined: its
+retain an escaping interior read. Any field read of the parameter counts as
+a possible view, except in a function declared to return an `Int`, a `Bool`
+or `Unit`: such a result holds no pointer, so no path can return a view, and
+`fn f(ctx: Ctx, o: Option[Int]) -> Int { match o { Some(_) => keep(ctx),
+None => ctx.n } }` takes the drop. The declared result is the one
+`fn_result_is_immediate` reads for the truncate rows (#2837). A pattern bind
+is still declined: its
 references are dups taken at the bind (`bind_match_pat`), so the path that
 skips its consume leaks the dup, which is the #1980 shape rather than this
 one.
@@ -239,10 +257,16 @@ arm's live occurrences and their maximum `M`:
 - when an arm has fewer than `M`, or an arm already holds a mark from an
   inner merge, the occurrences in the maximal arms become `PaConsumeMark`
   rows and the binding gets a `PaPathDrop`: the guarded drop above releases
-  one reference on a path that ran none of them.
+  `M - S` references on a path that ran none of them, `S` the most
+  occurrences a smaller arm has (0 when every arm is maximal). The drop is
+  one row per reference, and a binding with several marking merges takes the
+  least count any of them gives.
 
 Neither can release a reference a path still needs: a path consumes at most
-its own arm's occurrences, and one that ran no mark consumed fewer than `M`.
+its own arm's occurrences, and one that ran no mark took a smaller arm
+(at most `S` of them) or a maximal arm without reaching one (none). A merge
+enclosing a marking merge marks too, so the outermost one is on every path
+to the scope end, and every path that ran no mark holds the least count.
 The inner-mark rule keeps that true across nesting. In `if a { keep(v) }
 else if b { keep(v) }` the outer merge is symmetric and drops the inner
 arm's row, so the outer `then` path spends its whole budget; without a mark
@@ -255,8 +279,11 @@ A merge declines (the binding keeps today's rows) when an arm took the
 initial reference (the split above owns that), when an occurrence has no
 source offset or sits in a loop the binding is declared outside of. Its
 marks are withheld when another binding of the plan has its name: codegen
-gives a `PaPathDrop` to every `let` of the row's name. A path short by two
-or more still leaks the rest.
+gives a `PaPathDrop` to every `let` of the row's name. A path that runs no
+mark through an arm with fewer than `S` occurrences still leaks the
+difference: `match` arms taking 2, 1 and 0 release one on the `0` arm, which
+held two. `fixtures/rc_branch_dup_short_by_two_test.vibe` (gate row 40e9)
+bounds the shapes the count covers and runs that one under shadow.
 
 An early exit's row is resolved after the redundant rows are dropped, so it
 reads the merged budget `B`: it releases at most `1 + B - cons`, `cons` the
@@ -454,8 +481,9 @@ unrelated place, at a location that moves with the binary layout.
 ## Checks
 
 - `lib/@vibe/compiler/tests/perceus_rc_test.vibe`,
-  `perceus_reuse_plan_test.vibe`, `perceus_path_release_plan_test.vibe` and
-  `perceus_param_path_release_plan_test.vibe` pin plan rows.
+  `perceus_reuse_plan_test.vibe`, `perceus_path_release_plan_test.vibe`,
+  `perceus_param_path_release_plan_test.vibe` and
+  `perceus_param_scalar_result_plan_test.vibe` pin plan rows.
 - `perceus_reuse_e2e_test.vibe`, `hof_rc_ownership_test.vibe`,
   `lambda_param_consume_rc_test.vibe`, `borrowed_temp_release_rc_test.vibe`,
   `map_builder_rc_test.vibe` and `map_reuse_rc_test.vibe` (all under
@@ -466,4 +494,6 @@ unrelated place, at a location that moves with the binary layout.
   [`rc_shadow_regression_test.vibe`](../../../fixtures/rc_shadow_regression_test.vibe)
   runs the bug-shape corpus under shadow;
   [`rc_param_path_release_bounded_test.vibe`](../../../fixtures/rc_param_path_release_bounded_test.vibe)
-  bounds the parameter split shapes.
+  and
+  [`rc_param_scalar_result_release_bounded_test.vibe`](../../../fixtures/rc_param_scalar_result_release_bounded_test.vibe)
+  bound the parameter split shapes.

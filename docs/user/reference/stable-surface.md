@@ -416,7 +416,8 @@ The stable symbols listed under "Key Builtins" in the
   `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`, `Map::size`, `Map::new`, and `Map::from_pairs` cannot be frozen as first-class values -- they are call-only builtin operations (`Map::get(m, k)`, not `let g = Map::get`; #2274 / #2275).
   **`Map[K, V]` beyond `String` keys is deliberately NOT frozen** (#2263):
   `Int`, `Char` and `Bool` keys compile and run on the default and the
-  wasm-gc backends since #2334, but a generic function keyed by its type
+  wasm-gc backends since #2334, and a map built from a list of pairs takes their literals
+  as keys, but a generic function keyed by its type
   parameter still refuses them, so the surface may still grow. Any other
   concrete key is rejected, whether written or inferred. A function keyed by
   its type parameter compiles for `String` instantiations when it is called
@@ -548,8 +549,10 @@ that.
   `sleep_wait`, `Sender::send_wait` / `Receiver::recv_wait`,
   `TaskHandle::result_wait`, the task-level `Async::Suspend` effect, and the
   lower-level `adopt` / `park` / `wake` / `settle`. Their spelling is expected
-  to change once continuations are native (one `spawn` rather than two, no
-  hand-driven `pump_all`), so they stay outside the promise. The stable core
+  to change once one `spawn` covers both lanes, so they stay outside the
+  promise. No program needs `pump` / `pump_all`: a waiting `join`, `send` or
+  `recv` and the group's close resume parked tasks themselves (#3200), and the
+  two are not planned for the stable contract. The stable core
   they extend is §3.1. JSPI/Worker, the WASI Component Model, and
   shared-everything threads are interchangeable lowerings of both.
 

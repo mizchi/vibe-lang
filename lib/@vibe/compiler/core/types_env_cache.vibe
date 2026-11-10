@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/core/types.vibe — env cache.
 
 import ./ast.vibe {
-  Expr, Pat, Stmt, TypeExpr
+  EffectOwner, Expr, Pat, Stmt, TypeExpr
 }
 
 import ./expr_children.vibe {
@@ -96,7 +96,13 @@ export enum TypeDef {
   // effects register too — a type param resolves to a rigid `CtNamed(param,
   // [])` inside the op signatures, and use sites instantiate it per
   // perform/handle via subst_type_params + fresh inference vars.
-  TDEffect(String, Array[(String, Array[Type], Type)], Array[String]);
+  // ADR-0094 (#3143): the fourth slot is each parameter's RESOURCE KIND,
+  // parallel to the third (`""` = an ordinary type parameter). A resource
+  // parameter is a logical resource identity, not a type: it never appears
+  // in an operation signature and is never instantiated with a fresh
+  // inference variable (`effect_type_param_names` is what a typing consumer
+  // reads).
+  TDEffect(String, Array[(String, Array[Type], Type)], Array[String], Array[String], EffectOwner);
   // Effectsets are declaration authority too: a selected import must carry
   // its exact member closure, rather than re-inferring permission from case.
   TDEffectSet(String, Array[String])
@@ -616,7 +622,7 @@ fn type_definition_name(_ def: TypeDef) -> String {
     TDEnum(name, _, _) => name,
     TDStruct(name, _, _, _) => name,
     TDAlias(name, _, _) => name,
-    TDEffect(name, _, _) => name,
+    TDEffect(name, _, _, _, _) => name,
     TDEffectSet(name, _) => name
   }
 }
@@ -1586,6 +1592,21 @@ export fn find_enum_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDe
   result
 }
 
+/// ADR-0094: the TYPE parameters among an effect's parameters, in order --
+/// what generic instantiation reads. A resource parameter (a non-empty kind)
+/// is not one.
+export fn effect_type_param_names(params: Array[String], kinds: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    if i >= Array::length(kinds) || Array::get(kinds, at = i) == "" {
+      Array::push(out, value = Array::get(params, at = i))
+    }
+    i = i + 1
+  }
+  out
+}
+
 export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
   let len = Array::length(defs)
   let mut i = 0
@@ -1600,7 +1621,7 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
         TDEnum(n, _, _) => n,
         TDStruct(n, _, _, _) => n,
         TDAlias(n, _, _) => n,
-        TDEffect(n, _, _) => n,
+        TDEffect(n, _, _, _, _) => n,
         TDEffectSet(n, _) => n
       }
       if dname == name {

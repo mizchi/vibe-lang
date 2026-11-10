@@ -17,19 +17,16 @@ import @vibe/compiler/checker {
   set_error_row_checked
 }
 import @vibe/compiler/core {
-  namespace_rename_originals_snapshot, set_executable_exports_stripped
+  namespace_rename_originals_snapshot
 }
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc_body_cached_split
 }
 import @vibe/compiler/codegen/wasi {
-  PreludeModuleBatch, prelude_tail_record, prelude_with_module_batch_executor
-}
-import @vibe/compiler/normalize/desugar {
-  dtd_eq_invisible_nominals, eq_invisible_nominals_reset
+  PreludeModuleBatch, prelude_with_module_batch_executor
 }
 import @vibe/lowering_worker {
-  module_lowering_deferred_merge
+  prelude_module_product_merge
 }
 import @vibe/lowering_worker {
   PreludeSharedContext, write_prelude_shared_context, write_prelude_shared_job
@@ -39,7 +36,7 @@ import @vibe/lowering_worker {
 }
 
 fn compile_input() -> Bytes with Env + Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_split(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", use_split = true)
+  compile_file_fs_mode_rc_body_cached_split(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", use_split = true, exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
 }
 
 // These callbacks belong to this transient compile image. The host calls
@@ -114,34 +111,10 @@ export fn lowering_product_consume(index: Int, input_digest: String, product_dig
   if product.module_tag != "f\{index}" {
     throw("lowering: product belongs to a different module")
   } else ()
+  // In module order (the cursor), so the program's refusals are filed as the
+  // in-process driver files them; the driver reports them after this batch.
   let batch = Array::get(batches, at = 0)
-  let own = Array::get(batch.parts, at = index)
-  Array::truncate(own, length = 0)
-  for stmt in product.own {
-    Array::push(own, value = stmt)
-  }
-  for key in product.synth_keys {
-    Array::push(batch.synth, value = key)
-  }
-  let mut i = 0
-  while i < Array::length(product.tail.keys) {
-    prelude_tail_record(tail = batch.tail, key = Array::get(product.tail.keys, at = i), pass = Array::get(product.tail.passes, at = i))
-    i = i + 1
-  }
-  for diag in product.diagnostics {
-    Array::push(batch.diagnostics, value = diag)
-  }
-  for name in product.inline_names {
-    Array::push(batch.env.iw_names, value = name)
-  }
-  for wat in product.inline_wats {
-    Array::push(batch.env.iw_wats, value = wat)
-  }
-  module_lowering_deferred_merge(product.deferred)
-  eq_invisible_nominals_reset()
-  for name in product.invisible_nominals {
-    Array::push(dtd_eq_invisible_nominals, value = name)
-  }
+  prelude_module_product_merge(product = product, own = Array::get(batch.parts, at = index), env = batch.env, synth = batch.synth, tail = batch.tail, diagnostics = batch.diagnostics)
   clear_bytes(Array::get(product_buffer, at = 0))
   Array::set(cursor, at = 0, value = index + 1)
 }
@@ -192,7 +165,6 @@ fn single_compile() -> Unit with Env + Exception + Fs {
 
 fn main() -> Unit allows Env + Exception + Fs {
   configure_compiler_cfg_flags()
-  set_executable_exports_stripped(executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
   set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
   let mode = Env::get("VIBE_LOWERING_MODE")
   if mode == "serial" {

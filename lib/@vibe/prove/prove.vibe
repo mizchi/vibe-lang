@@ -9,7 +9,7 @@ import @vibe/parser {
 }
 
 import ./solver.vibe {
-  smt_unquote
+  arr_data, arr_datatype_decl, arr_len, arr_sort, model_terms, smt_unquote
 }
 
 import ./walk.vibe {
@@ -22,6 +22,7 @@ import ./walk.vibe {
   decl_offset,
   expr_kids,
   expr_off,
+  is_array_literal,
   reaches_cycle,
   shown_index_reads,
   strip_label
@@ -198,31 +199,6 @@ fn sort_of(adts: Array[Adt], ty: Option[TypeExpr]) -> String {
     },
     _ => ""
   }
-}
-
-//# `Array[Int]` (#3717)
-
-/// An `Array[Int]` is one SMT datatype: its contents as an SMT array and its
-/// length. An array stays a value: `Array::set`, an index write and
-/// `Array::push` are admitted only on a local no other name holds
-/// (`writable_arrays`), where a write replaces that binding's value, and a
-/// parameter is never written, so no call changes an array a caller holds.
-/// The contents past the length are unconstrained, so `==` on arrays is not
-/// encoded (SMT `=` would compare them too).
-fn arr_sort() -> String {
-  "|Array[Int]|"
-}
-
-fn arr_len(_ t: String) -> String {
-  "(|Array[Int].len| \{t})"
-}
-
-fn arr_data(_ t: String) -> String {
-  "(|Array[Int].data| \{t})"
-}
-
-fn arr_datatype_decl() -> String {
-  "(declare-datatypes ((|Array[Int]| 0)) (((|Array[Int]::mk| (|Array[Int].data| (Array Int Int)) (|Array[Int].len| Int)))))"
 }
 
 /// The SMT sort of a type spelled `n`: `Int`, `Bool`, a datatype of the
@@ -481,9 +457,11 @@ fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
   Array::push(lines, value = "(check-sat)")
   let names: Array[String] = []
   for d in ctx.decls {
-    let (n, _) = d
+    let (n, s) = d
     if !String::starts_with(n, prefix = "|r!") && !String::starts_with(n, prefix = "|w!") {
-      Array::push(names, value = n)
+      for t in model_terms(name = n, sort = s) {
+        Array::push(names, value = t)
+      }
     } else {
       ()
     }
@@ -1103,6 +1081,17 @@ fn ascription_type(_ callee: Expr) -> Option[TypeExpr] {
 fn sym_ascription(ctx: Ctx, ty: TypeExpr, arg: Expr, off: Int, st: Outcome) -> Array[Outcome] with Exception {
   let want = sort_of(adts = ctx.adts, ty = Some(ty))
   let out: Array[Outcome] = []
+  // `let xs: Array[Int] = []`: the annotation is what an empty literal lacks.
+  let empty = match arg {
+    EArray(items) => Array::length(items) == 0 && want == arr_sort(),
+    _ => false
+  }
+  if empty {
+    Array::push(out, value = with_value(st = st, value = "(|Array[Int]::mk| ((as const (Array Int Int)) 0) 0)", sort = arr_sort()))
+    return out
+  } else {
+    ()
+  }
   for o in sym(ctx = ctx, e = arg, st = st) {
     let w = adapt_word(value = o.value, sort = o.sort, want = want)
     if o.returned {
@@ -1951,7 +1940,9 @@ fn is_array_op_name(ctx: Ctx, fname: String, callee_off: Int) -> Bool {
   if fname == "__index" {
     index_site_offset(callee_off) >= 0
   } else {
-    (fname == "Array::get" || fname == "Array::length" || fname == "Array::set" || fname == "Array::push") && (is_builtin_ref_offset(callee_off) || match find_sig(fns = ctx.fns, name = fname) {
+    // `Array::all` / `Array::any` read the array's current value, as a quantifier
+    // over its elements: a written local may be the subject (#3719).
+    (fname == "Array::get" || fname == "Array::length" || fname == "Array::set" || fname == "Array::push" || fname == "Array::all" || fname == "Array::any") && (is_builtin_ref_offset(callee_off) || match find_sig(fns = ctx.fns, name = fname) {
       Some(_) => false,
       None => true
     })
@@ -1980,8 +1971,8 @@ fn writable_arrays(ctx: Ctx, params: Array[(String, Option[TypeExpr])], body: Ex
     let inits: Array[Option[Expr]] = []
     binder_inits(e = body, name = n, out = inits)
     let literal = Array::length(inits) == 1 && match Array::get(inits, at = 0) {
-      Some(EArray(_)) => true,
-      _ => false
+      Some(v) => is_array_literal(v),
+      None => false
     }
     if !literal {
       unsupported(off = 0 - 1, reason = "a write to `\{n}`, which is not bound exactly once, by `let`, to an array literal")
@@ -1989,7 +1980,7 @@ fn writable_arrays(ctx: Ctx, params: Array[(String, Option[TypeExpr])], body: Ex
       ()
     }
     match array_use_violation(ctx = ctx, e = body, name = n) {
-      Some(why) => unsupported(off = 0 - 1, reason = "`\{n}` is written, and \{why}: a written array is named only as the array of `Array::get`, `Array::length`, `xs[i]`, `Array::set` or `Array::push`"),
+      Some(why) => unsupported(off = 0 - 1, reason = "`\{n}` is written, and \{why}: a written array is named only as the array of `Array::get`, `Array::length`, `xs[i]`, `Array::set`, `Array::push`, `Array::all` or `Array::any`"),
       None => ()
     }
   }
@@ -2181,8 +2172,9 @@ fn sym_array_write(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int
   out
 }
 
-/// `[a, b, ..]` of `Int`s: its items in order, as written. An empty literal
-/// is unsupported: nothing in it says its element type.
+/// `[a, b, ..]` of `Int`s: its items in order, as written. A bare empty
+/// literal is unsupported: nothing in it says its element type. An annotated
+/// one (`let xs: Array[Int] = []`) is read by `sym_ascription`.
 fn sym_array_literal(ctx: Ctx, items: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
   if Array::length(items) == 0 {
     unsupported(off = off, reason = "an empty array literal, whose element type the prover does not read")

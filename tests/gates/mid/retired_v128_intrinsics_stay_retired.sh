@@ -554,6 +554,36 @@ fi
 rm -rf "$bxdir"
 echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
 
+# 40e9. #1980: a path that skips two or more of a branch's consumes releases
+# every dup it holds. pe_dup_merge's guarded path drop released one
+# reference, so `if c { sink(v) + sink(v) } else { 0 }` kept a dup on every
+# call that took the `else`. It now releases `M - S` (one PaPathDrop row
+# each): the larger arm's consumes less the most a smaller arm has, the
+# least over the binding's merges. The fixture measured 6,162,004 B at
+# N=20000 before; the bound is 4,000. Its controls keep the consumed values
+# past the call, so the shadow run is what proves no path drop released a
+# value still held, and the answer is checked on bump, rc, shadow and gc.
+echo "[compiler-gate] 40e9/40 RC branch-dup short-by-two guard"
+gate_workdir sbdir "_build/_gate_rc_branch_dup_short_by_two"
+for sb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$sb_lane" "fixtures/rc_branch_dup_short_by_two_test.vibe" "$sbdir/sb.wasm" main
+  gate_require_artifact "$sbdir/sb.wasm" "rc_branch_dup_short_by_two fixture did not compile on the $sb_lane lane (#1980)"
+  gate_run sb_out last "$sbdir/sb.wasm"
+  gate_require_eq "$sb_out" "0" "rc_branch_dup_short_by_two got '$sb_out' on the $sb_lane lane (want 0). A trap means a path drop released a value a path still held (#1980)."
+  if [ "$sb_lane" = rc ]; then
+    sb_json="$(node scripts/measure_heap.mjs "$sbdir/sb.wasm" main 2>/dev/null)"
+    sb_used="$(printf '%s' "$sb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sb_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_branch_dup_short_by_two heap ($sb_json)" >&2; exit 1
+    fi
+    if [ "$sb_used" -ge 4000 ]; then
+      echo "[compiler-gate] FAIL: rc_branch_dup_short_by_two heap_used=$sb_used >= 4000 (a branch-dup path drop releases fewer references than the path holds; measured 6162004 at N=20000 when it released one)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$sbdir"
+echo "[compiler-gate] RC branch-dup short-by-two guard ok (0 on bump/rc/shadow/gc, rc heap_used=$sb_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a
@@ -746,6 +776,36 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log"
 echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
+
+# 40f-b6. #2827: a parameter read only through its fields, and passed on to
+#         itself or to other such readers, is borrowed. Borrow inference
+#         counted a field read (`ctx.n`) as a consume, so such a parameter was
+#         owned, took its dups at entry on every path, and leaked them on the
+#         paths that ran none of its uses -- recursion included. Unfixed, the
+#         bounded fixture grew __heap_ptr by 119,996 B over its 2000 rounds.
+#         The answer is checked on bump, rc, shadow and gc; the shadow lane
+#         traps on a read of a freed block, which is what a field escaping a
+#         borrowed parameter without its own reference would hit.
+echo "[compiler-gate] 40f-b6/40 a parameter read only through its fields is borrowed (#2827)"
+gate_workdir pbdir "_build/_gate_rc_projection_param_borrow"
+for pb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$pb_lane" "fixtures/rc_projection_param_borrow_bounded_test.vibe" "$pbdir/pb.wasm" main
+  gate_require_artifact "$pbdir/pb.wasm" "rc_projection_param_borrow_bounded fixture did not compile on the $pb_lane lane (#2827)"
+  gate_run pb_out last "$pbdir/pb.wasm"
+  gate_require_eq "$pb_out" "8349000" "rc_projection_param_borrow_bounded got '$pb_out' on the $pb_lane lane (want 8349000). A trap means a field read off a borrowed parameter outlived the reference the caller lent (#2827)."
+  if [ "$pb_lane" = rc ]; then
+    pb_json="$(node scripts/measure_heap.mjs "$pbdir/pb.wasm" main 2>/dev/null)"
+    pb_used="$(printf '%s' "$pb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$pb_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_projection_param_borrow_bounded heap ($pb_json)" >&2; exit 1
+    fi
+    if [ "$pb_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_projection_param_borrow_bounded heap_used=$pb_used >= 20000 (#2827 regressed: a parameter read only through its fields is owned again and leaks its entry dups; unfixed, this fixture measured 119,996 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$pbdir"
+echo "[compiler-gate] field-reading parameter borrow guard ok (8349000 on bump/rc/shadow/gc, rc heap_used=$pb_used B)"
 
 # 40f-b5. #3129: `MutList::*` / `MutBytes::*` lower to the builtin
 #         `Array::*` / `ArrayBuilder::push` / `Bytes::*`. A program that
@@ -1655,6 +1715,38 @@ for pp_lane in bump rc shadow gc; do
 done
 rm -rf "$ppdir"
 echo "[compiler-gate] parameter path release guard ok (49000 on bump/rc/shadow/gc, rc heap_used=$pp_used B)"
+
+# 40f0q. #2827: the same parameter, when another path hands back a field of
+#        it. The guarded epilogue drop does not retain an escaping interior
+#        read, so the planner declined any body that may return a view of the
+#        parameter, and every field read counted -- `ctx.n` of an `Int` field
+#        too. A function declared to return an Int, a Bool or Unit hands back
+#        no pointer, so its parameters now take the drop. Unfixed, the bounded
+#        fixture grew __heap_ptr by 512,548 B; fixed, 548 B. Its control,
+#        `items_of`, returns an `Array` field and must keep its answer (the
+#        plan test pins that it keeps declining); the shadow lane traps on
+#        the drop of a freed block, which is what releasing a parameter on a
+#        path that already moved it out would hit.
+echo "[compiler-gate] 40f0q/40 a parameter consumed on some paths only is released past a scalar field read (#2827)"
+gate_workdir psdir "_build/_gate_rc_param_scalar_result"
+for ps_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ps_lane" "fixtures/rc_param_scalar_result_release_bounded_test.vibe" "$psdir/ps.wasm" main
+  gate_require_artifact "$psdir/ps.wasm" "rc_param_scalar_result_release_bounded fixture did not compile on the $ps_lane lane (#2827)"
+  gate_run ps_out last "$psdir/ps.wasm"
+  gate_require_eq "$ps_out" "3009552" "rc_param_scalar_result_release_bounded got '$ps_out' on the $ps_lane lane (want 3009552). A trap means a parameter's path drop released it on a path that had moved it out (#2827)."
+  if [ "$ps_lane" = rc ]; then
+    ps_json="$(node scripts/measure_heap.mjs "$psdir/ps.wasm" main 2>/dev/null)"
+    ps_used="$(printf '%s' "$ps_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ps_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_param_scalar_result_release_bounded heap ($ps_json)" >&2; exit 1
+    fi
+    if [ "$ps_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_param_scalar_result_release_bounded heap_used=$ps_used >= 20000 (#2827 regressed: a parameter of an Int/Bool/Unit function whose other path reads a field of it is left unreleased again; unfixed, this fixture measured 512,548 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$psdir"
+echo "[compiler-gate] scalar-result parameter path release guard ok (3009552 on bump/rc/shadow/gc, rc heap_used=$ps_used B)"
 
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).

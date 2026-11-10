@@ -2,6 +2,7 @@
 
 import @vibe/compiler/core {
   BindingOrigin,
+  EffectOwner,
   Subst,
   Type,
   TypeDef,
@@ -403,7 +404,7 @@ test "persistent module interface v9 round-trips enum struct and alias authority
 
 test "persistent module interface v9 round-trips effect and effectset authority" {
   let env = EnvTypeDefs([
-    TDEffect("Audit", [("Emit", [CtString], CtUnit)], []),
+    TDEffect("Audit", [("Emit", [CtString], CtUnit)], [], [], ProgramHandled),
     TDEffectSet("Audits", ["Audit"])
   ], ["Audits"], EnvEmpty)
   match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
@@ -413,11 +414,39 @@ test "persistent module interface v9 round-trips effect and effectset authority"
       assert(Array::length(env_selectable_type_defs(decoded)) == 1)
       assert(Array::get(env_selectable_type_defs(decoded), at = 0) == "Audits")
       match (Array::get(defs, at = 0), Array::get(defs, at = 1)) {
-        (TDEffect(effect_name, ops, _), TDEffectSet(set_name, members)) => {
+        (TDEffect(effect_name, ops, _, _, _), TDEffectSet(set_name, members)) => {
           assert(effect_name == "Audit")
           assert(Array::get(ops, at = 0).0 == "Emit")
           assert(set_name == "Audits")
           assert(Array::get(members, at = 0) == "Audit")
+        },
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "an effect's resource kinds survive the persistent codec (ADR-0094)" {
+  let env = EnvTypeDefs([
+    TDEffect("Kv", [("Get", [CtString], CtString)], ["R"], ["Store::Bucket"], ProgramHandled),
+    TDEffect("Log", [("Emit", [CtString], CtUnit)], ["T"], [""], ProgramHandled)
+  ], [], EnvEmpty)
+  let text = persistent_type_env_cache_text(env)
+  // Only the effect with a resource kind takes the `Q` form; the other keeps
+  // the earlier `K` bytes.
+  assert(String::contains(text, needle = "Q2:Kv"))
+  assert(String::contains(text, needle = "K3:Log"))
+  match parse_persistent_type_env(text) {
+    Some(decoded) => {
+      let defs = env_type_defs(decoded)
+      match (Array::get(defs, at = 0), Array::get(defs, at = 1)) {
+        (TDEffect(_, _, kv_params, kv_kinds, _), TDEffect(_, _, log_params, log_kinds, _)) => {
+          inspect(String::join(kv_params, sep = ","), content = "R")
+          inspect(String::join(kv_kinds, sep = ","), content = "Store::Bucket")
+          inspect(String::join(log_params, sep = ","), content = "T")
+          inspect(Array::length(log_kinds), content = "1")
+          inspect(Array::get(log_kinds, at = 0), content = "")
         },
         _ => assert(false)
       }

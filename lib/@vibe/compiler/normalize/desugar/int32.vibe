@@ -33,6 +33,16 @@ import @vibe/ast {
 /// Statements that hold no row and do not spell either type are left as they
 /// are.
 export fn rewrite_int32_stmts(stmts: Array[Stmt], binop32: Array[Int], binopu32: Array[Int], assign32: Array[Int], assignu32: Array[Int], neg32: Array[Int], notu32: Array[Int]) -> Unit {
+  rewrite_int32_stmts_vouched(stmts = stmts, binop32 = binop32, binopu32 = binopu32, assign32 = assign32, assignu32 = assignu32, neg32 = neg32, notu32 = notu32, free_from = 0, free_to = 0)
+}
+
+/// #3976: the same rewrite, for a caller that knows no statement in
+/// `free_from` .. `free_to` (exclusive) spells `Int32` or `UInt32`, so the
+/// test for whether the program does need not read them. The answer, and so
+/// the rewrite, is the one `rewrite_int32_stmts` gives: those statements
+/// cannot change it. A per-module run passes its dependency interface here,
+/// which it otherwise scans again for every module that imports it.
+export fn rewrite_int32_stmts_vouched(stmts: Array[Stmt], binop32: Array[Int], binopu32: Array[Int], assign32: Array[Int], assignu32: Array[Int], neg32: Array[Int], notu32: Array[Int], free_from: Int, free_to: Int) -> Unit {
   let rows = Int32Rows::{
     binop32: binop32,
     binopu32: binopu32,
@@ -42,7 +52,7 @@ export fn rewrite_int32_stmts(stmts: Array[Stmt], binop32: Array[Int], binopu32:
     notu32: notu32
   }
   let any_rows = Array::length(rows.binop32) + Array::length(rows.binopu32) + Array::length(rows.assign32) + Array::length(rows.assignu32) + Array::length(rows.neg32) + Array::length(rows.notu32) > 0
-  if any_rows || program_mentions_int32(stmts) {
+  if any_rows || i32_stmts_mention_outside(stmts = stmts, free_from = free_from, free_to = free_to) {
     let fresh = i32_fresh_base(stmts)
     let mut i = 0
     while i < Array::length(stmts) {
@@ -85,6 +95,22 @@ export fn program_mentions_int32(_ stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   while i < Array::length(stmts) && !found {
     found = i32_stmt_mentions(Array::get(stmts, at = i))
+    i = i + 1
+  }
+  found
+}
+
+/// `program_mentions_int32` over every statement outside `free_from` ..
+/// `free_to` (exclusive).
+fn i32_stmts_mention_outside(stmts: Array[Stmt], free_from: Int, free_to: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    if i < free_from || i >= free_to {
+      found = i32_stmt_mentions(Array::get(stmts, at = i))
+    } else {
+      ()
+    }
     i = i + 1
   }
   found
@@ -202,7 +228,7 @@ fn i32_stmt_mentions(_ stmt: Stmt) -> Bool {
     SSuberror(_, _, variants) => i32_variants_mention(variants),
     STypeAlias(_, _, _, ty) => i32_ty_mentions(ty),
     STrait(_, _, _, methods, _, _) => i32_sigs_mention(methods),
-    SEffectDef(_, _, _, ops) => i32_sigs_mention(ops),
+    SEffectDef(_, _, _, ops, _) => i32_sigs_mention(ops),
     // An impl header holds no value and no arithmetic; its methods are
     // separate declarations, read by the arms above. So a marker impl such as
     // @vibe/core's `impl Hash for Int32` does not make a program that never
@@ -486,7 +512,7 @@ fn i32_stmt(stmt: Stmt, rows: Int32Rows, fresh: String) -> Stmt {
     SSuberror(exported, name, variants) => SSuberror(exported, name, i32_variants(variants)),
     STypeAlias(exported, name, tparams, ty) => STypeAlias(exported, name, tparams, i32_ty(ty)),
     STrait(exported, name, supers, methods, generics, header) => STrait(exported, name, supers, i32_sigs(methods), generics, header),
-    SEffectDef(exported, name, tparams, ops) => SEffectDef(exported, name, tparams, i32_sigs(ops)),
+    SEffectDef(exported, name, tparams, ops, owner) => SEffectDef(exported, name, tparams, i32_sigs(ops), owner),
     // A marker impl keeps its target: erased, it would duplicate `Int`'s.
     SImpl(_, _, _, _) => stmt,
     SExternLet(name, ty) => SExternLet(name, i32_ty(ty)),

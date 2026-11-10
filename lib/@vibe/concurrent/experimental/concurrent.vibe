@@ -997,7 +997,10 @@ export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -
 
 /// Send: returns once the message is linearized (buffered, deposited for a
 /// committed receiver, or consumed by a receiver we drove). THROWS `Closed`
-/// on a closed channel (#1324: was `Err(Closed)` in a Result return). Blocking with no runnable task traps (deadlock).
+/// on a closed channel (#1324: was `Err(Closed)` in a Result return). While
+/// it waits it runs the group's queued tasks and resumes its parked
+/// suspendable ones (conc_blocked_step, #3200); with nothing left that can
+/// take the message it traps (deadlock).
 /// Row-polymorphic (`with e`, #1181) -- ineligible as a callee inside
 /// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
 /// lowering rejects row-variable callees); use `Sender::send_wait` there.
@@ -1028,19 +1031,14 @@ export fn Sender::send[rg, e, T](_ s: Sender[rg, e, T], v: T) -> Unit with Excep
   let myseq = c.pend_seq
   c.pend_seq = c.pend_seq + 1
   conc_chan_notify(c)
-  loop (d = 0) {
+  loop (stall = 0) {
     if c.pend_consumed > myseq {
       break ()
     }
     if chan_closed(c) {
       throw(Closed)
     }
-    if !drive_one(c.group) {
-      conc_deadlock()
-    } else {
-      ()
-    }
-    continue (d)
+    continue (conc_blocked_step(n = c.group, stall = stall))
   }
 }
 
@@ -1113,15 +1111,16 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
 }
 
 /// Receive: Some(message) in linearization order, or None once the
-/// channel is closed and drained. Blocks by driving ready tasks;
-/// blocking with no runnable task traps (deadlock).
+/// channel is closed and drained. While it waits it runs the group's queued
+/// tasks and resumes its parked suspendable ones (conc_blocked_step,
+/// #3200); with nothing left that can send or close it traps (deadlock).
 /// Row-polymorphic (`with e`, #1181) -- ineligible as a callee inside
 /// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
 /// lowering rejects row-variable callees); use `Receiver::recv_wait` there.
 export fn Receiver::recv[rg, e, T](_ rh: Receiver[rg, e, T]) -> Option[T] with e {
   let c = rh.ch
   c.waiting_recv = c.waiting_recv + 1
-  let out = loop (d = 0) {
+  let out = loop (stall = 0) {
     if c.buf.len > 0 {
       let v = ring_take(c.buf)
       // Promote the oldest blocked send into the freed buffer slot.
@@ -1145,12 +1144,7 @@ export fn Receiver::recv[rg, e, T](_ rh: Receiver[rg, e, T]) -> Option[T] with e
     if chan_closed(c) {
       break None
     }
-    if !drive_one(c.group) {
-      conc_deadlock()
-    } else {
-      ()
-    }
-    continue (d)
+    continue (conc_blocked_step(n = c.group, stall = stall))
   }
   c.waiting_recv = c.waiting_recv - 1
   out
@@ -1224,7 +1218,71 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () 
   // cell. A push/pop bracket (not set/clear) because task bodies may
   // spawn nested suspendable tasks.
   conc_running_push(h.cell)
-  let step = handle {
+  let step = conc_first_leg(n = n, h = h, f = f)
+  conc_running_pop()
+  TaskHandle::settle(h, step = step)
+  h
+}
+
+/// #3200: a suspendable task started the way `TaskGroup::spawn` starts a
+/// task. It is queued Ready and dispatched in FIFO order with the group's
+/// run-to-completion tasks, by `join`, a channel `send` / `recv`, or the
+/// group's close; `spawn_suspend` instead runs the first leg at the call.
+/// Once dispatched, the task is a suspendable one: the first leg runs under
+/// the same `Async` handle (`conc_first_leg`), and a wait parks it for the
+/// pump. A cancel or a sibling's failure before dispatch resolves it
+/// Cancelled without running it, as for `spawn`.
+///
+/// COMPILER-FACING: this is the target the suspend lowering will give a
+/// `TaskGroup::spawn` whose task closure uses `Async` (#3200 step b). A
+/// program does not call it by name.
+export fn __conc_spawn_async[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () -> T with Async + Exception) -> TaskHandle[rg, e, T] {
+  let h = TaskGroup::spawn(n, f = () -> {
+    conc_unreachable_runner(ResCell::{
+      value: None
+    })
+  })
+  let cell = h.cell
+  let rc = h.result
+  // Replace the placeholder runner with the suspendable start. `spawn`
+  // already queued the cell (status Ready) at index count - 1.
+  let runner: () -> Unit with e = () -> {
+    // Pump-visible from its first leg on: a wait parks it like any adopted
+    // task, and close / join / a blocked send or recv resume it.
+    Array::push(n.adopted, value = cell)
+    let th = TaskHandle::{
+      group: n,
+      cell: cell,
+      result: rc
+    }
+    // drive_one already brackets this runner with the running stack.
+    let step = conc_first_leg(n = n, h = th, f = f)
+    TaskHandle::settle(th, step = step)
+  }
+  Array::set(n.runners, at = n.count - 1, value = runner)
+  h
+}
+
+/// The placeholder task `__conc_spawn_async` queues before it installs its
+/// own runner. Never called: the cell it holds is always empty.
+fn conc_unreachable_runner[T](_ none: ResCell[T]) -> T {
+  match none.value {
+    Some(v) => v,
+    None => {
+      abort("vibe: internal: a queued suspendable task ran its placeholder runner")
+      conc_unreachable_runner(none)
+    }
+  }
+}
+
+/// The first leg of a suspendable task: run `f` up to its first suspension
+/// under the `Async` handle whose arm parks the continuation in the task's
+/// cell, or to its end. A throw on this leg fails the task and the group
+/// (fail-fast), as in `spawn`'s runner. Shared by `spawn_suspend` (which runs
+/// it at the call) and `__conc_spawn_async` (which runs it at dispatch). The
+/// caller brackets it with the running stack.
+fn conc_first_leg[rg, e, T](n: TaskGroup[rg, e], h: TaskHandle[rg, e, T], f: () -> T with Async + Exception) -> TaskStep[T] {
+  handle {
     handle {
       let v = f()
       SDone(v)
@@ -1263,9 +1321,6 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () 
     conc_fail_cell(n = n, cell = h.cell, msg = conc_exn_message(rendered = "\{msg}", kind = __exn_kind()))
     SParked
   } }
-  conc_running_pop()
-  TaskHandle::settle(h, step = step)
-  h
 }
 
 /// Register a suspendable task with the group. The body runs (to its
@@ -2206,8 +2261,9 @@ fn conc_pump_until_settled[rg, e](n: TaskGroup[rg, e], target: TaskCell) -> Unit
   conc_pump_rounds(n = n, until = [target])
 }
 
-/// Pump rounds under the deadlock rules below, until nothing is resumable
-/// or, when `until` names a task, until that task is no longer parked.
+/// Pump rounds under conc_stall_after_pump's deadlock rule, until nothing is
+/// resumable or, when `until` names a task, until that task is no longer
+/// parked.
 fn conc_pump_rounds[rg, e](n: TaskGroup[rg, e], until: Array[TaskCell]) -> Unit {
   let mut go = true
   let mut stall = 0
@@ -2215,51 +2271,88 @@ fn conc_pump_rounds[rg, e](n: TaskGroup[rg, e], until: Array[TaskCell]) -> Unit 
     let before = n.progress
     go = TaskGroup::pump(n)
     if go {
-      if n.progress == before && conc_all_parked_polling(n) {
-        stall = stall + 1
-      } else {
-        stall = 0
-      }
-      // A full round-robin sweep in which every parked task is a POLLER
-      // (Suspend(1) — waiting on an external condition) and zero progress
-      // was made can only repeat itself: the scheduler is deterministic
-      // and no wake can originate outside this loop — blocked-forever
-      // channel waits land here. Trap like every other deadlock
-      // (drive_one's rule) instead of livelocking. Cooperative YIELDS
-      // (Suspend(0)) never count: resuming one always advances its body,
-      // so a lone task yielding any number of times completes normally
-      // (an infinitely-yielding body is an ordinary infinite loop, not a
-      // deadlock).
-      //
-      // ADR-0089 D2 (#1218): one exception — a sweep is NOT deadlock
-      // evidence while some parked task still owes sleep time. A sleeper
-      // counts as a poller here (park_kind stores wait_poll = true for
-      // sleep debts), but pump skips it until its debt clears, so a
-      // poller waiting ON the sleeper (awaiting a future the sleeper
-      // resolves after its nap, recv_wait on a sleeping producer) spins
-      // without progress exactly like a real deadlock. Advance virtual
-      // time and retry; only a stalled sweep with NO sleeper traps.
-      //
-      // Second exception (direct-wake fallback valve): free pollers can
-      // stall while a DIRECT-parked waiter is stranded by a missed
-      // notify whose wake would unblock everything. Before concluding
-      // deadlock, clear the direct flags once per progress epoch and
-      // retry — genuinely blocked waiters re-register, so the next
-      // stalled sweep traps as before.
-      if stall > Array::length(n.adopted) {
-        if conc_force_settle_sleep_debt(n) {
-          stall = 0
-        } else if !n.direct_valve_used && conc_clear_direct_waits(n) {
-          n.direct_valve_used = true
-          stall = 0
-        } else {
-          conc_deadlock()
-        }
-      } else {
-        ()
-      }
+      stall = conc_stall_after_pump(n = n, before = before, stall = stall)
     } else {
       ()
+    }
+  }
+}
+
+/// The deadlock rule every pump loop shares (pump_all, a join on a parked
+/// task, close, and a blocked send / recv), applied after one
+/// `TaskGroup::pump` step that resumed something. `before` is the group's
+/// progress counter before that step; the result is the stall count to carry
+/// into the next step.
+///
+/// A full round-robin sweep in which every parked task is a POLLER
+/// (Suspend(1) — waiting on an external condition) and zero progress
+/// was made can only repeat itself: the scheduler is deterministic
+/// and no wake can originate outside this loop — blocked-forever
+/// channel waits land here. Trap like every other deadlock
+/// (drive_one's rule) instead of livelocking. Cooperative YIELDS
+/// (Suspend(0)) never count: resuming one always advances its body,
+/// so a lone task yielding any number of times completes normally
+/// (an infinitely-yielding body is an ordinary infinite loop, not a
+/// deadlock).
+///
+/// ADR-0089 D2 (#1218): one exception — a sweep is NOT deadlock
+/// evidence while some parked task still owes sleep time. A sleeper
+/// counts as a poller here (park_kind stores wait_poll = true for
+/// sleep debts), but pump skips it until its debt clears, so a
+/// poller waiting ON the sleeper (awaiting a future the sleeper
+/// resolves after its nap, recv_wait on a sleeping producer) spins
+/// without progress exactly like a real deadlock. Advance virtual
+/// time and retry; only a stalled sweep with NO sleeper traps.
+///
+/// Second exception (direct-wake fallback valve): free pollers can
+/// stall while a DIRECT-parked waiter is stranded by a missed
+/// notify whose wake would unblock everything. Before concluding
+/// deadlock, clear the direct flags once per progress epoch and
+/// retry — genuinely blocked waiters re-register, so the next
+/// stalled sweep traps as before.
+fn conc_stall_after_pump[rg, e](n: TaskGroup[rg, e], before: Int, stall: Int) -> Int {
+  let next = if n.progress == before && conc_all_parked_polling(n) {
+    stall + 1
+  } else {
+    0
+  }
+  if next > Array::length(n.adopted) {
+    if conc_force_settle_sleep_debt(n) {
+      0
+    } else if !n.direct_valve_used && conc_clear_direct_waits(n) {
+      n.direct_valve_used = true
+      0
+    } else {
+      conc_deadlock()
+      0
+    }
+  } else {
+    next
+  }
+}
+
+/// One step for a caller blocked on its own stack: `Sender::send` waiting for
+/// its message to be taken, `Receiver::recv` waiting for one to arrive. A
+/// queued run-to-completion task runs first (drive_one). Otherwise one parked
+/// suspendable task is resumed under the shared stall rule, so a peer that is
+/// itself waiting (a sleep, a `send_wait` / `recv_wait`, a future) is driven
+/// by the wait that needs it, and no program has to pump the group by hand
+/// before it sends or receives (#3200). Before this a parked peer read as a
+/// deadlock here, and a body sending into a rendezvous channel whose
+/// suspendable receiver had not reached its `recv_wait` yet could not be
+/// written at all: `pump_all` first deadlocked on the receiver instead.
+/// Nothing queued and nothing resumable is a deadlock. Returns the stall
+/// count for the next step.
+fn conc_blocked_step[rg, e](n: TaskGroup[rg, e], stall: Int) -> Int with e {
+  if drive_one(n) {
+    0
+  } else {
+    let before = n.progress
+    if TaskGroup::pump(n) {
+      conc_stall_after_pump(n = n, before = before, stall = stall)
+    } else {
+      conc_deadlock()
+      0
     }
   }
 }

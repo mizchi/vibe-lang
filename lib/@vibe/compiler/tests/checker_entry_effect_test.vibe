@@ -736,3 +736,38 @@ test "#3155: a local alias of a row-generic function checks like the direct call
   let effectful = String::concat(decl, "effect Log { Emit(Int) -> Unit }\nfn main() -> Int allows Exception {\n  let a = app\n  a(() -> {\n    perform Log::Emit(1)\n    42\n  })\n}\n")
   assert(String::contains(first_check_error(effectful), needle = "Log"))
 }
+
+test "#3143: a declared capability at the entry says why it is still refused" {
+  // ADR-0084 / ADR-0094: `Kv` declares a resource parameter, so the
+  // classifier reads it as a capability of `Store::Bucket`. No host provides
+  // a program-declared effect yet (#2656), so the entry still refuses it --
+  // and an algebraic effect gets no such note.
+  let capability = first_check_error("effect Kv[R: Store::Bucket] {\n  Get(String) -> String\n}\n\nresource Posts: Store::Bucket\n\nfn main() -> Unit allows Kv[Posts] {\n  let _ = perform Kv::Get(\"a\")\n  ()\n}\n")
+  assert(String::contains(capability, needle = "cannot discharge"))
+  assert(String::contains(capability, needle = "`Kv` acts on a resource of kind `Store::Bucket`, but no host provides an effect a program declares yet (#2656)"))
+  let algebraic = first_check_error("effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit allows Ask {\n  let _ = perform Ask::Get()\n  ()\n}\n")
+  assert(String::contains(algebraic, needle = "cannot discharge"))
+  assert(!String::contains(algebraic, needle = "acts on a resource"))
+}
+
+test "#2656: an extern effect at the entry says no provider binding exists yet" {
+  // ADR-0124: the catalog classifies an `extern effect` as a capability on
+  // `Process::Root` from its declaration, with no name added to the policy
+  // table. No provider can be bound yet, so the entry still refuses it, and
+  // the note names `extern effect` rather than a resource kind.
+  let host = first_check_error("extern effect Kv {\n  get(String) -> String\n}\n\nfn main() -> Unit allows Kv {\n  let _ = Kv::get(\"a\")\n  ()\n}\n")
+  assert(String::contains(host, needle = "cannot discharge { Kv }"))
+  assert(String::contains(host, needle = "`Kv` is an `extern effect`, but binding a host provider for one is not implemented yet (#2656)"))
+  assert(!String::contains(host, needle = "acts on a resource"))
+}
+
+test "#2656: an extern effect operation is a host function the checker types" {
+  // ADR-0124: `Kv::get(k)` is called like `Fs::read_file(p)` and carries
+  // `Kv` as its row, so a function that reaches it declares `with Kv`. The
+  // checker accepts this program; only a build refuses it, until a provider
+  // can be bound.
+  let ok = first_check_error("extern effect Kv {\n  get(String) -> String\n  put(String, String) -> Unit\n}\n\nfn read_key(k: String) -> String with Kv {\n  Kv::get(k)\n}\n\nfn copy_key(from: String, to: String) -> Unit with Kv {\n  Kv::put(to, read_key(k = from))\n}\n")
+  inspect(ok, content = "")
+  let wrong_arg = first_check_error("extern effect Kv {\n  get(String) -> String\n}\n\nfn read_key() -> String with Kv {\n  Kv::get(1)\n}\n")
+  assert(String::length(wrong_arg) > 0)
+}

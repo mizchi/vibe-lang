@@ -16,8 +16,9 @@ import @vibe/compiler/core {
   dce_keep_flags,
   executable_export_kept,
   executable_export_kept_bytes,
-  executable_exports_stripped,
   leb128_encode_u32,
+  leb128_encode_u32_slot,
+  reloc_slot_width,
   wat_callee_names
 }
 
@@ -596,6 +597,20 @@ fn lc_pf_leb_len(_ v: Int) -> Int {
     4
   } else {
     5
+  }
+}
+
+/// The length a renumbered `call` / `ref.func` immediate takes: the slot
+/// width the bodies were emitted at (#3941), or minimal. The rewrite below
+/// writes it with `leb128_encode_u32_slot`, so a pruned module keeps the
+/// encoding a fresh body has.
+fn lc_pf_site_len(_ v: Int) -> Int {
+  let w = reloc_slot_width()
+  let m = lc_pf_leb_len(v)
+  if w > m {
+    w
+  } else {
+    m
   }
 }
 
@@ -1336,7 +1351,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
       if target >= Array::length(newidx) || Array::get(newidx, at = target) < 0 {
         lc_pf_refuse(failed = failed, site = 5123)
       } else {
-        sz = sz - (lc_pf_skip_leb(b = mod_bytes, p = pos) - pos) + lc_pf_leb_len(Array::get(newidx, at = target))
+        sz = sz - (lc_pf_skip_leb(b = mod_bytes, p = pos) - pos) + lc_pf_site_len(Array::get(newidx, at = target))
       }
       k = k + 1
     }
@@ -1349,7 +1364,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
         let pk = Array::get(site, at = w)
         let pos = pk>>32
         Bytes::blit(dst, src = mod_bytes, start = prev, end = pos)
-        leb128_encode_u32(buf = dst, value = Array::get(newidx, at = pk&4294967295))
+        leb128_encode_u32_slot(buf = dst, value = Array::get(newidx, at = pk&4294967295))
         prev = lc_pf_skip_leb(b = mod_bytes, p = pos)
         w = w + 1
       }
@@ -1497,7 +1512,7 @@ fn lc_linemap_remap_stream(mod_bytes: Bytes, rec_start: Int, send: Int, cell: Ar
                 let target = pk&4294967295
                 if target < Array::length(newidx) && Array::get(newidx, at = target) >= 0 {
                   let old_leb = lc_pf_skip_leb(b = mod_bytes, p = pos) - pos
-                  call_delta = call_delta + lc_pf_leb_len(Array::get(newidx, at = target)) - old_leb
+                  call_delta = call_delta + lc_pf_site_len(Array::get(newidx, at = target)) - old_leb
                 } else {
                   ()
                 }
@@ -1659,8 +1674,8 @@ fn lc_is_derive_helper_name(derive_names: Array[String], name: String) -> Bool {
   String::starts_with(name, prefix = "__arr_equals__") || String::starts_with(name, prefix = "__arr_to_string__") || array_contains_str(arr = derive_names, s = name)
 }
 
-fn lc_export_is_root(name: String, entry_name: String) -> Bool {
-  !executable_exports_stripped() || executable_export_kept(name = name, entry_name = entry_name)
+fn lc_export_is_root(name: String, entry_name: String, exports_stripped: Bool) -> Bool {
+  !exports_stripped || executable_export_kept(name = name, entry_name = entry_name)
 }
 
 fn lc_fn_alias_name(renames: Array[(String, String)], name: String) -> Bool {
@@ -1687,7 +1702,7 @@ fn lc_boundary_has_reexport(_ locals: Array[String]) -> Bool {
   false
 }
 
-fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, exclude_derived_helpers: Bool, entry_source_roots: Bool) -> Array[String] {
+fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, exclude_derived_helpers: Bool, entry_source_roots: Bool, exports_stripped: Bool) -> Array[String] {
   let roots = lc_fresh_string_array()
   let derive_names = if exclude_derived_helpers {
     lc_derive_helper_names(stmts)
@@ -1789,7 +1804,7 @@ fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, 
       // Keep ordinary value initializers available to the direct codegen
       // lane's diagnostics. Function values are the definitions whose dead
       // bodies can safely be removed before they commit host imports.
-      SLet(exported, _, name, _, value) => if (own_definition || keep_segment || (publish && exported && lc_export_is_root(name = name, entry_name = entry_name)) || match value {
+      SLet(exported, _, name, _, value) => if (own_definition || keep_segment || (publish && exported && lc_export_is_root(name = name, entry_name = entry_name, exports_stripped = exports_stripped)) || match value {
         EFn(_, _, _, _, _, _) => false,
         EIdent(_, _) => !lc_fn_alias_name(renames = fn_aliases, name = name),
         _ => true
@@ -1798,7 +1813,7 @@ fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, 
       } else {
         ()
       },
-      SFnDecl(exported, name, _, _, _) => if (own_definition || keep_segment || (publish && exported && lc_export_is_root(name = name, entry_name = entry_name))) && (!exclude_derived_helpers || !lc_is_derive_helper_name(derive_names = derive_names, name = name)) {
+      SFnDecl(exported, name, _, _, _) => if (own_definition || keep_segment || (publish && exported && lc_export_is_root(name = name, entry_name = entry_name, exports_stripped = exports_stripped))) && (!exclude_derived_helpers || !lc_is_derive_helper_name(derive_names = derive_names, name = name)) {
         Array::push(roots, value = name)
       } else {
         ()
@@ -1810,7 +1825,7 @@ fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, 
         let mut j = 0
         while j < Array::length(names) {
           let name = Array::get(names, at = j)
-          if publish && lc_export_is_root(name = name, entry_name = entry_name) {
+          if publish && lc_export_is_root(name = name, entry_name = entry_name, exports_stripped = exports_stripped) {
             Array::push(roots, value = name)
           } else {
             ()
@@ -1827,15 +1842,15 @@ fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, 
   roots
 }
 
-export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool) -> Array[String] {
-  lc_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = keep_source_defs, exclude_derived_helpers = true, entry_source_roots = false)
+export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, exports_stripped: Bool) -> Array[String] {
+  lc_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = keep_source_defs, exclude_derived_helpers = true, entry_source_roots = false, exports_stripped = exports_stripped)
 }
 
 // Before synthesis, every declaration is source-owned. A handwritten exported
 // Type::to_string (or a re-exported helper) must not be excluded by spelling.
 // The export-strip, alias, initializer and source-boundary policies stay shared.
-export fn lc_source_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, entry_source_roots: Bool) -> Array[String] {
-  lc_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = keep_source_defs, exclude_derived_helpers = false, entry_source_roots = entry_source_roots)
+export fn lc_source_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, entry_source_roots: Bool, exports_stripped: Bool) -> Array[String] {
+  lc_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = keep_source_defs, exclude_derived_helpers = false, entry_source_roots = entry_source_roots, exports_stripped = exports_stripped)
 }
 
 export fn lc_late_dce_wat_roots(roots: Array[String], stmts: Array[Stmt], iw_names: Array[String], iw_wats: Array[String]) -> Unit {

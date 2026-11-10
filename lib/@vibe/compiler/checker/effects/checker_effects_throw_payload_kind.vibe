@@ -2,6 +2,7 @@
 
 import @vibe/compiler/core {
   BindingOrigin,
+  EffectOwner,
   Expr,
   Pat,
   Stmt,
@@ -27,6 +28,7 @@ import @vibe/compiler/core {
   is_exception_label,
   is_exception_throw_operation,
   is_legacy_console_provider,
+  process_root_resource_kind,
   subst_apply,
   subst_eff_binding
 }
@@ -36,7 +38,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  type_param_name
+  resource_param_kind, type_param_name
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -2186,11 +2188,52 @@ export fn row_owner_display_name(_ fn_name: String) -> String {
 // well as the real host `Env::get` builtin used by its entry point.
 export let entry_user_effect_operations: Array[String] = array_empty()
 
+// ADR-0094 (#3143): each declared effect with the resource kind its resource
+// parameter names (`""` when it takes none) -- the declarations
+// `classify_label_in` reads, filled with `entry_user_effect_operations`. An
+// `extern effect` without one acts on the singleton `Process::Root`, as `Fs`
+// does (ADR-0124), so the catalog classifies it as a capability.
+export let entry_declared_effect_kinds: Array[(String, String)] = []
+
+// ADR-0124 (#2656): the declared effects whose operations the host provides.
+export let entry_host_provided_effects: Array[String] = []
+
+export fn collect_entry_declared_effect_kinds(stmts: Array[Stmt], out: Array[(String, String)]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SEffectDef(_, name, keys, _, owner) => {
+        let mut kind = ""
+        for key in keys {
+          if resource_param_kind(key) != "" {
+            kind = resource_param_kind(key)
+          }
+        }
+        match owner {
+          HostProvided => {
+            if kind == "" {
+              kind = process_root_resource_kind()
+            }
+            Array::push(entry_host_provided_effects, value = name)
+          },
+          ProgramHandled => ()
+        }
+        Array::push(out, value = (name, kind))
+      },
+      SModule(_, _, body) => collect_entry_declared_effect_kinds(stmts = body, out = out),
+      _ => ()
+    }
+  }
+  ()
+}
+
 export fn collect_entry_user_effect_operations(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
-      SEffectDef(_, name, _, ops) => {
+      // ADR-0124: an `extern effect`'s operations are host functions, not
+      // operations a handler in the program discharges.
+      SEffectDef(_, _, _, _, HostProvided) => (),
+      SEffectDef(_, name, _, ops, _) => {
         let mut oi = 0
         while oi < Array::length(ops) {
           let (op_name, _, _) = Array::get(ops, at = oi)

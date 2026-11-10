@@ -11,7 +11,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Subst, Type, TypeDef, TypeEnv
+  EffectOwner, Subst, Type, TypeDef, TypeEnv
 }
 
 import @vibe/core {
@@ -245,7 +245,7 @@ fn artifact_typedef(_ def: TypeDef) -> String {
       String::concat("S", String::concat(artifact_piece(name), String::concat(artifact_array(encoded), String::concat(artifact_strings(mut_fields), artifact_strings(params)))))
     },
     TDAlias(name, params, body) => String::concat("A", String::concat(artifact_piece(name), String::concat(artifact_strings(params), artifact_type(body)))),
-    TDEffect(name, ops, params) => {
+    TDEffect(name, ops, params, kinds, owner) => {
       let encoded = array_empty()
       let mut i = 0
       while i < Array::length(ops) {
@@ -259,7 +259,11 @@ fn artifact_typedef(_ def: TypeDef) -> String {
         Array::push(encoded, value = String::concat(artifact_piece(op_name), String::concat(artifact_array(arg_text), artifact_type(ret))))
         i = i + 1
       }
-      String::concat("K", String::concat(artifact_piece(name), String::concat(artifact_array(encoded), artifact_strings(params))))
+      let owner_text = match owner {
+        HostProvided => "host",
+        ProgramHandled => "program"
+      }
+      String::concat("K", String::concat(artifact_piece(name), String::concat(artifact_array(encoded), String::concat(artifact_strings(params), String::concat(artifact_strings(kinds), artifact_piece(owner_text))))))
     },
     TDEffectSet(name, members) => String::concat("Z", String::concat(artifact_piece(name), artifact_strings(members)))
   }
@@ -864,7 +868,7 @@ fn artifact_struct_parse(name: String, raws: Array[String], mut_fields: Array[St
   }
 }
 
-fn artifact_effect_parse(name: String, raws: Array[String], params: Array[String]) -> Option[TypeDef] {
+fn artifact_effect_parse(name: String, raws: Array[String], params: Array[String], kinds: Array[String], owner: EffectOwner) -> Option[TypeDef] {
   let ops = array_empty()
   let mut i = 0
   let mut valid = true
@@ -898,7 +902,7 @@ fn artifact_effect_parse(name: String, raws: Array[String], params: Array[String
     i = i + 1
   }
   if valid {
-    Some(TDEffect(name, ops, params))
+    Some(TDEffect(name, ops, params, kinds, owner))
   } else {
     None
   }
@@ -961,10 +965,20 @@ fn artifact_typedef_parse(_ text: String) -> Option[TypeDef] {
       match artifact_piece_parse(text = text, pos = 1) {
         Some((name, p1)) => match artifact_array_parse(text = text, pos = p1) {
           Some((raws, p2)) => match artifact_array_parse(text = text, pos = p2) {
-            Some((params, end)) => if end == String::length(text) {
-              artifact_effect_parse(name = name, raws = raws, params = params)
-            } else {
-              None
+            Some((params, p3)) => match artifact_array_parse(text = text, pos = p3) {
+              Some((kinds, p4)) => match artifact_piece_parse(text = text, pos = p4) {
+                Some((owner_text, end)) => if end == String::length(text) && Array::length(kinds) == Array::length(params) && (owner_text == "host" || owner_text == "program") {
+                  artifact_effect_parse(name = name, raws = raws, params = params, kinds = kinds, owner = if owner_text == "host" {
+                    HostProvided
+                  } else {
+                    ProgramHandled
+                  })
+                } else {
+                  None
+                },
+                None => None
+              },
+              None => None
             },
             None => None
           },
