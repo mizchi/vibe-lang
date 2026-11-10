@@ -1,0 +1,44 @@
+// ADR-0124 (#2656): `extern effect` declares an effect whose operations the
+// host provides. The parser records the owner on `SEffectDef`, and the
+// printer writes the keyword back.
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
+import ./printer.vibe {
+  print_program
+}
+
+import @vibe/ast {
+  EffectOwner, Stmt
+}
+
+fn owner_of(_ src: String) -> String with Exception {
+  match Array::get(parse_program(lex(src)), at = 0) {
+    SEffectDef(exported, name, _, ops, owner) => {
+      let tag = match owner {
+        HostProvided => "host",
+        ProgramHandled => "program"
+      }
+      "\{name} exported=\{exported} ops=\{Array::length(ops)} \{tag}"
+    },
+    _ => "not an effect"
+  }
+}
+
+test "extern effect parses as a host-provided effect" {
+  inspect(owner_of("extern effect Kv {\n  get(String) -> String\n}\n"), content = "Kv exported=false ops=1 host")
+  inspect(owner_of("export extern effect Kv {\n  get(String) -> String\n  put(String, String) -> Unit\n}\n"), content = "Kv exported=true ops=2 host")
+  inspect(owner_of("effect Log {\n  Emit(String) -> Unit\n}\n"), content = "Log exported=false ops=1 program")
+}
+
+test "extern effect prints back with its keyword" {
+  let src = "extern effect Kv {\n  get(String) -> String\n}\n"
+  let printed = print_program(parse_program(lex(src)))
+  assert(String::contains(printed, needle = "extern effect Kv"))
+  inspect(owner_of(printed), content = "Kv exported=false ops=1 host")
+}

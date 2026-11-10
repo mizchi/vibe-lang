@@ -38,12 +38,12 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, builtin_operation_arity, call_placement_wire_valid, return_call_site
+  EffectOwner, Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, builtin_operation_arity, call_placement_wire_valid, return_call_site
 }
 
 //# Constants ===
 
-export let AST_BINARY_VERSION: Int = 4
+export let AST_BINARY_VERSION: Int = 5
 export let AST_BINARY_MAGIC_V: Int = 118
 /// 'v'
 export let AST_BINARY_MAGIC_A: Int = 65
@@ -1975,12 +1975,16 @@ export fn ast_binary_write_stmt(buf: Bytes, st: Stmt) -> Unit {
       ast_binary_write_string(buf = buf, s = name)
       ast_binary_write_stmt_array(buf = buf, items = body)
     }
-    SEffectDef(exported, name, tps, ops) => {
+    SEffectDef(exported, name, tps, ops, owner) => {
       Bytes::push(buf, value = AST_BINARY_TAG_S_EFFECT_DEF)
       ast_binary_write_bool(buf = buf, b = exported)
       ast_binary_write_string(buf = buf, s = name)
       ast_binary_write_string_array(buf = buf, items = tps)
       ast_binary_write_sigs(buf = buf, items = ops)
+      ast_binary_write_bool(buf = buf, b = match owner {
+        HostProvided => true,
+        ProgramHandled => false
+      })
     }
     SEffectSet(exported, name, members) => {
       Bytes::push(buf, value = AST_BINARY_TAG_S_EFFECT_SET)
@@ -2140,7 +2144,12 @@ export fn ast_binary_read_stmt(_ r: AstBinaryReader) -> Stmt with Exception {
     let name = ast_binary_read_string_checked(r)
     let tps = ast_binary_read_string_array(r)
     let ops = ast_binary_read_sigs(r)
-    SEffectDef(exported, name, tps, ops)
+    let owner = if ast_binary_read_bool_checked(r) {
+      HostProvided
+    } else {
+      ProgramHandled
+    }
+    SEffectDef(exported, name, tps, ops, owner)
   } else if tag == AST_BINARY_TAG_S_EFFECT_SET {
     let exported = ast_binary_read_bool_checked(r)
     let name = ast_binary_read_string_checked(r)
