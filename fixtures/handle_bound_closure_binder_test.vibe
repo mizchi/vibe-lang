@@ -5,8 +5,11 @@
 // the binder shapes that stay accepted: a binder over a closure that performs
 // nothing the handle answers, kept and called after the handle; a binder
 // over a handle-bound closure handed to a parameter whose row takes the
-// effect; and a binder that holds only the plain part of a value written
-// beside a handle-bound closure.
+// effect; a binder that holds only the plain part of a value written
+// beside a handle-bound closure; and a binding that only shares its spelling
+// with one a handle-bound closure is assigned to -- shadowed by it, beside it
+// in another block, or a binder of the same spelling -- which keeps a fact of
+// its own.
 effect Ask {
   Get() -> Int
 }
@@ -146,6 +149,96 @@ fn bound_loop_plain_param() -> Int {
   } with { Ask::Get() => resume(5) }
 }
 
+fn shadowed_by_assigned() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let mut x = () -> 21
+    if true {
+      let mut x = () -> 0
+      x = g
+      ()
+    } else {
+      ()
+    }
+    let _ = keep(f = x)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn beside_assigned() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    if true {
+      let mut x = () -> 0
+      x = g
+      ()
+    } else {
+      ()
+    }
+    if true {
+      let mut x = () -> 22
+      let _ = keep(f = x)
+      ()
+    } else {
+      ()
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn assigned_in_inner_closure() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let mut x = () -> 23
+    let inner = () -> {
+      let mut x = () -> 0
+      x = g
+      0
+    }
+    let _ = keep(f = x)
+    inner()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn shadowed_by_loop_param() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let mut x = () -> 24
+    let _ = loop (x = () -> 0, i = 0) {
+      if i > 0 {
+        break 0
+      } else {
+        continue (g, i + 1)
+      }
+    }
+    let _ = keep(f = x)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn shadowed_by_binders() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let mut x = () -> 25
+    for x in [g] {
+      let _ = x
+    }
+    match Some(g) {
+      Some(x) => {
+        let _ = x
+      },
+      None => ()
+    }
+    let _ = keep(f = x)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
 test "a binder over a closure that performs nothing the handle answers may keep it" {
   inspect(plain_for(), content = "7")
   inspect(plain_match(), content = "8")
@@ -167,4 +260,12 @@ test "a binder of the plain part beside a handle-bound closure is a plain value"
 test "a binder over a handle-bound closure it does not keep" {
   inspect(bound_for_unused(), content = "2")
   inspect(bound_loop_plain_param(), content = "3")
+}
+
+test "a binding sharing its spelling with one assigned a handle-bound closure keeps its own fact" {
+  inspect(shadowed_by_assigned(), content = "21")
+  inspect(beside_assigned(), content = "22")
+  inspect(assigned_in_inner_closure(), content = "23")
+  inspect(shadowed_by_loop_param(), content = "24")
+  inspect(shadowed_by_binders(), content = "25")
 }
