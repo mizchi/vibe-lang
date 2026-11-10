@@ -24,7 +24,8 @@ import @vibe/compiler/loader {
   collect_source_groups_fs,
   fill_require_pins_lenient,
   ingest_source_text_fs,
-  ingestion_pipeline_telemetry_json,
+  ingestion_pipeline_telemetry_publish,
+  ingestion_pipeline_telemetry_refusal,
   load_or_parse_module_header_fs,
   set_ingestion_pipeline_telemetry_enabled
 }
@@ -261,6 +262,9 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
       throw("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT requires VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
     } else if ingestion_out != "" && (ingestion_nonce == "" || has_control_char(ingestion_nonce)) {
       throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
+    } else if pipeline_out != "" && ingestion_pipeline_telemetry_refusal() != "" {
+      // #2498: a build without the counters refuses rather than publishing.
+      throw(ingestion_pipeline_telemetry_refusal())
     } else if pipeline_out != "" && (pipeline_nonce == "" || has_control_char(pipeline_nonce)) {
       throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
     } else {
@@ -303,7 +307,7 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
     // Published strictly after the check has been answered: a failure above
     // leaves no pipeline sidecar looking like a successful observation.
     if pipeline_out != "" {
-      Fs::write_file(pipeline_out, contents = ingestion_pipeline_telemetry_json(pipeline_nonce))
+      ingestion_pipeline_telemetry_publish(path = pipeline_out, nonce = pipeline_nonce)
     } else {
       ()
     }
