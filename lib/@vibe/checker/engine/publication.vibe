@@ -62,6 +62,7 @@ import @vibe/compiler/checker {
   unresolved_export_message
 }
 import @vibe/compiler/core {
+  EffectOwner,
   Stmt,
   Type,
   TypeDef,
@@ -509,7 +510,7 @@ fn engine_interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) 
       SSuberror(true, name, _) => Array::push(names, value = name),
       SStruct(true, name, _, _, _, _) => Array::push(names, value = name),
       STypeAlias(true, name, _, _) => Array::push(names, value = name),
-      SEffectDef(true, name, _, _) => Array::push(names, value = name),
+      SEffectDef(true, name, _, _, _) => Array::push(names, value = name),
       SEffectSet(true, name, _) => Array::push(names, value = name),
       SExport(items) => {
         let mut j = 0
@@ -1159,7 +1160,7 @@ export fn engine_interface_decl_lines(stmts: Array[Stmt], include_private: Bool,
       } else {
         ()
       },
-      SEffectDef(exported, name, params, ops) => if engine_interface_decl_selected(exported = exported, name = name, aggregate = aggregate, include_private = include_private) {
+      SEffectDef(exported, name, params, ops, owner) => if engine_interface_decl_selected(exported = exported, name = name, aggregate = aggregate, include_private = include_private) {
         let os = array_empty()
         let mut j = 0
         while j < Array::length(ops) {
@@ -1173,7 +1174,12 @@ export fn engine_interface_decl_lines(stmts: Array[Stmt], include_private: Bool,
           Array::push(os, value = String::concat(engine_interface_segment(opname), String::concat("[", String::concat(String::join(arg_lines, sep = ";"), String::concat("]", engine_interface_canonical_type_expr(ty = ret, params = params))))))
           j = j + 1
         }
-        engine_interface_push_decl_line(lines = lines, exported = exported, include_private = include_private, line = engine_interface_decl_line(prefix = "effect:", name = name, params = params, body = engine_interface_bracketed(items = os, separator = ";")))
+        // ADR-0124 (#2656): the owner is part of the published declaration.
+        let prefix = match owner {
+          HostProvided => "extern-effect:",
+          ProgramHandled => "effect:"
+        }
+        engine_interface_push_decl_line(lines = lines, exported = exported, include_private = include_private, line = engine_interface_decl_line(prefix = prefix, name = name, params = params, body = engine_interface_bracketed(items = os, separator = ";")))
       } else {
         ()
       },

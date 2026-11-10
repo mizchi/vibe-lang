@@ -1575,14 +1575,14 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
         (mname, mtparams, rewrite_alias_bounds(bounds = mbounds, am = aliasidx_without_names(am = type_am, names = mtparams)))
       }, tparams)
     },
-    SEffectDef(exported, name, params, ops) => {
+    SEffectDef(exported, name, params, ops, owner) => {
       let type_am = aliasidx_without_names(am = am, names = stmt_type_binder_names(stmt))
       SEffectDef(exported, name, params, for op in ops {
         let (op_name, op_params, ret_ty) = op
         (op_name, for param in op_params {
           rewrite_alias_type_expr(te = param, am = type_am)
         }, rewrite_alias_type_expr(te = ret_ty, am = type_am))
-      })
+      }, owner)
     },
     _ => stmt
   }
@@ -2028,7 +2028,7 @@ export fn collect_declared_type_names(_ stmts: Array[Stmt]) -> Array[String] {
       STrait(_, name, _, _, _, _) => Array::push(names, value = name),
       STypeAlias(_, name, _, _) => Array::push(names, value = name),
       SSuberror(_, name, _) => Array::push(names, value = name),
-      SEffectDef(_, name, _, _) => Array::push(names, value = name),
+      SEffectDef(_, name, _, _, _) => Array::push(names, value = name),
       _ => ()
     }
     i = i + 1
@@ -2788,7 +2788,7 @@ fn stmt_type_binder_names(_ stmt: Stmt) -> Array[String] {
     SFnDecl(_, _, EFn(tparams, _, _, _, _, _), _, _) => tparams,
     STrait(_, _, _, _, _, tparams) => tparams,
     // `effect State[Alias] { Get() -> Alias }` (Codex on #3942).
-    SEffectDef(_, _, params, _) => params,
+    SEffectDef(_, _, params, _, _) => params,
     _ => empty_strings()
   }
   for name in names {
@@ -2928,12 +2928,12 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
       SLetPat(next_pat, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_pat(aliases = ctor_renames, pat = next_pat)))
     },
     SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(path = name, stmts = stmts)),
-    SEffectDef(exported, name, params, ops) => SEffectDef(exported, name, params, for op in ops {
+    SEffectDef(exported, name, params, ops, owner) => SEffectDef(exported, name, params, for op in ops {
       let (op_name, op_params, ret_ty) = op
       (op_name, for param in op_params {
         rewrite_private_type_expr(ty = param, renames = type_renames)
       }, rewrite_private_type_expr(ty = ret_ty, renames = type_renames))
-    }),
+    }, owner),
     _ => stmt
   }
 }
