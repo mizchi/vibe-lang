@@ -9,7 +9,9 @@
 //#
 //# Each unannotated answer is checked against the annotated spelling of the
 //# same lambda, including the results that wrap at the 32-bit boundary: an
-//# answer computed in 63-bit `Int` would differ there.
+//# answer computed in 63-bit `Int` would differ there. An early `return` is
+//# checked against the expected result as the tail is (its refusals are the
+//# `err_type_*_lambda_expected_early_return_*` typecheck fixtures).
 
 struct H {
   f: (Int32) -> Int32;
@@ -85,6 +87,55 @@ test "a literal tail takes the expected result type" {
     1
   }, x = -5), content = "-1")
   inspect(apu(f = (k) -> 4294967295, x = 0), content = "4294967295")
+}
+
+test "an early return is checked and wraps as under the annotation" {
+  inspect(ap(f = (k) -> {
+    if k == 0 {
+      return 7
+    }
+    0
+  }, x = 0), content = "7")
+  inspect(ap(f = (k: Int32) -> Int32 {
+    if k == 0 {
+      return 7
+    }
+    0
+  }, x = 0), content = "7")
+  inspect(ap(f = (k) -> {
+    if k == 1 {
+      return k + 2147483647
+    }
+    k
+  }, x = 1), content = "-2147483648")
+  inspect(ap(f = (k: Int32) -> Int32 {
+    if k == 1 {
+      return k + 2147483647
+    }
+    k
+  }, x = 1), content = "-2147483648")
+  inspect(apu(f = (k) -> {
+    match k == 0 {
+      true => {
+        return k - 1
+      },
+      false => ()
+    }
+    4294967295
+  }, x = 0), content = "4294967295")
+  let h = H::{
+    f: (k) -> {
+      if k < 0 {
+        return -2147483648
+      }
+      k * 2
+    },
+    u: (k) -> k
+  }
+  let neg: Int32 = -1
+  let big: Int32 = 2000000000
+  inspect(Int32::to_int(h.f(neg)), content = "-2147483648")
+  inspect(Int32::to_int(h.f(big)), content = "-294967296")
 }
 
 test "a generic callee's lambda takes the type read from an earlier argument" {

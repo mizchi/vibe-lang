@@ -26,8 +26,8 @@ import ./checker_expr_capture_helpers.vibe {
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture
 }
-import ./checker_lambda_expr.vibe {
-  seed_lambda_arg_from_call, seed_lambda_params
+import ./checker_lambda_seed.vibe {
+  seed_lambda_arg_from_call, seed_lambda_fn, seed_lambda_params
 }
 import ./checker_row_effect_inst.vibe {
   callback_arg_env, callback_prefix_subst, effect_inst_arg_check
@@ -58,18 +58,16 @@ export fn seed_array_callback_elem(arg: Expr, recv_ty: Type, s: Subst) -> Unit {
 }
 
 /// #4053: a lambda literal given for a named struct's function-typed field
-/// (`H::{ f: (k) -> k + 1 }`) starts with its parameters at the field's
-/// declared parameter types, as an argument does at its parameter's.
+/// (`H::{ f: (k) -> k + 1 }`) starts with its parameters, and an `Int32` /
+/// `UInt32` result, at the field's declared types, as an argument does at its
+/// parameter's (`seed_lambda_fn`).
 export fn seed_struct_field_lambda(defs: Array[TypeDef], struct_name: String, field: String, value: Expr, s: Subst) -> Unit {
   if struct_name != "" && (value is EFn(_, _, _, _, _, _)) {
     match struct_literal_typedef(defs = defs, name = struct_name) {
       Some(TDStruct(_, dfields, _, _)) => for df in dfields {
         let (dn, dty) = df
-        match dty {
-          CtFn(eps, _, _) => if dn == field {
-            seed_lambda_params(arg = value, expected = eps, s = s)
-          },
-          _ => ()
+        if dn == field {
+          seed_lambda_fn(arg = value, want = dty, s = s)
         }
       },
       _ => ()
