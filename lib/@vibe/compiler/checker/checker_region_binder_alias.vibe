@@ -1,0 +1,139 @@
+// lib/@vibe/compiler/checker -- a binder whose value is read out of a
+// location declared before an active region (#4050).
+
+//# Inside `region r { .. }` or a `TaskGroup::run` body, a write is refused
+//# when it stores a value of a region into a location that outlives that
+//# region (`container_write_crosses_region`). A binding declared inside the
+//# body may still BE such a location: `let a = boxes`, `for a in boxes`,
+//# `match Some(boxes) { Some(a) => .. }` and `let (a, _) = (boxes, 1)` all
+//# bind `a` to a part of `boxes`. Each such binder is marked
+//# `__region_outer_alias__a` with the regions its source location was
+//# declared before -- the same `CtTuple` of region names a re-checked
+//# parameter carries -- so a write into it is judged against exactly those
+//# regions. With nested regions that matters: a container declared inside
+//# `region r1` and iterated inside a nested `region r2` predates `r2` only,
+//# so it may hold an `r1` value but not an `r2` one.
+
+import @vibe/compiler/core {
+  Expr, Pat, Type, TypeEnv, env_bind, env_lookup
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  arg_is_region_token, expression_aliases_outer_binding, literal_item_is_inert
+}
+
+import ./checker_region_retention.vibe {
+  retention_active_region_names, retention_arg_predates
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_pat_names_into
+}
+
+/// #4050: the active regions that the location `value` reads from was
+/// declared before, as seen from `scope` -- the regions a binder holding
+/// `value`, or a part of it, may not keep a value of. Empty when `active` is
+/// false (no region is open) or `value` is fresh. A name answers the regions
+/// opened since its binding, plus those its own alias marker records; a
+/// field, element, literal, block or conditional answers what its parts do;
+/// a constructor or builtin call (`Some(boxes)`, `Map::values(m)`) answers
+/// what its arguments do, since its result holds only them. Any other call
+/// the checker knows returns an outer location answers every active region,
+/// and so does a value `expression_aliases_outer_binding` says aliases one
+/// when no narrower answer was found, so the answer is never smaller than
+/// the one that test gives.
+export fn region_outer_alias_regions(value: Expr, scope: TypeEnv, active: Bool) -> Array[String] {
+  if active {
+    let found = binder_source_predates(value = value, scope = scope)
+    if Array::length(found) == 0 && expression_aliases_outer_binding(expr = value, env = scope) {
+      retention_active_region_names(scope)
+    } else {
+      found
+    }
+  } else {
+    []
+  }
+}
+
+/// Mark `name` an alias of a location declared before `regions`, so a write
+/// into it is judged as a write into that location for those regions. No
+/// regions, no mark.
+export fn region_outer_alias_mark(env: TypeEnv, name: String, regions: Array[String]) -> TypeEnv {
+  if Array::length(regions) > 0 {
+    env_bind(env = env, name = String::concat("__region_outer_alias__", name), ty = CtTuple(for rname in regions {
+      CtNamed(rname, [])
+    }))
+  } else {
+    env
+  }
+}
+
+/// #4050: mark each name `pat` binds -- a `for` element (`PBind(name)`), a
+/// `match` arm's pattern, which a destructuring `let` and `if .. is` lower
+/// to -- with the regions `value` predates. `env` is the binders'
+/// environment, `scope` the one `value` is read in. Before, the binder was
+/// judged as a binding of the region body, so `for a in boxes {
+/// Array::push(a, value = cell) }` kept a region value in an outer array.
+export fn region_outer_alias_bind(env: TypeEnv, pat: Pat, value: Expr, scope: TypeEnv) -> TypeEnv {
+  let active = match env_lookup(env = scope, name = "#active_region") {
+    Some(CtNamed(_, _)) => true,
+    _ => false
+  }
+  if active {
+    let names: Array[String] = []
+    retention_pat_names_into(p = pat, out = names)
+    if Array::length(names) > 0 {
+      let regions = region_outer_alias_regions(value = value, scope = scope, active = true)
+      let mut out = env
+      for name in names {
+        out = region_outer_alias_mark(env = out, name = name, regions = regions)
+      }
+      out
+    } else {
+      env
+    }
+  } else {
+    env
+  }
+}
+
+/// The regions `value`'s location predates; a constructor or builtin call
+/// is read through its arguments rather than answered by every region.
+fn binder_source_predates(value: Expr, scope: TypeEnv) -> Array[String] {
+  match value {
+    ECall(EIdent(callee, _), args, _, _) => match env_lookup(env = scope, name = callee) {
+      None => {
+        let out: Array[String] = []
+        for a in args {
+          if !literal_item_is_inert(item = a, env = scope) && !arg_is_region_token(arg = a, env = scope) {
+            for r in binder_source_predates(value = a, scope = scope) {
+              if !binder_region_listed(names = out, rname = r) {
+                Array::push(out, value = r)
+              } else {
+                ()
+              }
+            }
+            ()
+          } else {
+            ()
+          }
+        }
+        out
+      },
+      Some(_) => retention_arg_predates(arg = value, env = scope)
+    },
+    _ => retention_arg_predates(arg = value, env = scope)
+  }
+}
+
+fn binder_region_listed(names: Array[String], rname: String) -> Bool {
+  let mut found = false
+  for n in names {
+    if n == rname {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
