@@ -1,0 +1,175 @@
+// RC leak guard: a path that skips two or more of a branch's consumes
+// releases every dup it holds, not one.
+//
+// A plain `let`'s or a parameter's planned dups are taken at its declaration
+// (a parameter's at function entry), on every path. pe_dup_merge budgets a
+// branch's larger arm, marks that arm's occurrences, and gives the binding a
+// guarded path drop for the paths that ran none of them (#1980). That drop
+// released ONE reference, so `if c { sink(v) + sink(v) } else { 0 }`
+// leaked one dup on every call that took the `else`: the path held two.
+//
+// The drop now releases `M - S` references, `M` the larger arm's consumes
+// and `S` the most a smaller arm has, the least over the binding's merges:
+// what every path that ran no mark still holds.
+//
+// Measured at N=20000 on the compiler before this change:
+//
+//   | shape                                          |      before |   after |
+//   |------------------------------------------------|------------:|--------:|
+//   | `let`, two consumes against none               |   880,020 B |   112 B |
+//   | parameter, two consumes against none           |   880,020 B |   112 B |
+//   | this fixture, with its controls                | 6,162,004 B | 1,564 B |
+//
+// `match` arms that take 2, 1 and 0 still leak on the `0` arm: its path
+// drop releases `2 - 1`. `kept_two_one_none` runs that shape outside the
+// bounded loop.
+//
+// The controls keep the consumed values in an array past the call, so a
+// release on a path still holding the value would free it under the array:
+// VIBE_RC=shadow traps on that. The gate compiles this under VIBE_RC=1 and
+// bounds __heap_ptr growth, and checks the answer under VIBE_RC=shadow and on
+// the bump and gc lanes too
+// (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh, 40e9).
+// `main` returns 0: every shape adds 0, so the answer cannot drift with the
+// allocation behaviour being measured.
+struct H {
+  inner: Array[Int]
+}
+
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+// Takes its argument: stores it into a record that it then drops.
+fn sink(_ v: Array[Int]) -> Int {
+  let h = H::{ inner: v }
+  Array::get(h.inner, at = 0)
+}
+
+fn let_two(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v) + sink(v) - 2 * i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+fn param_two(_ v: Array[Int], _ i: Int) -> Int {
+  let a = if i % 2 == 0 {
+    sink(v) + sink(v) - 2 * i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// Three against one: the `else` path holds two the drop must release.
+fn let_three_one(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v) + sink(v) + sink(v) - 3 * i
+  } else {
+    sink(v) - i
+  }
+  (a + Array::get(v, at = 1) - (i + 1)) * 0
+}
+
+fn match_two(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = match i % 3 {
+    0 => sink(v) + sink(v) - 2 * i,
+    1 => 0,
+    _ => 1 - 1
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// The consumes sit in an inner merge; the outer one marks them too.
+fn nested_two(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 3 == 0 {
+    if i % 2 == 0 {
+      sink(v) + sink(v) - 2 * i
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 0) - i) * 0
+}
+
+fn lambda_two(_ i: Int) -> Int {
+  let f = (v: Array[Int], j: Int) -> Int {
+    let a = if j % 2 == 0 {
+      sink(v) + sink(v) - 2 * j
+    } else {
+      0
+    }
+    (a + Array::get(v, at = 2) - (j + 2)) * 0
+  }
+  f(mka(i), i)
+}
+
+// Controls: the consumed values outlive the call.
+fn kept_let_two(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  if i % 2 == 0 {
+    Array::push(ks, value = v)
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  Array::get(v, at = 2) - (i + 2)
+}
+
+// `v` is `mka(i + 10)`.
+fn kept_param_two(ks: Array[Array[Int]], v: Array[Int], i: Int) -> Int {
+  if i % 2 == 0 {
+    Array::push(ks, value = v)
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  Array::get(v, at = 2) - (i + 12)
+}
+
+fn kept_two_one_none(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  match i % 3 {
+    0 => {
+      Array::push(ks, value = v)
+      Array::push(ks, value = v)
+    },
+    1 => Array::push(ks, value = v),
+    _ => ()
+  }
+  Array::get(v, at = 1) - (i + 1)
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + let_two(i) + param_two(mka(i), i) + let_three_one(i) + match_two(i) + nested_two(i) + lambda_two(i)
+    i = i + 1
+  }
+  let ks: Array[Array[Int]] = []
+  let mut j = 0
+  while j < 6 {
+    acc = acc + kept_let_two(ks = ks, i = j) + kept_param_two(ks = ks, v = mka(j + 10), i = j) + kept_two_one_none(ks = ks, i = j + 20)
+    j = j + 1
+  }
+  // Kept: two of each even call -- 0, 2, 4 (kept_let_two) and 10, 12, 14
+  // (kept_param_two) -- and of kept_two_one_none two of 21 and 24 and one
+  // of 22 and 25. 18 arrays, first elements summing to 12 + 72 + 137.
+  let mut s = 0
+  let mut m = 0
+  while m < Array::length(ks) {
+    s = s + Array::get(Array::get(ks, at = m), at = 0)
+    m = m + 1
+  }
+  acc + s - 221 + Array::length(ks) - 18
+}

@@ -6,6 +6,7 @@ import @vibe/core {
 }
 import @vibe/compiler/core {
   BindingOrigin,
+  EffectOwner,
   EnvValueBinding,
   Type,
   TypeDef,
@@ -362,11 +363,18 @@ fn write_type_def(out: CacheTextWriter, def: TypeDef) -> Unit {
       write_string_array(out = out, items = params)
       write_type(out = out, ty = target)
     },
-    TDEffect(name, ops, params, kinds) => {
+    TDEffect(name, ops, params, kinds, owner) => {
       // ADR-0094: `Q` is an effect with a resource parameter, which also
       // carries its kinds; `K` keeps the earlier bytes for every other one.
-      let resourced = env_codec_any_kind(kinds)
-      cache_push(out = out, text = if resourced {
+      // ADR-0124: `H` is a host-provided `extern effect`, kinds included.
+      let host = match owner {
+        HostProvided => true,
+        ProgramHandled => false
+      }
+      let resourced = host || env_codec_any_kind(kinds)
+      cache_push(out = out, text = if host {
+        "H"
+      } else if resourced {
         "Q"
       } else {
         "K"
@@ -984,7 +992,7 @@ fn parse_trait_method_gens(text: String, pos: Int) -> (Array[(String, Array[Stri
 
 /// An effect definition: `K` without resource kinds, `Q` with them
 /// (ADR-0094, `with_kinds`).
-fn parse_effect_type_def(text: String, pos: Int, with_kinds: Bool) -> (TypeDef, Int) with Exception {
+fn parse_effect_type_def(text: String, pos: Int, with_kinds: Bool, owner: EffectOwner) -> (TypeDef, Int) with Exception {
   let (name, after_name) = parse_segment(text = text, pos = pos + 1)
   let (params, after_param_names) = parse_string_array(text = text, pos = after_name)
   let (kinds, after_params) = if with_kinds {
@@ -1016,7 +1024,7 @@ fn parse_effect_type_def(text: String, pos: Int, with_kinds: Bool) -> (TypeDef, 
   if cursor >= String::length(text) || String::char_code_at(text, at = cursor) != ']' {
     throw("invalid persistent effect definition")
   } else {
-    (TDEffect(name, ops, params, kinds), cursor + 1)
+    (TDEffect(name, ops, params, kinds, owner), cursor + 1)
   }
 }
 
@@ -1058,8 +1066,9 @@ fn parse_type_def(text: String, pos: Int) -> (TypeDef, Int) with Exception {
         let (target, next) = parse_cached_type(source = text, pos = after_params)
         (TDAlias(name, params, target), next)
       },
-      'K' => parse_effect_type_def(text = text, pos = pos, with_kinds = false),
-      'Q' => parse_effect_type_def(text = text, pos = pos, with_kinds = true),
+      'K' => parse_effect_type_def(text = text, pos = pos, with_kinds = false, owner = ProgramHandled),
+      'Q' => parse_effect_type_def(text = text, pos = pos, with_kinds = true, owner = ProgramHandled),
+      'H' => parse_effect_type_def(text = text, pos = pos, with_kinds = true, owner = HostProvided),
       'Z' => {
         let (name, after_name) = parse_segment(text = text, pos = pos + 1)
         let (members, next) = parse_string_array(text = text, pos = after_name)

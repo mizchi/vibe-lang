@@ -515,3 +515,34 @@ export fn is_entry_cache_safe_operation(_ label: String) -> Bool {
     label == "Console::write_stream" || label == "Console::write_char"
   }
 }
+
+//# Host-provided effects (ADR-0124, #2656)
+
+// The `extern effect` names of the program being compiled, recorded by the
+// desugar pass every lane runs (`note_extern_effects`).
+let program_extern_effects: Array[String] = []
+
+export fn set_program_extern_effects(_ names: Array[String]) -> Unit {
+  Array::truncate(program_extern_effects, length = 0)
+  for name in names {
+    Array::push(program_extern_effects, value = name)
+  }
+  ()
+}
+
+/// ADR-0124 (#2656): linking a host provider for an `extern effect` is not
+/// implemented yet, so no lowering binds `Kv::get`. `vibe check` accepts a
+/// program that calls one; code generation reaches the name unbound, and
+/// refuses it here, naming the operation, rather than as an internal error.
+export fn refuse_extern_effect_operation(_ name: String) -> Unit with Exception {
+  let at = String::index_of(name, needle = "::")
+  if at > 0 {
+    let effect = String::substring(name, start = 0, end = at)
+    for host in program_extern_effects {
+      if host == effect {
+        throw("this program calls `\{name}`, an operation of `extern effect \{effect}`, and binding a host provider for one is not implemented yet (#2656): it cannot be built or run yet, though `vibe check` accepts it")
+      }
+    }
+  }
+  ()
+}

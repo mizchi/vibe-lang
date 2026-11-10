@@ -1,16 +1,50 @@
 //# Compiler-owned loader ingestion telemetry (#1551).
+//#
+//# #2498: the counters and their JSON encoder exist only in a compiler built
+//# with `VIBE_CFG=telemetry`. scripts/generate_bundle.sh flattens the compiler
+//# with that flag by default (`VIBE_COMPILER_CFG`), so the generation's stage2
+//# -- the CLI the oracles and the KPI drive -- keeps them;
+//# scripts/build_compile_only.sh flattens without it, so the compile-only
+//# artifact holds no counter cell and no encoder (scripts/check_compile_only_lanes.sh
+//# reads that from its name section). Every declaration below has a
+//# `#cfg(not(telemetry))` twin with the same signature, so the call sites in
+//# the loader, the checker and the CLI compile unchanged in either build.
+//#
+//# A build without the counters REFUSES a request for them
+//# (`ingestion_pipeline_telemetry_refusal`): writing zeros, or writing
+//# nothing, would read as an observation of a run that took no cache probes.
 
 import @vibe/core {
   array_empty
 }
 
+#cfg(telemetry)
 let ingestion_pipeline_enabled_cell: Array[Bool] = array_empty()
+#cfg(telemetry)
 let ingestion_pipeline_counters: Array[Int] = array_empty()
 
+#cfg(telemetry)
 fn ingestion_pipeline_enabled() -> Bool {
   Array::length(ingestion_pipeline_enabled_cell) > 0 && Array::get(ingestion_pipeline_enabled_cell, at = 0)
 }
 
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_INGESTION_PIPELINE_TELEMETRY_OUT`, or
+/// `""` when it can. The CLI asks before the check runs and throws a
+/// non-empty answer, so a request never reaches a build without counters.
+export fn ingestion_pipeline_telemetry_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_INGESTION_PIPELINE_TELEMETRY_OUT`, or
+/// `""` when it can. This build has no counters, so it always refuses.
+export fn ingestion_pipeline_telemetry_refusal() -> String {
+  "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT needs a compiler built with VIBE_CFG=telemetry, and this one was built without it: unset the variable, or use the generation's stage2 (scripts/generate_bundle.sh flattens it with VIBE_COMPILER_CFG=telemetry)"
+}
+
+#cfg(telemetry)
+/// Turn the counters on for this invocation (or off) and zero them.
 export fn set_ingestion_pipeline_telemetry_enabled(_ enabled: Bool) -> Unit {
   Array::truncate(ingestion_pipeline_enabled_cell, length = 0)
   Array::push(ingestion_pipeline_enabled_cell, value = enabled)
@@ -22,6 +56,15 @@ export fn set_ingestion_pipeline_telemetry_enabled(_ enabled: Bool) -> Unit {
   }
 }
 
+#cfg(not(telemetry))
+/// No counters in this build. Only `false` reaches it: a request is refused
+/// before the check by `ingestion_pipeline_telemetry_refusal`.
+export fn set_ingestion_pipeline_telemetry_enabled(_ enabled: Bool) -> Unit {
+  ()
+}
+
+#cfg(telemetry)
+/// Add `amount` to counter `index` while the counters are on.
 export fn ingestion_pipeline_telemetry_add(index: Int, amount: Int) -> Unit {
   if ingestion_pipeline_enabled() {
     Array::set(ingestion_pipeline_counters, at = index, value = Array::get(ingestion_pipeline_counters, at = index) + amount)
@@ -30,6 +73,13 @@ export fn ingestion_pipeline_telemetry_add(index: Int, amount: Int) -> Unit {
   }
 }
 
+#cfg(not(telemetry))
+/// No counters in this build: an observation point does nothing.
+export fn ingestion_pipeline_telemetry_add(index: Int, amount: Int) -> Unit {
+  ()
+}
+
+#cfg(telemetry)
 fn ingestion_pipeline_counter(_ index: Int) -> Int {
   if ingestion_pipeline_enabled() {
     Array::get(ingestion_pipeline_counters, at = index)
@@ -38,6 +88,7 @@ fn ingestion_pipeline_counter(_ index: Int) -> Int {
   }
 }
 
+#cfg(telemetry)
 fn ingestion_pipeline_json_string(_ text: String) -> String {
   let out = StringBuilder::new()
   StringBuilder::push(out, value = "\"")
@@ -57,7 +108,9 @@ fn ingestion_pipeline_json_string(_ text: String) -> String {
   StringBuilder::freeze(out)
 }
 
-export fn ingestion_pipeline_telemetry_json(_ nonce: String) -> String {
+#cfg(telemetry)
+/// The `ingestion_pipeline` v1 sidecar for this invocation's counters.
+fn ingestion_pipeline_telemetry_json(_ nonce: String) -> String {
   let keys = [
     "source_list_cache_probes",
     "source_list_cache_hits",
@@ -91,4 +144,16 @@ export fn ingestion_pipeline_telemetry_json(_ nonce: String) -> String {
   }
   StringBuilder::push(out, value = "}")
   StringBuilder::freeze(out)
+}
+
+#cfg(telemetry)
+/// Write this invocation's `ingestion_pipeline` sidecar to `path`.
+export fn ingestion_pipeline_telemetry_publish(path: String, nonce: String) -> Unit with Exception + Fs {
+  Fs::write_file(path, contents = ingestion_pipeline_telemetry_json(nonce))
+}
+
+#cfg(not(telemetry))
+/// No counters to write: refuse, as the request should already have been.
+export fn ingestion_pipeline_telemetry_publish(path: String, nonce: String) -> Unit with Exception + Fs {
+  throw(ingestion_pipeline_telemetry_refusal())
 }

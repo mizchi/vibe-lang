@@ -43,10 +43,14 @@ cache_key() {
   [ "${VIBE_BUILD_CLI_WASM_NO_CACHE:-0}" != "1" ] || return 1
   git rev-parse --git-dir >/dev/null 2>&1 || return 1
   [ -z "$(git status --porcelain -- lib bootstrap/seed.json 2>/dev/null)" ] || return 1
-  local lib_tree seed_hash
+  local lib_tree seed_hash cfg
   lib_tree="$(git rev-parse HEAD:lib 2>/dev/null)" || return 1
   seed_hash="$(sha256_file bootstrap/seed.json)" || return 1
-  printf '%s-%s\n' "$lib_tree" "$seed_hash"
+  # #2498: the compiler's own `#cfg` flavor (scripts/generate_bundle.sh reads
+  # VIBE_COMPILER_CFG, default `telemetry`) changes what stage2 contains, so a
+  # build of one flavor must never be served for another.
+  cfg="$(printf '%s' "${VIBE_COMPILER_CFG-telemetry}" | tr -c 'A-Za-z0-9_,' '_')"
+  printf '%s-%s-cfg_%s\n' "$lib_tree" "$seed_hash" "$cfg"
 }
 
 cache_dir="${VIBE_BUILD_CLI_WASM_CACHE_DIR:-$ROOT_DIR/_build/cli_wasm_cache}"

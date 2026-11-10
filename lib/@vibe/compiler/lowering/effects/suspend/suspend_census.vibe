@@ -1,50 +1,173 @@
-//# The binder census the suspend pass reads, kept until the program changes
+//# The binder census the suspend pass reads, kept per statement
 //
 // Several questions of this pass need every name the program binds locally
 // (`edp_collect_program_binders`): whether a callee spelled like a pure
 // top-level function may be a local instead (`edp_argcond_*`), and whether a
-// needing function is shadowed (`scps_needing_for`). Each used to walk the
-// whole program again, about a tenth of a second on the compiler's own
-// sources, though most of them read the same statement list: the census
-// after alias inlining, the one for every clone the worklist emits, and the
-// ones a handle transform asks while its statement is being rewritten (#3856).
+// needing function is shadowed (`scps_needing_for`).
 //
-// The census is kept here and walked again only after the statement list was
-// written. Every write the pass makes to that list is followed by
-// `scps_census_drop`, and both entry points drop it first, since each lowers
-// a list of its own.
+// The census is kept as each statement's share of it (`edp_statement_binder_log`,
+// the binders that statement would insert) plus a count per name, so a write
+// to one statement updates the census by that statement alone (#4039). It
+// used to be one set, dropped after every write and walked again over the
+// whole program at the next read: the prepass writes every statement, so a
+// program whose prepass reads the census walked it once per reading
+// statement -- 0.27 s of a warm build on the compiler's own sources.
+//
+// Every write the pass makes to the statement list reports its index here
+// (`scps_census_replaced`, `scps_census_appended`). A write that is not one
+// statement -- another list, the retry's restore -- drops the census, and the
+// next read builds it again.
 
 import @vibe/compiler/core {
   Stmt
 }
 
 import @vibe/core {
-  struct MutSet
+  struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/lowering/effects/queries {
-  edp_argcond_use_binders, edp_collect_program_binders
+  edp_argcond_use_binders, edp_statement_binder_log
 }
 
-let scps_census_memo: Array[MutSet[String]] = []
+/// One statement list's census: each statement's binder log, a count of the
+/// statements whose log holds each name, and the set of names with a count.
+/// `shared` says the set was handed to the argument conditions
+/// (`scps_census_note`), which keep it as it was: the next change to the
+/// census changes a copy instead.
+struct ScpsCensus {
+  logs: Array[Array[String]];
+  counts: MutMap[String, Int];
+  set: Array[MutSet[String]];
+  shared: Array[Bool]
+}
 
-/// Forget the kept census: the statement list was just written, or another
-/// one is about to be lowered.
+let scps_census_memo: Array[ScpsCensus] = []
+
+/// Forget the kept census: the statement list was replaced wholesale, or
+/// another one is about to be lowered.
 export fn scps_census_drop() -> Unit {
   Array::truncate(scps_census_memo, length = 0)
 }
 
-/// `edp_collect_program_binders(stmts)`, walked only when nothing was kept
-/// since the last `scps_census_drop`. Read it, do not add to it: every reader
-/// of the kept census shares the one set.
-export fn scps_census(_ stmts: Array[Stmt]) -> MutSet[String] {
-  if Array::length(scps_census_memo) == 0 {
-    Array::push(scps_census_memo, value = edp_collect_program_binders(stmts))
+/// The census's set, ready to change: a copy when the current one was
+/// handed out.
+fn scps_census_owned_set(_ census: ScpsCensus) -> MutSet[String] {
+  if Array::get(census.shared, at = 0) {
+    Array::set(census.set, at = 0, value = MutSet::union(Array::get(census.set, at = 0), b = MutSet::new_string()))
+    Array::set(census.shared, at = 0, value = false)
   } else ()
-  Array::get(scps_census_memo, at = 0)
+  Array::get(census.set, at = 0)
 }
 
-/// `edp_argcond_note_binders(stmts)`, from the kept census.
+/// Count the distinct names of `log` into the census.
+fn scps_census_add_log(census: ScpsCensus, log: Array[String]) -> Unit {
+  let seen: MutSet[String] = MutSet::new_string()
+  for nm in log {
+    if !MutSet::has(seen, x = nm) {
+      MutSet::add(seen, x = nm)
+      let n = match MutMap::get(census.counts, k = nm) {
+        Some(c) => c,
+        None => 0
+      }
+      MutMap::set(census.counts, k = nm, v = n + 1)
+      if n == 0 {
+        MutSet::add(scps_census_owned_set(census), x = nm)
+      } else ()
+    } else ()
+  }
+  ()
+}
+
+/// Take the distinct names of `log` out of the census again.
+fn scps_census_remove_log(census: ScpsCensus, log: Array[String]) -> Unit {
+  let seen: MutSet[String] = MutSet::new_string()
+  for nm in log {
+    if !MutSet::has(seen, x = nm) {
+      MutSet::add(seen, x = nm)
+      match MutMap::get(census.counts, k = nm) {
+        Some(c) => if c <= 1 {
+          let _ = MutMap::delete(census.counts, k = nm)
+          let _ = MutSet::delete(scps_census_owned_set(census), x = nm)
+          ()
+        } else {
+          MutMap::set(census.counts, k = nm, v = c - 1)
+        },
+        None => ()
+      }
+    } else ()
+  }
+  ()
+}
+
+fn scps_census_build(_ stmts: Array[Stmt]) -> ScpsCensus {
+  let census = ScpsCensus::{
+    logs: [],
+    counts: MutMap::new_string(),
+    set: [MutSet::new_string()],
+    shared: [false]
+  }
+  for s in stmts {
+    let log = edp_statement_binder_log(s)
+    Array::push(census.logs, value = log)
+    scps_census_add_log(census = census, log = log)
+  }
+  census
+}
+
+/// `edp_collect_program_binders(stmts)`, built only when nothing is kept since
+/// the last `scps_census_drop`. Read it at once and do not add to it: the set
+/// is the census's own, and `scps_census_replaced` keeps it current.
+export fn scps_census(_ stmts: Array[Stmt]) -> MutSet[String] {
+  if Array::length(scps_census_memo) == 0 {
+    Array::push(scps_census_memo, value = scps_census_build(stmts))
+  } else ()
+  Array::get(Array::get(scps_census_memo, at = 0).set, at = 0)
+}
+
+/// `edp_argcond_note_binders(stmts)`, from the kept census. The argument
+/// conditions read the census as of this call: the set they are handed is
+/// theirs, and the census copies it before it next changes, so the statements
+/// the pass rewrites afterwards do not reach them. That is what they read
+/// when the census was a set dropped and rebuilt on every write -- the
+/// dropped set stayed theirs.
 export fn scps_census_note(_ stmts: Array[Stmt]) -> Unit {
-  edp_argcond_use_binders(scps_census(stmts))
+  let set = scps_census(stmts)
+  Array::set(Array::get(scps_census_memo, at = 0).shared, at = 0, value = true)
+  edp_argcond_use_binders(set)
+}
+
+/// Statement `i` of the kept list was just written: replace its share. With
+/// no census kept there is nothing to update; the next read builds one.
+export fn scps_census_replaced(stmts: Array[Stmt], i: Int) -> Unit {
+  if Array::length(scps_census_memo) > 0 {
+    let census = Array::get(scps_census_memo, at = 0)
+    if i >= 0 && i < Array::length(census.logs) && i < Array::length(stmts) {
+      scps_census_remove_log(census = census, log = Array::get(census.logs, at = i))
+      let log = edp_statement_binder_log(Array::get(stmts, at = i))
+      Array::set(census.logs, at = i, value = log)
+      scps_census_add_log(census = census, log = log)
+    } else {
+      // Not a statement the kept census describes: build it again.
+      scps_census_drop()
+    }
+  } else ()
+}
+
+/// Statements were appended to the kept list: add their shares.
+export fn scps_census_appended(_ stmts: Array[Stmt]) -> Unit {
+  if Array::length(scps_census_memo) > 0 {
+    let census = Array::get(scps_census_memo, at = 0)
+    if Array::length(census.logs) > Array::length(stmts) {
+      scps_census_drop()
+    } else {
+      let mut i = Array::length(census.logs)
+      while i < Array::length(stmts) {
+        let log = edp_statement_binder_log(Array::get(stmts, at = i))
+        Array::push(census.logs, value = log)
+        scps_census_add_log(census = census, log = log)
+        i = i + 1
+      }
+    }
+  } else ()
 }
