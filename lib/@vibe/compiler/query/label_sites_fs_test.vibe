@@ -16,13 +16,13 @@ test "the recheck types a replacement through the file's imports" {
   let path = dir + "/main.vibe"
   let source = "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(10, 3)\n}\n"
   Fs::write_file(path, contents = source)
-  let answers = query_label_sites_fs([path])
+  let answers = query_label_sites_fs([path], checked_error_row = false)
   inspect(Array::length(answers), content = "1")
   inspect(Array::get(answers, at = 0).error, content = "")
   // The imported `sub` resolves, so its labels check...
-  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(x = 10, y = 3)\n}\n"), content = "")
+  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(x = 10, y = 3)\n}\n", checked_error_row = false), content = "")
   // ...and an edit that no longer checks is refused with the checker's answer.
-  let broken = query_label_sites_recheck_fs(path = path, source = source, edited = "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(x = 10, z = 3)\n}\n")
+  let broken = query_label_sites_recheck_fs(path = path, source = source, edited = "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(x = 10, z = 3)\n}\n", checked_error_row = false)
   inspect(String::length(broken) > 0, content = "true")
   // The file itself is never written.
   inspect(Fs::read_file(path) == source, content = "true")
@@ -39,9 +39,9 @@ test "the recheck types the edit, not the original, under a require head" {
   let body = "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(10, 3)\n}\n"
   let source = head + body
   Fs::write_file(path, contents = source)
-  inspect(Array::get(query_label_sites_fs([path]), at = 0).error, content = "")
-  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = head + "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(x = 10, y = 3)\n}\n"), content = "")
-  let broken = query_label_sites_recheck_fs(path = path, source = source, edited = head + "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(x = 10, z = 3)\n}\n")
+  inspect(Array::get(query_label_sites_fs([path], checked_error_row = false), at = 0).error, content = "")
+  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = head + "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(x = 10, y = 3)\n}\n", checked_error_row = false), content = "")
+  let broken = query_label_sites_recheck_fs(path = path, source = source, edited = head + "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(x = 10, z = 3)\n}\n", checked_error_row = false)
   inspect(String::length(broken) > 0, content = "true")
 }
 
@@ -52,7 +52,7 @@ test "a failed import has no label sites and does not abort the next file" {
   let good = dir + "/good.vibe"
   Fs::write_file(broken, contents = "import ./missing.vibe { nope }\nfn main() -> Int { nope() }\n")
   Fs::write_file(good, contents = "fn sub(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { sub(10, 3) }\n")
-  let answers = query_label_sites_fs([broken, good])
+  let answers = query_label_sites_fs([broken, good], checked_error_row = false)
   inspect(Array::length(answers), content = "2")
   let failed = Array::get(answers, at = 0)
   inspect(String::length(failed.error) > 0, content = "true")
@@ -70,7 +70,7 @@ test "the recheck collects imports added by the replacement without writing it" 
   let edited = "import ./dep.vibe { sub }\nfn main() -> Int { sub(x = 10, y = 3) }\n"
   Fs::write_file(path, contents = source)
   Fs::write_file(dir + "/dep.vibe", contents = "export fn sub(x: Int, y: Int) -> Int { x - y }\n")
-  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = edited), content = "")
+  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = edited, checked_error_row = false), content = "")
   inspect(Fs::read_file(path), content = source)
 }
 
@@ -80,8 +80,8 @@ test "a replacement can remove a missing import and reports its own broken impor
   let path = dir + "/main.vibe"
   let source = "import ./old_missing.vibe { old }\nfn main() -> Int { old() }\n"
   Fs::write_file(path, contents = source)
-  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = "fn main() -> Int { 7 }\n"), content = "")
-  let broken = query_label_sites_recheck_fs(path = path, source = source, edited = "// moved\n\nimport ./new_missing.vibe { new }\nfn main() -> Int { new() }\n")
+  inspect(query_label_sites_recheck_fs(path = path, source = source, edited = "fn main() -> Int { 7 }\n", checked_error_row = false), content = "")
+  let broken = query_label_sites_recheck_fs(path = path, source = source, edited = "// moved\n\nimport ./new_missing.vibe { new }\nfn main() -> Int { new() }\n", checked_error_row = false)
   inspect(String::starts_with(broken, prefix = "line 3:8: cannot resolve import './new_missing.vibe'"), content = "true")
   inspect(Fs::read_file(path), content = source)
 }

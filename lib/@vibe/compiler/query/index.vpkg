@@ -37,23 +37,24 @@ generated_hash =
 // `TypeAtTyped` is a whole file's typing, built by type_at_fs.vibe from the
 // import-resolving check and passed back in (#3834).
 opaque type TypeAtTyped
-fn type_at_source(source: String, line: Int, col: Int) -> String
-fn type_at_source_typed(source: String, line: Int, col: Int, typed: Option[TypeAtTyped]) -> String
-fn type_at_typed(table: Array[(Int, Type)], subst: Subst, env: TypeEnv) -> TypeAtTyped
-fn type_at_typed_kept(table: Array[(Int, Type)], subst: Subst, env: TypeEnv) -> TypeAtTyped
+fn type_at_source(source: String, line: Int, col: Int, checked_error_row: Bool) -> String
+fn type_at_source_typed(source: String, line: Int, col: Int, typed: Option[TypeAtTyped], checked_error_row: Bool) -> String
+fn type_at_typed(table: Array[(Int, Type)], subst: Subst, env: TypeEnv, checked_error_row: Bool) -> TypeAtTyped
+fn type_at_typed_kept(table: Array[(Int, Type)], subst: Subst, env: TypeEnv, checked_error_row: Bool) -> TypeAtTyped
 fn type_at_ident_at(source: String, line: Int, col: Int) -> String
 // `TypeAtMemo` is one exact source revision's single-file typing, kept so a
 // resident editor session answers every hover of that revision from one set
 // of checks (#1960).
 opaque type TypeAtMemo
-fn type_at_memo_new(_ source: String) -> TypeAtMemo
+fn type_at_memo_new(_ source: String, checked_error_row: Bool) -> TypeAtMemo
 fn type_at_memo_source(_ memo: TypeAtMemo) -> String
+fn type_at_memo_error_row_checked(_ memo: TypeAtMemo) -> Bool
 fn type_at_memo_checks(_ memo: TypeAtMemo) -> Int
-fn type_at_source_memo(source: String, line: Int, col: Int, memo: TypeAtMemo) -> String
+fn type_at_source_memo(source: String, line: Int, col: Int, memo: TypeAtMemo, checked_error_row: Bool) -> String
 
 // --- type_at_fs.vibe (#3834): `vibe type-at`, typed on `vibe check`'s
 // import-resolving lane, falling back to type_at_source.
-fn type_at_fs(path: String, source: String, line: Int, col: Int) -> String with Env + Fs
+fn type_at_fs(path: String, source: String, line: Int, col: Int, checked_error_row: Bool) -> String with Env + Fs
 // A resident editor session's import-resolving typing (#1960): the project
 // walk kept between requests, and one revision's typing keyed by path, buffer
 // text and the entry's walked fingerprint, re-walked only when a dependency's
@@ -64,7 +65,7 @@ fn type_at_fs_session_typings(_ session: TypeAtFsSession) -> Int
 fn type_at_fs_session_walks(_ session: TypeAtFsSession) -> Int
 fn type_at_fs_session_invalidate(_ session: TypeAtFsSession) -> Unit
 fn type_at_fs_session_release(session: TypeAtFsSession, path: String) -> Unit
-fn type_at_fs_session_answer(session: TypeAtFsSession, path: String, source: String, line: Int, col: Int) -> Option[String] with Env + Fs
+fn type_at_fs_session_answer(session: TypeAtFsSession, path: String, source: String, line: Int, col: Int, checked_error_row: Bool) -> Option[String] with Env + Fs
 
 // --- binding_at.vibe
 fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int, Int)]
@@ -109,12 +110,12 @@ fn escape_spans_strict(_ source: String) -> Array[(String, Int, Int)] with Excep
 
 // --- rc_query.vibe (issue 1981): `vibe rc-classify` / `vibe rc-plan`.
 // Same prelude + classifier / planner functions as linked_compile.
-fn rc_classify_source(_ source: String) -> String with Exception
-fn rc_plan_source(source: String, fn_filter: String) -> String with Exception
+fn rc_classify_source(_ source: String, checked_error_row: Bool) -> String with Exception
+fn rc_plan_source(source: String, fn_filter: String, checked_error_row: Bool) -> String with Exception
 // #3718: the front half rc-plan and rc-validate share -- parse and check,
 // prelude, classifier tables, and every taken function normalized as the RC
 // codegen plans it.
-fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_names: Array[String], out_fns: Array[Expr], tables: Array[Array[String]], masks: Array[Int]) -> Unit with Exception
+fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_names: Array[String], out_fns: Array[Expr], tables: Array[Array[String]], masks: Array[Int], checked_error_row: Bool) -> Unit with Exception
 
 // --- rc_validate.vibe (#3718): `vibe rc-validate`, every plan checked against
 // the linear ownership discipline, plus four test seams (an edited plan, an
@@ -123,11 +124,11 @@ fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_names: A
 import @vibe/compiler/perceus {
   PerceusAction
 }
-fn rc_validate_source(source: String, fn_filter: String) -> String with Exception
-fn rc_validate_source_edited(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception
-fn rc_validate_source_reclassified(source: String, fn_filter: String, scalar: (String, String) -> Bool, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception
-fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow_fn: String, borrow_mask: Int) -> String with Exception
-fn rc_validate_source_mutated(source: String, fn_filter: String, mutation: String) -> String with Exception
+fn rc_validate_source(source: String, fn_filter: String, checked_error_row: Bool) -> String with Exception
+fn rc_validate_source_edited(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], checked_error_row: Bool) -> String with Exception
+fn rc_validate_source_reclassified(source: String, fn_filter: String, scalar: (String, String) -> Bool, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], checked_error_row: Bool) -> String with Exception
+fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow_fn: String, borrow_mask: Int, checked_error_row: Bool) -> String with Exception
+fn rc_validate_source_mutated(source: String, fn_filter: String, mutation: String, checked_error_row: Bool) -> String with Exception
 
 // --- mutants.vibe: `vibe mutants` -- the mutation sites of a source file
 // outside its test / bench blocks, as (start, end, kind, original,
@@ -162,20 +163,20 @@ fn grep_file_hits(path: String, source: String, pat: GrepPattern) -> Array[GrepH
 fn grep_empty_hits() -> Array[GrepHit]
 fn grep_empty_strings() -> Array[String]
 fn grep_needs_typing(wheres: Array[String], where_rows: Array[String], only: String) -> Bool
-fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv) -> GrepTyped
+fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv, checked_error_row: Bool) -> GrepTyped
 fn grep_untyped_context() -> GrepTyped
 fn grep_typed_context_error(source: String, message: String) -> GrepTyped
 fn grep_emit_hits(source: String, hits: Array[GrepHit], ctx: GrepTyped, typed: Bool, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, out: Array[String]) -> Unit with Exception
 fn grep_join_lines(lines: Array[String], json: Bool) -> String
 // Single-source seam: typed filters resolved against THIS FILE ALONE. Only
 // grep_test.vibe uses it; `vibe grep` always goes through grep_scan_fs.
-fn grep_scan_source(path: String, source: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception
+fn grep_scan_source(path: String, source: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, checked_error_row: Bool) -> String with Exception
 
 // --- grep_fs.vibe (#1572 scope 3): the filesystem tier. Typing runs only for
 // files that already have a structural match, through the same FS import walk
 // `vibe check` uses.
-fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Env + Exception + Fs + Profiler
-fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler
+fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, checked_error_row: Bool) -> String with Env + Exception + Fs + Profiler
+fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, checked_error_row: Bool) -> (String, String) with Env + Exception + Fs + Profiler
 fn grep_collect_files(_ root: String) -> Array[String] with Fs
 fn grep_list_files(_ root: String) -> String with Fs
 fn grep_file_list_banner() -> String
@@ -194,10 +195,10 @@ struct LabelSiteFile {
   sites: Array[LabelSite];
   error: String
 }
-fn query_label_sites_fs(_ files: Array[String]) -> Array[LabelSiteFile] with Env + Exception + Fs
-fn query_label_sites_recheck_fs(path: String, source: String, edited: String) -> String with Env + Fs
+fn query_label_sites_fs(_ files: Array[String], checked_error_row: Bool) -> Array[LabelSiteFile] with Env + Exception + Fs
+fn query_label_sites_recheck_fs(path: String, source: String, edited: String, checked_error_row: Bool) -> String with Env + Fs
 
-fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, named_files: Array[String], resume_out: String) -> (String, String) with Env + Exception + Fs + Profiler
+fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, named_files: Array[String], resume_out: String, checked_error_row: Bool) -> (String, String) with Env + Exception + Fs + Profiler
 
 // --- deprecated_scan.vibe (#1262 / ADR-0101): uses, in entry_source, of
 // names whose declarations carry a `#deprecated` marker (in the entry itself

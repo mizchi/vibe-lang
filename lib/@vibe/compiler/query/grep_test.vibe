@@ -37,19 +37,19 @@ fn one_string(_ a: String) -> Array[String] {
 }
 
 fn scan(source: String, pattern: String) -> String with Exception {
-  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = no_strings(), only = "", json = false)
+  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = no_strings(), only = "", json = false, checked_error_row = false)
 }
 
 fn scan_where(source: String, pattern: String, where_clause: String) -> String with Exception {
-  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = one_string(where_clause), where_rows = no_strings(), only = "", json = false)
+  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = one_string(where_clause), where_rows = no_strings(), only = "", json = false, checked_error_row = false)
 }
 
 fn scan_row(source: String, pattern: String, row_clause: String) -> String with Exception {
-  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = one_string(row_clause), only = "", json = false)
+  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = one_string(row_clause), only = "", json = false, checked_error_row = false)
 }
 
 fn scan_only(source: String, pattern: String, only: String) -> String with Exception {
-  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = no_strings(), only = only, json = false)
+  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = no_strings(), only = only, json = false, checked_error_row = false)
 }
 
 /// The error message a bad pattern / bad filter produces, or "" when the scan
@@ -57,7 +57,7 @@ fn scan_only(source: String, pattern: String, only: String) -> String with Excep
 /// tells the caller what to type instead.
 fn scan_filtered_err(source: String, pattern: String, wheres: Array[String], where_rows: Array[String], json: Bool) -> String {
   handle {
-    let _ = grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = wheres, where_rows = where_rows, only = "", json = json)
+    let _ = grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = wheres, where_rows = where_rows, only = "", json = json, checked_error_row = false)
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -97,7 +97,7 @@ fn grep_error_scan_where_err(source: String, pattern: String, wheres: Array[Stri
 fn typed_scan_where(source: String, pattern: String, import_env: TypeEnv, where_clause: String) -> String with Exception {
   let hits = grep_file_hits(path = "a.vibe", source = source, pat = grep_compile_pattern(pattern))
   let out = grep_empty_strings()
-  grep_emit_hits(source = source, hits = hits, ctx = grep_typed_context(source = source, typed_source = source, import_env = import_env), typed = true, wheres = one_string(where_clause), where_rows = no_strings(), only = "", json = false, out = out)
+  grep_emit_hits(source = source, hits = hits, ctx = grep_typed_context(source = source, typed_source = source, import_env = import_env, checked_error_row = false), typed = true, wheres = one_string(where_clause), where_rows = no_strings(), only = "", json = false, out = out)
   grep_join_lines(lines = out, json = false)
 }
 
@@ -188,13 +188,13 @@ test "grep: nested matches are reported as the separate sites they are" {
 
 test "grep: JSON output carries offsets and per-capture spans" {
   let src = "let a = f(1)\n"
-  inspect(grep_scan_source(path = "a.vibe", source = src, pattern = "f($(x:const))", wheres = no_strings(), where_rows = no_strings(), only = "", json = true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":12,\"synthetic\":false,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":10,\"end\":11,\"synthetic\":false}}}\n]\n")
+  inspect(grep_scan_source(path = "a.vibe", source = src, pattern = "f($(x:const))", wheres = no_strings(), where_rows = no_strings(), only = "", json = true, checked_error_row = false), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":12,\"synthetic\":false,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":10,\"end\":11,\"synthetic\":false}}}\n]\n")
 }
 
 test "grep: an unlocated match is null + synthetic, and the two modes agree" {
   // The Bool arm introduced by `is` has no source occurrence of `true`.
   let src = "let a = value is None\n"
-  let out = grep_scan_source(path = "a.vibe", source = src, pattern = "true", wheres = no_strings(), where_rows = no_strings(), only = "", json = true)
+  let out = grep_scan_source(path = "a.vibe", source = src, pattern = "true", wheres = no_strings(), where_rows = no_strings(), only = "", json = true, checked_error_row = false)
   assert(String::contains(out, needle = "\"line\":null,\"col\":null,\"start\":null,\"end\":null,\"synthetic\":true"))
   assert(!String::contains(out, needle = "-1"))
   assert(String::contains(scan(source = src, pattern = "true"), needle = "<synthetic>"))
@@ -203,7 +203,7 @@ test "grep: an unlocated match is null + synthetic, and the two modes agree" {
 test "grep: no match is empty output, in both text and JSON form" {
   let src = "let a = f(1)\n"
   inspect(scan(source = src, pattern = "zzz(1)"), "")
-  inspect(grep_scan_source(path = "a.vibe", source = src, pattern = "zzz(1)", wheres = no_strings(), where_rows = no_strings(), only = "", json = true), "[]\n")
+  inspect(grep_scan_source(path = "a.vibe", source = src, pattern = "zzz(1)", wheres = no_strings(), where_rows = no_strings(), only = "", json = true, checked_error_row = false), "[]\n")
 }
 
 test "grep --where: filter a capture by its inferred type" {
@@ -251,7 +251,7 @@ test "grep: a file whose typing failed outright is never reported well-typed" {
   // (grep_fs.vibe). An empty context would call the file clean; this one must
   // not. Typed filters fail closed rather than dropping matches silently.
   let src = "let f = (_ x: Int) -> Int { x }\nlet a = f(1)\n"
-  inspect(grep_scan_source(path = "a.vibe", source = src, pattern = "f($(x:exp))", wheres = no_strings(), where_rows = no_strings(), only = "well", json = false), "a.vibe:2:9: f(1)\t$x=1\n")
+  inspect(grep_scan_source(path = "a.vibe", source = src, pattern = "f($(x:exp))", wheres = no_strings(), where_rows = no_strings(), only = "well", json = false, checked_error_row = false), "a.vibe:2:9: f(1)\t$x=1\n")
   inspect(grep_error_scan(source = src, pattern = "f($(x:exp))", only = "well"), "")
   inspect(grep_error_scan(source = src, pattern = "f($(x:exp))", only = "ill"), "a.vibe:2:9: f(1)\t$x=1\n")
   // A capture with no identifier-shaped token (a bare literal) carries no
@@ -483,7 +483,7 @@ fn span_src() -> String {
 }
 
 fn scan_json(source: String, pattern: String) -> String with Exception {
-  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = no_strings(), only = "", json = true)
+  grep_scan_source(path = "a.vibe", source = source, pattern = pattern, wheres = no_strings(), where_rows = no_strings(), only = "", json = true, checked_error_row = false)
 }
 
 test "grep: a call range includes its closing delimiter" {
@@ -582,7 +582,7 @@ test "grep typed tier: an aliased import keeps the imported type, not the local 
   let import_env = env_bind(env = EnvEmpty, name = "nf", ty = int3_to_int())
   // The diagnosis: nothing failed to type. Before the fix this carried
   // `function arity mismatch for nf: expected 2 args, got 3`.
-  inspect(grep_typed_context(source = src, typed_source = src, import_env = import_env).type_error, "")
+  inspect(grep_typed_context(source = src, typed_source = src, import_env = import_env, checked_error_row = false).type_error, "")
   // The user-visible half: the `--where` filter answers about the call
   // instead of the file being skipped.
   inspect(typed_scan_where(source = src, pattern = "nf($(a:args))", import_env = import_env, where_clause = "$a : Int"), "a.vibe:6:3: nf(a, a, a)\t$a=a, a, a\n")
@@ -595,6 +595,6 @@ test "grep typed tier: an aliased import keeps the imported type, not the local 
 test "grep typed tier: a non-colliding import was never affected (#2915 control)" {
   let src = "import ./dep.vibe { f as nf }\nfn g(a: Int, b: Int) -> Int {\n  a + b\n}\nfn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}\n"
   let import_env = env_bind(env = EnvEmpty, name = "nf", ty = int3_to_int())
-  inspect(grep_typed_context(source = src, typed_source = src, import_env = import_env).type_error, "")
+  inspect(grep_typed_context(source = src, typed_source = src, import_env = import_env, checked_error_row = false).type_error, "")
   inspect(typed_scan_where(source = src, pattern = "nf($(a:args))", import_env = import_env, where_clause = "$a : Int"), "a.vibe:6:3: nf(a, a, a)\t$a=a, a, a\n")
 }

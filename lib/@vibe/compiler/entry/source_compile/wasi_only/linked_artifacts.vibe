@@ -362,7 +362,7 @@ export fn collect_linked_compile_inputs_with_rows(_ entry_path: String) -> (Arra
   (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, linked_entry_checked_rows(path = entry_path, source = entry_source))
 }
 
-export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with Env + Exception + Fs {
+export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: String, checked_error_row: Bool) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with Env + Exception + Fs {
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(entry_path)
   let stmts = empty_stmt_array()
   append_stmt_array(dst = stmts, src = resolved_type_stmts)
@@ -372,19 +372,19 @@ export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: Str
   expand_interp_only(stmts)
   // Check before stripping generic type params so Ord/Add/... constrained
   // bodies (`[T: Ord](a, b) { a < b }`) resolve `T` as a bound type variable.
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = checked_error_row)
   // #3625: this check sees imported names as unknown, so its answers are
   // not the program's; the import-resolving check's are, when one ran in
   // this process on this text. Without them the lane refuses what it cannot
   // answer (an interpolated untyped shadow, #3456; a `Float`, #3543).
-  refuse_linked_witness_imports(specs = linked_dep_specs, imports = linked_imports)
+  refuse_linked_witness_imports(specs = linked_dep_specs, imports = linked_imports, checked_error_row = checked_error_row)
   desugar_linked_entry(stmts = stmts, checked = checked_rows)
   strip_generic_type_params(stmts)
   let wasm = compile_linked_entry_module(stmts = stmts, entry_name = entry_name, srcs = array_empty(), linked_imports = linked_imports, checked = checked_rows)
   (wasm, linked_imports, linked_dep_specs)
 }
 
-export fn compile_file_wasi_linked(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)]) with Env + Exception + Fs {
-  let (wasm, linked_imports, _) = compile_file_wasi_linked_artifacts(entry_path = entry_path, entry_name = entry_name)
+export fn compile_file_wasi_linked(entry_path: String, entry_name: String, checked_error_row: Bool) -> (Bytes, Array[(String, String, Int, Int)]) with Env + Exception + Fs {
+  let (wasm, linked_imports, _) = compile_file_wasi_linked_artifacts(entry_path = entry_path, entry_name = entry_name, checked_error_row = checked_error_row)
   (wasm, linked_imports)
 }

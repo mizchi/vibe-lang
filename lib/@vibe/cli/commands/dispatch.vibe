@@ -236,7 +236,7 @@ fn write_warning_rows(_ rows: Array[String]) -> Unit with Stderr {
 /// ADR-0068 applies as on every artifact path: the closure gate is asked after
 /// the walk, so a program the build refuses for an unstable import is reported
 /// by `vibe check` too rather than answered clean.
-fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
+fn user_check_linked(src: String, checked_error_row: Bool) -> Int with Exception + Fs + Env + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
@@ -274,9 +274,9 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
     set_ingestion_fingerprint_telemetry_enabled(ingestion_out != "")
     set_ingestion_pipeline_telemetry_enabled(pipeline_out != "")
     set_incremental_interface_trace_enabled(trace_out != "")
-    reject_unstable_entry_surface(src)
+    reject_unstable_entry_surface(src, checked_error_row = checked_error_row)
     unstable_closure_reset()
-    let groups = check_linked_file_source_groups(src)
+    let groups = check_linked_file_source_groups(src, checked_error_row = checked_error_row)
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_groups_done")
     if telemetry_out != "" {
       Fs::write_file(telemetry_out, contents = incremental_typecheck_telemetry_json())
@@ -284,7 +284,7 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
       ()
     }
     if trace_out != "" {
-      Fs::write_file(trace_out, contents = incremental_invalidation_trace_json(entry_path = src, run_nonce = trace_nonce))
+      Fs::write_file(trace_out, contents = incremental_invalidation_trace_json(entry_path = src, run_nonce = trace_nonce, checked_error_row = checked_error_row))
     } else {
       ()
     }
@@ -295,13 +295,13 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
     }
     reject_unstable_closure_surface()
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_unstable_done")
-    write_warning_rows(check_deprecated_warnings_from_source_groups(input_path = src, source_groups = groups))
+    write_warning_rows(check_deprecated_warnings_from_source_groups(input_path = src, source_groups = groups, checked_error_row = checked_error_row))
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_deprecated")
-    write_warning_rows(check_redundant_import_warnings_from_source_groups(input_path = src, source_groups = groups))
+    write_warning_rows(check_redundant_import_warnings_from_source_groups(input_path = src, source_groups = groups, checked_error_row = checked_error_row))
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_redundant")
-    write_warning_rows(check_let_star_warnings_from_source_groups(input_path = src, source_groups = groups))
+    write_warning_rows(check_let_star_warnings_from_source_groups(input_path = src, source_groups = groups, checked_error_row = checked_error_row))
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_letstar")
-    write_warning_rows(check_unreachable_arm_warnings_from_source_groups(input_path = src, source_groups = groups))
+    write_warning_rows(check_unreachable_arm_warnings_from_source_groups(input_path = src, source_groups = groups, checked_error_row = checked_error_row))
     write_warning_rows(check_builtin_shadowing_warnings_from_source_groups(input_path = src, source_groups = groups))
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_shadow")
     // Published strictly after the check has been answered: a failure above
@@ -320,13 +320,13 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
 /// check runs under a handler here and the raised text becomes the array's
 /// one entry; a clean file yields `[]` and exit 0. `not found` stays an
 /// exception -- a usage error is not a diagnostic about the file's contents.
-fn user_check_linked_json(src: String) -> Int with Exception + Fs + Env + Console + Stderr {
+fn user_check_linked_json(src: String, checked_error_row: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
     let text = Fs::read_file(src)
     let errors = handle {
-      let _ = user_check_linked(src = src)
+      let _ = user_check_linked(src = src, checked_error_row = checked_error_row)
       let empty: Array[String] = []
       empty
     } with { Exception::Throw(message) => {
@@ -417,7 +417,7 @@ fn write_check_profiles(tsv_path: String, callstack_path: String, elapsed_us: In
   }
 }
 
-fn selfhost_cli_user_check_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Console + Stderr + Process + Profiler {
+fn selfhost_cli_user_check_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Console + Stderr + Process + Profiler {
   let mut prove = false
   let mut solver = ""
   for a in args {
@@ -442,7 +442,7 @@ fn selfhost_cli_user_check_args(_ args: Array[String]) -> Int with Exception + F
       "auto"
     } else {
       solver
-    })
+    }, checked_error_row = checked_error_row)
   } else if solver != "" {
     throw("check: `--solver` chooses the solver of `--prove`; add `--prove`, or drop `--solver`")
   } else {
@@ -495,11 +495,11 @@ fn selfhost_cli_user_check_args(_ args: Array[String]) -> Int with Exception + F
       let src = Array::get(paths, at = ci)
       let file_code = handle {
         if single {
-          user_check_single(src = src, json = json)
+          user_check_single(src = src, json = json, checked_error_row = checked_error_row)
         } else if json {
-          user_check_linked_json(src = src)
+          user_check_linked_json(src = src, checked_error_row = checked_error_row)
         } else {
-          user_check_linked(src = src)
+          user_check_linked(src = src, checked_error_row = checked_error_row)
         }
       } with { Exception::Throw(e) => {
         print(line_terminated(format_check_report(e)))
@@ -677,7 +677,7 @@ fn args_has_flag(args: Array[String], flag: String) -> Bool {
   found
 }
 
-fn selfhost_cli_user_compile_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Console {
+fn selfhost_cli_user_compile_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Console {
   let (src, out, entry, wit, minify, component, jobs) = parse_user_compile_request(args)
   // `--debug` is the linked debug lane docs/user/reference/cli-commands.md
   // documents for `vibe build`: library modules cached as linked wasm files,
@@ -714,8 +714,8 @@ fn selfhost_cli_user_compile_args(_ args: Array[String]) -> Int with Exception +
     ensure_parent_dir(resolved)
     // The GATED builder checks the closure its own compile ingested, so the
     // verdict covers exactly the bytes it writes (#2305, Codex review).
-    reject_unstable_entry_surface(src)
-    write_linked_debug_build_checked(input_path = src, output_path = resolved, entry_name = entry, allow_unstable = unstable_opt_in())
+    reject_unstable_entry_surface(src, checked_error_row = checked_error_row)
+    write_linked_debug_build_checked(input_path = src, output_path = resolved, entry_name = entry, allow_unstable = unstable_opt_in(), checked_error_row = checked_error_row)
     println(String::concat("compiled (debug) ", String::concat(src, String::concat(" -> ", display_under_root(path = resolved, build_dir = default_build_dir())))))
     0
   } else if component {
@@ -727,7 +727,7 @@ fn selfhost_cli_user_compile_args(_ args: Array[String]) -> Int with Exception +
     // (scripts/test_component_lazy_dispatch_gate.sh asserts both). Other
     // refusals (an unstable import, a type error) keep their own message.
     let core = handle {
-      compile_user_artifact(input_path = src, entry_name = entry, kind = "component", grants = no_grants())
+      compile_user_artifact(input_path = src, entry_name = entry, kind = "component", grants = no_grants(), checked_error_row = checked_error_row)
     } with { Exception::Throw(message) => {
       if String::contains(message, needle = "no functions found to compile") {
         throw(user_command_component_edit(input_path = src, entry = entry, message = "the module has no `\{entry}` export (\{message})"))
@@ -748,7 +748,7 @@ fn selfhost_cli_user_compile_args(_ args: Array[String]) -> Int with Exception +
   } else {
     let resolved = resolve_user_build_output(output_path = out, output_given = out_given)
     let kind = user_artifact_backend_kind()
-    let bytes = compile_user_artifact(input_path = src, entry_name = entry, kind = kind, grants = no_grants())
+    let bytes = compile_user_artifact(input_path = src, entry_name = entry, kind = kind, grants = no_grants(), checked_error_row = checked_error_row)
     write_user_executable(output_path = resolved, bytes = bytes, entry_name = entry, kind = kind)
     println(String::concat("compiled ", String::concat(src, String::concat(" -> ", display_under_root(path = resolved, build_dir = default_build_dir())))))
     if minify {
@@ -795,13 +795,13 @@ export fn parse_user_fmt_args(_ args: Array[String]) -> (String, String) with Ex
   }
 }
 
-fn selfhost_cli_user_fmt_args(_ args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn selfhost_cli_user_fmt_args(_ args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let (src, mode) = parse_user_fmt_args(args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
     let raw = Fs::read_file(src)
-    let pre = fill_require_pins_lenient(raw)
+    let pre = fill_require_pins_lenient(raw, checked_error_row = checked_error_row)
     let formatted = format_source(path = src, src = pre)
     let is_vpkg = path_has_suffix(s = src, suffix = ".vpkg")
     let head_end = if is_vpkg {
@@ -934,14 +934,14 @@ export fn parse_user_type_at_args(_ args: Array[String]) -> (String, Int, Int) w
 /// literal, punctuation, past the end of the line or file) is an error: stderr
 /// says so and the exit is 1. So is a file that does not parse, which used to
 /// answer nothing with exit 0 as well.
-fn selfhost_cli_user_type_at_args(_ args: Array[String]) -> Int with Env + Exception + Fs + Console + Stderr {
+fn selfhost_cli_user_type_at_args(_ args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console + Stderr {
   let (src, line, col) = parse_user_type_at_args(args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
     let source = Fs::read_file(src)
     // #3834: typed with its imports, as `vibe check` types it.
-    let ty = type_at_fs(path = src, source = source, line = line, col = col)
+    let ty = type_at_fs(path = src, source = source, line = line, col = col, checked_error_row = checked_error_row)
     if ty != "" {
       print_text(ty)
       0
@@ -1323,7 +1323,7 @@ fn rc_validate_help_text() -> String {
   "usage: vibe rc-validate [--fn NAME] [--mutate drop-dups|inflate-exit-drops|scalar-classes] <file.vibe>\nChecks each function's Perceus plan against the linear ownership discipline.\nEmpty output = every checked binding balances on every path and no reference cycle was found.\nLines: FN BINDING PATH: owned value not consumed | owned value released N more than held | borrowed parameter consumed without a dup | consume mark at offset N is not a consuming occurrence | heap value planned as scalar | warning: reference cycle (...); RC cannot free it | not checked: REASON.\nGaps: the file is checked alone; elaborate_heap_params and return_control_annotate_calls do not run; a heap value planned as scalar is not caught in general (only an allocating literal and a parameter whose declared type may be a heap block are cross-checked).\n--mutate drop-dups: self-test seam only. Validates each plan with every PaDup row deleted (inflate-exit-drops: every exit-drop count one higher; scalar-classes: every heap binding read as planned scalar), so a gate can show it fails on a wrong plan; the lines then describe a plan the compiler never builds.\n"
 }
 
-fn selfhost_cli_user_rc_classify_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
+fn selfhost_cli_user_rc_classify_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Console {
   if Array::length(args) >= 2 && (Array::get(args, at = 1) == "--help" || Array::get(args, at = 1) == "-h") {
     print_text(rc_classify_help_text())
     0
@@ -1334,13 +1334,13 @@ fn selfhost_cli_user_rc_classify_args(_ args: Array[String]) -> Int with Excepti
     if !Fs::exists(src) {
       throw(String::concat("not found: ", src))
     } else {
-      print_text(rc_classify_source(Fs::read_file(src)))
+      print_text(rc_classify_source(Fs::read_file(src), checked_error_row = checked_error_row))
       0
     }
   }
 }
 
-fn selfhost_cli_user_rc_plan_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
+fn selfhost_cli_user_rc_plan_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Console {
   let mut fn_filter = ""
   let mut src = ""
   let mut i = 1
@@ -1368,12 +1368,12 @@ fn selfhost_cli_user_rc_plan_args(_ args: Array[String]) -> Int with Exception +
   } else if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
-    print_text(rc_plan_source(source = Fs::read_file(src), fn_filter = fn_filter))
+    print_text(rc_plan_source(source = Fs::read_file(src), fn_filter = fn_filter, checked_error_row = checked_error_row))
     0
   }
 }
 
-fn selfhost_cli_user_rc_validate_args(_ args: Array[String]) -> Int with Exception + Fs + Console {
+fn selfhost_cli_user_rc_validate_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Console {
   let mut fn_filter = ""
   let mut mutation = ""
   let mut src = ""
@@ -1411,9 +1411,9 @@ fn selfhost_cli_user_rc_validate_args(_ args: Array[String]) -> Int with Excepti
   } else {
     let text = Fs::read_file(src)
     print_text(if mutation == "" {
-      rc_validate_source(source = text, fn_filter = fn_filter)
+      rc_validate_source(source = text, fn_filter = fn_filter, checked_error_row = checked_error_row)
     } else {
-      rc_validate_source_mutated(source = text, fn_filter = fn_filter, mutation = mutation)
+      rc_validate_source_mutated(source = text, fn_filter = fn_filter, mutation = mutation, checked_error_row = checked_error_row)
     })
     0
   }
@@ -1498,7 +1498,7 @@ fn join_dep_paths(groups: Array[(String, Array[(String, String)])], entry_path: 
   StringBuilder::freeze(acc)
 }
 
-fn selfhost_cli_user_deps_args(_ args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn selfhost_cli_user_deps_args(_ args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let mut direct = false
   let mut src = ""
   let mut i = 1
@@ -1522,17 +1522,17 @@ fn selfhost_cli_user_deps_args(_ args: Array[String]) -> Int with Env + Exceptio
   } else if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else if direct {
-    let ingested = ingest_source_text_fs(path = src, raw = Fs::read_file(src))
-    let (deps, _, _) = load_or_parse_module_header_fs(path = src, source = ingested, parse_count = 0)
+    let ingested = ingest_source_text_fs(path = src, raw = Fs::read_file(src), checked_error_row = checked_error_row)
+    let (deps, _, _) = load_or_parse_module_header_fs(path = src, source = ingested, parse_count = 0, checked_error_row = checked_error_row)
     print_text(String::join(deps, sep = "\n"))
     0
   } else {
-    print_text(join_dep_paths(groups = collect_source_groups_fs(src), entry_path = src))
+    print_text(join_dep_paths(groups = collect_source_groups_fs(src, checked_error_row = checked_error_row), entry_path = src))
     0
   }
 }
 
-fn selfhost_cli_user_diagnostics_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Console {
+fn selfhost_cli_user_diagnostics_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Console {
   let mut json = false
   let mut src = ""
   let mut i = 1
@@ -1552,7 +1552,7 @@ fn selfhost_cli_user_diagnostics_args(_ args: Array[String]) -> Int with Excepti
   if src == "" {
     throw("usage: vibe diagnostics [--json] <file.vibe>")
   } else {
-    user_diagnostics_report(src = src, json = json)
+    user_diagnostics_report(src = src, json = json, checked_error_row = checked_error_row)
   }
 }
 
@@ -1561,13 +1561,13 @@ fn selfhost_cli_user_diagnostics_args(_ args: Array[String]) -> Int with Excepti
 /// Diagnostic array with `--json`), and exit 0 whether or not the file is
 /// clean. Routing it through `user_check_single` gave it `vibe check`'s
 /// `error:` framing and exit 1 (Codex review of #2858).
-fn user_diagnostics_report(src: String, json: Bool) -> Int with Exception + Fs + Env + Console {
+fn user_diagnostics_report(src: String, json: Bool, checked_error_row: Bool) -> Int with Exception + Fs + Env + Console {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
     let text = Fs::read_file(src)
     let diags = handle {
-      collect_all_diagnostics_with_unstable_for_path(input_path = src, source = text, allow_unstable = unstable_opt_in())
+      collect_all_diagnostics_with_unstable_for_path(input_path = src, source = text, allow_unstable = unstable_opt_in(), checked_error_row = checked_error_row)
     } with { Exception::Throw(_) => {
       let empty: Array[String] = []
       empty
@@ -1583,7 +1583,7 @@ fn user_diagnostics_report(src: String, json: Bool) -> Int with Exception + Fs +
   }
 }
 
-fn selfhost_cli_user_grep_args(_ args: Array[String]) -> Int with Env + Exception + Fs + Profiler + Console + Stderr {
+fn selfhost_cli_user_grep_args(_ args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Profiler + Console + Stderr {
   let mut pattern = ""
   let mut json = false
   let mut only = ""
@@ -1767,7 +1767,7 @@ fn selfhost_cli_user_grep_args(_ args: Array[String]) -> Int with Env + Exceptio
         }
         ni = ni + 1
       }
-      let (text, warnings) = grep_scan_files_report(files = sweep_files, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json, named_files = named_files, resume_out = resume_out)
+      let (text, warnings) = grep_scan_files_report(files = sweep_files, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json, named_files = named_files, resume_out = resume_out, checked_error_row = checked_error_row)
       // A file the sweep could not parse is reported, not searched: the
       // warning is what tells "no match" from "not searched" apart, so it
       // reaches stderr the way the launcher used to relay `<out>.warn`.
@@ -1798,9 +1798,9 @@ fn selfhost_cli_user_grep_args(_ args: Array[String]) -> Int with Env + Exceptio
 /// framed diagnostic goes to STDERR, where `runtime/vibe` used to print the
 /// adapter's `.diag` sidecar, so a verb's machine-readable stdout (symbols
 /// rows, grep matches, check diagnostics) is never interleaved with it.
-export fn run_user_dispatch_args(_ args: Array[String]) -> Int with Fs + Env + Stdin + Console + Stderr + Process + Profiler {
+export fn run_user_dispatch_args(_ args: Array[String], checked_error_row: Bool) -> Int with Fs + Env + Stdin + Console + Stderr + Process + Profiler {
   handle {
-    selfhost_cli_user_dispatch_args(args)
+    selfhost_cli_user_dispatch_args(args, checked_error_row = checked_error_row)
   } with { Exception::Throw(e) => {
     // #3520: a refusal thrown after the merge carries a ` [@off=N]` marker;
     // locate it against its own file, or strip it, the way `lib/@vibe/cli`'s
@@ -1857,7 +1857,7 @@ fn run_args_input_path(_ args: Array[String]) -> String {
   found
 }
 
-export fn selfhost_cli_user_dispatch_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler {
+export fn selfhost_cli_user_dispatch_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler {
   let argv = rewrite_user_argv(args = args, invoke_dir = Env::get("VIBE_INVOKE_DIR"), project_root = Fs::getcwd())
   let first = if Array::length(argv) == 0 {
     "help"
@@ -1865,35 +1865,35 @@ export fn selfhost_cli_user_dispatch_args(_ args: Array[String]) -> Int with Exc
     Array::get(argv, at = 0)
   }
   match first {
-    "check" => selfhost_cli_user_check_args(argv),
-    "compile" => selfhost_cli_user_compile_args(argv),
-    "build" => selfhost_cli_user_compile_args(argv),
-    "fmt" => selfhost_cli_user_fmt_args(argv),
+    "check" => selfhost_cli_user_check_args(argv, checked_error_row = checked_error_row),
+    "compile" => selfhost_cli_user_compile_args(argv, checked_error_row = checked_error_row),
+    "build" => selfhost_cli_user_compile_args(argv, checked_error_row = checked_error_row),
+    "fmt" => selfhost_cli_user_fmt_args(argv, checked_error_row = checked_error_row),
     "normalize" => selfhost_cli_user_normalize_args(argv),
-    "type-at" => selfhost_cli_user_type_at_args(argv),
+    "type-at" => selfhost_cli_user_type_at_args(argv, checked_error_row = checked_error_row),
     "doc-at" => selfhost_cli_user_doc_at_args(argv),
-    "refactor" => selfhost_cli_user_refactor_args(argv),
+    "refactor" => selfhost_cli_user_refactor_args(argv, checked_error_row = checked_error_row),
     "binding-at" => selfhost_cli_user_binding_at_args(argv),
     "symbols" => selfhost_cli_user_symbols_args(argv),
     "escapes" => selfhost_cli_user_escapes_args(argv),
-    "rc-classify" => selfhost_cli_user_rc_classify_args(argv),
-    "rc-plan" => selfhost_cli_user_rc_plan_args(argv),
-    "rc-validate" => selfhost_cli_user_rc_validate_args(argv),
+    "rc-classify" => selfhost_cli_user_rc_classify_args(argv, checked_error_row = checked_error_row),
+    "rc-plan" => selfhost_cli_user_rc_plan_args(argv, checked_error_row = checked_error_row),
+    "rc-validate" => selfhost_cli_user_rc_validate_args(argv, checked_error_row = checked_error_row),
     "allocs" => selfhost_cli_user_allocs_args(argv),
-    "deps" => selfhost_cli_user_deps_args(argv),
-    "diagnostics" => selfhost_cli_user_diagnostics_args(argv),
-    "grep" => selfhost_cli_user_grep_args(argv),
-    "run" => selfhost_cli_user_run_args(argv),
-    "test" => selfhost_cli_user_test_args(argv),
-    "bench" => selfhost_cli_user_bench_args(argv),
-    "serve" => selfhost_cli_user_serve_args(argv),
+    "deps" => selfhost_cli_user_deps_args(argv, checked_error_row = checked_error_row),
+    "diagnostics" => selfhost_cli_user_diagnostics_args(argv, checked_error_row = checked_error_row),
+    "grep" => selfhost_cli_user_grep_args(argv, checked_error_row = checked_error_row),
+    "run" => selfhost_cli_user_run_args(argv, checked_error_row = checked_error_row),
+    "test" => selfhost_cli_user_test_args(argv, checked_error_row = checked_error_row),
+    "bench" => selfhost_cli_user_bench_args(argv, checked_error_row = checked_error_row),
+    "serve" => selfhost_cli_user_serve_args(argv, checked_error_row = checked_error_row),
     "profile" => selfhost_cli_user_profile_args(argv),
-    "lsp" => selfhost_cli_user_lsp_args(argv),
-    "hash" => selfhost_cli_user_hash_args(argv),
+    "lsp" => selfhost_cli_user_lsp_args(argv, checked_error_row = checked_error_row),
+    "hash" => selfhost_cli_user_hash_args(argv, checked_error_row = checked_error_row),
     "inspect-update" => selfhost_cli_user_inspect_update_args(argv),
     "mutants" => selfhost_cli_user_mutants_args(argv),
     "mutate-report" => selfhost_cli_user_mutate_report_args(argv),
-    "pkg" => selfhost_cli_user_pkg_args(argv),
+    "pkg" => selfhost_cli_user_pkg_args(argv, checked_error_row = checked_error_row),
     "test-report" => selfhost_cli_user_test_report_args(argv),
     "help" => selfhost_cli_user_help_args(argv),
     "--help" => selfhost_cli_user_help_args(argv),

@@ -280,15 +280,15 @@ export fn unstable_opt_in() -> Bool with Env {
   Env::get("VIBE_UNSTABLE") == "1"
 }
 
-fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
+fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)], checked_error_row: Bool) -> Bytes with Exception + Fs + Env {
   if kind == "trace" {
-    compile_file_fs_mode_trace(entry_path = input_path, entry_name = entry_name)
+    compile_file_fs_mode_trace(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
   } else if kind == "break" {
-    compile_file_fs_mode_break(entry_path = input_path, entry_name = entry_name)
+    compile_file_fs_mode_break(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
   } else if kind == "coverage" {
-    compile_file_fs_mode_coverage(entry_path = input_path, entry_name = entry_name)
+    compile_file_fs_mode_coverage(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
   } else if kind == "gc" {
-    compile_file_fs_mode_gc(entry_path = input_path, entry_name = entry_name)
+    compile_file_fs_mode_gc(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
   } else if kind == "component" {
     // A COMMAND component prunes from the module's own command entry and emits
     // a LIBRARY, which is why it needs its own mode rather than `mvp`
@@ -296,7 +296,7 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
     // `cli_support.vibe` so this door and the `.vibex` CLI's `build
     // --component` cannot drift apart (#2863: the same flag produced 40 MB
     // through one door and 2.6 MB through the other).
-    compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = command_component_compile_mode(), exports_stripped = false)
+    compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = command_component_compile_mode(), exports_stripped = false, checked_error_row = checked_error_row)
   } else {
     // The release artifact is written with its exports stripped to the
     // entry's keep list (`write_user_executable` / `write_user_run_executable`),
@@ -307,7 +307,7 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
     // program calling 10 of z3.wasm's functions asked the runner for all 853.
     // #1953: an argument of this compile, so a compile that throws leaves
     // nothing behind for the next one in this process.
-    compile_release_lane(input_path = input_path, entry_name = entry_name, grants = grants, exports_stripped = executable_exports_stripped(entry_name))
+    compile_release_lane(input_path = input_path, entry_name = entry_name, grants = grants, exports_stripped = executable_exports_stripped(entry_name), checked_error_row = checked_error_row)
   }
 }
 
@@ -318,21 +318,21 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
 /// `compile_file_fs_mode` alone here was the bump lane for EVERY compile
 /// (Codex review of #2858): a long-running program kept every allocation until
 /// exit, and `VIBE_RC=shadow` silently did nothing.
-fn compile_release_lane(input_path: String, entry_name: String, grants: Array[(String, String)], exports_stripped: Bool) -> Bytes with Exception + Fs + Env {
+fn compile_release_lane(input_path: String, entry_name: String, grants: Array[(String, String)], exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception + Fs + Env {
   let rc_flag = Env::get("VIBE_RC")
   if rc_flag == "0" {
     // #2828 rung 2: every arm carries the grants. When only the rc arm did,
     // `VIBE_RC=0` and `VIBE_RC=shadow` silently answered `NotGranted` for every
     // optional capability -- authority became a function of which allocator was
     // selected, which is the "silently wrong" this project ranks worst.
-    compile_file_fs_mode_grants(entry_path = input_path, entry_name = entry_name, mode = "mvp", grants = grants, exports_stripped = exports_stripped)
+    compile_file_fs_mode_grants(entry_path = input_path, entry_name = entry_name, mode = "mvp", grants = grants, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
   } else if rc_flag == "shadow" {
-    compile_file_fs_mode_rc_shadow_grants(entry_path = input_path, entry_name = entry_name, grants = grants, exports_stripped = exports_stripped)
+    compile_file_fs_mode_rc_shadow_grants(entry_path = input_path, entry_name = entry_name, grants = grants, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
   } else {
     // #2825: an exact no-op replays the module the last identical compile
     // produced (linked_output_memo.vibe); `VIBE_LINKED_OUTPUT_MEMO=off`
     // compiles anyway, `verify` compiles and compares.
-    compile_file_fs_mode_rc_grants_memo(entry_path = input_path, entry_name = entry_name, grants = grants, memo_mode = linked_output_memo_mode("on"), exports_stripped = exports_stripped)
+    compile_file_fs_mode_rc_grants_memo(entry_path = input_path, entry_name = entry_name, grants = grants, memo_mode = linked_output_memo_mode("on"), exports_stripped = exports_stripped, checked_error_row = checked_error_row)
   }
 }
 
@@ -347,11 +347,11 @@ fn compile_release_lane(input_path: String, entry_name: String, grants: Array[(S
 /// the split CLI applies unchanged: the gate belongs on the one function every
 /// artifact-producing path goes through, so it covers them by construction
 /// rather than by remembering.
-export fn reject_unstable_entry_surface(_ input_path: String) -> Unit with Exception + Fs + Env {
+export fn reject_unstable_entry_surface(_ input_path: String, checked_error_row: Bool) -> Unit with Exception + Fs + Env {
   if unstable_opt_in() {
     ()
   } else {
-    let diags = check_unstable_surface_warnings_from_path(input_path)
+    let diags = check_unstable_surface_warnings_from_path(input_path, checked_error_row = checked_error_row)
     if Array::length(diags) > 0 {
       throw(String::join(diags, sep = "\n"))
     } else {
@@ -378,10 +378,10 @@ export fn reject_unstable_closure_surface() -> Unit with Exception + Fs + Env {
 
 /// Every artifact this dispatcher compiles goes through here: entry gate,
 /// compile, closure gate.
-export fn compile_user_artifact(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
-  reject_unstable_entry_surface(input_path)
+export fn compile_user_artifact(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)], checked_error_row: Bool) -> Bytes with Exception + Fs + Env {
+  reject_unstable_entry_surface(input_path, checked_error_row = checked_error_row)
   unstable_closure_reset()
-  let bytes = compile_user_wasm(input_path = input_path, entry_name = entry_name, kind = kind, grants = grants)
+  let bytes = compile_user_wasm(input_path = input_path, entry_name = entry_name, kind = kind, grants = grants, checked_error_row = checked_error_row)
   reject_unstable_closure_surface()
   bytes
 }
@@ -913,7 +913,7 @@ export fn user_check_scan(root: String, missing_vpkg: Bool) -> Int with Env + Ex
   }
 }
 
-export fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
+export fn user_check_single(src: String, json: Bool, checked_error_row: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
@@ -934,7 +934,7 @@ export fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs 
     // is deprecated and FROZEN at exit 0 for the editors still calling it, so
     // unfreezing it is a separate decision, not this fix.
     let collected = handle {
-      collect_all_diagnostics_with_unstable_for_path(input_path = src, source = text, allow_unstable = unstable_opt_in())
+      collect_all_diagnostics_with_unstable_for_path(input_path = src, source = text, allow_unstable = unstable_opt_in(), checked_error_row = checked_error_row)
     } with { Exception::Throw(message) => {
       let failed: Array[String] = []
       Array::push(failed, value = String::concat("check failed: ", message))
@@ -1401,7 +1401,7 @@ fn args_contain_newline(_ args: Array[String]) -> Bool {
   found
 }
 
-export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
+export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String, checked_error_row: Bool) -> Int with Exception + Fs + Env {
   let (run_args, allows, denies) = split_capability_flags(args)
   let (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args, provides) = parse_run_flags(run_args)
   if !Fs::exists(src) {
@@ -1433,7 +1433,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     } else {
       ()
     }
-    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_from_flags(allows = allows, denies = denies))
+    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_from_flags(allows = allows, denies = denies), checked_error_row = checked_error_row)
     write_user_run_executable(output_path = out, bytes = bytes, kind = kind)
     write_user_funcmap(input_path = src, output_path = out)
     let acc = StringBuilder::new()
@@ -1496,8 +1496,8 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
   }
 }
 
-export fn selfhost_cli_user_run_args(_ args: Array[String]) -> Int with Exception + Fs + Env {
-  selfhost_cli_run_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"))
+export fn selfhost_cli_user_run_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env {
+  selfhost_cli_run_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"), checked_error_row = checked_error_row)
 }
 
 /// Where `vibe test` puts the artifact for `src`, relative to
@@ -1634,7 +1634,7 @@ fn test_plan_first_line(_ text: String) -> String {
   }
 }
 
-export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env + Stderr {
+export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String, checked_error_row: Bool) -> Int with Exception + Fs + Env + Stderr {
   let mut update = false
   let mut no_cache = false
   let mut jobs = 1
@@ -1704,7 +1704,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       // record's third field, read from the bytes just written: the one
       // counter both test runners use.
       let compiled = handle {
-        reject_unstable_entry_surface(src)
+        reject_unstable_entry_surface(src, checked_error_row = checked_error_row)
         unstable_closure_reset()
         // The pure-test pass cache (#634, ADR-0026) reads the `.testmeta`
         // verdict the launcher's run-tests arm keys on. Only the legacy bump
@@ -1721,14 +1721,14 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         // `no functions found to compile`, where scripts/vibe_test.sh and the
         // RC default report it `ok ... (no tests found)` (#948).
         let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
-          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta, exports_stripped = false)
+          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta, exports_stripped = false, checked_error_row = checked_error_row)
         } else {
           if Fs::exists(meta) {
             Fs::remove(meta)
           } else {
             ()
           }
-          compile_user_wasm(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants())
+          compile_user_wasm(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants(), checked_error_row = checked_error_row)
         }
         reject_unstable_closure_surface()
         write_wasm(output_path = out, bytes = bytes)
@@ -1777,11 +1777,11 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
   }
 }
 
-export fn selfhost_cli_user_test_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Stderr {
-  selfhost_cli_test_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"))
+export fn selfhost_cli_user_test_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Stderr {
+  selfhost_cli_test_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"), checked_error_row = checked_error_row)
 }
 
-export fn selfhost_cli_user_bench_args(_ args: Array[String]) -> Int with Exception + Fs + Env {
+export fn selfhost_cli_user_bench_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env {
   let mut src = ""
   let mut iters = "0"
   let mut warmup = "0"
@@ -1842,7 +1842,7 @@ export fn selfhost_cli_user_bench_args(_ args: Array[String]) -> Int with Except
     }
     let out = String::concat(default_build_dir(), String::concat("/bench/", String::concat(basename_of(strip_vibe_suffix(src)), ".wasm")))
     let backend_kind = user_backend_kind("VIBE_BENCH_BACKEND")
-    let bytes = compile_user_artifact(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants())
+    let bytes = compile_user_artifact(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants(), checked_error_row = checked_error_row)
     write_wasm(output_path = out, bytes = bytes)
     let acc = StringBuilder::new()
     StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-benches\n")
@@ -1870,7 +1870,7 @@ export fn selfhost_cli_user_bench_args(_ args: Array[String]) -> Int with Except
   }
 }
 
-export fn selfhost_cli_user_serve_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Console {
+export fn selfhost_cli_user_serve_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Console {
   let mut src = ""
   let mut out = ""
   let mut addr = "127.0.0.1:8080"
@@ -1917,7 +1917,7 @@ export fn selfhost_cli_user_serve_args(_ args: Array[String]) -> Int with Except
     }
     let entry_stmts = parse_user_entry_file(src)
     validate_serve_handler(entry_stmts)
-    let core = compile_user_artifact(input_path = src, entry_name = "__no_entry__", kind = "mvp", grants = no_grants())
+    let core = compile_user_artifact(input_path = src, entry_name = "__no_entry__", kind = "mvp", grants = no_grants(), checked_error_row = checked_error_row)
     let body_stream = serve_handler_takes_body_stream(entry_stmts)
     let component = if body_stream {
       comp_emit_component_wasm_stream_handler(core_wasm = core, target_func_name = "handler", export_name = "handler", param_names = serve_handler_param_names())
@@ -2034,8 +2034,8 @@ export fn selfhost_cli_user_profile_args(_ args: Array[String]) -> Int with Exce
 /// The embedded server (`vibe lsp --selfhost`). `VIBE_UNSTABLE=1` is the
 /// server-start policy `lsp_main` documents, the same opt-in the adapter route
 /// passed (Codex review of #2858).
-export fn selfhost_cli_user_lsp_args(_ _args: Array[String]) -> Int with Env + Fs + Stdin + Console {
-  lsp_main(unstable_opt_in())
+export fn selfhost_cli_user_lsp_args(_ _args: Array[String], checked_error_row: Bool) -> Int with Env + Fs + Stdin + Console {
+  lsp_main(unstable_opt_in(), checked_error_row = checked_error_row)
 }
 
 /// `vibe hash [--write] <pkg_dir|index.vpkg|index.vibei>` (ADR-0063 §5).
@@ -2048,7 +2048,7 @@ export fn selfhost_cli_user_lsp_args(_ _args: Array[String]) -> Int with Env + F
 /// `generated_hash = ` directive in place instead. A directory names its
 /// contract on either spelling (#897 / ADR-0070: `.vpkg` preferred, `.vibei`
 /// still accepted).
-export fn selfhost_cli_user_hash_args(_ args: Array[String]) -> Int with Env + Exception + Fs + Console {
+export fn selfhost_cli_user_hash_args(_ args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let mut write = false
   let mut src = ""
   let mut i = 1
@@ -2087,7 +2087,7 @@ export fn selfhost_cli_user_hash_args(_ args: Array[String]) -> Int with Env + E
       if !path_has_suffix(s = target, suffix = ".vpkg") {
         throw(String::concat("vibe hash --write requires an index.vpkg target (got ", String::concat(target, "); generated_hash is a #1128 directive, the legacy index.vibei format has no such field")))
       } else {
-        let rewritten = write_generated_hash_fs(target)
+        let rewritten = write_generated_hash_fs(target, checked_error_row = checked_error_row)
         Fs::write_file(target, contents = rewritten)
         let lines = String::split(rewritten, sep = "\n")
         let mut li = 0
@@ -2103,7 +2103,7 @@ export fn selfhost_cli_user_hash_args(_ args: Array[String]) -> Int with Env + E
         0
       }
     } else {
-      let (pkg_hash, ct_hash) = contract_package_hashes_fs(target)
+      let (pkg_hash, ct_hash) = contract_package_hashes_fs(target, checked_error_row = checked_error_row)
       print_text(String::concat("package #", String::concat(pkg_hash, String::concat("\ncontract ", ct_hash))))
       0
     }

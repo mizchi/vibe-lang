@@ -63,14 +63,14 @@ fn as_scalar(src: String, fname: String, x: String) -> String with Exception {
     f == fname && n == x
   }, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
     without_drop(plan = p, x = x)
-  })
+  }, checked_error_row = false)
 }
 
 /// Validate `fname` in `src` with `x`'s scope-end drop deleted.
 fn no_drop(src: String, fname: String, x: String) -> String with Exception {
   rc_validate_source_edited(source = src, fn_filter = fname, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
     without_drop(plan = p, x = x)
-  })
+  }, checked_error_row = false)
 }
 
 //# #3240: returning an Option closure payload
@@ -79,7 +79,7 @@ fn no_drop(src: String, fname: String, x: String) -> String with Exception {
 let src_3240 = "fn fresh_callback() -> (Int) -> Int {\n  let offset = [1]\n  (n: Int) -> Int {\n    n + Array::get(offset, at = 0)\n  }\n}\nfn unwrap_callback(_ opt: Option[(Int) -> Int]) -> (Int) -> Int {\n  match opt {\n    Some(callback) => callback,\n    None => fresh_callback()\n  }\n}\nlet main: () -> Int = () -> {\n  let f = unwrap_callback(Some(fresh_callback()))\n  f(5)\n}"
 
 test "#3240 today: the Option parameter balances; its payload binder is not checked" {
-  inspect(tagged(tag = "3240", out = rc_validate_source(source = src_3240, fn_filter = "unwrap_callback")), content = "3240: unwrap_callback * -: not checked: 1 pattern binders, 0 let mut")
+  inspect(tagged(tag = "3240", out = rc_validate_source(source = src_3240, fn_filter = "unwrap_callback", checked_error_row = false)), content = "3240: unwrap_callback * -: not checked: 1 pattern binders, 0 let mut")
 }
 
 test "#3240 before #3241: an Option of a closure planned as scalar is named" {
@@ -95,7 +95,7 @@ test "#3240 before #3241: an Option of a closure planned as scalar is named" {
 let src_3169 = "effect Tick {\n  Tick(Int) -> Unit\n}\nfn tick(_ n: Int) -> Unit with Tick {\n  perform Tick::Tick(n)\n}\nlet main: () -> Int = () -> {\n  let mut total = 0\n  handle {\n    tick(1)\n  } with {\n    Tick::Tick(k) => {\n      total = total + k\n      resume(())\n    }\n  }\n  total\n}"
 
 test "#3169 today: the evidence dictionary parameter balances" {
-  inspect(tagged(tag = "3169", out = rc_validate_source(source = src_3169, fn_filter = "tick")), content = "3169: clean")
+  inspect(tagged(tag = "3169", out = rc_validate_source(source = src_3169, fn_filter = "tick", checked_error_row = false)), content = "3169: clean")
 }
 
 test "#3169 before its fix: an evidence dictionary planned as scalar is named" {
@@ -109,8 +109,8 @@ test "#3169 before its fix: an evidence dictionary planned as scalar is named" {
 let src_3135 = "fn take_d(d: Float64) -> Int {\n  if d > 1.0 {\n    1\n  } else {\n    0\n  }\n}\nfn literal() -> Int {\n  let x = 1.5\n  if x > 1.0 {\n    1\n  } else {\n    0\n  }\n}\nlet main: () -> Int = () -> {\n  take_d(2.5) + literal()\n}"
 
 test "#3135 today: a Double literal and a Double parameter balance" {
-  inspect(tagged(tag = "3135 literal", out = rc_validate_source(source = src_3135, fn_filter = "literal")), content = "3135 literal: clean")
-  inspect(tagged(tag = "3135 param", out = rc_validate_source(source = src_3135, fn_filter = "take_d")), content = "3135 param: clean")
+  inspect(tagged(tag = "3135 literal", out = rc_validate_source(source = src_3135, fn_filter = "literal", checked_error_row = false)), content = "3135 literal: clean")
+  inspect(tagged(tag = "3135 param", out = rc_validate_source(source = src_3135, fn_filter = "take_d", checked_error_row = false)), content = "3135 param: clean")
 }
 
 test "#3135 before #3130: a Double literal planned as scalar is named" {
@@ -140,7 +140,7 @@ let src_3140 = "enum D {\n  A(Array[Int])\n}\nstruct Cell {\n  mut v: D\n}\nlet 
 
 test "#3140 today: the receiver of a releasing field store balances" {
   // Before this slice the field-release row made `s` not checked.
-  inspect(tagged(tag = "3140", out = rc_validate_source(source = src_3140, fn_filter = "run")), content = "3140: clean")
+  inspect(tagged(tag = "3140", out = rc_validate_source(source = src_3140, fn_filter = "run", checked_error_row = false)), content = "3140: clean")
 }
 
 test "#3140 before #3159: a receiver the store took leaks the struct" {
@@ -160,6 +160,6 @@ test "#3140's overwritten value is outside the ledger" {
     drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
       pa_is_field_release(a)
     })
-  })
+  }, checked_error_row = false)
   inspect(tagged(tag = "pre-3159 overwritten", out = out), content = "pre-3159 overwritten: clean")
 }

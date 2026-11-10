@@ -275,17 +275,17 @@ export fn type_diagnostic_display(path: String, source: String, located_msg: Str
 /// without ever being seeded (manifest collect lists the contract, not the
 /// generated `.vibe/build/vpkg_types/` file). Load it from disk so the
 /// walk can check it instead of projecting a missing env row (#1921).
-export fn load_planned_module_source(rdb: RippleDb, path: String) -> (RippleDb, Option[String]) with Env + Exception + Fs {
-  load_planned_module_source_with_config(rdb = rdb, path = path, cfg = target_cfg_ambient())
+export fn load_planned_module_source(rdb: RippleDb, path: String, checked_error_row: Bool) -> (RippleDb, Option[String]) with Env + Exception + Fs {
+  load_planned_module_source_with_config(rdb = rdb, path = path, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-export fn load_planned_module_source_with_config(rdb: RippleDb, path: String, cfg: TargetCfg) -> (RippleDb, Option[String]) with Env + Exception + Fs {
+export fn load_planned_module_source_with_config(rdb: RippleDb, path: String, cfg: TargetCfg, checked_error_row: Bool) -> (RippleDb, Option[String]) with Env + Exception + Fs {
   match ripple_get_source(db = rdb, path = path) {
     Some(source) => (rdb, Some(source)),
     None =>
     if is_vpkg_types_stub_path(path) && Fs::exists(path) {
-      let source = ingest_source_text_fs_with_config(path = path, raw = cache_read_source_fs(path), cfg = cfg)
+      let source = ingest_source_text_fs_with_config(path = path, raw = cache_read_source_fs(path), cfg = cfg, checked_error_row = checked_error_row)
       (ripple_set_source(db = rdb, path = path, source = source), Some(source))
     } else {
       (rdb, None)
@@ -317,9 +317,9 @@ export fn project_exact_dependency_envs(deps: Array[String], full_cache: Array[(
 
 /// Test-only semantic seam: production projects with the same helper and then
 /// gives this exact table to build_import_env through ModuleJob.dep_envs.
-export fn projected_import_env_for_test(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Env + Exception {
+export fn projected_import_env_for_test(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)], checked_error_row: Bool) -> TypeEnv with Env + Exception {
   let dep_envs = project_exact_dependency_envs(deps = deps, full_cache = full_cache)
-  build_import_env(stmts = parse_program_with_path(path = path, source = source), base_dir = dir_of_path(path), cache = dep_envs)
+  build_import_env(stmts = parse_program_with_path(path = path, source = source, checked_error_row = checked_error_row), base_dir = dir_of_path(path), cache = dep_envs)
 }
 
 /// The module's typing fingerprint (typing_module_fingerprint, the one
