@@ -37,6 +37,12 @@ import ./checker_label_sites.vibe {
   checker_check_required_labels, checker_note_label_site
 }
 
+// #3730: an integer literal argument takes an `Int32` / `UInt32` parameter's
+// type, range-checked, exactly as `check_written_call_arguments` adapts it.
+import ./checker_int32.vibe {
+  int32_literal_adapt
+}
+
 import @vibe/compiler/checker/diagnostics {
   off_marker_len
 }
@@ -212,20 +218,38 @@ fn judge_declared_method(row: DeferredMethodCall, recv: Type, scheme: Type, qual
           Some(slots) => {
             let tys: Array[Type] = []
             let exprs: Array[Expr] = []
+            let mut slot = 0
             for code in slots {
               if code < 2 || code / 2 - 1 >= Array::length(row.arg_tys) {
                 // An omitted optional parameter takes its default.
                 Array::push(tys, value = CtUnknown)
                 Array::push(exprs, value = EUnit)
               } else {
-                let at = Array::get(row.arg_tys, at = code / 2 - 1)
-                Array::push(tys, value = if code % 2 == 1 {
+                let value = written_value(Array::get(row.args, at = code / 2 - 1))
+                // An optional parameter's value is wrapped in `Some`, so the
+                // literal is adapted to the payload, as on the ordinary path.
+                let wrap = code % 2 == 1
+                let want = if slot < Array::length(explicit) {
+                  match Array::get(explicit, at = slot) {
+                    CtOption(inner) => if wrap {
+                      inner
+                    } else {
+                      CtOption(inner)
+                    },
+                    other => other
+                  }
+                } else {
+                  CtUnknown
+                }
+                let at = int32_literal_adapt(e = value, expected = want, actual = Array::get(row.arg_tys, at = code / 2 - 1), s = s1, errors = errors, off = 0 - 1)
+                Array::push(tys, value = if wrap {
                   CtOption(at)
                 } else {
                   at
                 })
-                Array::push(exprs, value = written_value(Array::get(row.args, at = code / 2 - 1)))
+                Array::push(exprs, value = value)
               }
+              slot = slot + 1
             }
             unify_call_args_with_source_placement(param_tys = explicit, arg_tys = tys, arg_exprs = exprs, s = s1, errors = errors, label = qualified, off = row.call_off, placement = Some((slots, Array::length(row.args))))
           },
@@ -233,7 +257,19 @@ fn judge_declared_method(row: DeferredMethodCall, recv: Type, scheme: Type, qual
             if Array::length(row.args) + 1 != Array::length(params) {
               Array::push(errors, value = arity_message(qualified = qualified, expected = Array::length(params), got = Array::length(row.args) + 1) + off_marker_len(off = row.call_off, len = String::length(qualified)))
             }
-            unify_call_args(param_tys = explicit, arg_tys = row.arg_tys, arg_exprs = written_values(row.args), s = s1, errors = errors, label = qualified, off = row.call_off)
+            let values = written_values(row.args)
+            let tys: Array[Type] = []
+            let mut i = 0
+            while i < Array::length(row.arg_tys) {
+              let want = if i < Array::length(explicit) {
+                Array::get(explicit, at = i)
+              } else {
+                CtUnknown
+              }
+              Array::push(tys, value = int32_literal_adapt(e = Array::get(values, at = i), expected = want, actual = Array::get(row.arg_tys, at = i), s = s1, errors = errors, off = 0 - 1))
+              i = i + 1
+            }
+            unify_call_args(param_tys = explicit, arg_tys = tys, arg_exprs = values, s = s1, errors = errors, label = qualified, off = row.call_off)
           }
         }
         (unify_deferred_method_result(row = row, ret = ret, s = s2, defs = defs, errors = errors), nc)

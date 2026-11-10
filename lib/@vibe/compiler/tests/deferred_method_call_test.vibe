@@ -83,3 +83,30 @@ test "#4037: a function stored in a field, called with the wrong type" {
   let src = "struct Holder {\n  f: (Int) -> Int\n}\nfn apply(h: Holder, g: (Holder) -> Int) -> Int {\n  g(h)\n}\nfn main() -> Int {\n  apply(h = Holder::{ f: (x) -> x + 1 }, g = (v) -> v.f(\"abc\"))\n}\n"
   inspect(first_check_error(src), content = "argument type mismatch for Holder::f: expected Int, got String")
 }
+
+//# Int32 / UInt32 literals
+
+/// The prelude of the #3730 rows: methods taking 32-bit integers.
+fn int32_source(_ call: String) -> String {
+  "struct Counter {\n  n: Int\n}\nfn Counter::add(c: Counter, k: Int32) -> Int {\n  c.n\n}\nfn Counter::addu(c: Counter, k: UInt32) -> Int {\n  c.n\n}\nfn Counter::opt(c: Counter, k: Int, m?: Int32) -> Int {\n  c.n + k\n}\nfn Counter::pos(c: Counter, _ k: Int32) -> Int {\n  c.n\n}\nfn main() -> Array[Int] {\n  Array::map([Counter::{ n: 1 }], f = (c) -> " + call + ")\n}\n"
+}
+
+test "#4037: an integer literal takes a late method's Int32 / UInt32 parameter" {
+  // #3730: the same adaptation `check_written_call_arguments` applies, in the
+  // labeled, positional and optional placements.
+  inspect([
+    first_check_error(int32_source("c.add(k = 1)")),
+    first_check_error(int32_source("c.addu(k = 7)")),
+    first_check_error(int32_source("c.pos(3)")),
+    first_check_error(int32_source("c.opt(k = 1, m = 2)")),
+    first_check_error(int32_source("c.opt(k = 1)"))
+  ], content = "[, , , , ]")
+}
+
+test "#4037: a string is still refused where a late method wants Int32" {
+  inspect(first_check_error(int32_source("c.add(k = \"x\")")), content = "argument type mismatch for Counter::add: expected Int32, got String")
+}
+
+test "#4037: a literal outside UInt32's range is refused" {
+  inspect(first_check_error(int32_source("c.addu(k = -1)")), content = "integer literal -1 does not fit `UInt32` (0 .. 4294967295): use an `Int`, or write a value in range")
+}
