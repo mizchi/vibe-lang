@@ -73,6 +73,10 @@ import ./checker_region_retention.vibe {
   retention_recheck
 }
 
+import ./checker_region_retention_types.vibe {
+  retention_type_hides_region
+}
+
 import ./checker_region_retention_summary.vibe {
   retention_any_nursery
 }
@@ -119,10 +123,18 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
 /// outside the region, so does it (#4050: `Array::map(boxes, (a) -> {
 /// Array::push(a, value = cell); 0 })` with `boxes = [outer]` stored the
 /// region value in `outer`, where `Array::get(boxes, at = 0)` is refused).
-export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
+/// Either counts only where its type, read from the callback's `fn_ty`, can
+/// hold a region value (`callback_param_transports`): an `Int` accumulator
+/// or an `Array[Int]` element keeps nothing of the region whatever it
+/// aliases.
+export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, recv_ty: Type, fn_ty: Type, pidx: Int, s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
   if env_has_active_region(env) {
     match subst_apply(s = s, ty = recv_ty) {
       CtArray(elem) => {
+        let fn_params = match subst_apply(s = s, ty = fn_ty) {
+          CtFn(ptys, _, _) => ptys,
+          _ => array_empty()
+        }
         let known: Array[Option[Type]] = []
         let mut pi = 0
         while pi <= pidx {
@@ -137,7 +149,16 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, recv_ty: Type, pidx
         let outer: Array[Bool] = []
         let mut oi = 0
         while oi <= pidx {
-          Array::push(outer, value = oi < pidx || elem_outer)
+          // The type the callback gives this parameter: the element's at
+          // `pidx`, the callback's own before it.
+          let pty = if oi == pidx {
+            Some(subst_apply(s = s, ty = elem))
+          } else if oi < Array::length(fn_params) {
+            Some(subst_apply(s = s, ty = Array::get(fn_params, at = oi)))
+          } else {
+            None
+          }
+          Array::push(outer, value = (oi < pidx || elem_outer) && callback_param_transports(ty = pty, env = env, defs = defs))
           oi = oi + 1
         }
         callback_recheck(arg = call_arg_value(arg), param_tys = known, outer = outer, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
@@ -337,6 +358,20 @@ fn callback_too_deep_message(_ nursery: Bool) -> String {
     "region escapes its scope: "
   }
   String::concat(scope, "this callback hands a value of the active region on through more nested re-checked calls than the checker follows, so what it keeps is not known -- hand the value to fewer nested callbacks or functions inside the region")
+}
+
+/// Can a parameter of type `ty` hold a value of an active region, so that a
+/// write into it -- or a write of it -- can carry the region out? Its type
+/// names an active region, or may hide one (`retention_type_hides_region`:
+/// a region head spelled without its region, a closure, a declared type
+/// holding either); a type not known yet may be anything. A scalar, or an
+/// array, option, tuple or record of scalars, cannot.
+fn callback_param_transports(ty: Option[Type], env: TypeEnv, defs: Array[TypeDef]) -> Bool {
+  match ty {
+    Some(CtVar(_)) => true,
+    Some(t) => type_mentions_active_region(ty = t, env = env) || retention_type_hides_region(t = t, defs = defs),
+    None => true
+  }
 }
 
 fn callback_any(_ flags: Array[Bool]) -> Bool {

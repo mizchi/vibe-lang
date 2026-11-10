@@ -134,3 +134,19 @@ test "a callback that only reads an outer container's elements, or fills an inne
   let src = "fn build() -> Int {\n  let outer: Array[Int] = []\n  let boxes = [outer]\n  region r {\n    let cell = MutList::empty(r)\n    let sizes = Array::map(boxes, f = (a) -> {\n      Array::push(a, value = MutList::length(cell))\n      Array::length(a)\n    })\n    let inner: Array[MutList[Int]] = []\n    let _ = Array::map([inner], f = (b) -> {\n      Array::push(b, value = cell)\n      0\n    })\n    Array::get(sizes, at = 0)\n  }\n}\n"
   assert(check_source_ok(src))
 }
+
+// Codex on #4057: a fold accumulator, or an element of an outer container,
+// counts as an alias of an outer binding only where its type can hold a
+// region value. A `let mut` callback over scalars is not refused as
+// untraceable: nothing of the region can cross it.
+test "a mutable callback over scalars is not refused for its accumulator or outer elements" {
+  let fold_src = "fn build() -> Int {\n  region r {\n    let cell = MutList::empty(r)\n    let mut add = (a: Int, b: Int) -> a + b\n    add = (a: Int, b: Int) -> a + b + 0\n    Array::fold([1, 2], init = MutList::length(cell), f = add)\n  }\n}\n"
+  assert(check_source_ok(fold_src))
+  let map_src = "fn build() -> Int {\n  let pre: Array[Int] = [1, 2]\n  region r {\n    let cell = MutList::empty(r)\n    let mut inc = (x: Int) -> x + 1\n    inc = (x: Int) -> x + 2\n    let got = Array::map(pre, f = inc)\n    Array::get(got, at = 1) + MutList::length(cell)\n  }\n}\n"
+  assert(check_source_ok(map_src))
+}
+
+test "a mutable callback over an accumulator that can hold region values is still refused" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let mut keep = (acc: Array[MutList[Int]], c: MutList[Int]) -> acc\n    keep = (acc: Array[MutList[Int]], c: MutList[Int]) -> acc\n    let _ = Array::fold(cells, init = sink, f = keep)\n    0\n  }\n}\n"
+  assert(String::contains(check_source_report(src), needle = "bind `keep` to the closure with `let`"))
+}
