@@ -763,23 +763,43 @@ fi
 rm -rf "$tdir"
 echo "[compiler-gate] test-block regression ok"
 
-# 6. normalize regression (#594): `vibe normalize` (VIBE_NORMALIZE=1) canonicalizes
-#    a source file — DCE from exported roots + section layout — via the
-#    in-compiler engine. Guards that a future seed keeps it working and
-#    idempotent. The flat selfbuild source strips imports, so the fixpoint
-#    above does not exercise the normalize entry; assert it directly.
+# 6. normalize regression (#594, #4027): `vibe normalize` (VIBE_NORMALIZE=1)
+#    respells `recv.method(args)` as `Type::method(recv, args)` and keeps every
+#    other byte -- it used to write back a dead-code-eliminated program, which
+#    emptied an export-less file and deleted unexported helpers with exit 0.
+#    The flat selfbuild source strips imports, so the fixpoint above does not
+#    exercise the normalize entry; assert it directly.
 #    (Module blocks were removed in #728; flatten coverage retired with them.)
 echo "[compiler-gate] 6/6 normalize compile+run regression"
 gate_workdir ndir "_build/_gate_normalize"
+normalize_to() {
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$1" "$2" >/dev/null 2>&1
+}
 printf 'let dead: () -> Int = () -> { 0 }\nlet helper: () -> Int = () -> { 1 }\nexport let run: () -> Int = () -> { helper() }\n' > "$ndir/in.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1 || true
+normalize_to "$ndir/in.vibe" "$ndir/out.vibe" || true
 gate_require_artifact "$ndir/out.vibe" "normalize produced no output"
-# `dead` must be eliminated; `helper` (reached from the exported `run`) kept.
-if grep -q "dead" "$ndir/out.vibe" || ! grep -q "helper" "$ndir/out.vibe"; then
-  echo "[compiler-gate] FAIL: normalize DCE incorrect" >&2
-  cat "$ndir/out.vibe" >&2; exit 1
+# Nothing to respell: the unexported `dead` and `helper` are kept verbatim.
+if ! cmp -s "$ndir/in.vibe" "$ndir/out.vibe"; then
+  echo "[compiler-gate] FAIL: normalize changed a file with no dot call (#4027)" >&2
+  diff "$ndir/in.vibe" "$ndir/out.vibe" >&2 || true; exit 1
+fi
+# An export-less file with a foldable body round-trips byte for byte.
+printf '// keep me\nfn main() -> Int {\n  1 + 2\n}\n' > "$ndir/noexport.vibe"
+normalize_to "$ndir/noexport.vibe" "$ndir/noexport.out.vibe" || true
+if ! cmp -s "$ndir/noexport.vibe" "$ndir/noexport.out.vibe"; then
+  echo "[compiler-gate] FAIL: normalize rewrote an export-less file (#4027)" >&2
+  od -c "$ndir/noexport.out.vibe" | head >&2 || true; exit 1
+fi
+# The one rewrite: a same-file dot call takes the qualified spelling, and the
+# comment and the unexported caller around it survive.
+printf 'struct Cart { items: Int }\n\nfn Cart::size(c: Cart) -> Int {\n  c.items\n}\n\n// count\nfn count(cart: Cart) -> Int {\n  cart.size()\n}\n' > "$ndir/dot.vibe"
+printf 'struct Cart { items: Int }\n\nfn Cart::size(c: Cart) -> Int {\n  c.items\n}\n\n// count\nfn count(cart: Cart) -> Int {\n  Cart::size(c = cart)\n}\n' > "$ndir/dot.expected.vibe"
+normalize_to "$ndir/dot.vibe" "$ndir/dot.out.vibe" || true
+if ! cmp -s "$ndir/dot.expected.vibe" "$ndir/dot.out.vibe"; then
+  echo "[compiler-gate] FAIL: normalize did not respell only the dot call (#1194/#4027)" >&2
+  diff "$ndir/dot.expected.vibe" "$ndir/dot.out.vibe" >&2 || true; exit 1
 fi
 # Removed/guarded syntax must be refused by the CURRENT stage2 (the committed
 # seed lags until the next bump, so these checks live here, not in the
@@ -791,40 +811,25 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   && [ -s "$ndir/reject_module.out.vibe" ]; then
   echo "[compiler-gate] FAIL: module-block source was not rejected (#728)" >&2; exit 1
 fi
-# fn round-trip (ADR-0064 #727): normalize must KEEP `fn` declarations —
-# including the `where` contract — in fn form (SFnDecl + printer support),
-# not rewrite them to `let rec` + inlined asserts; and stay idempotent.
+# fn round-trip (ADR-0064 #727): normalize must KEEP `fn` declarations --
+# including the `where` contract -- exactly as written, and stay idempotent.
 printf 'fn checked_inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } { x + 1 }\nexport fn run() -> Int { checked_inc(x = 41) }\nexport { run }\n' > "$ndir/keep_fn.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1 || true
+normalize_to "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" || true
 gate_require_artifact "$ndir/keep_fn.out.vibe" "fn-bearing source was not normalized (#727)"
-if ! grep -q "fn checked_inc" "$ndir/keep_fn.out.vibe" \
-  || ! grep -q "fn run" "$ndir/keep_fn.out.vibe" \
-  || ! grep -q "where { requires:" "$ndir/keep_fn.out.vibe" \
-  || ! grep -q "ensures:" "$ndir/keep_fn.out.vibe" \
-  || grep -q "let rec checked_inc" "$ndir/keep_fn.out.vibe"; then
+if ! cmp -s "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe"; then
   echo "[compiler-gate] FAIL: normalize did not keep the fn + where form (#727)" >&2
-  cat "$ndir/keep_fn.out.vibe" >&2; exit 1
-fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >/dev/null 2>&1
-if ! cmp -s "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe"; then
-  echo "[compiler-gate] FAIL: fn normalize not idempotent (#727)" >&2
-  diff "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >&2 || true; exit 1
+  diff "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >&2 || true; exit 1
 fi
 # Idempotency: normalize(normalize(x)) == normalize(x).
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/out.vibe" "$ndir/out2.vibe" >/dev/null 2>&1
-if ! cmp -s "$ndir/out.vibe" "$ndir/out2.vibe"; then
-  echo "[compiler-gate] FAIL: normalize not idempotent" >&2; exit 1
+normalize_to "$ndir/dot.out.vibe" "$ndir/dot.out2.vibe"
+if ! cmp -s "$ndir/dot.out.vibe" "$ndir/dot.out2.vibe"; then
+  echo "[compiler-gate] FAIL: normalize not idempotent" >&2
+  diff "$ndir/dot.out.vibe" "$ndir/dot.out2.vibe" >&2 || true; exit 1
 fi
-# Normalized output must still typecheck: compiling a copy with an entry
+# Respelled output must still typecheck: compiling a copy with an entry
 # must succeed.
-cp "$ndir/out.vibe" "$ndir/compile.vibe"
-printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ndir/compile.vibe"
+cp "$ndir/dot.out.vibe" "$ndir/compile.vibe"
+printf '\nexport let _start: () -> Int = () -> { count(cart = Cart::{ items: 3 }) }\n' >> "$ndir/compile.vibe"
 gate_fs_compile "$ndir/compile.vibe" "$ndir/out.wasm" _start
 if [ ! -s "$ndir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: normalized output does not compile" >&2
@@ -1806,19 +1811,21 @@ fi
 rm -rf "$ldir"
 echo "[compiler-gate] labeled-param round-trip regression ok"
 
-# 9. constant-folding regression (#594): `vibe normalize` folds `+ - *` over int
-#    literals. The folded value must replace the expression and the result must
-#    compile + run unchanged.
-echo "[compiler-gate] 9/9 constant-folding regression"
+# 9. constant-expression round-trip regression (#594, #4027): `vibe normalize`
+#    used to fold `+ - *` over int literals (#594's engine re-printed the
+#    folded, dead-code-eliminated program). Since #4027 it rewrites nothing
+#    but dot calls, so `40 + 2 * 10` must come back byte for byte, and the
+#    program must still compile + run to the same value.
+echo "[compiler-gate] 9/9 constant-expression round-trip regression"
 gate_workdir fdir "_build/_gate_fold"
 printf 'let x = 40 + 2 * 10\nexport let run: () -> Int = () -> { x }\nexport { run }\n' > "$fdir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fdir/in.vibe" "$fdir/out.vibe" >/dev/null 2>&1
-# 40 + 2*10 = 60; the arithmetic must be gone and `60` present.
-if ! grep -q "let x: Int = 60" "$fdir/out.vibe" || grep -q "40 + 2" "$fdir/out.vibe"; then
-  echo "[compiler-gate] FAIL: constant folding incorrect" >&2
-  cat "$fdir/out.vibe" >&2; exit 1
+  "$fdir/in.vibe" "$fdir/out.vibe" >/dev/null 2>&1 || true
+gate_require_artifact "$fdir/out.vibe" "constant-expression normalize produced no output"
+if ! cmp -s "$fdir/in.vibe" "$fdir/out.vibe"; then
+  echo "[compiler-gate] FAIL: normalize rewrote a constant expression (#4027)" >&2
+  diff "$fdir/in.vibe" "$fdir/out.vibe" >&2 || true; exit 1
 fi
 cp "$fdir/out.vibe" "$fdir/compile.vibe"
 printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$fdir/compile.vibe"
@@ -1827,10 +1834,10 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$fdir/compile.vibe" "$fdir/out.wasm" _start >/dev/null 2>&1
 gate_run fold_out digits --invoke _start "$fdir/out.wasm"
 if [ "$fold_out" != "60" ]; then
-  echo "[compiler-gate] FAIL: folded program did not run to 60 (got '$fold_out')" >&2; exit 1
+  echo "[compiler-gate] FAIL: normalized program did not run to 60 (got '$fold_out')" >&2; exit 1
 fi
 rm -rf "$fdir"
-echo "[compiler-gate] constant-folding regression ok"
+echo "[compiler-gate] constant-expression round-trip regression ok"
 
 # 10. nested constructor sub-pattern regression (#608): a constructor pattern
 #     whose argument is itself a constructor (`SL(_, None, _)` vs

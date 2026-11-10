@@ -1,0 +1,78 @@
+//# #2501: `x.method()` is lowered to the qualified call `T::method(x)` from
+//# the receiver head the checker resolved, not from the receiver's spelling.
+//# The spelling knows nothing about a `for` element, a `match` arm binder, an
+//# index of a call result or an unannotated binding of a lambda's result, so
+//# each of these checked clean and then failed the build with `unknown struct
+//# field: size` (measured on main at d764ee4), as did the two cross-module
+//# cases. The last two tests are controls the spelling already resolved.
+
+import ./modules/method_receiver_row_provider.vibe {
+  Gauge, gauges, tally_total
+}
+
+struct Counter {
+  n: Int
+}
+
+fn Counter::size(self: Counter) -> Int {
+  self.n
+}
+
+fn counters() -> Array[Counter] {
+  [Counter::{ n: 3 }, Counter::{ n: 20 }]
+}
+
+fn find_big(cs: Array[Counter]) -> Option[Counter] {
+  Array::find(cs, f = (c) -> c.n > 10)
+}
+
+test "an index of a call result" {
+  let cs = counters()
+  inspect(cs[0].size(), content = "3")
+}
+
+test "an unannotated binding of a lambda's result" {
+  let mk = (k: Int) -> Counter::{ n: k }
+  let c = mk(7)
+  inspect(c.size(), content = "7")
+}
+
+test "a match arm binder" {
+  let r = match find_big(cs = counters()) {
+    Some(c) => c.size()
+    None => 0
+  }
+  inspect(r, content = "20")
+}
+
+test "a for element" {
+  let mut t = 0
+  for c in counters() {
+    t = t + c.size()
+  }
+  inspect(t, content = "23")
+}
+
+test "a private struct of another module" {
+  inspect(tally_total(), content = "32")
+}
+
+test "an imported struct" {
+  let mut t = 0
+  for g in gauges() {
+    t = t + g.read()
+  }
+  let one: Gauge = Array::get(gauges(), at = 0)
+  inspect(t + one.read(), content = "60")
+}
+
+test "control: an annotated binding" {
+  let cs = counters()
+  let c: Counter = cs[1]
+  inspect(c.size() + 1, content = "21")
+}
+
+test "control: a struct literal" {
+  let c = Counter::{ n: 9 }
+  inspect(c.size(), content = "9")
+}
