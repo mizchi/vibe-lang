@@ -1,0 +1,24 @@
+// #3255: a closure handed to `Array::map` passes each task handle of the
+// group to a helper that stores it in an outer array. The callback is checked
+// again once the map has typed its parameter; that re-check used to judge
+// calls by spelling and never read a program helper's body, so this compiled
+// and the handle outlived its group, where the same call in `for h in hs` is
+// refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+fn keep(xs: Array[TaskHandle[Int]], v: TaskHandle[Int]) -> Unit {
+  Array::push(xs, value = v)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let outer: Array[TaskHandle[Int]] = []
+  let r = TaskGroup::run((n) -> {
+    let hs = [TaskGroup::spawn(n, f = () -> { 41 })]
+    let _ = Array::map(hs, f = (h) -> {
+      keep(xs = outer, v = h)
+      0
+    })
+    1
+  })
+  println("r=\{r} after=\{Array::length(outer)}")
+}
