@@ -1,0 +1,61 @@
+// #3417: one predicate in core says which row labels are provenance the
+// checker records rather than effects; row comparison, display, publication
+// and the effect checks all ask it (`is_row_provenance_label`).
+
+import @vibe/compiler/core {
+  is_row_provenance_label
+}
+
+/// `P` for a provenance label, `-` for anything else.
+fn classify(_ labels: Array[String]) -> String {
+  let marks: Array[String] = []
+  for label in labels {
+    if is_row_provenance_label(label) {
+      Array::push(marks, value = "P")
+    } else {
+      Array::push(marks, value = "-")
+    }
+  }
+  String::join(marks, sep = " ")
+}
+
+test "every provenance spelling is provenance" {
+  inspect(classify([
+    "#region_4",
+    "#capture[37]",
+    "#param[2]",
+    "#aliasparam[8]",
+    "#fieldparam[0]",
+    "#einst:Box:17",
+    "#einst:a::B:3"
+  ]), content = "P P P P P P P")
+}
+
+test "effects and near-miss spellings are not" {
+  inspect(classify([
+    "",
+    "IO",
+    "Box[Int]",
+    "Exception[(Int, Int) -> Int]",
+    "e",
+    "$1",
+    "#region",
+    "#capture",
+    "#param",
+    "#aliasparam",
+    "#fieldparam",
+    "#einst",
+    "#Region_1",
+    "#PARAM[0]"
+  ]), content = "- - - - - - - - - - - - - -")
+}
+
+test "the label must be trimmed and start with the spelling" {
+  // Callers trim each row item first; a nested spelling is part of an
+  // effect's argument, not a label of the row.
+  inspect(classify([
+    " #param[0]",
+    "Exception[(Int) -> Int with #einst:Box:4]",
+    "a::#param[0]"
+  ]), content = "- - -")
+}
