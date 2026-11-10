@@ -52,6 +52,24 @@ test "the builtin Array::push inside a callback is still refused as a container 
   inspect(check_source_report(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
 }
 
+// Codex on #4047: a re-check of a callback is keyed by the closure and the
+// shape it is checked at, so a recursive callback re-checked inside its own
+// re-check ends there instead of running into the depth guard, whose answer
+// is a refusal.
+let walk_through_literal = "    let rec walk = (c) -> {\n      let _ = Array::map([c], f = (d) -> walk(d))\n      MutList::length(c)\n    }\n"
+
+test "a recursive callback that stores nothing is accepted, reachable or not" {
+  let reached = String::concat("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n", String::concat(walk_through_literal, "    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"))
+  assert(check_source_ok(reached))
+  let unreached = "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let rec walk = (c) -> {\n      if false {\n        let _ = Array::map([c], f = (d) -> walk(d))\n        0\n      } else {\n        MutList::length(c)\n      }\n    }\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"
+  assert(check_source_ok(unreached))
+}
+
+test "a recursive callback that stores its element outside is refused" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let rec walk = (c) -> {\n      Array::push(sink, value = c)\n      let _ = Array::map([c], f = (d) -> walk(d))\n      0\n    }\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"
+  assert(String::contains(check_source_report(src), needle = "region escapes its scope: a container write stores a value that captures this region"))
+}
+
 // #4049: a callback that is not a closure literal was not checked again at
 // all, and `Array::fold`'s accumulator was checked as a local. Measured on
 // the #4047 branch, each of these checked clean and the region value outlived
@@ -89,4 +107,13 @@ test "a captured region value pushed into the fold accumulator is refused even o
 test "a named callback that keeps nothing and a fold over plain values are fine" {
   let src = "fn size(c: MutList[Int]) -> Int {\n  MutList::length(c)\n}\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = size)\n    Array::fold([1, 2], init = Array::get(got, at = 0), f = (acc, x) -> acc + x)\n  }\n}\n"
   assert(check_source_ok(src))
+}
+
+test "a recursive top-level function handed by name is re-checked once per shape" {
+  let walk = "fn walk(c: MutList[Int]) -> Int {\n  let _ = Array::map([c], f = walk)\n  MutList::length(c)\n}\n"
+  let src = String::concat(walk, "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n")
+  assert(check_source_ok(src))
+  let keeps = "let kept: Array[MutList[Int]] = []\nfn walk(c: MutList[Int]) -> Int {\n  Array::push(kept, value = c)\n  let _ = Array::map([c], f = walk)\n  0\n}\n"
+  let refused = String::concat(keeps, "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n")
+  assert(String::contains(check_source_report(refused), needle = "this call to `walk` stores a value that captures this region"))
 }
