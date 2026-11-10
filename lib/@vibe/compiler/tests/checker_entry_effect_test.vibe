@@ -736,3 +736,16 @@ test "#3155: a local alias of a row-generic function checks like the direct call
   let effectful = String::concat(decl, "effect Log { Emit(Int) -> Unit }\nfn main() -> Int allows Exception {\n  let a = app\n  a(() -> {\n    perform Log::Emit(1)\n    42\n  })\n}\n")
   assert(String::contains(first_check_error(effectful), needle = "Log"))
 }
+
+test "#3143: a declared capability at the entry says why it is still refused" {
+  // ADR-0084 / ADR-0094: `Kv` declares a resource parameter, so the
+  // classifier reads it as a capability of `Store::Bucket`. No host provides
+  // a program-declared effect yet (#2656), so the entry still refuses it --
+  // and an algebraic effect gets no such note.
+  let capability = first_check_error("effect Kv[R: Store::Bucket] {\n  Get(String) -> String\n}\n\nresource Posts: Store::Bucket\n\nfn main() -> Unit allows Kv[Posts] {\n  let _ = perform Kv::Get(\"a\")\n  ()\n}\n")
+  assert(String::contains(capability, needle = "cannot discharge"))
+  assert(String::contains(capability, needle = "`Kv` acts on a resource of kind `Store::Bucket`, but no host provides an effect a program declares yet (#2656)"))
+  let algebraic = first_check_error("effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit allows Ask {\n  let _ = perform Ask::Get()\n  ()\n}\n")
+  assert(String::contains(algebraic, needle = "cannot discharge"))
+  assert(!String::contains(algebraic, needle = "acts on a resource"))
+}

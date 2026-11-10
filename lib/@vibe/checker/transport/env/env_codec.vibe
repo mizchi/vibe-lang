@@ -362,10 +362,22 @@ fn write_type_def(out: CacheTextWriter, def: TypeDef) -> Unit {
       write_string_array(out = out, items = params)
       write_type(out = out, ty = target)
     },
-    TDEffect(name, ops, params) => {
-      cache_push(out = out, text = "K")
+    TDEffect(name, ops, params, kinds) => {
+      // ADR-0094: `Q` is an effect with a resource parameter, which also
+      // carries its kinds; `K` keeps the earlier bytes for every other one.
+      let resourced = env_codec_any_kind(kinds)
+      cache_push(out = out, text = if resourced {
+        "Q"
+      } else {
+        "K"
+      })
       cache_segment(out = out, text = name)
       write_string_array(out = out, items = params)
+      if resourced {
+        write_string_array(out = out, items = kinds)
+      } else {
+        ()
+      }
       write_count(out = out, count = Array::length(ops))
       let mut i = 0
       while i < Array::length(ops) {
@@ -970,6 +982,44 @@ fn parse_trait_method_gens(text: String, pos: Int) -> (Array[(String, Array[Stri
   }
 }
 
+/// An effect definition: `K` without resource kinds, `Q` with them
+/// (ADR-0094, `with_kinds`).
+fn parse_effect_type_def(text: String, pos: Int, with_kinds: Bool) -> (TypeDef, Int) with Exception {
+  let (name, after_name) = parse_segment(text = text, pos = pos + 1)
+  let (params, after_param_names) = parse_string_array(text = text, pos = after_name)
+  let (kinds, after_params) = if with_kinds {
+    parse_string_array(text = text, pos = after_param_names)
+  } else {
+    let none: Array[String] = []
+    for _p in params {
+      Array::push(none, value = "")
+    }
+    (none, after_param_names)
+  }
+  if Array::length(kinds) != Array::length(params) {
+    throw("invalid persistent effect definition")
+  } else {
+    ()
+  }
+  let (count, start) = parse_count_header(text = text, pos = after_params, terminator = '[')
+  let ops = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (op, after_op) = parse_segment(text = text, pos = cursor)
+    let (args, after_args) = parse_type_array(text = text, pos = after_op)
+    let (ret, next) = parse_cached_type(source = text, pos = after_args)
+    Array::push(ops, value = (op, args, ret))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, at = cursor) != ']' {
+    throw("invalid persistent effect definition")
+  } else {
+    (TDEffect(name, ops, params, kinds), cursor + 1)
+  }
+}
+
 fn parse_type_def(text: String, pos: Int) -> (TypeDef, Int) with Exception {
   if pos >= String::length(text) {
     throw("invalid persistent type definition")
@@ -1008,27 +1058,8 @@ fn parse_type_def(text: String, pos: Int) -> (TypeDef, Int) with Exception {
         let (target, next) = parse_cached_type(source = text, pos = after_params)
         (TDAlias(name, params, target), next)
       },
-      'K' => {
-        let (name, after_name) = parse_segment(text = text, pos = pos + 1)
-        let (params, after_params) = parse_string_array(text = text, pos = after_name)
-        let (count, start) = parse_count_header(text = text, pos = after_params, terminator = '[')
-        let ops = array_empty()
-        let mut i = 0
-        let mut cursor = start
-        while i < count {
-          let (op, after_op) = parse_segment(text = text, pos = cursor)
-          let (args, after_args) = parse_type_array(text = text, pos = after_op)
-          let (ret, next) = parse_cached_type(source = text, pos = after_args)
-          Array::push(ops, value = (op, args, ret))
-          cursor = next
-          i = i + 1
-        }
-        if cursor >= String::length(text) || String::char_code_at(text, at = cursor) != ']' {
-          throw("invalid persistent effect definition")
-        } else {
-          (TDEffect(name, ops, params), cursor + 1)
-        }
-      },
+      'K' => parse_effect_type_def(text = text, pos = pos, with_kinds = false),
+      'Q' => parse_effect_type_def(text = text, pos = pos, with_kinds = true),
       'Z' => {
         let (name, after_name) = parse_segment(text = text, pos = pos + 1)
         let (members, next) = parse_string_array(text = text, pos = after_name)
@@ -1377,4 +1408,14 @@ export fn decode_checked_dependency_paths(text: String, cache_path: String) -> A
       throw(String::concat("invalid persistent dep list header: ", cache_path))
     }
   }
+}
+
+fn env_codec_any_kind(_ kinds: Array[String]) -> Bool {
+  let mut found = false
+  for k in kinds {
+    if k != "" {
+      found = true
+    }
+  }
+  found
 }

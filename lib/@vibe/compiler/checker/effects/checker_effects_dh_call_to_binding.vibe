@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   call_arg_value,
+  env_cache_read_snapshot,
   env_lookup,
   exception_label_kind,
   expr_children,
@@ -34,6 +35,7 @@ import @vibe/compiler/checker/builtin_sigs {
 import ./checker_effects_decl_authorizes_effect.vibe {
   authority_is_optional,
   decl_authorizes_op,
+  entry_declared_capability_note,
   entry_handler_labels,
   entry_unadmitted_labels,
   entry_unresolved_labels,
@@ -375,7 +377,7 @@ fn make_contextual_row_error_plain(fn_name: String, declared: Array[String], mis
     // is undischargeable, and the edit is `handle`, not `allows`.
     EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off)
   } else if is_entry_point_name(fn_name) && Array::length(bad) > 0 {
-    EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off)
+    EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off, entry_declared_capability_note(join_labels(bad)))
   } else {
     make_row_mismatch(fn_name = fn_name, declared = declared, missing = missing, off = off)
   }
@@ -427,7 +429,7 @@ export fn entry_grant_errors(entry_name: String, labels: Array[String], off: Int
     if Array::length(unresolved) > 0 {
       Array::push(errors, value = EEUnresolvedEntryEffectRow(entry_name, join_labels(unresolved), off))
     } else {
-      Array::push(errors, value = EEUndischargedEntryEffect(entry_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
+      Array::push(errors, value = EEUndischargedEntryEffect(entry_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off, entry_declared_capability_note(join_labels(bad))))
     }
   } else {
     let mut li = 0
@@ -1346,6 +1348,16 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
     Array::push(records, value = out)
     i = i + 1
   }
+  // The rounds below only read `env`, once or twice per call record, per bare
+  // label, per round. A large program's checker chain is long and uncached:
+  // on the flat bootstrap source these lookups were about 31% of the whole
+  // stage compile (#3483). Snapshot it once, as the async-effect walk does
+  // (`check_async_effects_stmts`); a small module keeps its plain chain.
+  let lookup_env = if any_bare && local_count >= 256 {
+    env_cache_read_snapshot(env)
+  } else {
+    env
+  }
   let mut changed = any_bare
   let mut rounds = 0
   while changed && rounds <= local_count {
@@ -1366,7 +1378,7 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
                 ()
               }
             }
-            for item in callee_payloads_for(eff = label, recs = recs, env = env, first_local = first_local, index = index, fn_effs = fn_effs, fn_param_effs = fn_param_effs) {
+            for item in callee_payloads_for(eff = label, recs = recs, env = lookup_env, first_local = first_local, index = index, fn_effs = fn_effs, fn_param_effs = fn_param_effs) {
               if !checker_effects_string_has(xs = fixed, x = item) {
                 Array::push(fixed, value = item)
               } else {

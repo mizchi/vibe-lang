@@ -317,6 +317,23 @@ own each serial walk. Full collection/typecheck/CLI propagation, policy-bound
 walk ownership and concurrent access remain separate work. AST suppression
 under legacy checked-module `on` and cache identity/transport formats are unchanged.
 
+## Inline-WAT Int representation
+
+Each inline-WAT assembly retains its immutable `int_tagged` choice in its own
+`IwAssembly` traversal state. Function codegen passes `enable_rc` through
+`lc_compile_iw_body` to
+`compile_inline_wat_array_params_for_int_representation`: RC emits the tag and
+untag shifts, while bump uses raw Ints. Recursive operands and control-flow
+bodies use the same assembly state. There is no representation cell or setter.
+
+The standard assembler entries and the type-validation entry always use tagged
+Ints, independently of earlier successful or failed compilations. The explicit
+entry accepts data only; it grants no compiler or runtime authority. The
+regression in `invocation_config_inline_wat_test.vibe` checks both completion
+paths after bump codegen and alternating explicit tagged/raw assemblies.
+This isolates representation selection; other mutable codegen state still
+prevents claiming that the whole compiler supports arbitrary concurrent calls.
+
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |

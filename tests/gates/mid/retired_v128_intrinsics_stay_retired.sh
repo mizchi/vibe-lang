@@ -777,6 +777,36 @@ fi
 rm -f "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log"
 echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
 
+# 40f-b6. #2827: a parameter read only through its fields, and passed on to
+#         itself or to other such readers, is borrowed. Borrow inference
+#         counted a field read (`ctx.n`) as a consume, so such a parameter was
+#         owned, took its dups at entry on every path, and leaked them on the
+#         paths that ran none of its uses -- recursion included. Unfixed, the
+#         bounded fixture grew __heap_ptr by 119,996 B over its 2000 rounds.
+#         The answer is checked on bump, rc, shadow and gc; the shadow lane
+#         traps on a read of a freed block, which is what a field escaping a
+#         borrowed parameter without its own reference would hit.
+echo "[compiler-gate] 40f-b6/40 a parameter read only through its fields is borrowed (#2827)"
+gate_workdir pbdir "_build/_gate_rc_projection_param_borrow"
+for pb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$pb_lane" "fixtures/rc_projection_param_borrow_bounded_test.vibe" "$pbdir/pb.wasm" main
+  gate_require_artifact "$pbdir/pb.wasm" "rc_projection_param_borrow_bounded fixture did not compile on the $pb_lane lane (#2827)"
+  gate_run pb_out last "$pbdir/pb.wasm"
+  gate_require_eq "$pb_out" "8349000" "rc_projection_param_borrow_bounded got '$pb_out' on the $pb_lane lane (want 8349000). A trap means a field read off a borrowed parameter outlived the reference the caller lent (#2827)."
+  if [ "$pb_lane" = rc ]; then
+    pb_json="$(node scripts/measure_heap.mjs "$pbdir/pb.wasm" main 2>/dev/null)"
+    pb_used="$(printf '%s' "$pb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$pb_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_projection_param_borrow_bounded heap ($pb_json)" >&2; exit 1
+    fi
+    if [ "$pb_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_projection_param_borrow_bounded heap_used=$pb_used >= 20000 (#2827 regressed: a parameter read only through its fields is owned again and leaks its entry dups; unfixed, this fixture measured 119,996 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$pbdir"
+echo "[compiler-gate] field-reading parameter borrow guard ok (8349000 on bump/rc/shadow/gc, rc heap_used=$pb_used B)"
+
 # 40f-b5. #3129: `MutList::*` / `MutBytes::*` lower to the builtin
 #         `Array::*` / `ArrayBuilder::push` / `Bytes::*`. A program that
 #         defines its own function under the target spelling must not capture
