@@ -200,6 +200,52 @@ export fn standard_effect_catalog() -> Array[(String, EffectClass)] {
   out
 }
 
+/// ADR-0094 (#3143): `standard_effect_catalog` with the program's own
+/// effects. A declared effect replaces any standard row of its name, so each
+/// effect still has exactly one class: a capability of its resource kind when
+/// it declares a resource parameter, otherwise algebraic.
+export fn effect_catalog_in(_ declared: Array[(String, String)]) -> Array[(String, EffectClass)] {
+  let out: Array[(String, EffectClass)] = []
+  for row in standard_effect_catalog() {
+    match declared_effect_kind(declared = declared, name = row.0) {
+      Some(_) => (),
+      None => Array::push(out, value = row)
+    }
+  }
+  let seen: Array[String] = []
+  let mut i = Array::length(declared) - 1
+  while i >= 0 {
+    let (name, kind) = Array::get(declared, at = i)
+    let mut dup = false
+    for s in seen {
+      if s == name {
+        dup = true
+      }
+    }
+    if !dup {
+      Array::push(seen, value = name)
+      if kind == "" {
+        Array::push(out, value = (name, AlgebraicClass))
+      } else {
+        Array::push(out, value = (name, CapabilityClass(kind)))
+      }
+    }
+    i = i - 1
+  }
+  out
+}
+
+/// A row label classified against the program's declarations: the label is
+/// lowered with `operation_ref_in` and classified against
+/// `effect_catalog_in`. `None` when it does not lower or cannot be
+/// classified.
+export fn classify_label_in(label: String, declared: Array[(String, String)]) -> Option[EffectRequirement] {
+  match operation_ref_in(label = label, declared = declared) {
+    Some(operation) => classify_operation(catalog = effect_catalog_in(declared), operation = operation),
+    None => None
+  }
+}
+
 /// Byte offset of the first `::` outside brackets, or -1: the operation
 /// separator of `Exception[pkg::Err]::Throw` is the second `::`, not the one
 /// inside the kind.
@@ -270,10 +316,38 @@ fn label_bracket_arguments(_ text: String) -> Option[Array[String]] {
 ///   effect with exactly one kind argument, `""` for the erased spellings, as
 ///   `exception_effect_kind` reports it. The Lean model has no erased kind;
 ///   here it is the kind every other kind is compatible with.
-/// - anything else: every bracket argument is a TYPE. That holds because an
-///   effect declaration cannot take a resource parameter yet (ADR-0094 step
-///   3); once `TDEffect` carries `param_kinds`, this is where they are read.
+/// - anything else: every bracket argument is a TYPE.
+///
+/// Program declarations are not consulted here; `operation_ref_in` reads
+/// them.
 export fn standard_operation_ref(_ label: String) -> Option[OperationRef] {
+  operation_ref_in(label = label, declared = [])
+}
+
+/// The resource kind `declared` records for effect `name` -- `""` when the
+/// effect takes no resource -- or `None` when the program declares no effect
+/// of that name. The last entry for a name wins.
+fn declared_effect_kind(declared: Array[(String, String)], name: String) -> Option[String] {
+  let mut found: Option[String] = None
+  for entry in declared {
+    if entry.0 == name {
+      found = Some(entry.1)
+    }
+  }
+  found
+}
+
+/// ADR-0094 (#3143): `standard_operation_ref` against the program's own
+/// effect declarations, `declared` being `(effect, resource kind)` with `""`
+/// for an effect that takes no resource. A declared effect is read from its
+/// declaration, never from the provider table, even when it reuses a
+/// provider's name:
+///
+/// - with a resource parameter, its bracket argument is the
+///   `ResourceArgument`, and an omitted one is the kind's singleton when the
+///   kind has one (`Clock[_: Process::Root]` -> `Process::Root`);
+/// - without one, every bracket argument is a `TypeArgument`.
+export fn operation_ref_in(label: String, declared: Array[(String, String)]) -> Option[OperationRef] {
   let sep = label_operation_separator(label)
   let head = if sep >= 0 {
     String::substring(label, start = 0, end = sep)
@@ -309,20 +383,26 @@ export fn standard_operation_ref(_ label: String) -> Option[OperationRef] {
       Some(texts) => if String::length(base) == 0 {
         None
       } else {
-        let provider = standard_host_provider_index(base) >= 0
+        // The resource kind the effect acts on: its declaration's, else the
+        // standard provider's, else none.
+        let resource_kind = match declared_effect_kind(declared = declared, name = base) {
+          Some(kind) => kind,
+          None => standard_provider_default_resource_kind(base)
+        }
+        let acts_on_resource = resource_kind != ""
         let arguments: Array[EffectArgument] = []
         let mut i = 0
         while i < Array::length(texts) {
           let text = Array::get(texts, at = i)
-          if provider {
+          if acts_on_resource {
             Array::push(arguments, value = ResourceArgument(text))
           } else {
             Array::push(arguments, value = TypeArgument(text))
           }
           i = i + 1
         }
-        if provider && Array::length(arguments) == 0 {
-          match singleton_resource_of_kind(standard_provider_default_resource_kind(base)) {
+        if acts_on_resource && Array::length(arguments) == 0 {
+          match singleton_resource_of_kind(resource_kind) {
             Some(resource) => Array::push(arguments, value = ResourceArgument(resource)),
             None => ()
           }

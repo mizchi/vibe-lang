@@ -1,12 +1,13 @@
 # ADR-0084: Effect classification and the `.vibex` entry-row admission rule
 
-Status: proposed. The entry-admission rule is implemented (#1683), and it
-decides by classifying an `OperationRef` against class metadata (#3143,
-implementation step 1). The resource kinds in that metadata still come from
-the standard provider table, not from declarations: a user effect cannot
-declare a resource parameter yet (ADR-0094 step 3). It becomes accepted when
-operations carry the resource kind their effect declares and the standard
-policies classify by it (#3143).
+Status: accepted. The entry-admission rule is implemented (#1683), and it
+decides by classifying an `OperationRef` against class metadata (#3143).
+An operation carries the resource kind its effect declares: a builtin's
+from the standard provider table, a program effect's from its resource
+parameter (ADR-0094), and a program effect named like a provider is read
+from its own declaration (`operation_ref_in`, `effect_catalog_in`,
+`classify_label_in`). What remains is implementation step 4 below, the
+residual row reaching WIT and the entry contract.
 
 Date: 2026-07-30
 
@@ -126,11 +127,17 @@ declaration syntax for resource kinds is ADR-0094's subject, not this ADR's.
    (`lib/@vibe/compiler/core/operation_ref_test.vibe`), and entry admission
    decides through it.
 2. Let the checker distinguish capabilities with an explicit resource kind
-   from algebraic effects without one.
-3. Classify the row remaining on a `.vibex` `main` / `_start` under the
-   current standard policy: reject user effects, accept host providers /
-   Exception / Async. **The current-policy slice landed in #1683.** Replacing
-   it with the resource-qualified taxonomy comes after steps 1 and 2 (#3143).
+   from algebraic effects without one. **Landed in #3143**: an effect
+   declares a resource parameter (ADR-0094), and `effect_catalog_in` gives a
+   program effect `CapabilityClass(kind)` when it declares one and
+   `AlgebraicClass` otherwise, replacing any standard row of its name.
+3. Classify the row remaining on a `.vibex` `main` / `_start`: reject user
+   effects, accept host providers / Exception / Async. **Landed in #1683, and
+   classified through the declarations in #3143.** A program capability is a
+   capability by class, but no host provides a program-declared effect yet
+   (#2656), so the entry still refuses it, and the refusal says so
+   (`entry_declared_capability_note`,
+   `fixtures/typecheck/err_entry_declared_capability_note.vibe`).
 4. Pass only that residual row to WIT / `Entry.requires` / host preflight.
 
 ## Formal contract

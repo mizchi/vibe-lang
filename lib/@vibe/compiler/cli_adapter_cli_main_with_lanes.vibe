@@ -517,6 +517,47 @@ fn adapter_command_component_edit(input_path: String, message: String) -> String
   "build --component \{input_path}: \{message}; a command module exports exactly `export fn vibe_command(args: String) -> String` and returns the `vibe-command-result-v1` frame (`command_ok` / `command_result` in @vibe/command)"
 }
 
+/// #2499: the component-producing tools of the positional protocol. The
+/// selectors are still read in `cli_main_with_lanes`, in the same place as
+/// before, so the derived selector order does not move. What runs for one is
+/// a parameter of `cli_main_with_lanes`, like the lane tables (#2497): the
+/// full CLI installs `component_tools_full`; the compile-only artifact installs
+/// `component_tools_none`, which names none of the adapters. The module-source
+/// DCE rooted at `main_compile_only` then drops the WIT generator, the serve /
+/// command lifts and the vfs wraps (measured in #2504), while the async
+/// component composition that user programs reach stays.
+enum cli_adapter_ComponentTool {
+  ToolEmitWit;
+  ToolServeComponent;
+  ToolBuildComponent
+}
+
+/// The switch that selected the tool, as the caller spelled it.
+fn component_tool_switch(_ tool: cli_adapter_ComponentTool) -> String {
+  match tool {
+    ToolEmitWit => "VIBE_EMIT_WIT=1",
+    ToolServeComponent => "VIBE_SERVE_COMPONENT=1",
+    ToolBuildComponent => "VIBE_BUILD_COMPONENT=1"
+  }
+}
+
+/// Every component tool the full CLI serves.
+fn component_tools_full(tool: cli_adapter_ComponentTool, input_path: String, output_path: String) -> Int with Fs + Env {
+  match tool {
+    ToolEmitWit => adapter_emit_wit(input_path = input_path, output_path = output_path),
+    ToolServeComponent => adapter_serve_component(input_path = input_path, output_path = output_path),
+    ToolBuildComponent => adapter_command_component(input_path = input_path, output_path = output_path)
+  }
+}
+
+/// The compile-only artifact's component tools: none. A request is refused by
+/// its switch, with no output written, rather than falling through to an
+/// ordinary core compile that a caller could mistake for the component.
+fn component_tools_none(tool: cli_adapter_ComponentTool, input_path: String, output_path: String) -> Int with Fs + Env {
+  let _ = input_path
+  emit_compile_diag(output_path = output_path, msg = "this compiler is the compile-only build and has no tool for \{component_tool_switch(tool)}; unset it, or run the same command with the full CLI build (stage2.wasm from scripts/generations.sh)")
+}
+
 fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
   let disable = Env::get("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE")
   let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
@@ -529,12 +570,13 @@ fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
   }
 }
 
-/// The env-mode CLI body, parameterized by its lane tables (#2497). `cli_main`
-/// installs the full tables; `cli_main_compile_only` the production ones. The
+/// The env-mode CLI body, parameterized by its lane tables (#2497) and its
+/// component tool table (#2499). `cli_main` installs the full tables;
+/// `cli_main_compile_only` the production lanes and no component tools. The
 /// tables are the ONLY difference between the two artifacts, so every other
-/// switch (command selectors, VIBE_CFG, VIBE_UNSTABLE, the trusted-source
-/// boundary) behaves identically on both.
-fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool, String, Bool) -> Bytes with Exception) -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
+/// switch (the remaining command selectors, VIBE_CFG, VIBE_UNSTABLE, the
+/// trusted-source boundary) behaves identically on both.
+fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool, String, Bool) -> Bytes with Exception, component_tools: (cli_adapter_ComponentTool, String, String) -> Int with Fs + Env) -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
   // Typing-dependency env reuse (TDRE10) is the default on every lane, the
   // compile lanes included (#2728). `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1`
   // opts out, and an invalidation trace forces it off so the trace stays
@@ -1842,7 +1884,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // world imports). Same (input, output) interface; imports resolved from FS.
   // Contract: docs/internal/design/effect-wit-mapping.md.
   if Env::get("VIBE_EMIT_WIT") == "1" {
-    return adapter_emit_wit(input_path = input_path, output_path = output_path)
+    return component_tools(ToolEmitWit, input_path, output_path)
   }
   // #537 `vibe serve` artifact step: validate the wasi-http P3 handler
   // contract, compile the file, and wrap it into a component exporting
@@ -1851,14 +1893,14 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // the P3 HTTP adapter and launches `wasmtime serve` — artifact generation
   // stays in the compiler, serving stays in the runner.
   if Env::get("VIBE_SERVE_COMPONENT") == "1" {
-    return adapter_serve_component(input_path = input_path, output_path = output_path)
+    return component_tools(ToolServeComponent, input_path, output_path)
   }
   // `vibe build --component` (docs/internal/design/component-lazy-dispatch.md).
   // Immediately after the serve wrap: both produce a component from a library
   // build, and keeping them adjacent keeps the launcher's derived clear list
   // for the two identical but for each other.
   if Env::get("VIBE_BUILD_COMPONENT") == "1" {
-    return adapter_command_component(input_path = input_path, output_path = output_path)
+    return component_tools(ToolBuildComponent, input_path, output_path)
   }
   let source = Fs::read_file(input_path)
   // ADR-0068 gate for the SINGLE-SOURCE lane. `VIBE_TEST_BACKEND=gc` and
@@ -2069,7 +2111,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
     vibe_process_exit_raw(code)
     code
   } else {
-    cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full)
+    cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full)
   }
 }
 
@@ -2083,7 +2125,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
 /// reason `main` is: only the entry file's own exports keep their public
 /// names through the flatten.
 export fn cli_main_compile_only() -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
-  cli_main_with_lanes(fs_lanes = fs_lane_compile_production, ss_lanes = ss_lane_compile_production)
+  cli_main_with_lanes(fs_lanes = fs_lane_compile_production, ss_lanes = ss_lane_compile_production, component_tools = component_tools_none)
 }
 
 export fn main_compile_only() -> Unit with Exception + Fs + Env + Process + Profiler + Stdin + Console {
