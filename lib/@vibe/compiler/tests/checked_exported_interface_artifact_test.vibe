@@ -223,6 +223,19 @@ test "checked exported-interface artifact ignores private bodies and comments" {
   assert(first == second)
 }
 
+test "checked exported-interface artifact tells an extern effect from a program-handled one" {
+  // ADR-0124 (#2656): the same operations under another owner are another
+  // interface -- one is performed and handled, the other called and bound to
+  // a host provider -- so the identity changes with the owner.
+  let handled = parse_program(lex("export effect Kv {\n  Fetch() -> String\n}\n"))
+  let hosted = parse_program(lex("export extern effect Kv {\n  Fetch() -> String\n}\n"))
+  assert(artifact_text(handled) != artifact_text(hosted))
+  assert(artifact_fingerprint(handled) != artifact_fingerprint(hosted))
+  assert(String::contains(artifact_text(hosted), needle = "extern-effect"))
+  // A program-handled effect keeps the bytes it had before the owner existed.
+  assert(!String::contains(artifact_text(handled), needle = "extern-effect"))
+}
+
 test "checked exported-interface artifact fails closed for unknown exports and nested public values" {
   let unknown = check_program_result([
     SLet(false, false, "private", None, EInt(1)),
