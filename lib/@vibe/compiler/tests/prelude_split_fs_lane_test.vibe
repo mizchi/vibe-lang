@@ -148,3 +148,39 @@ test "the re-export chain still compiles identically with the split on" {
   inspect(Bytes::length(whole) > 1000, content = "true")
   inspect(whole == split, content = "true")
 }
+
+fn bytes_contain(hay: Bytes, needle: String) -> Bool {
+  let n = String::length(needle)
+  let mut found = false
+  let mut i = 0
+  while !found && i + n <= Bytes::length(hay) {
+    let mut j = 0
+    while j < n && Bytes::get(hay, at = i + j) == String::byte_at(needle, at = j) {
+      j = j + 1
+    }
+    if j == n {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+// ADR-0124 (#2656): the whole-program trait-dict entry binds an `extern
+// effect`'s operations to its `vibe:effect:` import, and a module's run does
+// not reach that entry, so the split route binds them before partitioning.
+// Without it the split lane left the declaration in the program and emitted
+// no import for the provider.
+test "the split lane binds an extern effect declared in another module" {
+  let helper = "/tmp/vibe_split_fs_extern_helper.vibe"
+  let main = "/tmp/vibe_split_fs_extern_main.vibe"
+  Fs::write_file(helper, contents = "export extern effect Greeter {\n  greet(String) -> String\n}\n\nexport fn hello(name: String) -> String with Greeter {\n  Greeter::greet(name)\n}\n")
+  Fs::write_file(main, contents = "import ./vibe_split_fs_extern_helper.vibe {\n  Greeter, hello\n}\n\nfn main() -> Unit allows Console + Greeter {\n  println(hello(name = \"vibe\"))\n}\n")
+  let (modules, _) = ordinary_lane_split_shape(main)
+  inspect(modules, content = "2")
+  let whole = compile_file_fs_mode_rc_body_cached(entry_path = main, entry_name = "main", cache_mode = "off", exports_stripped = false)
+  let split = compile_file_fs_mode_rc_body_cached_split(entry_path = main, entry_name = "main", cache_mode = "off", use_split = true, exports_stripped = false)
+  inspect(bytes_contain(hay = whole, needle = "vibe:effect:./Greeter"), content = "true")
+  inspect(bytes_contain(hay = split, needle = "vibe:effect:./Greeter"), content = "true")
+  inspect(whole == split, content = "true")
+}

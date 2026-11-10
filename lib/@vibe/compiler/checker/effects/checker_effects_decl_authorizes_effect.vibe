@@ -3,6 +3,7 @@
 import @vibe/compiler/core {
   BindingOrigin,
   EffectClass,
+  EffectOwner,
   EffectRequirement,
   Expr,
   Pat,
@@ -15,6 +16,7 @@ import @vibe/compiler/core {
   classify_label_in,
   effect_catalog_in,
   effect_catalog_lookup_unique,
+  env_type_defs,
   erased_exception_covers_kind,
   exception_effect_labels_equal,
   exception_kinds_compatible,
@@ -274,6 +276,30 @@ export fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
     }
     found
   }
+}
+
+/// ADR-0124 (#2656): the `extern effect`s a module reaches through its
+/// imports are in the checked environment's type definitions, not in its own
+/// statements, so they are added to the host-provided registry from there.
+/// Without this an imported extern effect was refused at the entry.
+export fn note_env_host_provided_effects(_ env: TypeEnv) -> Unit {
+  for def in env_type_defs(env) {
+    match def {
+      TDEffect(name, _, _, _, HostProvided) => {
+        let mut known = false
+        for host in entry_host_provided_effects {
+          if host == name {
+            known = true
+          }
+        }
+        if !known {
+          Array::push(entry_host_provided_effects, value = name)
+        }
+      },
+      _ => ()
+    }
+  }
+  ()
 }
 
 export fn set_entry_user_effect_operations(_ stmts: Array[Stmt]) -> Unit {

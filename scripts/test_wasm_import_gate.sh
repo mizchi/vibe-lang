@@ -42,8 +42,9 @@
 #  15. an `extern effect` (ADR-0124, #2656) runs against the provider
 #      component `vibe run --provide` binds, on both lanes; with none bound it
 #      is refused before `main`, naming the effect, its operations and the
-#      flag; the node runner refuses it; and a provider whose export has
-#      another signature is refused at link time (extern_greeter_*.vibex).
+#      flag; the node runner refuses it; a provider whose export has another
+#      signature is refused at link time; and an extern effect imported from
+#      another module runs the same way (extern_greeter_*.vibex).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -252,6 +253,12 @@ for LANE_RC in 1 0; do
   [ "$out" = "hi, vibe" ] || fail "[viberun VIBE_RC=$LANE_RC] extern_greeter_main printed $(printf '%q' "$out"), want hi, vibe"
 done
 LANE_RC=1
+# Declared in an imported module, the effect is admitted at the entry and
+# bound in the importing program.
+status=0
+out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_import_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] extern_greeter_import_main exited $status"; }
+[ "$out" = "hi, import" ] || fail "[viberun] extern_greeter_import_main printed $(printf '%q' "$out"), want hi, import"
 # With no provider bound, nothing of the program runs: the refusal comes
 # before `main` and names the effect, the operation and the flag.
 status=0

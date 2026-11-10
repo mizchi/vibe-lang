@@ -21,20 +21,46 @@ import @vibe/parser {
 /// generation refuses an operation this pass did not bind -- one declared
 /// inside a `module` -- by name rather than as an internal error.
 export fn bind_extern_effects(_ stmts: Array[Stmt]) -> Unit with Exception {
+  bind_extern_effects_owned(stmts = stmts, owners = [])
+}
+
+/// `bind_extern_effects` for a program partitioned by module: `owners[i]` is
+/// the module of `stmts[i]` (the split lowering route's `stmt_file_id`), and
+/// every binding takes its declaration's module, so the two stay aligned.
+/// An empty `owners` tracks nothing.
+export fn bind_extern_effects_owned(stmts: Array[Stmt], owners: Array[Int]) -> Unit with Exception {
   let hosts: Array[String] = []
   xe_collect_hosts(stmts = stmts, out = hosts)
   set_program_extern_effects(hosts)
   if Array::length(hosts) > 0 {
+    let tracked = Array::length(owners) == Array::length(stmts) && Array::length(owners) > 0
     let kept: Array[Stmt] = []
-    for stmt in stmts {
-      match stmt {
+    let kept_owners: Array[Int] = []
+    let mut i = 0
+    while i < Array::length(stmts) {
+      let before = Array::length(kept)
+      match Array::get(stmts, at = i) {
         SEffectDef(_, name, _, ops, HostProvided) => xe_bind(effect = name, ops = ops, out = kept),
-        _ => Array::push(kept, value = stmt)
+        other => Array::push(kept, value = other)
       }
+      if tracked {
+        let mut k = before
+        while k < Array::length(kept) {
+          Array::push(kept_owners, value = Array::get(owners, at = i))
+          k = k + 1
+        }
+      }
+      i = i + 1
     }
     Array::truncate(stmts, length = 0)
     for stmt in kept {
       Array::push(stmts, value = stmt)
+    }
+    if tracked {
+      Array::truncate(owners, length = 0)
+      for o in kept_owners {
+        Array::push(owners, value = o)
+      }
     }
   }
   ()
