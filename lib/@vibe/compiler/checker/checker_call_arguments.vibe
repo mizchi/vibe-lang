@@ -12,17 +12,22 @@ import @vibe/compiler/core {
   call_placement_payload_valid,
   env_value_binding,
   fresh_var,
-  refine_trait_bounds_from_receiver
+  refine_trait_bounds_from_receiver,
+  subst_apply
 }
 import ./checker_int32.vibe {
   int32_literal_adapt
+}
+
+import ./checker_expr_capture_helpers.vibe {
+  struct_literal_typedef
 }
 
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture
 }
 import ./checker_lambda_expr.vibe {
-  seed_lambda_arg_from_call
+  seed_lambda_arg_from_call, seed_lambda_params
 }
 import ./checker_row_effect_inst.vibe {
   callback_arg_env, callback_prefix_subst, effect_inst_arg_check
@@ -36,6 +41,39 @@ export fn checker_call_argument_value(_ arg: Expr) -> Expr {
   match arg {
     ELabeledArg(_, _, value) => value,
     _ => arg
+  }
+}
+
+/// #4053: an element callback's lambda literal (`Array::map(xs, f = (k) ->
+/// ..)`) starts with its one parameter at the receiver's element type, so an
+/// `Array[Int32]` gives `k + 1` the `Int32` the call will ask of it.
+export fn seed_array_callback_elem(arg: Expr, recv_ty: Type, s: Subst) -> Unit {
+  match subst_apply(s = s, ty = recv_ty) {
+    CtArray(elem) => {
+      let expected: Array[Type] = [elem]
+      seed_lambda_params(arg = checker_call_argument_value(arg), expected = expected, s = s)
+    },
+    _ => ()
+  }
+}
+
+/// #4053: a lambda literal given for a named struct's function-typed field
+/// (`H::{ f: (k) -> k + 1 }`) starts with its parameters at the field's
+/// declared parameter types, as an argument does at its parameter's.
+export fn seed_struct_field_lambda(defs: Array[TypeDef], struct_name: String, field: String, value: Expr, s: Subst) -> Unit {
+  if struct_name != "" && (value is EFn(_, _, _, _, _, _)) {
+    match struct_literal_typedef(defs = defs, name = struct_name) {
+      Some(TDStruct(_, dfields, _, _)) => for df in dfields {
+        let (dn, dty) = df
+        match dty {
+          CtFn(eps, _, _) => if dn == field {
+            seed_lambda_params(arg = value, expected = eps, s = s)
+          },
+          _ => ()
+        }
+      },
+      _ => ()
+    }
   }
 }
 

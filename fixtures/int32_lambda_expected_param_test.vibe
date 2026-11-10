@@ -1,0 +1,134 @@
+//# An unannotated lambda passed where a function over `Int32` / `UInt32` is
+//# expected takes that type for its parameters and, for an integer-literal
+//# tail, its result: as an argument (`ap(f = (k) -> k + 1)`), as a named
+//# struct literal's field (`H::{ f: (k) -> k * 2 }`), and as the callback of
+//# `Array::map` / `filter` / `any` / `all` / `find` over an `Array[Int32]`.
+//# Before, `k + 1` settled on `Int` and the lambda was refused as
+//# `(Int) -> Int`, while `let h: (Int32) -> Int32 = (k) -> k + 1` and
+//# `(k: Int32) -> k + 1` were accepted (#4053).
+//#
+//# Each unannotated answer is checked against the annotated spelling of the
+//# same lambda, including the results that wrap at the 32-bit boundary: an
+//# answer computed in 63-bit `Int` would differ there.
+
+struct H {
+  f: (Int32) -> Int32;
+  u: (UInt32) -> UInt32
+}
+
+fn ap(f: (Int32) -> Int32, x: Int32) -> Int {
+  Int32::to_int(f(x))
+}
+
+fn apu(f: (UInt32) -> UInt32, x: UInt32) -> Int {
+  UInt32::to_int(f(x))
+}
+
+fn test32(f: (Int32) -> Bool, x: Int32) -> Bool {
+  f(x)
+}
+
+fn twice(f: (Int32) -> (Int32) -> Int32, a: Int32, b: Int32) -> Int {
+  Int32::to_int(f(a)(b))
+}
+
+fn same[T](x: T, f: (T) -> T) -> T {
+  f(x)
+}
+
+fn inc(x: Int32) -> Int32 {
+  x + 1
+}
+
+test "an argument lambda computes over Int32" {
+  inspect(ap(f = (k) -> k + 1, x = 5), content = "6")
+  inspect(ap(f = (k) -> k * 2, x = 5), content = "10")
+  inspect(ap(f = (k) -> k - 1, x = -5), content = "-6")
+  inspect(ap(f = (k) -> k + k, x = 5), content = "10")
+  inspect(ap(f = (k) -> inc(x = k) * 3, x = 5), content = "18")
+  inspect(ap(f = (k) -> k / 2, x = -7), content = "-3")
+  inspect(test32(f = (k) -> k < 3, x = 5), content = "false")
+  inspect(test32(f = (k) -> k == 5, x = 5), content = "true")
+  inspect(twice(f = (a) -> (b) -> a + b + 1, a = 5, b = 10), content = "16")
+}
+
+test "an argument lambda wraps at the Int32 boundary as the annotated one does" {
+  inspect(ap(f = (k) -> k + 1, x = 2147483647), content = "-2147483648")
+  inspect(ap(f = (k: Int32) -> k + 1, x = 2147483647), content = "-2147483648")
+  inspect(ap(f = (k) -> k - 1, x = -2147483648), content = "2147483647")
+  inspect(ap(f = (k: Int32) -> k - 1, x = -2147483648), content = "2147483647")
+  inspect(ap(f = (k) -> k * 2, x = 2000000000), content = "-294967296")
+  inspect(ap(f = (k: Int32) -> k * 2, x = 2000000000), content = "-294967296")
+  inspect(ap(f = (k) -> -k, x = -2147483648), content = "-2147483648")
+  inspect(ap(f = (k: Int32) -> -k, x = -2147483648), content = "-2147483648")
+  inspect(ap(f = (k) -> k << 1, x = 1073741824), content = "-2147483648")
+  inspect(ap(f = (k: Int32) -> k << 1, x = 1073741824), content = "-2147483648")
+}
+
+test "an argument lambda wraps at the UInt32 boundary as the annotated one does" {
+  inspect(apu(f = (k) -> k + 1, x = 4294967295), content = "0")
+  inspect(apu(f = (k: UInt32) -> k + 1, x = 4294967295), content = "0")
+  inspect(apu(f = (k) -> k - 1, x = 0), content = "4294967295")
+  inspect(apu(f = (k: UInt32) -> k - 1, x = 0), content = "4294967295")
+  inspect(apu(f = (k) -> k * 2, x = 4000000000), content = "3705032704")
+  inspect(apu(f = (k: UInt32) -> k * 2, x = 4000000000), content = "3705032704")
+  inspect(apu(f = (k) -> k >> 1, x = 4294967295), content = "2147483647")
+  inspect(apu(f = (k: UInt32) -> k >> 1, x = 4294967295), content = "2147483647")
+}
+
+test "a literal tail takes the expected result type" {
+  inspect(ap(f = (k) -> 7, x = 5), content = "7")
+  inspect(ap(f = (k) -> -2147483648, x = 5), content = "-2147483648")
+  inspect(ap(f = (k) -> if k < 0 {
+    -1
+  } else {
+    1
+  }, x = -5), content = "-1")
+  inspect(apu(f = (k) -> 4294967295, x = 0), content = "4294967295")
+}
+
+test "a generic callee's lambda takes the type read from an earlier argument" {
+  let x: Int32 = 2147483647
+  inspect(Int32::to_int(same(x = x, f = (k) -> k + 1)), content = "-2147483648")
+}
+
+test "a struct literal's function field computes over Int32 and UInt32" {
+  let h = H::{
+    f: (k) -> k * 2,
+    u: (k) -> k + 1
+  }
+  let five: Int32 = 5
+  let big: Int32 = 2000000000
+  let umax: UInt32 = 4294967295
+  inspect(Int32::to_int(h.f(five)), content = "10")
+  inspect(Int32::to_int(h.f(big)), content = "-294967296")
+  inspect(UInt32::to_int(h.u(umax)), content = "0")
+  let annotated = H::{
+    f: (k: Int32) -> k * 2,
+    u: (k: UInt32) -> k + 1
+  }
+  inspect(Int32::to_int(annotated.f(big)), content = "-294967296")
+  inspect(UInt32::to_int(annotated.u(umax)), content = "0")
+  let lit = H::{
+    f: (k) -> 7,
+    u: (k) -> 4294967295
+  }
+  inspect(Int32::to_int(lit.f(five)), content = "7")
+  inspect(UInt32::to_int(lit.u(umax)), content = "4294967295")
+}
+
+test "an Array[Int32] callback takes the element type" {
+  let xs: Array[Int32] = [2147483647, -2147483648, 3]
+  let ys: Array[Int32] = Array::map(xs, f = (k) -> k + 1)
+  inspect(Int32::to_int(Array::get(ys, at = 0)), content = "-2147483648")
+  inspect(Int32::to_int(Array::get(ys, at = 1)), content = "-2147483647")
+  inspect(Int32::to_int(Array::get(ys, at = 2)), content = "4")
+  inspect(Array::length(Array::filter(xs, f = (k) -> k < 3)), content = "1")
+  inspect(Array::any(xs, f = (k) -> k + 1 == -2147483648), content = "true")
+  inspect(Array::all(xs, f = (k) -> k != 0), content = "true")
+  let found = match Array::find(xs, f = (k) -> k * 2 == 6) {
+    Some(v) => Int32::to_int(v),
+    None => 0
+  }
+  inspect(found, content = "3")
+}
