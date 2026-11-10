@@ -19,7 +19,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Stmt, TypeExpr, env_lookup, str_lt
+  EffectOwner, Stmt, TypeExpr, env_lookup, str_lt
 }
 
 import @vibe/core {
@@ -310,7 +310,7 @@ fn interface_declares_name(stmts: Array[Stmt], wanted: String) -> Bool {
       } else {
         ()
       },
-      SEffectDef(_, name, _, _) => if name == wanted {
+      SEffectDef(_, name, _, _, _) => if name == wanted {
         found = true
       } else {
         ()
@@ -463,8 +463,14 @@ fn interface_collect(stmts: Array[Stmt], path: Array[String], checked: CheckedPr
         } else {
           ()
         },
-        SEffectDef(exported, name, params, ops) => if exported || interface_has_name(names = selected, wanted = name) {
-          Array::push(entries, value = interface_node(tag = "effect", fields = [
+        // ADR-0124 (#2656): an `extern effect` is a different interface from a
+        // program-handled one of the same shape -- its operations are called,
+        // not performed or handled -- so its owner is part of the tag.
+        SEffectDef(exported, name, params, ops, owner) => if exported || interface_has_name(names = selected, wanted = name) {
+          Array::push(entries, value = interface_node(tag = match owner {
+            HostProvided => "extern-effect",
+            ProgramHandled => "effect"
+          }, fields = [
             interface_path(path),
             name,
             interface_strings(params),
@@ -633,7 +639,7 @@ fn interface_piece_parse(text: String, pos: Int) -> Option[(String, Int)] {
 fn interface_entry_tag_arity(_ tag: String) -> Int {
   if tag == "value" || tag == "effectset" || tag == "reexport" || tag == "suberror" {
     3
-  } else if tag == "alias" || tag == "effect" {
+  } else if tag == "alias" || tag == "effect" || tag == "extern-effect" {
     4
   } else if tag == "enum" {
     5

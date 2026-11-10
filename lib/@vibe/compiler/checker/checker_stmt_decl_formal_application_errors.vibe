@@ -587,7 +587,7 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
       STypeAlias(_, name, params, te) => fapp_report(te = te, formals = params, where_label = String::concat(String::concat("the body of type alias `", name), "`"), errors = errors),
-      SEffectDef(_, ename, eparams, ops) => {
+      SEffectDef(_, ename, eparams, ops, _) => {
         let effect_tes = array_empty()
         let mut oi = 0
         while oi < Array::length(ops) {
@@ -1214,7 +1214,7 @@ export fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef]
           vi = vi + 1
         }
       },
-      SEffectDef(_, name, params, ops) => {
+      SEffectDef(_, name, params, ops, _) => {
         let mut oi = 0
         while oi < Array::length(ops) {
           let (op_name, op_params, op_ret) = Array::get(ops, at = oi)
@@ -1577,11 +1577,11 @@ export fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef
           ()
         }
       },
-      SEffectDef(_, name, keys, ops) => {
+      SEffectDef(_, name, keys, ops, owner) => {
         let params = effect_param_names(keys)
         let kinds = effect_param_kinds(keys)
         let type_params = effect_type_param_names(params = params, kinds = kinds)
-        let idx = completed_type_def_index(defs = defs, probe = TDEffect(name, array_empty(), params, kinds), from = from, to = to, taken = taken)
+        let idx = completed_type_def_index(defs = defs, probe = TDEffect(name, array_empty(), params, kinds, owner), from = from, to = to, taken = taken)
         if idx >= 0 {
           let resolved = for op in ops {
             let (op_name, op_params, ret) = op
@@ -1589,7 +1589,7 @@ export fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef
               resolve_type_expr_shadowed(te = param, defs = defs, shadow = type_params)
             }, resolve_type_expr_shadowed(te = ret, defs = defs, shadow = type_params))
           }
-          Array::set(defs, at = idx, value = TDEffect(name, resolved, params, kinds))
+          Array::set(defs, at = idx, value = TDEffect(name, resolved, params, kinds, owner))
         } else {
           ()
         }
@@ -1759,7 +1759,7 @@ fn type_def_same_head(left: TypeDef, right: TypeDef) -> Bool {
     (TDEnum(a, _, _), TDEnum(b, _, _)) => a == b,
     (TDStruct(a, _, _, _), TDStruct(b, _, _, _)) => a == b,
     (TDAlias(a, _, _), TDAlias(b, _, _)) => a == b,
-    (TDEffect(a, _, _, _), TDEffect(b, _, _, _)) => a == b,
+    (TDEffect(a, _, _, _, _), TDEffect(b, _, _, _, _)) => a == b,
     (TDEffectSet(a, _), TDEffectSet(b, _)) => a == b,
     _ => false
   }
@@ -1859,12 +1859,12 @@ fn refresh_completed_env_type_def(node_def: TypeDef, completed_def: TypeDef, def
         refresh_completed_type(ty = payload, defs = defs, shadow = params, seen = array_empty())
       })
     }),
-    TDEffect(name, ops, params, kinds) => TDEffect(name, for op in ops {
+    TDEffect(name, ops, params, kinds, owner) => TDEffect(name, for op in ops {
       let (op_name, op_params, ret) = op
       (op_name, for param in op_params {
         refresh_completed_type(ty = param, defs = defs, shadow = effect_type_param_names(params = params, kinds = kinds), seen = array_empty())
       }, refresh_completed_type(ty = ret, defs = defs, shadow = effect_type_param_names(params = params, kinds = kinds), seen = array_empty()))
-    }, params, kinds),
+    }, params, kinds, owner),
     TDEffectSet(name, members) => TDEffectSet(name, members)
   }
 }
