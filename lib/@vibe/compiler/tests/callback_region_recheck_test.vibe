@@ -117,3 +117,20 @@ test "a recursive top-level function handed by name is re-checked once per shape
   let refused = String::concat(keeps, "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n")
   assert(String::contains(check_source_report(refused), needle = "this call to `walk` stores a value that captures this region"))
 }
+
+// #4050: an element callback's parameter is an element of the receiver, so
+// over a container declared outside the region it is an alias of that
+// container, as `Array::get(boxes, at = 0)` is.
+let outer_boxes = "  let outer: Array[MutList[Int]] = []\n  let boxes = [outer]\n"
+
+test "a region value written into an element of an outer container by a callback is refused" {
+  let map_src = String::concat("fn build() -> Int {\n", String::concat(outer_boxes, "  region r {\n    let cell = MutList::empty(r)\n    let _ = Array::map(boxes, f = (a) -> {\n      Array::push(a, value = cell)\n      0\n    })\n    0\n  }\n}\n"))
+  inspect(check_source_report(map_src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+  let fold_src = String::concat("fn build() -> Int {\n", String::concat(outer_boxes, "  region r {\n    let cell = MutList::empty(r)\n    Array::fold(boxes, init = 0, f = (acc, a) -> {\n      Array::push(a, value = cell)\n      acc\n    })\n  }\n}\n"))
+  inspect(check_source_report(fold_src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+}
+
+test "a callback that only reads an outer container's elements, or fills an inner one, is fine" {
+  let src = "fn build() -> Int {\n  let outer: Array[Int] = []\n  let boxes = [outer]\n  region r {\n    let cell = MutList::empty(r)\n    let sizes = Array::map(boxes, f = (a) -> {\n      Array::push(a, value = MutList::length(cell))\n      Array::length(a)\n    })\n    let inner: Array[MutList[Int]] = []\n    let _ = Array::map([inner], f = (b) -> {\n      Array::push(b, value = cell)\n      0\n    })\n    Array::get(sizes, at = 0)\n  }\n}\n"
+  assert(check_source_ok(src))
+}
