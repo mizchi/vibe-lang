@@ -13,11 +13,19 @@
 #      the artifact is built with VIBE_WASM_NAMES=1 -- and a wasm whose
 #      functions are mostly UNNAMED fails here: a scanner that cannot see is
 #      unchecked, not safe.
+#      Since #2499 the same holds for the component tools of the positional
+#      protocol (WIT emission, the serve and command lifts, the vfs wraps),
+#      and the async component composition that user programs reach must
+#      still be PRESENT -- a cut that took it out would change what this
+#      artifact emits for an `Async` export.
 #   2. REFUSAL. Each switch that selects a dropped lane (VIBE_BACKEND=gc,
 #      VIBE_DEBUG_BREAK=1, VIBE_DEBUG=1, VIBE_RC=shadow, VIBE_COVERAGE=1,
-#      VIBE_CODEGEN_BODY_CACHE=on) produces no wasm and a diagnostic that names
-#      the switch. Silently compiling on another lane is the failure this
-#      guards against (policy: never silently wrong).
+#      VIBE_CODEGEN_BODY_CACHE=on) or a dropped component tool
+#      (VIBE_EMIT_WIT=1, VIBE_SERVE_COMPONENT=1, VIBE_BUILD_COMPONENT=1)
+#      produces no output and a diagnostic that names the switch. Silently
+#      compiling on another lane, or writing a core module where a component
+#      was asked for, is the failure this guards against (policy: never
+#      silently wrong).
 #   3. ACCEPTANCE. The two production lanes still compile, and the default
 #      lane's output runs. Cfg, unstable authorization and generated-source
 #      trust remain per-compilation inputs to this same artifact.
@@ -30,6 +38,9 @@
 #       runs 1-3 against an existing wasm, invoked through NAME
 #   bash scripts/check_compile_only_lanes.sh --scan-only W
 #       runs check 1 alone against W (the self-test's mutation probe)
+#   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --tools-only
+#       runs the component-tool half of check 2 alone (the self-test's probe
+#       for it: the full CLI fails the lane half first)
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -37,11 +48,13 @@ cd "$ROOT_DIR"
 ARTIFACT=""
 ENTRY="cli_main_compile_only"
 SCAN_ONLY=""
+TOOLS_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifact) ARTIFACT="$2"; shift 2 ;;
     --entry) ENTRY="$2"; shift 2 ;;
     --scan-only) SCAN_ONLY="$2"; shift 2 ;;
+    --tools-only) TOOLS_ONLY=1; shift ;;
     *) echo "check-compile-only-lanes: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -64,6 +77,17 @@ ABSENT_PATTERNS='emit_shadow_mark_freed|emit_str_operand_guard|codegen_gc_backen
 # #2497: measured replay, relocation and harvest code. Cache constructors and
 # layout fingerprints remain shared with production; they are not cache replay.
 ABSENT_PATTERNS="$ABSENT_PATTERNS|codegen_body_cache_(replay|record|filter_fold_sigs|find_at|find_named|set_fold_table)|lc_src_edit_(of|reindex|replayable)|lc_relocate_replayed_strings|lc_string_remap|lc_(types|structs|effects)_agree"
+# #2499: the component tools only the full CLI installs (component_tools_full,
+# cli_adapter_cli_main_with_lanes.vibe): the three adapters, the WIT generator,
+# the serve / command lifts and the vfs wraps they alone reach (#2504's
+# inventory of what those arms held).
+ABSENT_PATTERNS="$ABSENT_PATTERNS|(^| )adapter_(emit_wit|serve_component|command_component)|codegen_wit_wit_gen_vibe|(^| )wit_from_program|(^| )validate_serve_handler|(^| )comp_emit_component_wasm_(string_handler|stream_handler|command|service_handler)|(^| )comp_emit_string_handler|(^| )comp_generate_vfs_|(^| )comp_generate_serve_stream_adapter_module"
+# What must stay: the async component composition the production compile lanes
+# reach for a user program (`maybe_wrap_async_component`,
+# `maybe_wrap_stdin_provider_core`). Each pattern must match at least one
+# function, so a cut that removed the lane a user program needs fails here
+# instead of passing as a smaller artifact.
+PRESENT_PATTERNS='comp_emit_component_wasm_async_stdin_provider|comp_emit_component_wasm_async_hostfuture|maybe_wrap_async_component|maybe_wrap_stdin_provider_core'
 
 scan_names() { # <wasm>
   local wasm="$1" listing
@@ -83,15 +107,23 @@ scan_names() { # <wasm>
     rm -f "$listing"
     fail "$wasm names only $named of $total functions; build it with VIBE_WASM_NAMES=1 (scripts/build_compile_only.sh --names) so the lane check can see"
   fi
-  local hits
-  hits="$(grep -E '^ *[0-9]+ #' "$listing" | awk '{print $1, $NF}' | grep -E "$ABSENT_PATTERNS" || true)"
+  local hits names
+  names="$(grep -E '^ *[0-9]+ #' "$listing" | awk '{print $1, $NF}')"
   rm -f "$listing"
+  hits="$(printf '%s\n' "$names" | grep -E "$ABSENT_PATTERNS" || true)"
   if [ -n "$hits" ]; then
     echo "compile-only-lanes: FAIL: $wasm still defines functions of a dropped lane:" >&2
     printf '%s\n' "$hits" | sort -rn | head -40 >&2
     exit 1
   fi
-  echo "compile-only-lanes: absence ok ($named of $total functions named, none from a dropped lane)"
+  local want
+  for want in $(printf '%s' "$PRESENT_PATTERNS" | tr '|' ' '); do
+    # A here-string, not a pipe: under pipefail `grep -q` closing the pipe
+    # early fails the writer, and a present name would read as missing.
+    grep -qE "$want" <<<"$names" \
+      || fail "$wasm defines no function matching '$want': the async component composition the production lanes need is gone"
+  done
+  echo "compile-only-lanes: absence ok ($named of $total functions named, none from a dropped lane; the async component lane is present)"
 }
 
 if [ -n "$SCAN_ONLY" ]; then
@@ -164,10 +196,37 @@ refuse() { # <switch NAME=VALUE>
     *) fail "$switch produced no wasm but the diagnostic does not name it: '${PROBE_DIAG:-<none>}'" ;;
   esac
 }
+# The component tools are positional-protocol selectors that the FS compile
+# arm precedes, so they are asked with VIBE_FS_COMPILE unset, the way their
+# callers ask (tests/gates/mid, scripts/test_serve_body_stream_gate.sh). Each
+# would write a .wit or a component to the output path; refused, it writes
+# nothing there.
+refuse_tool() { # <switch NAME=VALUE>
+  local switch="$1"
+  compile_input_mode 0 "$WORK/probe.vibe" "refuse_${switch%%=*}" "$switch"
+  if [ -s "$PROBE_OUT" ]; then
+    fail "$switch was ACCEPTED by $ARTIFACT (invoke $ENTRY): it wrote an artifact instead of refusing the tool"
+  fi
+  case "$PROBE_DIAG" in
+    *"has no tool for $switch"*) ;;
+    *) fail "$switch produced no output but the diagnostic does not name it: '${PROBE_DIAG:-<none>}'" ;;
+  esac
+}
+refuse_tools() {
+  for sw in VIBE_EMIT_WIT=1 VIBE_SERVE_COMPONENT=1 VIBE_BUILD_COMPONENT=1; do
+    refuse_tool "$sw"
+  done
+  echo "compile-only-lanes: tool refusal ok (3 component tools refused by name)"
+}
+if [ "$TOOLS_ONLY" = 1 ]; then
+  refuse_tools
+  exit 0
+fi
 for sw in VIBE_BACKEND=gc VIBE_DEBUG_BREAK=1 VIBE_DEBUG=1 VIBE_RC=shadow VIBE_COVERAGE=1 VIBE_CODEGEN_BODY_CACHE=on; do
   refuse "$sw"
 done
 echo "compile-only-lanes: refusal ok (6 switches refused by name)"
+refuse_tools
 
 # 3. acceptance: the default (RC) lane and the bump lane compile; they differ;
 # the default output runs.

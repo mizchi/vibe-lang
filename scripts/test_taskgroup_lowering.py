@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -252,7 +253,61 @@ try {
             if (project / "m0.vibe").is_symlink():
                 (project / "m0.vibe").unlink()
             (project / "m0.vibe").write_bytes(previous)
-    print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness, trace aliases and protected output passed")
+        refusal_parity(repo, env, runner, Path(directory))
+    print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness, trace aliases, protected output and refusal reports passed")
+
+
+def diagnostic_bodies(text, jobs):
+    """The diagnostic lines of one build's stderr without the CLI's framing.
+
+    The serial build locates each line (`error: leaf.vibe: line 8:5: `); the
+    `--jobs` frontend reports the compile image's uncaught error instead,
+    with the site still a ` [@off=N]` marker and a runner backtrace after it.
+    """
+    if jobs:
+        body = text.split("vibe: uncaught error: ", 1)[1].split("Stack backtrace:", 1)[0].strip()
+        return [re.sub(r" \[@off=\d+\]", "", line) for line in body.splitlines()]
+    return [re.sub(r"^error: (\S+: line \d+:\d+: )?", "", line) for line in text.strip().splitlines()]
+
+
+def refusal_parity(repo, env, runner, root):
+    """#2826: worker instances send each module's trait-dict refusals back,
+    and the build reports them once for the program, as the serial build
+    does: both modules' `==` refusals in program order, and no refusal of a
+    32-bit `Add` row that only the importer's call consumes."""
+    cell = ("struct Cell[T] {\n  v: T\n} derive (Eq)\n\nfn same_cell[T: Eq](x: T, y: T) -> Bool {\n"
+            "  let a = Cell::{ v: x }\n  let b = Cell::{ v: y }\n  a == b\n}\n\n")
+    box = ("struct Box[T] {\n  v: T\n} derive (Eq)\n\nexport fn same_box[T: Eq](x: T, y: T) -> Bool {\n"
+           "  let a = Box::{ v: x }\n  let b = Box::{ v: y }\n  a == b\n}\n")
+    programs = {
+        "eqeq": ("import ./leaf.vibe {\n  same_box\n}\n\n" + cell + "fn main() -> Int {\n"
+                 "  if same_box(x = 1, y = 1) && same_cell(x = 1, y = 1) {\n    1\n  } else {\n    0\n  }\n}\n", box),
+        "add32": ("import ./leaf.vibe {\n  add\n}\n\nfn main() -> Int {\n  let top: Int32 = 2147483647\n"
+                  "  let one: Int32 = 1\n  Int32::to_int(add(a = top, b = one))\n}\n",
+                  "export fn add[T: Add](a: T, b: T) -> T {\n  a + b\n}\n"),
+    }
+    for tag, (main_source, leaf_source) in programs.items():
+        project = root / f"refusal-{tag}"
+        project.mkdir()
+        (project / "main.vibe").write_text(main_source)
+        (project / "leaf.vibe").write_text(leaf_source)
+        results = {}
+        for label, flags, extra in [("serial", [], {}), ("jobs", ["--jobs", "2"], {"VIBE_TASKGROUP_LOWERING": "1"})]:
+            current = dict(env, VIBE_BUILD_CACHE_DIR=str(project / f"{label}-cache"), **extra)
+            results[label] = subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe",
+                                             "-o", f"{label}.wasm", *flags], cwd=project, env=current,
+                                            capture_output=True, text=True, timeout=180)
+        serial, jobs = results["serial"], results["jobs"]
+        if tag == "eqeq":
+            assert serial.returncode == 1 and jobs.returncode == 1, (serial, jobs)
+            expected = diagnostic_bodies(serial.stderr, jobs=False)
+            assert len(expected) == 2 and "`Box" in expected[0] and "`Cell`" in expected[1], serial.stderr
+            assert diagnostic_bodies(jobs.stderr, jobs=True) == expected, (expected, jobs.stderr)
+        else:
+            assert serial.returncode == 0 and jobs.returncode == 0, (serial, jobs)
+            assert (project / "jobs.wasm").read_bytes() == (project / "serial.wasm").read_bytes(), tag
+            ran = subprocess.run([str(runner), str(project / "jobs.wasm")], capture_output=True, text=True, check=True)
+            assert ran.stdout.strip() == "-2147483648", ran
 
 
 if __name__ == "__main__":

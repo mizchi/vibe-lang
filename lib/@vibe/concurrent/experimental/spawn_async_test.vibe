@@ -1,0 +1,217 @@
+//# Imports
+
+import ./concurrent.vibe {
+  __conc_spawn_async, enum TaskError, sleep_wait, struct Channel, struct Receiver, struct Sender, struct TaskGroup, struct TaskHandle
+}
+
+//# Test helpers
+
+/// The order tasks ran in. A module global rather than a local: a task closure
+/// may not capture a mutable array (`Spawnable`), and calling a top-level
+/// function is not a capture.
+let trace_log: Array[String] = []
+
+/// Where the current test's part of `trace_log` starts.
+let trace_from: Array[Int] = [0]
+
+/// Record that `s` ran.
+fn note(_ s: String) -> Unit {
+  Array::push(trace_log, value = s)
+}
+
+/// The trace since the last call, joined by `sep`.
+fn take_trace(sep: String) -> String {
+  let end = Array::length(trace_log)
+  let out = String::join(Array::slice(trace_log, start = Array::get(trace_from, at = 0), end = end), sep = sep)
+  Array::set(trace_from, at = 0, value = end)
+  out
+}
+
+/// The failure `join` throws, or `None` when it returns. Caught at the use
+/// site: `TaskGroup::run`'s row carries the effect variable `e`.
+fn caught_join[rg, e, T](_ h: TaskHandle[rg, e, T]) -> Option[TaskError] with e {
+  handle {
+    let _v = TaskHandle::join(h)
+    None
+  } with { Exception[TaskError]::Throw(err) => Some(err) }
+}
+
+//# Deferred suspendable start (#3200)
+
+// `__conc_spawn_async` is the suspendable task `TaskGroup::spawn` is to start
+// once its task closure may use `Async`: queued like `spawn`, suspendable once
+// it runs. These tests pin the order a program will observe, against
+// `spawn_suspend`, which runs the first leg at the call.
+
+/// Nothing runs at the call: the body's next line runs first, and the task
+/// starts when the body waits.
+test "a deferred suspendable task does not run at the call" {
+  let v = TaskGroup::run((g) -> {
+    let h = __conc_spawn_async(g, f = () -> {
+      note("t1")
+      sleep_wait(5)
+      note("t2")
+      7
+    })
+    note("body")
+    TaskHandle::join(h)
+  })
+  inspect(take_trace(sep = " ") + " v=\{v}", content = "body t1 t2 v=7")
+}
+
+/// The p5 shape of #3200. With `spawn_suspend` the suspendable task's first
+/// leg runs at the call, before the queued plain task (`s1 plain s2`); queued,
+/// it runs after the plain task spawned before it, in FIFO order.
+test "a deferred suspendable task keeps spawn's FIFO order in a mixed group" {
+  let v = TaskGroup::run((g) -> {
+    let p = TaskGroup::spawn(g, f = () -> {
+      note("plain")
+      20
+    })
+    let s = __conc_spawn_async(g, f = () -> {
+      note("s1")
+      sleep_wait(5)
+      note("s2")
+      10
+    })
+    TaskHandle::join(s) + TaskHandle::join(p)
+  })
+  inspect(take_trace(sep = " ") + " v=\{v}", content = "plain s1 s2 v=30")
+}
+
+/// The same group with `spawn_suspend`: its order is unchanged by the
+/// refactor that moved the first leg into `conc_first_leg`.
+test "spawn_suspend still runs its first leg at the call in a mixed group" {
+  let v = TaskGroup::run((g) -> {
+    let p = TaskGroup::spawn(g, f = () -> {
+      note("plain")
+      20
+    })
+    let s = TaskGroup::spawn_suspend(g, f = () -> {
+      note("s1")
+      sleep_wait(5)
+      note("s2")
+      10
+    })
+    TaskHandle::join(s) + TaskHandle::join(p)
+  })
+  inspect(take_trace(sep = " ") + " v=\{v}", content = "s1 plain s2 v=30")
+}
+
+/// The book's chapter 17 example with both tasks queued: `a` parks at its
+/// sleep, `b` runs until it waits for `a`, and `a` then wakes `b`.
+test "deferred suspendable tasks interleave through result_wait" {
+  let total = TaskGroup::run((g) -> {
+    let a = __conc_spawn_async(g, f = () -> {
+      note("a1")
+      sleep_wait(10)
+      note("a2")
+      1
+    })
+    let b = __conc_spawn_async(g, f = () -> {
+      note("b1")
+      let va = TaskHandle::result_wait(a)
+      note("b2 saw a = \{va}")
+      va + 1
+    })
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+  inspect(take_trace(sep = ", ") + "; total = \{total}", content = "a1, b1, a2, b2 saw a = 1; total = 3")
+}
+
+/// A body that returns without joining: the close dispatches the queued task
+/// and then pumps it to its end.
+test "the close dispatches and pumps a deferred suspendable task" {
+  let v = TaskGroup::run((g) -> {
+    let _ = __conc_spawn_async(g, f = () -> {
+      note("c1")
+      sleep_wait(5)
+      note("c2")
+      1
+    })
+    note("body done")
+    4
+  })
+  inspect(take_trace(sep = " ") + " v=\{v}", content = "body done c1 c2 v=4")
+}
+
+/// A task that never waits finishes on its first leg, at dispatch.
+test "a deferred suspendable task that never waits settles at dispatch" {
+  let v = TaskGroup::run((g) -> {
+    let h = __conc_spawn_async(g, f = () -> {
+      6 * 7
+    })
+    TaskHandle::join(h)
+  })
+  inspect(v, content = "42")
+}
+
+/// Cancelled before dispatch, the task resolves Cancelled and its body never
+/// runs, as for a queued `spawn` task.
+test "a deferred suspendable task cancelled before dispatch never runs" {
+  let cancelled = TaskGroup::run((g) -> {
+    let h = __conc_spawn_async(g, f = () -> {
+      note("ran")
+      sleep_wait(5)
+      1
+    })
+    TaskHandle::cancel(h)
+    caught_join(h) is Some(TaskError::Cancelled)
+  })
+  inspect("cancelled=\{cancelled} log=\{take_trace(sep = ",")}", content = "cancelled=true log=")
+}
+
+/// A throw on the first leg fails the task and the group (fail-fast): the
+/// suspendable sibling parked before it is cancelled.
+test "a throw on a deferred first leg fails fast and cancels a parked sibling" {
+  let out = handle {
+    TaskGroup::run((g) -> {
+      let a = __conc_spawn_async(g, f = () -> {
+        sleep_wait(5)
+        100
+      })
+      let b = __conc_spawn_async(g, f = () -> Int with Async + Exception {
+        throw("boom")
+      })
+      let b_failed = match caught_join(b) {
+        Some(TaskError::Failed(m)) => m == "boom",
+        _ => false
+      }
+      let a_cancelled = caught_join(a) is Some(TaskError::Cancelled)
+      "b_failed=\{b_failed} a_cancelled=\{a_cancelled}"
+    })
+  } with { Exception[TaskError]::Throw(err) => match err {
+    TaskError::Failed(m) => "group failed: \{m}",
+    TaskError::Cancelled => "group cancelled"
+  } }
+  inspect(out, content = "group failed: boom")
+}
+
+/// A channel between two queued suspendable tasks: the consumer parks in
+/// `recv_wait` and the producer's `send_wait` wakes it.
+test "deferred suspendable tasks hand values over a rendezvous channel" {
+  let total = TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 0)
+    let consumer = __conc_spawn_async(g, f = () -> {
+      let mut sum = 0
+      let mut go = true
+      while go {
+        match Receiver::recv_wait(rx) {
+          Some(x) => {
+            note("got \{x}")
+            sum = sum + x
+          },
+          None => go = false
+        }
+      }
+      sum
+    })
+    let _ = __conc_spawn_async(g, f = () -> Unit with Async + Exception {
+      Sender::send_wait(tx, v = 1)
+      Sender::send_wait(tx, v = 2)
+      Sender::release(tx)
+    })
+    TaskHandle::join(consumer)
+  })
+  inspect(take_trace(sep = " ") + " total=\{total}", content = "got 1 got 2 total=3")
+}
