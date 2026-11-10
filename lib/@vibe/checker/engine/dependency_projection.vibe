@@ -6,7 +6,7 @@ import @vibe/ast {
   TypeExpr
 }
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef
+  BindingOrigin, EffectOwner, EnvValueBinding, Expr, Stmt, Type, TypeDef
 }
 import @vibe/compiler/syntax {
   Token
@@ -255,7 +255,7 @@ fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Ar
               CtNamed(param, array_empty())
             })),
             TDAlias(_, params, target) => TDAlias(local_name, params, target),
-            TDEffect(_, ops, params, kinds) => TDEffect(local_name, ops, params, kinds),
+            TDEffect(_, ops, params, kinds, owner) => TDEffect(local_name, ops, params, kinds, owner),
             TDEffectSet(_, members) => TDEffectSet(local_name, members)
           }
           Array::push(selected, value = alias_def)
@@ -662,7 +662,7 @@ fn engine_typedef_payload_types(_ def: TypeDef) -> (Array[String], Array[Type]) 
       Array::push(tys, value = target)
       (params, tys)
     },
-    TDEffect(_, ops, params, _) => {
+    TDEffect(_, ops, params, _, _) => {
       for op in ops {
         let (_, ps, ret) = op
         for pt in ps {
@@ -1134,7 +1134,7 @@ fn engine_typedef_identity(_ def: TypeDef) -> Type {
       CtNamed(String::concat("#typeid.type.", name), engine_identity_formals(params)),
       engine_identity_rename_formals(ty = target, params = params)
     ]),
-    TDEffect(name, ops, params, kinds) => {
+    TDEffect(name, ops, params, kinds, owner) => {
       let parts = [
         CtNamed(String::concat("#typeid.effect.", name), engine_identity_formals(params)),
         CtRecord(for op in ops {
@@ -1145,6 +1145,10 @@ fn engine_typedef_identity(_ def: TypeDef) -> Type {
       // ADR-0094: a resource parameter's kind is part of the declaration, so
       // `Kv[R: A::B]` and `Kv[R: C::D]` are different identities. An effect
       // without one keeps its earlier identity.
+      match owner {
+        HostProvided => Array::push(parts, value = CtNamed("#typeid.effect.host_provided", array_empty())),
+        ProgramHandled => ()
+      }
       if engine_identity_has_kind(kinds) {
         Array::push(parts, value = CtNamed("#typeid.effect.resource_kinds", for k in kinds {
           CtNamed(k, array_empty())
@@ -1216,7 +1220,7 @@ fn engine_typedef_reference_names(_ def: TypeDef) -> Array[String] {
       }
     },
     TDAlias(_, params, target) => engine_push_reference_names(ty = target, binders = params, out = out),
-    TDEffect(_, ops, params, _) => {
+    TDEffect(_, ops, params, _, _) => {
       let mut oi = 0
       while oi < Array::length(ops) {
         let (_, args, ret) = Array::get(ops, at = oi)

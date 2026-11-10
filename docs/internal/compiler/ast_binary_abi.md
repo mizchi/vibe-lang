@@ -35,14 +35,18 @@ be added, removed or renamed without this document following it.
 ```
 +----------------+------------------+----------------+
 | magic (4B)     | version (varint) | module body    |
-| "vAST"         | = 4              |                |
+| "vAST"         | = 5              |                |
 +----------------+------------------+----------------+
 ```
 
 Magic: ASCII `'v' 'A' 'S' 'T'` (`0x76 0x41 0x53 0x54`). Followed by a
-varint version number; this document defines **version 4**. The
+varint version number; this document defines **version 5**. The
 deserializer rejects any other magic or any version it doesn't
 recognize.
+
+**v4 -> v5**: `SEffectDef` appends its owner as a `bool`, `true` for a
+host-provided `extern effect` (ADR-0124, #2656). The deserializer rejects v4
+rather than reading every effect as program-handled.
 
 **v3 -> v4**: `EAssign` and `EAssignOp` append the byte offset of their
 TARGET token as an `svarint` (#3248), `-1` when the assignment is synthesized.
@@ -281,7 +285,7 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 | 0x14 | `STestEffectRows(Array[(String, String)])` | `array<(string, string)>(test_name_row_pairs)` |
 | 0x15 | `SLetPat(Pat, Expr)` | `Pat(pat) Expr(value)` |
 | 0x16 | `SModule(Bool, String, Array[Stmt])` | `bool(exported) string(name) array<Stmt>(body)` |
-| 0x17 | `SEffectDef(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)])` | `bool(exported) string(name) array<string>(type_params) array<(string, array<TypeExpr>, TypeExpr)>(ops)` |
+| 0x17 | `SEffectDef(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)], EffectOwner)` | `bool(exported) string(name) array<string>(type_params) array<(string, array<TypeExpr>, TypeExpr)>(ops) bool(host_provided)` |
 | 0x18 | `SEffectSet(Bool, String, Array[String])` | `bool(exported) string(name) array<string>(members)` |
 | 0x19 | `SResource(String, String)` | `string(name) string(kind_path)` |
 | 0x1A | `SFnDecl(Bool, String, Expr, Array[Expr], Array[Expr])` | `bool(exported) string(name) Expr(fn_value) array<Expr>(requires) array<Expr>(ensures)` |

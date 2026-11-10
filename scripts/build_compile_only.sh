@@ -79,6 +79,11 @@ CLEAR_ARGS="$(selector_clear_args)" || exit 1
 # the same way it would hijack the compile below.
 env $CLEAR_ARGS bash "$ROOT_DIR/scripts/ensure_generated.sh" >&2
 
+# #2498: flattened with no compiler `#cfg` flag (VIBE_COMPILER_CFG=""), so the
+# compiler's `#cfg(telemetry)` declarations -- observation counters and their
+# sidecar encoders -- are replaced by their `#cfg(not(telemetry))` twins, which
+# refuse a request by name. scripts/check_compile_only_lanes.sh pins both.
+#
 # The generator rewrites its default outputs in lib/; point them at scratch
 # copies so this build touches nothing but its own directory, and ask only
 # for the compile-only emission (no adapter module source, hence no seed
@@ -91,6 +96,7 @@ VIBE_ADAPTER_BUNDLE_OUT="$BUNDLE_TMP/cli_adapter_bundle.vibe" \
 VIBE_RUNTIME_ENTRY_BUNDLE_OUT="$BUNDLE_TMP/selfbuild_runtime_entry_bundle.vibe" \
 VIBE_ADAPTER_MODULE_SOURCE_OUT="" \
 VIBE_COMPILE_ONLY_MODULE_SOURCE_OUT="$MODULE_SOURCE" \
+VIBE_COMPILER_CFG="" \
   env $CLEAR_ARGS bash "$ROOT_DIR/scripts/generate_bundle.sh" >"$STEM.generate_bundle.log" 2>&1 || {
     echo "build_compile_only: compile-only module source emission failed:" >&2
     tail -40 "$STEM.generate_bundle.log" >&2
