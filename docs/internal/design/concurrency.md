@@ -874,6 +874,19 @@ one spawn covers both shapes (#3200).
 up to its first suspension; it does not enter the ready queue. A body that
 finishes without suspending settles the task at once.
 
+The library also has the start a unified `spawn` needs (#3200):
+`__conc_spawn_async(g, f)`, a compiler-facing entry with `spawn_suspend`'s
+signature that queues the task Ready like `spawn` does. When `join`, a channel
+`send` / `recv` or the close dispatches it, its first leg runs under the same
+`Async` handle as `spawn_suspend`'s (`conc_first_leg`), and from then on it is
+a suspendable task: it parks, and the pump resumes it. A cancel or a sibling's
+failure before dispatch resolves it Cancelled without running it. No program
+calls it by name yet; it is the target the lowering is to give a
+`TaskGroup::spawn` whose task closure uses `Async`. Pinned by
+`lib/@vibe/concurrent/experimental/spawn_async_test.vibe`, including the mixed
+group whose order differs between the two starts (`plain s1 s2` queued,
+`s1 plain s2` with `spawn_suspend`).
+
 The body is written inline, as a closure literal at the call. A closure passed
 to `spawn_suspend` -- or to any parameter whose row carries `Async`, such as a
 wrapper around it -- must be compiled with the step-returning convention, and
@@ -1057,7 +1070,9 @@ deadlock.
 
 The tasks themselves are still guest-side continuations scheduled by
 `@vibe/concurrent` inside one component instance. Backing them with Component
-Model subtasks that the host can schedule and cancel is #3147.
+Model subtasks that the host can schedule and cancel is #3147; the measured
+mapping is [component-subtask-taskgroup.md](component-subtask-taskgroup.md)
+(ADR-0125).
 
 ## Effects and authority
 
@@ -1125,7 +1140,7 @@ open.
 | --- | --- | --- | --- | --- |
 | cooperative, in-guest | stack driving, plus stored continuations from ADR-0076's suspend lowering | one heap; `Send` keeps sharing unobservable | none | ships; the reference behaviour |
 | host waitables (Component Model) | a parked task waits on a host future, stream read or timer through the adapter's waitable set | as above | host I/O overlaps; task bodies do not | ships with an entry boundary that settles host futures |
-| Component Model subtasks | async lift/lower, one subtask per task | component / resource boundaries | as the host provides | not implemented (#3147) |
+| Component Model subtasks | an async call into a second instance of the program, one subtask per task | an instance per side; captures and results copied by the canonical ABI | host I/O overlaps; task bodies do not | proposed, not implemented: ADR-0125, [component-subtask-taskgroup.md](component-subtask-taskgroup.md) (#3147) |
 | JSPI with Workers | `WebAssembly.Suspending` / `promising` | an instance and heap per Worker, messages copied | up to the number of Workers | not implemented; JSPI only lowers suspension |
 | shared-everything threads | thread intrinsics over a shared store | task-local arenas inside one store; same message API | host threads | opt-in probe only (#488) |
 

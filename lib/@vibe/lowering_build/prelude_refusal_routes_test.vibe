@@ -1,0 +1,240 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_split
+}
+import @vibe/compiler/codegen/wasi {
+  PreludeEnv, PreludeModuleBatch, PreludeTail, prelude_with_module_batch_executor, prelude_with_module_executor
+}
+import @vibe/compiler/core {
+  Stmt, namespace_rename_originals_snapshot
+}
+import @vibe/lowering_worker {
+  ModuleLoweringJob,
+  PreludeModuleJob,
+  PreludeSharedContext,
+  decode_prelude_module_job,
+  decode_prelude_module_product,
+  decode_prelude_shared_context,
+  decode_prelude_shared_job,
+  encode_prelude_module_job,
+  encode_prelude_module_product,
+  prelude_module_product_merge,
+  run_prelude_module_job,
+  write_prelude_shared_context,
+  write_prelude_shared_job
+}
+
+// #2826: the per-module prelude's two out-of-driver routes report the
+// trait-dict refusals (`==`, derived renderer, index receiver, unconsumed
+// 32-bit `Add` row) exactly as the whole program does.
+//
+// - batch: `prelude_with_module_batch_executor`, the route `vibe build
+//   --jobs N` takes with `VIBE_TASKGROUP_LOWERING=1`. `lowering_build`'s
+//   compile image serializes every module's job, worker instances run them
+//   (`worker.vibe`), and the products are merged in module order. Here the
+//   jobs cross the same wire (`write_prelude_shared_context` / `_job`,
+//   `encode_prelude_module_product`), and EVERY job runs before ANY product
+//   is merged, as in the worker waves, so no job can see another module's
+//   refusals.
+// - executor: `prelude_with_module_executor`, the per-module hook; each
+//   module's job crosses the module-job wire and runs inside the driver's
+//   loop.
+//
+// Every row compiles one program through the whole lane, the in-process
+// split lane and both routes, and requires each to agree with the whole lane
+// on the diagnostic text, or on the bytes and the output. Before #2826 a
+// worker threw its module's refusals itself, so both routes reported the
+// leaf's refusal alone (`batch=refused[Box](differs)`), an earlier family
+// from the leaf instead of `main`'s `==`, and refused the valid 32-bit
+// `Add` program, whose row only `main`'s run consumes.
+
+/// The batch route, with the products made before any is merged.
+fn run_batch_in_instances(_ batch: PreludeModuleBatch) -> Unit with Exception {
+  let context = PreludeSharedContext::{
+    interfaces: batch.context_pool,
+    typed_offsets: batch.offsets,
+    typed_keys: batch.keys,
+    facts: batch.env.trait_facts,
+    namespace_originals: namespace_rename_originals_snapshot(),
+    alias_renames: batch.env.alias_renames,
+    calls_host_future: batch.env.calls_host_future,
+    waiter_hooks: batch.env.waiter_hooks,
+    aw_note: batch.env.aw_note
+  }
+  let context_bytes = Bytes::new()
+  write_prelude_shared_context(b = context_bytes, context = context)
+  let shared = decode_prelude_shared_context(context_bytes)
+  let count = Array::length(batch.parts)
+  let products: Array[Bytes] = []
+  let mut i = 0
+  while i < count {
+    let entry = if i == batch.entry_fid {
+      batch.entry_name
+    } else {
+      ""
+    }
+    let input = Bytes::new()
+    write_prelude_shared_job(b = input, own = Array::get(batch.parts, at = i), indices = Array::get(batch.context_indices, at = i), tag = "f\{i}", entry = entry, digest = "test")
+    let job = decode_prelude_shared_job(bytes = input, context = shared, digest = "test")
+    Array::push(products, value = encode_prelude_module_product(run_prelude_module_job(job)))
+    i = i + 1
+  }
+  i = 0
+  while i < count {
+    let product = decode_prelude_module_product(Array::get(products, at = i))
+    prelude_module_product_merge(product = product, own = Array::get(batch.parts, at = i), env = batch.env, synth = batch.synth, tail = batch.tail, diagnostics = batch.diagnostics)
+    i = i + 1
+  }
+  ()
+}
+
+/// The executor route: one module's job, across the wire and back.
+fn run_module_in_instance(own: Array[Stmt], interfaces: Array[Stmt], index: Int, _count: Int, entry: String, offsets: Array[Int], keys: Array[String], env: PreludeEnv, synth: Array[String], tail: PreludeTail, diagnostics: Array[String]) -> Unit with Exception {
+  let job = PreludeModuleJob::{
+    trait_job: ModuleLoweringJob::{
+      own: own,
+      interfaces: interfaces,
+      module_tag: "f\{index}",
+      typed_offsets: offsets,
+      typed_keys: keys,
+      facts: env.trait_facts,
+      namespace_originals: namespace_rename_originals_snapshot()
+    },
+    entry_name: entry,
+    alias_renames: env.alias_renames,
+    calls_host_future: env.calls_host_future,
+    waiter_hooks: env.waiter_hooks,
+    aw_note: env.aw_note
+  }
+  let product = decode_prelude_module_product(encode_prelude_module_product(run_prelude_module_job(decode_prelude_module_job(encode_prelude_module_job(job)))))
+  prelude_module_product_merge(product = product, own = own, env = env, synth = synth, tail = tail, diagnostics = diagnostics)
+}
+
+/// The answer one route gives: the diagnostic it throws, or "" and the module.
+fn route_answer(entry: String, route: String) -> (String, Bytes) with Env + Fs {
+  handle {
+    let compile = () -> Bytes with Env + Exception + Fs {
+      compile_file_fs_mode_rc_body_cached_split(entry_path = entry, entry_name = "main", cache_mode = "off", use_split = route != "whole")
+    }
+    let bytes = if route == "batch" {
+      prelude_with_module_batch_executor(executor = run_batch_in_instances, action = compile)
+    } else if route == "executor" {
+      prelude_with_module_executor(executor = run_module_in_instance, action = compile)
+    } else {
+      compile()
+    }
+    ("", bytes)
+  } with { Exception::Throw(msg) => (msg, Bytes::new(0)) }
+}
+
+/// Each diagnostic line of `msg`, reduced to the first of `needles` it
+/// contains (`?` when none).
+fn labels(msg: String, needles: Array[String]) -> String {
+  let out: Array[String] = []
+  for line in String::split(msg, sep = "\n") {
+    let mut label = "?"
+    let mut k = 0
+    while label == "?" && k < Array::length(needles) {
+      if String::contains(line, needle = Array::get(needles, at = k)) {
+        label = Array::get(needles, at = k)
+      } else ()
+      k = k + 1
+    }
+    Array::push(out, value = label)
+  }
+  String::join(out, sep = ",")
+}
+
+/// One route's answer, rendered: `refused[labels]`, or `ran[output]` with
+/// the module validated and executed by wasmtime.
+fn rendered(tag: String, route: String, answer: (String, Bytes), needles: Array[String]) -> String with Console + Exception + Fs + Process {
+  if answer.0 != "" {
+    "refused[" + labels(msg = answer.0, needles = needles) + "]"
+  } else {
+    let path = "/tmp/vibe_psr_" + tag + "_" + route + ".wasm"
+    Fs::write_bytes(path, bytes = answer.1)
+    let lines = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0")
+    "ran[" + String::join(lines, sep = ",") + "]"
+  }
+}
+
+/// Writes `files` as `/tmp/vibe_psr_<tag>_<name>.vibe`, compiles `main`
+/// through every route, and renders each answer; `(differs)` marks one whose
+/// diagnostic text or bytes are not the whole lane's.
+fn all_routes(tag: String, files: Array[(String, String)], needles: Array[String]) -> String with Console + Env + Exception + Fs + Process {
+  for file in files {
+    Fs::write_file("/tmp/vibe_psr_" + tag + "_" + file.0 + ".vibe", contents = file.1)
+  }
+  let entry = "/tmp/vibe_psr_" + tag + "_main.vibe"
+  let whole = route_answer(entry = entry, route = "whole")
+  let out: Array[String] = [
+    "whole=" + rendered(tag = tag, route = "whole", answer = whole, needles = needles)
+  ]
+  for route in ["split", "batch", "executor"] {
+    let answer = route_answer(entry = entry, route = route)
+    let same = if answer.0 == whole.0 && answer.1 == whole.1 {
+      ""
+    } else {
+      "(differs)"
+    }
+    Array::push(out, value = route + "=" + rendered(tag = tag, route = route, answer = answer, needles = needles) + same)
+  }
+  String::join(out, sep = " ")
+}
+
+/// `import ./vibe_psr_<tag>_<dep>.vibe { names }`, then a blank line.
+fn import_of(tag: String, dep: String, names: String) -> String {
+  "import ./vibe_psr_" + tag + "_" + dep + ".vibe {\n  " + names + "\n}\n\n"
+}
+
+/// A generic `==` the desugar refuses (#3297), in the leaf.
+fn eq_refused_leaf() -> String {
+  "struct Box[T] {\n  v: T\n} derive (Eq)\n\nexport fn same_box[T: Eq](x: T, y: T) -> Bool {\n  let a = Box::{ v: x }\n  let b = Box::{ v: y }\n  a == b\n}\n"
+}
+
+/// The same refusal, declared in `main` itself.
+fn eq_refused_main_decls() -> String {
+  "struct Cell[T] {\n  v: T\n} derive (Eq)\n\nfn same_cell[T: Eq](x: T, y: T) -> Bool {\n  let a = Cell::{ v: x }\n  let b = Cell::{ v: y }\n  a == b\n}\n\n"
+}
+
+/// A derived renderer of a function field, refused in the leaf.
+fn show_refused_leaf() -> String {
+  "struct C {\n  f: (Int) -> Int\n} derive (Show)\n\nfn inc(_ x: Int) -> Int {\n  x + 1\n}\n\nexport fn show_len() -> Int {\n  let c = C::{ f: inc }\n  let s = \"c=\\{c}\"\n  String::length(s)\n}\n"
+}
+
+test "batch and executor: an `==` refusal in each module reports both, in program order" {
+  let main = import_of(tag = "eqeq", dep = "leaf", names = "same_box") + eq_refused_main_decls() + "fn main() -> Int {\n  if same_box(x = 1, y = 1) && same_cell(x = 1, y = 1) {\n    1\n  } else {\n    0\n  }\n}\n"
+  inspect(all_routes(tag = "eqeq", files = [
+    ("main", main),
+    ("leaf", eq_refused_leaf())
+  ], needles = ["Box", "Cell"]), content = "whole=refused[Box,Cell] split=refused[Box,Cell] batch=refused[Box,Cell] executor=refused[Box,Cell]")
+}
+
+test "batch and executor: a later module's `==` refusal outranks the leaf's renderer and index refusals" {
+  let show_main = import_of(tag = "showeq", dep = "leaf", names = "show_len") + eq_refused_main_decls() + "fn main() -> Int {\n  if same_cell(x = 1, y = 1) {\n    show_len()\n  } else {\n    0\n  }\n}\n"
+  let index_leaf = "export fn first[T](_ c: T) -> Int {\n  Array::get(c, at = 0)\n}\n"
+  let index_main = import_of(tag = "indexeq", dep = "leaf", names = "first") + eq_refused_main_decls() + "fn main() -> Int {\n  if same_cell(x = 1, y = 1) {\n    first([7])\n  } else {\n    0\n  }\n}\n"
+  let show = all_routes(tag = "showeq", files = [
+    ("main", show_main),
+    ("leaf", show_refused_leaf())
+  ], needles = ["`==`", "renderer"])
+  let index = all_routes(tag = "indexeq", files = [
+    ("main", index_main),
+    ("leaf", index_leaf)
+  ], needles = ["`==`", "Array::get"])
+  inspect(show + " / " + index, content = "whole=refused[`==`] split=refused[`==`] batch=refused[`==`] executor=refused[`==`] / whole=refused[`==`] split=refused[`==`] batch=refused[`==`] executor=refused[`==`]")
+}
+
+test "batch and executor: a 32-bit `Add` call in another module than its generic compiles" {
+  let leaf = "export fn add[T: Add](a: T, b: T) -> T {\n  a + b\n}\n"
+  let main = import_of(tag = "add32", dep = "leaf", names = "add") + "fn main() -> Int {\n  let top: Int32 = 2147483647\n  let one: Int32 = 1\n  Int32::to_int(add(a = top, b = one))\n}\n"
+  inspect(all_routes(tag = "add32", files = [("main", main), ("leaf", leaf)], needles = [
+  ]), content = "whole=ran[-2147483648] split=ran[-2147483648] batch=ran[-2147483648] executor=ran[-2147483648]")
+}
+
+test "batch and executor: a renderer refusal in each module reports the first, as the whole program does" {
+  let main = import_of(tag = "showshow", dep = "leaf", names = "show_len") + "struct D {\n  g: (Int) -> Int\n} derive (Show)\n\nfn dec(_ x: Int) -> Int {\n  x - 1\n}\n\nfn show_len2() -> Int {\n  let d = D::{ g: dec }\n  let s = \"d=\\{d}\"\n  String::length(s)\n}\n\nfn main() -> Int {\n  show_len() + show_len2()\n}\n"
+  inspect(all_routes(tag = "showshow", files = [
+    ("main", main),
+    ("leaf", show_refused_leaf())
+  ], needles = ["renderer"]), content = "whole=refused[renderer] split=refused[renderer] batch=refused[renderer] executor=refused[renderer]")
+}

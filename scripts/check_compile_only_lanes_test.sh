@@ -8,9 +8,13 @@
 #   2. leak       -- a named wasm that defines a function of a dropped lane
 #                    (a probe program spelling `compile_file_fs_mode_gc`):
 #                    the absence check must name it.
-#   3. accepted   -- the full CLI stage2, invoked as `cli_main`: it serves
-#                    VIBE_BACKEND=gc, so the refusal check must fail.
-#   4. control    -- the real compile-only artifact passes.
+#                    Also run for a component-tool family (#2499).
+#   3. lost       -- a named wasm with no async component composition: the
+#                    presence check must say the production lane is gone.
+#   4. accepted   -- the full CLI stage2, invoked as `cli_main`: it serves
+#                    VIBE_BACKEND=gc, so the refusal check must fail; and it
+#                    serves VIBE_EMIT_WIT=1, so the tool refusal must fail.
+#   5. control    -- the real compile-only artifact passes.
 #
 # Fixture: the named compile-only artifact the gate builds
 # (_build/compile_only/vibe_compile_only.names.wasm); built here when absent.
@@ -122,12 +126,49 @@ check_leak() { # <source-level name of a forbidden family>
 }
 check_leak compile_file_fs_mode_gc
 check_leak codegen_body_cache_replay
+check_leak adapter_serve_component
 
-# 3. accepted: the full CLI serves the gc lane, so the refusal check fails on
-# the first switch.
+# 3. lost: a named build with no forbidden name and no async component lane.
+# The same probe shape as a leak, under a name no pattern matches, so the
+# absence half passes and only the presence half can fail it.
+check_lost() {
+  local witness="benign_probe_fn"
+  local SRC="$TMP/$witness.vibe" OUT="$TMP/$witness.wasm" i
+  {
+    echo "fn $witness() -> Int { 1 }"
+    i=0
+    while [ "$i" -lt 60 ]; do
+      echo "fn helper_$i(x: Int) -> Int { x + $i }"
+      i=$((i + 1))
+    done
+    printf 'fn main() -> Int {\n  let mut acc = %s()\n' "$witness"
+    i=0
+    while [ "$i" -lt 60 ]; do
+      echo "  acc = helper_$i(x = acc)"
+      i=$((i + 1))
+    done
+    printf '  acc\n}\n'
+  } > "$SRC"
+  _selector_order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
+  env $(printf '%s\n' $_selector_order | sed 's/^/-u /' | tr '\n' ' ') \
+    -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$SRC" "$OUT" main >"$TMP/lost.build.log" 2>&1 || true
+  [ -s "$OUT" ] || { echo "check_compile_only_lanes_test: FAIL (lost): probe did not compile" >&2; exit 1; }
+  if node scripts/wasm_func_sizes.mjs "$OUT" --top 1000000 | grep -qF comp_emit_component_wasm_async_; then
+    echo "check_compile_only_lanes_test: FAIL (lost): the probe defines an async component function, so the mutation did not hit" >&2
+    exit 1
+  fi
+  expect_fail lost "the async component composition the production lanes need is gone" --scan-only "$OUT"
+}
+check_lost
+
+# 4. accepted: the full CLI serves the gc lane, so the refusal check fails on
+# the first switch; it also serves the component tools, which the lane half
+# fails before, so the tool half is asked on its own.
 expect_fail accepted "VIBE_BACKEND=gc was ACCEPTED" --artifact "$STAGE2" --entry cli_main
+expect_fail accepted_tool "VIBE_EMIT_WIT=1 was ACCEPTED" --artifact "$STAGE2" --entry cli_main --tools-only
 
-# 4. control.
+# 5. control.
 if ! bash "$GATE" --artifact "$ART" --entry cli_main_compile_only >"$TMP/control.log" 2>&1; then
   echo "check_compile_only_lanes_test: FAIL (control): the gate rejects the real compile-only artifact" >&2
   cat "$TMP/control.log" >&2

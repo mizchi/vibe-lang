@@ -8,14 +8,23 @@
 // `Float64::cube`, a library function the builtin package declares, while
 // `vibe check` typed both `Float64`.
 //
+// The checker types the INGESTED entry text. For a file in a package whose
+// `index.vpkg` shares imports with its siblings, that text is the shared
+// import lines followed by the file as written, so the typing is read there
+// with the position moved down past those lines (#1960). Before, such a file
+// fell back to single-module typing, which answers nothing for a file that
+// uses a shared import -- most of `lib/`.
+//
 // The single-module answer remains the fallback: a file that does not check
-// on this lane (a type error, a failed import walk) keeps the partial answers
-// its own hover table gives, and so does a file whose ingested source carries
-// a prepended directory-shared import, whose offsets the typed rows would not
-// share with the file as written.
+// on this lane (a type error, a failed import walk), and a file whose
+// ingested text is not the file with whole lines in front of it.
 
 import @vibe/compiler/checker {
   check_program_with_projected_import_env_result, local_let_types_begin, local_let_types_end
+}
+
+import @vibe/compiler/core {
+  TypeEnv
 }
 
 import @vibe/parser {
@@ -23,41 +32,251 @@ import @vibe/parser {
 }
 
 import @vibe/compiler/query/project_context {
-  query_project_context_fs, query_project_state_new
+  QueryProjectState, query_project_context_fs, query_project_state_new, query_project_tokens_unchanged
 }
 
 import ./type_at.vibe {
-  type_at_source, type_at_source_typed, type_at_typed
+  TypeAtTyped, type_at_source, type_at_source_typed, type_at_typed, type_at_typed_kept
+}
+
+/// What a hover on the import-resolving lane answers from: the text the
+/// checker typed, how many lines of it come before the file's first line,
+/// and the typing.
+struct TypeAtFsTyping {
+  text: String;
+  line_shift: Int;
+  typed: TypeAtTyped
+}
+
+/// One resident editor session's import-resolving typing (#1960).
+///
+/// `state` is the project walk kept between requests: per-module
+/// fingerprints, checked environments and dependency sources, so a walk
+/// re-checks only the modules whose source changed. `kept` is the typing of
+/// one revision: the document's path, its buffer text, the entry's walked
+/// fingerprint -- which covers every transitive dependency's source, the
+/// target configuration and the checker semantics -- and the stat token each
+/// dependency was read under.
+///
+/// A hover of the same buffer whose dependencies all keep their stat tokens
+/// is answered from the kept typing without walking: walking the CLI closure
+/// on every request exhausted wasm32's 4 GiB within ~100 hovers. Any token
+/// that moved means a walk; the walk's fingerprint then decides whether the
+/// entry is typed again. A dependency edited on disk, public or private, is
+/// therefore never answered from the typing built before it.
+///
+/// Tokens see a module of the closure change; they cannot see a file appear
+/// that would change what an import resolves to. `invalid` covers that: the
+/// editor reports file events (`didOpen`, `didSave`, watched files), and
+/// `type_at_fs_session_invalidate` makes the next hover walk.
+export struct TypeAtFsSession {
+  state: Array[QueryProjectState];
+  kept: Array[Option[TypeAtFsKept]];
+  invalid: Array[Bool];
+  typings: Array[Int];
+  walks: Array[Int]
+}
+
+struct TypeAtFsKept {
+  path: String;
+  source: String;
+  fingerprint: String;
+  tokens: Array[(String, Int)];
+  typing: Option[TypeAtFsTyping]
 }
 
 //# Functions
+
+/// The number of lines `entry` holds before `source` when it is `source` with
+/// whole lines in front of it, or -1 when it is not.
+fn type_at_fs_line_shift(entry: String, source: String) -> Int {
+  let n = String::length(entry)
+  let m = String::length(source)
+  if n == m {
+    if entry == source {
+      0
+    } else {
+      -1
+    }
+  } else if n < m || String::byte_at(entry, at = n - m - 1) != 10 || entry[n - m: n] != source {
+    -1
+  } else {
+    let mut lines = 0
+    let mut i = 0
+    while i < n - m {
+      if String::byte_at(entry, at = i) == 10 {
+        lines = lines + 1
+      } else ()
+      i = i + 1
+    }
+    lines
+  }
+}
+
+/// Check `text`, the ingested entry, against the import environment its
+/// imports project. `keep` copies the local `let` rows, for a typing that
+/// outlives the next check of any source.
+fn type_at_fs_check(text: String, line_shift: Int, import_env: TypeEnv, keep: Bool) -> TypeAtFsTyping with Exception {
+  // A fresh parse: the checker mutates the statements it is handed.
+  let (tokens, starts, _) = lex_with_offsets(text)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = text)
+  // The rows a local `let` binder answers with are recorded only while
+  // this is on (#3050).
+  local_let_types_begin()
+  let checked = handle {
+    check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env)
+  } with { Exception::Throw(message) => {
+    local_let_types_end(); throw(message)
+  } }
+  local_let_types_end()
+  let typed = if keep {
+    type_at_typed_kept(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env)
+  } else {
+    type_at_typed(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env)
+  }
+  TypeAtFsTyping::{
+    text: text,
+    line_shift: line_shift,
+    typed: typed
+  }
+}
+
+fn type_at_fs_answer(typing: TypeAtFsTyping, line: Int, col: Int) -> String {
+  type_at_source_typed(source = typing.text, line = line + typing.line_shift, col = col, typed = Some(typing.typed))
+}
 
 /// The type of the identifier at 1-based (`line`, `col`) of `source`, the
 /// contents of `path`, typed with its imports resolved. "" as in
 /// `type_at_source`.
 export fn type_at_fs(path: String, source: String, line: Int, col: Int) -> String with Env + Fs {
-  let typed = handle {
+  let typing = handle {
     let context = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new())
-    if context.entry_source != source {
+    let shift = type_at_fs_line_shift(entry = context.entry_source, source = source)
+    if shift < 0 {
       None
     } else {
-      // A fresh parse: the checker mutates the statements it is handed.
-      let (tokens, starts, _) = lex_with_offsets(source)
-      let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
-      // The rows a local `let` binder answers with are recorded only while
-      // this is on (#3050).
-      local_let_types_begin()
-      let checked = handle {
-        check_program_with_projected_import_env_result(stmts = stmts, initial_env = context.import_env)
-      } with { Exception::Throw(message) => {
-        local_let_types_end(); throw(message)
-      } }
-      local_let_types_end()
-      Some(type_at_typed(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env))
+      Some(type_at_fs_check(text = context.entry_source, line_shift = shift, import_env = context.import_env, keep = false))
     }
   } with { Exception::Throw(_) => None }
-  match typed {
-    Some(_) => type_at_source_typed(source = source, line = line, col = col, typed = typed),
+  match typing {
+    Some(t) => type_at_fs_answer(typing = t, line = line, col = col),
     None => type_at_source(source = source, line = line, col = col)
+  }
+}
+
+/// A session that has typed nothing and walked nothing.
+export fn type_at_fs_session_new() -> TypeAtFsSession {
+  TypeAtFsSession::{
+    state: [query_project_state_new()],
+    kept: [None],
+    invalid: [false],
+    typings: [0],
+    walks: [0]
+  }
+}
+
+/// How many revisions this session has typed: the first hover of a revision
+/// types it, every later hover of the same revision reuses that typing.
+export fn type_at_fs_session_typings(_ session: TypeAtFsSession) -> Int {
+  Array::get(session.typings, at = 0)
+}
+
+/// How many times this session has walked the project: once per revision,
+/// and again whenever a dependency's stat token moved or a file event
+/// invalidated the kept typing.
+export fn type_at_fs_session_walks(_ session: TypeAtFsSession) -> Int {
+  Array::get(session.walks, at = 0)
+}
+
+/// Make the next hover walk the project, because a file may have appeared or
+/// been removed where an import looks (a file event from the editor).
+export fn type_at_fs_session_invalidate(_ session: TypeAtFsSession) -> Unit {
+  Array::set(session.invalid, at = 0, value = true)
+}
+
+/// Drop the kept typing when it belongs to `path`. The project walk stays: it
+/// is keyed by module path, not by the document.
+export fn type_at_fs_session_release(session: TypeAtFsSession, path: String) -> Unit {
+  match Array::get(session.kept, at = 0) {
+    Some(k) => if k.path == path {
+      Array::set(session.kept, at = 0, value = None)
+    } else (),
+    None => ()
+  }
+}
+
+/// The kept typing, when it is of this buffer and nothing it was built from
+/// may have changed since.
+fn type_at_fs_session_current(session: TypeAtFsSession, path: String, source: String) -> Option[Option[TypeAtFsTyping]] with Fs {
+  if Array::get(session.invalid, at = 0) {
+    None
+  } else {
+    match Array::get(session.kept, at = 0) {
+      Some(k) => if k.path == path && k.source == source && k.fingerprint != "" && query_project_tokens_unchanged(k.tokens) {
+        Some(k.typing)
+      } else {
+        None
+      },
+      None => None
+    }
+  }
+}
+
+/// Walk the project for this buffer and type it, unless the walk finds the
+/// kept revision's fingerprint again.
+fn type_at_fs_session_walk(session: TypeAtFsSession, path: String, source: String) -> Option[TypeAtFsTyping] with Env + Exception + Fs {
+  // Counted before the walk: a walk that fails (an import that no longer
+  // resolves) is still a walk this session made.
+  Array::set(session.walks, at = 0, value = Array::get(session.walks, at = 0) + 1)
+  let context = query_project_context_fs(path = path, source = source, replacement = None, state = Array::get(session.state, at = 0))
+  Array::set(session.state, at = 0, value = context.state)
+  Array::set(session.invalid, at = 0, value = false)
+  let same = match Array::get(session.kept, at = 0) {
+    Some(k) => if k.path == path && k.source == source && k.fingerprint == context.entry_fingerprint && k.fingerprint != "" {
+      Some(k.typing)
+    } else {
+      None
+    },
+    None => None
+  }
+  let typing = match same {
+    Some(t) => t,
+    None => {
+      let shift = type_at_fs_line_shift(entry = context.entry_source, source = source)
+      Array::set(session.typings, at = 0, value = Array::get(session.typings, at = 0) + 1)
+      if shift < 0 {
+        None
+      } else {
+        handle {
+          Some(type_at_fs_check(text = context.entry_source, line_shift = shift, import_env = context.import_env, keep = true))
+        } with { Exception::Throw(_) => None }
+      }
+    }
+  }
+  Array::set(session.kept, at = 0, value = Some(TypeAtFsKept::{
+    path: path,
+    source: source,
+    fingerprint: context.entry_fingerprint,
+    tokens: context.closure_tokens,
+    typing: typing
+  }))
+  typing
+}
+
+/// `type_at_fs` for a resident session: the type at 1-based (`line`, `col`)
+/// of `source`, the buffer of `path`, or `None` when the file has no typing on
+/// this lane (it does not check with its imports, the walk failed, or its
+/// ingested text is not the buffer with lines in front of it). A caller
+/// answers `None` from the single-module typing, as `type_at_fs` does.
+export fn type_at_fs_session_answer(session: TypeAtFsSession, path: String, source: String, line: Int, col: Int) -> Option[String] with Env + Fs {
+  let typing = match type_at_fs_session_current(session = session, path = path, source = source) {
+    Some(kept) => kept,
+    None => handle {
+      type_at_fs_session_walk(session = session, path = path, source = source)
+    } with { Exception::Throw(_) => None }
+  }
+  match typing {
+    Some(t) => Some(type_at_fs_answer(typing = t, line = line, col = col)),
+    None => None
   }
 }
