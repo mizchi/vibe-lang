@@ -25,6 +25,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  env_bind,
   env_lookup,
   env_name_index_at,
   env_name_index_length,
@@ -1019,6 +1020,47 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
       }
       found
     }
+  }
+}
+
+/// Mark `name` an alias of a binding declared outside the active region when
+/// `aliases` says its value is one, so a write into it is judged as a write
+/// into that binding (`container_write_crosses_region`).
+export fn region_outer_alias_mark(env: TypeEnv, name: String, aliases: Bool) -> TypeEnv {
+  if aliases {
+    env_bind(env = env, name = String::concat("__region_outer_alias__", name), ty = CtUnit)
+  } else {
+    env
+  }
+}
+
+/// #4050: a binder that reads its value out of `value` -- a `for` loop's
+/// element (`pat` is `PBind(name)`), a `match` arm's pattern -- holds a part
+/// of what `value` holds. Inside a region, a `value` that aliases a binding
+/// declared outside it makes each name `pat` binds an alias of that binding,
+/// as `let a = Array::get(boxes, at = 0)` already is; `env` is the binders'
+/// environment and `scope` the one `value` is read in. Before, the binder was
+/// judged as a binding of the region body, so `for a in boxes {
+/// Array::push(a, value = cell) }` stored a region value in an outer array.
+export fn region_outer_alias_bind(env: TypeEnv, pat: Pat, value: Expr, scope: TypeEnv) -> TypeEnv {
+  let active = match env_lookup(env = scope, name = "#active_region") {
+    Some(CtNamed(_, _)) => true,
+    _ => false
+  }
+  if active {
+    let names: Array[String] = []
+    retention_pat_names_into(p = pat, out = names)
+    let mut out = env
+    if Array::length(names) > 0 && expression_aliases_outer_binding(expr = value, env = scope) {
+      for name in names {
+        out = region_outer_alias_mark(env = out, name = name, aliases = true)
+      }
+    } else {
+      ()
+    }
+    out
+  } else {
+    env
   }
 }
 

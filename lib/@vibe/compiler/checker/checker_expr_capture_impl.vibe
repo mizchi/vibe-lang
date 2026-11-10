@@ -289,6 +289,8 @@ import ./checker_merge_capture_provenance.vibe {
   merge_value_effect_provenance,
   record_local_let_rec_type,
   record_local_let_type,
+  region_outer_alias_bind,
+  region_outer_alias_mark,
   reset_eq_formal_vars,
   resume_walk_param_base,
   return_provenance_key,
@@ -425,11 +427,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           },
           _ => ()
         }
-        if aliases_outer {
-          cenv = env_bind(env = cenv, name = String::concat("__region_outer_alias__", name), ty = CtUnit)
-        } else {
-          ()
-        }
+        cenv = region_outer_alias_mark(env = cenv, name = name, aliases = aliases_outer)
         // #3343: what a call of `name` reaches -- the closure literal, or the
         // callee an alias stands for -- so a call inside a region can check
         // the body for what it keeps.
@@ -1298,6 +1296,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Some(t) => env_bind(env = arm_env, name = spawn_safe_marker(t), ty = CtUnit),
             None => arm_env
           }
+          let arm_env = region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env)
           // #3548: a pattern carries no offset, so what `check_pattern`
           // reports (a constructor bound with the wrong arity, ...) is
           // anchored at its arm -- the body, or the scrutinee when the body
@@ -2279,7 +2278,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           (CtUnknown, c1)
         }
       }
-      let env2 = env_bind(env = env, name = name, ty = et)
+      let env2 = region_outer_alias_bind(env = env_bind(env = env, name = name, ty = et), pat = PBind(name), value = iterable, scope = env)
       let env3 = match index_name {
         Some(index_name) => env_bind(env = env2, name = index_name, ty = CtInt),
         None => env2
