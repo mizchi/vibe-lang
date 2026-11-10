@@ -51,3 +51,21 @@ test "the builtin Array::push inside a callback is still refused as a container 
   let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = (c) -> {\n      Array::push(sink, value = c)\n      0\n    })\n    0\n  }\n}\n"
   inspect(check_source_report(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
 }
+
+// Codex on #4047: a re-check of a callback is keyed by the closure and the
+// shape it is checked at, so a recursive callback re-checked inside its own
+// re-check ends there instead of running into the depth guard, whose answer
+// is a refusal.
+let walk_through_literal = "    let rec walk = (c) -> {\n      let _ = Array::map([c], f = (d) -> walk(d))\n      MutList::length(c)\n    }\n"
+
+test "a recursive callback that stores nothing is accepted, reachable or not" {
+  let reached = String::concat("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n", String::concat(walk_through_literal, "    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"))
+  assert(check_source_ok(reached))
+  let unreached = "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let rec walk = (c) -> {\n      if false {\n        let _ = Array::map([c], f = (d) -> walk(d))\n        0\n      } else {\n        MutList::length(c)\n      }\n    }\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"
+  assert(check_source_ok(unreached))
+}
+
+test "a recursive callback that stores its element outside is refused" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let rec walk = (c) -> {\n      Array::push(sink, value = c)\n      let _ = Array::map([c], f = (d) -> walk(d))\n      0\n    }\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"
+  assert(String::contains(check_source_report(src), needle = "region escapes its scope: a container write stores a value that captures this region"))
+}
