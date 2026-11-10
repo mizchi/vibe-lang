@@ -1,0 +1,91 @@
+// #2334: `Map::from_pairs` takes `Int`, `Char` and `Bool` literal keys as well
+// as String ones. A scalar-keyed call builds the same map as the `Map::set`
+// calls a program would write, so its keys are compared as exact i64 values
+// and never hashed as String pointers. The same file runs on the linear and
+// the wasm-gc lanes (tests/gates/mid/6b_40, step 40h8s).
+
+test "Int keys: get, has_key, size" {
+  let m = Map::from_pairs([(1, "one"), (2, "two"), (30, "thirty")])
+  inspect(Map::size(m), content = "3")
+  inspect(Map::get(m, key = 2), content = "two")
+  inspect(m[30], content = "thirty")
+  inspect("\{Map::has_key(m, key = 1)} \{Map::has_key(m, key = 3)}", content = "true false")
+}
+
+test "a negative Int key" {
+  let m = Map::from_pairs([(-1, "minus one"), (1, "plus one")])
+  inspect(Map::get(m, key = 0 - 1), content = "minus one")
+  inspect(Map::get(m, key = 1), content = "plus one")
+}
+
+test "Char keys" {
+  let m = Map::from_pairs([('a', 1), ('b', 2), ('z', 26)])
+  inspect(Map::get(m, key = 'z'), content = "26")
+  inspect("\{Map::has_key(m, key = 'b')} \{Map::has_key(m, key = 'c')} (Char)", content = "true false (Char)")
+}
+
+test "Bool keys" {
+  let m = Map::from_pairs([(true, "yes"), (false, "no")])
+  inspect(Map::get(m, key = false), content = "no")
+  inspect("\{Map::size(m)} Bool keys", content = "2 Bool keys")
+}
+
+test "keys keep their insertion order and come back as Ints" {
+  let m = Map::from_pairs([(30, "x"), (12, "y"), (5, "z")])
+  let mut seen = ""
+  let mut total = 0
+  for k in Map::keys(m) {
+    seen = "\{seen}\{k},"
+    total = total + k
+  }
+  inspect(seen, content = "30,12,5,")
+  inspect(total, content = "47")
+}
+
+test "a from_pairs map takes further scalar operations" {
+  let m = Map::from_pairs([(1, 10), (2, 20)])
+  let grown = Map::set(m, key = 3, value = 30)
+  let shrunk = Map::delete(grown, key = 1)
+  inspect("\{Map::size(m)} \{Map::size(grown)} \{Map::size(shrunk)}", content = "2 3 2")
+  inspect(Map::get(shrunk, key = 3), content = "30")
+  inspect("deleted: \{!Map::has_key(shrunk, key = 1)}", content = "deleted: true")
+}
+
+test "equals the map the Map::set calls build" {
+  let a = Map::from_pairs([(1, "a"), (2, "b")])
+  let b = Map::set(Map::set(Map::new(), key = 2, value = "b"), key = 1, value = "a")
+  let c = Map::from_pairs([(1, "a"), (2, "c")])
+  inspect("a == b: \{a == b}, a == c: \{a == c}", content = "a == b: true, a == c: false")
+}
+
+test "pair values may hold commas, brackets and blocks" {
+  let m = Map::from_pairs([
+    (1, [10, 11]),
+    (2, Array::map([1, 2, 3], f = (x) -> {
+      x * 2
+    })),
+    (3, [(4, 5)] |> Array::map(f = (p) -> p.0 + p.1)),
+  ])
+  inspect("\{Map::size(m)} pairs", content = "3 pairs")
+  inspect(Map::get(m, key = 2), content = "[2, 4, 6]")
+  inspect(Map::get(m, key = 3), content = "[9]")
+}
+
+test "a String-keyed from_pairs map is unchanged" {
+  let m = Map::from_pairs([("k1", 1), ("k2", 2)])
+  inspect("k2=\{Map::get(m, key = "k2")} k3=\{Map::has_key(m, key = "k3")}", content = "k2=2 k3=false")
+}
+
+test "an annotated scalar-keyed binding" {
+  let m: Map[Int, String] = Map::from_pairs([(7, "seven")])
+  inspect(Map::get(m, key = 7), content = "seven")
+}
+
+test "Int keys whose low 32 bits are zero stay distinct" {
+  // `1 << 32` and `2 << 32`: read as packed String refs they are two empty
+  // Strings, which the String-aware `eq` calls equal.
+  let m = Map::from_pairs([(4294967296, "first"), (8589934592, "second")])
+  inspect("\{Map::size(m)} entries", content = "2 entries")
+  inspect(Map::get(m, key = 1 << 32), content = "first")
+  inspect(Map::get(m, key = 2 << 32), content = "second")
+}

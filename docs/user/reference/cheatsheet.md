@@ -1641,6 +1641,7 @@ let nv = {                            // destructure also works in fn/block body
 // rejected -- written or inferred. For another key type, use `MutMap[K, V]`
 // from `@vibe/core` (below).
 let m = Map::from_pairs([("key", 42)])
+let im = Map::from_pairs([(1, "one"), (2, "two")]) // literal keys: String, Int, Char or Bool
 let e = Map::new()                    // empty map
 let mv = m["key"]
 // `Map::set` is FUNCTIONAL: it returns a new map and leaves the receiver
@@ -3150,9 +3151,12 @@ A `for-in` comprehension desugars to these builder operations internally.
 
 **Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Int32`,
 `UInt32`, `Char` or `Bool` key (#2334, #3730); `StringMap[V]` is `Map[String, V]` (no import needed; the
-operations keep the `Map::` qualifier). A map literal and
-`Map::from_pairs([...])` take string-literal keys; a map with another key
-starts from `Map::new()`, and the first keyed call decides its key type:
+operations keep the `Map::` qualifier). `Map::from_pairs([...])` takes
+literal keys of one type -- String, `Int`, `Char` or `Bool` literals, each
+listed once: `Map::from_pairs([(7, "seven")])` is a `Map[Int, String]`, and
+builds the same map as the `Map::set` calls that would add its pairs one by
+one. A map keyed by anything else, or by a computed key, starts from
+`Map::new()`, and the first keyed call decides its key type:
 `Map::set(Map::new(), 7, "seven")` is a `Map[Int, String]`. An annotation
 naming any other key (`fn f(m: Map[Double, String])`) is rejected where it is
 written, and points at `MutMap[K, V]` from `@vibe/core`.
