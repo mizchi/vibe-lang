@@ -1,0 +1,342 @@
+//# Imports
+
+// #2827: a function-typed parameter that every call binds to the same
+// function is called as that function directly.
+//
+// An indirect call owns its arguments, so a function that passes a parameter
+// to a callback owns that parameter, and so does every caller that passes it
+// along. The compiler's `compile_expr` hands itself down as the `ce` callback
+// to the files it imports, which cannot import it back, so `ctx` was owned
+// through the whole code generator. `direct_known_fn_params` rewrites each
+// call of such a parameter to a direct call of the one function it can hold.
+// These tests pin which parameters it takes and the plans the RC queries then
+// report.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  direct_known_fn_params
+}
+
+import @vibe/compiler/query {
+  rc_plan_source
+}
+
+//# Helpers
+
+fn ty(_ n: String) -> Option[TypeExpr] {
+  Some(TyName(n))
+}
+
+/// The callback type `(Ctx, Int) -> Int`.
+fn cb_ty() -> Option[TypeExpr] {
+  Some(TyFn([TyName("Ctx"), TyName("Int")], TyName("Int"), None))
+}
+
+fn fn_typed(name: String, params: Array[(String, Option[TypeExpr])], body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], params, None, None, body))
+}
+
+fn id(_ n: String) -> Expr {
+  EIdent(n, -1)
+}
+
+fn call(f: String, args: Array[Expr]) -> Expr {
+  ECall(id(f), args, -1, [])
+}
+
+/// `reader(ctx: Ctx, k: Int) = ctx.n + k`.
+fn reader(_ name: String) -> Stmt {
+  fn_typed(name = name, params = [("ctx", ty("Ctx")), ("k", ty("Int"))], body = EBinOp("+", EDot(id("ctx"), "n", -1, -1), id("k"), -1))
+}
+
+/// `step(ctx: Ctx, cb: (Ctx, Int) -> Int) = cb(ctx, 1)`.
+fn step() -> Stmt {
+  fn_typed(name = "step", params = [("ctx", ty("Ctx")), ("cb", cb_ty())], body = call(f = "cb", args = [
+    id("ctx"),
+    EInt(1)
+  ]))
+}
+
+/// `<name>() = step(mk(), <cb>)`.
+fn caller(name: String, cb: Expr) -> Stmt {
+  fn_typed(name = name, params = [], body = call(f = "step", args = [
+    call(f = "mk", args = []),
+    cb
+  ]))
+}
+
+fn joined(_ xs: Array[String]) -> String {
+  let mut out = ""
+  for x in xs {
+    out = if out == "" {
+      x
+    } else {
+      out + "," + x
+    }
+  }
+  if out == "" {
+    "(none)"
+  } else {
+    out
+  }
+}
+
+/// `<case>: <rewritten parameters>`, so every expectation is a distinct
+/// literal.
+fn direct(case: String, stmts: Array[Stmt]) -> String {
+  case + ": " + joined(direct_known_fn_params(stmts = stmts, exclude = ["main"]))
+}
+
+/// The callee of the body call of the function `name`.
+fn body_callee_of(stmts: Array[Stmt], name: String) -> String {
+  let mut found = "(absent)"
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, ECall(EIdent(callee, _), _, _, _))) => if n == name {
+        found = callee
+      } else (),
+      _ => ()
+    }
+  }
+  found
+}
+
+//# Which parameters are taken
+
+test "a callback every call binds to one function is called directly" {
+  let stmts = [
+    reader("g"),
+    step(),
+    caller(name = "a", cb = id("g")),
+    caller(name = "b", cb = id("g"))
+  ]
+  inspect(direct(case = "one", stmts = stmts), content = "one: step:cb=g")
+  inspect(body_callee_of(stmts = stmts, name = "step"), content = "g")
+}
+
+test "a labeled argument binds the callback the same way" {
+  let labeled = fn_typed(name = "a", params = [], body = call(f = "step", args = [
+    ELabeledArg("ctx", "", call(f = "mk", args = [])),
+    ELabeledArg("cb", "", id("g"))
+  ]))
+  let stmts = [reader("g"), step(), labeled]
+  inspect(direct(case = "labeled", stmts = stmts), content = "labeled: step:cb=g")
+}
+
+test "two different functions keep the indirect call" {
+  let stmts = [
+    reader("g"),
+    reader("h"),
+    step(),
+    caller(name = "a", cb = id("g")),
+    caller(name = "b", cb = id("h"))
+  ]
+  inspect(direct(case = "two", stmts = stmts), content = "two: (none)")
+  inspect(body_callee_of(stmts = stmts, name = "step"), content = "cb")
+}
+
+test "a forwarded parameter is followed to the function its callers pass" {
+  // `fwd(ctx, cb) = step(ctx, cb)`: `step`'s `cb` is whatever `fwd`'s is.
+  let fwd = fn_typed(name = "fwd", params = [("ctx", ty("Ctx")), ("cb", cb_ty())], body = call(f = "step", args = [
+    id("ctx"),
+    id("cb")
+  ]))
+  let top = fn_typed(name = "a", params = [], body = call(f = "fwd", args = [
+    call(f = "mk", args = []),
+    id("g")
+  ]))
+  inspect(direct(case = "forward", stmts = [reader("g"), step(), fwd, top]), content = "forward: step:cb=g")
+}
+
+test "a function passed only to a parameter a rewrite left dead is taken next" {
+  // The compiler's shape: `core(ctx, cb)` forwards `cb` to `step`, and it is
+  // passed down as `corefn` to `named`, which `top` calls. `core` is named as
+  // a value, so the first round cannot see all its calls. That round turns
+  // `named`'s `corefn(..)` into `core(..)`, which leaves the value `core` dead
+  // and lets the second round follow `cb` through it.
+  let core = fn_typed(name = "core", params = [
+    ("ctx", ty("Ctx")),
+    ("cb", cb_ty())
+  ], body = call(f = "step", args = [id("ctx"), id("cb")]))
+  let core_ty = Some(TyFn([
+    TyName("Ctx"),
+    TyFn([TyName("Ctx"), TyName("Int")], TyName("Int"), None)
+  ], TyName("Int"), None))
+  let named = fn_typed(name = "named", params = [
+    ("ctx", ty("Ctx")),
+    ("cb", cb_ty()),
+    ("corefn", core_ty)
+  ], body = call(f = "corefn", args = [id("ctx"), id("cb")]))
+  let top = fn_typed(name = "a", params = [], body = call(f = "named", args = [
+    call(f = "mk", args = []),
+    id("g"),
+    id("core")
+  ]))
+  let stmts = [reader("g"), step(), core, named, top]
+  inspect(direct(case = "rounds", stmts = stmts), content = "rounds: named:corefn=core,step:cb=g")
+  inspect(body_callee_of(stmts = stmts, name = "named"), content = "core")
+  inspect(body_callee_of(stmts = stmts, name = "step"), content = "g")
+}
+
+test "a function passed only to an unused parameter does not hide its forwards" {
+  // `compile_call_core`'s shape: `core` is never called, only passed as
+  // `corefn` to `named`, which ignores it. `core` forwards `cb` to `step`.
+  // Once `corefn` is known to hold nothing but `core` and is never called,
+  // `core` has no callers at all, and `step`'s `cb` is what `named` passes.
+  let core = fn_typed(name = "core", params = [
+    ("ctx", ty("Ctx")),
+    ("cb", cb_ty())
+  ], body = call(f = "step", args = [id("ctx"), id("cb")]))
+  let core_ty = Some(TyFn([
+    TyName("Ctx"),
+    TyFn([TyName("Ctx"), TyName("Int")], TyName("Int"), None)
+  ], TyName("Int"), None))
+  let named = fn_typed(name = "named", params = [
+    ("ctx", ty("Ctx")),
+    ("cb", cb_ty()),
+    ("corefn", core_ty)
+  ], body = call(f = "step", args = [id("ctx"), id("cb")]))
+  let top = fn_typed(name = "a", params = [], body = call(f = "named", args = [
+    call(f = "mk", args = []),
+    id("g"),
+    id("core")
+  ]))
+  let stmts = [reader("g"), step(), core, named, top]
+  inspect(direct(case = "unused", stmts = stmts), content = "unused: step:cb=g")
+}
+
+test "a function value that escapes keeps what it forwards unknown" {
+  // As above, but `named` also stores `corefn`: `core` may be called from
+  // anywhere, so `step`'s `cb` may be anything `core` is handed.
+  let core = fn_typed(name = "core", params = [
+    ("ctx", ty("Ctx")),
+    ("cb", cb_ty())
+  ], body = call(f = "step", args = [id("ctx"), id("cb")]))
+  let core_ty = Some(TyFn([
+    TyName("Ctx"),
+    TyFn([TyName("Ctx"), TyName("Int")], TyName("Int"), None)
+  ], TyName("Int"), None))
+  let named = fn_typed(name = "named", params = [
+    ("ctx", ty("Ctx")),
+    ("cb", cb_ty()),
+    ("corefn", core_ty)
+  ], body = ESeq(call(f = "keep", args = [id("corefn")]), call(f = "step", args = [
+    id("ctx"),
+    id("cb")
+  ])))
+  let top = fn_typed(name = "a", params = [], body = call(f = "named", args = [
+    call(f = "mk", args = []),
+    id("g"),
+    id("core")
+  ]))
+  inspect(direct(case = "escapes", stmts = [
+    reader("g"),
+    step(),
+    core,
+    named,
+    top
+  ]), content = "escapes: (none)")
+}
+
+test "a cycle of forwards that no call feeds is left alone" {
+  // `loop(ctx, cb) = loop(ctx, cb)`, called from nowhere else.
+  let lp = fn_typed(name = "lp", params = [("ctx", ty("Ctx")), ("cb", cb_ty())], body = ESeq(call(f = "cb", args = [
+    id("ctx"),
+    EInt(1)
+  ]), call(f = "lp", args = [id("ctx"), id("cb")])))
+  inspect(direct(case = "cycle", stmts = [reader("g"), lp]), content = "cycle: (none)")
+}
+
+test "a lambda argument keeps the indirect call" {
+  let lam = EFn([], [], [("c", ty("Ctx")), ("k", ty("Int"))], None, None, id("k"))
+  inspect(direct(case = "lambda", stmts = [
+    reader("g"),
+    step(),
+    caller(name = "a", cb = lam)
+  ]), content = "lambda: (none)")
+}
+
+test "a function used as a value keeps its callback indirect" {
+  // `v() = keep(step)`: a value use of `step` reaches calls this cannot see.
+  let v = fn_typed(name = "v", params = [], body = call(f = "keep", args = [
+    id("step")
+  ]))
+  inspect(direct(case = "valued", stmts = [
+    reader("g"),
+    step(),
+    caller(name = "a", cb = id("g")),
+    v
+  ]), content = "valued: (none)")
+}
+
+test "a binder that spells the target keeps the callback indirect" {
+  let other = fn_typed(name = "other", params = [("g", ty("Ctx"))], body = EDot(id("g"), "n", -1, -1))
+  inspect(direct(case = "binder", stmts = [
+    reader("g"),
+    step(),
+    caller(name = "a", cb = id("g")),
+    other
+  ]), content = "binder: (none)")
+}
+
+test "a body that rebinds the parameter keeps it indirect" {
+  // `step2(ctx, cb) = { let cb = cb; cb(ctx, 1) }`
+  let rebinding = fn_typed(name = "step", params = [
+    ("ctx", ty("Ctx")),
+    ("cb", cb_ty())
+  ], body = ELet("cb", id("cb"), call(f = "cb", args = [id("ctx"), EInt(1)]), -1))
+  inspect(direct(case = "rebound", stmts = [
+    reader("g"),
+    rebinding,
+    caller(name = "a", cb = id("g"))
+  ]), content = "rebound: (none)")
+}
+
+test "a call that omits a parameter keeps the callback indirect" {
+  let short = fn_typed(name = "a", params = [], body = call(f = "step", args = [
+    call(f = "mk", args = [])
+  ]))
+  inspect(direct(case = "short", stmts = [
+    reader("g"),
+    step(),
+    caller(name = "b", cb = id("g")),
+    short
+  ]), content = "short: (none)")
+}
+
+test "a target with an optional parameter keeps the callback indirect" {
+  let opt = fn_typed(name = "g", params = [("ctx", ty("Ctx")), ("k?", ty("Int"))], body = EDot(id("ctx"), "n", -1, -1))
+  inspect(direct(case = "optional", stmts = [
+    opt,
+    step(),
+    caller(name = "a", cb = id("g"))
+  ]), content = "optional: (none)")
+}
+
+//# The `vibe rc-plan` surface
+
+// `walk` hands itself down to `step` as `cb`, the way `compile_expr` hands
+// itself to `compile_match`. Before the rewrite, `step`'s two indirect calls
+// consumed `ctx` (one dup), and `walk` passed it to `step` before reading it
+// again (another dup).
+let callback_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn use1(ctx: Ctx) -> Int {\n  ctx.n + 1\n}\n\nfn walk(ctx: Ctx, k: Int) -> Int {\n  if k > 0 {\n    step(ctx = ctx, k = k - 1, cb = walk) + use1(ctx = ctx)\n  } else {\n    0\n  }\n}\n\nfn step(ctx: Ctx, k: Int, cb: (Ctx, Int) -> Int) -> Int {\n  cb(ctx, k) + cb(ctx, k)\n}\n\nexport fn main() -> Int {\n  let cx = Ctx::{ n: 1, xs: [1, 2] }\n  walk(ctx = cx, k = 3)\n}\n"
+
+test "rc-plan takes no dup of a context only a known callback reads" {
+  let plan = rc_plan_source(source = callback_prelude, fn_filter = "")
+  assert(!String::contains(plan, needle = "step ctx dup"))
+  assert(!String::contains(plan, needle = "walk ctx dup"))
+  // `walk` is still passed as a value, so it keeps an owning thunk for that.
+  assert(String::contains(plan, needle = "walk$owned ctx drop 1"))
+}
+
+// The same program with a second callback: `step` cannot know which one it
+// holds, so its calls stay indirect and keep their dups.
+let two_callback_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn use1(ctx: Ctx) -> Int {\n  ctx.n + 1\n}\n\nfn use2(ctx: Ctx, k: Int) -> Int {\n  ctx.n + k\n}\n\nfn walk(ctx: Ctx, k: Int) -> Int {\n  if k > 0 {\n    step(ctx = ctx, k = k - 1, cb = walk) + use1(ctx = ctx)\n  } else {\n    0\n  }\n}\n\nfn step(ctx: Ctx, k: Int, cb: (Ctx, Int) -> Int) -> Int {\n  cb(ctx, k) + cb(ctx, k)\n}\n\nexport fn main() -> Int {\n  let cx = Ctx::{ n: 1, xs: [1, 2] }\n  walk(ctx = cx, k = 3) + step(ctx = cx, k = 1, cb = use2)\n}\n"
+
+test "rc-plan keeps the dup when the callback can be either of two functions" {
+  let plan = rc_plan_source(source = two_callback_prelude, fn_filter = "")
+  assert(String::contains(plan, needle = "step ctx dup"))
+}

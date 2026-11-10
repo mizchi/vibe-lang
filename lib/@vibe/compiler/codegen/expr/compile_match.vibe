@@ -1293,6 +1293,307 @@ fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(St
   }
 }
 
+/// #2827: `compile_match`'s pattern tests, as functions rather than closures
+/// over its locals. A closure would capture `ctx`, and borrow inference counts
+/// a capture as a consume, which made `ctx` owned in `compile_match` and up
+/// its callers to `compile_expr`.
+///
+/// A test reads the value at one position of the scrutinee. `path` says how to
+/// load it: from `scrut_local`, each step `(0, k, _)` reads constructor field
+/// `k`, and each `(1, k, scratch)` reads tuple element `k`, probing the fields'
+/// base with `scratch`.
+fn match_emit_load(buf: Bytes, scrut_local: Int, path: Array[(Int, Int, Int)], ctx: CompileCtx) -> Unit {
+  emit_local_get(buf = buf, idx = scrut_local)
+  let mut i = 0
+  while i < Array::length(path) {
+    let (kind, k, scratch) = Array::get(path, at = i)
+    if kind == 0 {
+      emit_i64_const(buf = buf, value = -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf = buf, align = 3, offset = 8 + k * 8)
+    } else {
+      emit_match_fields_base(buf = buf, scratch = scratch, constant_header = ctx.enable_rc)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
+        8 + k * 8
+      } else {
+        k * 8
+      })
+    }
+    i = i + 1
+  }
+}
+
+/// `path` with one more step.
+fn match_path_then(path: Array[(Int, Int, Int)], kind: Int, k: Int, scratch: Int) -> Array[(Int, Int, Int)] {
+  let out = Array::slice(path, start = 0, end = Array::length(path))
+  Array::push(out, value = (kind, k, scratch))
+  out
+}
+
+/// #613 follow-up: discriminate literal sub-patterns at EVERY nesting level,
+/// not just the top constructor-argument level. This emits a single i32
+/// boolean ("does the value at `path` match `sp`?") with NO trailing AND,
+/// recursing through ctor args, tuple elements, and or-branches. Without
+/// recursing, `N(W(false), n)` matched `N(W(true), _)`, `T((false, n))` matched
+/// `T((true, _))`, and or-branches `(1, _) | (2, _)` / `"a" | "b"` matched
+/// anything -- silent wrong results. Bindings/wildcards always match (push 1).
+fn match_emit_pat_test(buf: Bytes, sp: Pat, path: Array[(Int, Int, Int)], scrut_local: Int, tuple_probe_local: Int, ctx: CompileCtx) -> Unit with Exception {
+  match sp {
+    POr(__l, __r) => {
+      // (left matches) OR (right matches) at this same position.
+      match_emit_pat_test(buf = buf, sp = __l, path = path, scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+      match_emit_pat_test(buf = buf, sp = __r, path = path, scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+      bytebuf_push(buf = buf, byte = 114)
+    },
+    _ => {
+      if is_pfloat(sp) {
+        // Bit-exact f64 compare: bump lane holds raw bits, RC lane a boxed
+        // pointer (unbox first). f64.eq gives `==` semantics (0.0 == -0.0).
+        match_emit_load(buf = buf, scrut_local = scrut_local, path = path, ctx = ctx)
+        if ctx.enable_rc {
+          emit_unbox_float(buf)
+        } else {
+          ()
+        }
+        emit_f64_reinterpret_i64(buf)
+        let __pfv = get_pfloat_value(sp)
+        emit_f64_const_lohi(buf = buf, lo = Float64::to_i64_bits_lo(__pfv), hi = Float64::to_i64_bits_hi(__pfv))
+        emit_f64_eq(buf)
+      } else if is_pint(sp) {
+        match_emit_load(buf = buf, scrut_local = scrut_local, path = path, ctx = ctx)
+        emit_i64_const(buf = buf, value = get_pint_value(sp))
+        if ctx.enable_rc {
+          emit_i64_const(buf = buf, value = 1)
+          emit_i64_shl(buf)
+        }
+        emit_i64_eq(buf)
+      } else if is_pbool(sp) {
+        match_emit_load(buf = buf, scrut_local = scrut_local, path = path, ctx = ctx)
+        emit_i64_const(buf = buf, value = if get_pbool_value(sp) {
+          1
+        } else {
+          0
+        })
+        if ctx.enable_rc {
+          emit_i64_const(buf = buf, value = 1)
+          emit_i64_shl(buf)
+        }
+        emit_i64_eq(buf)
+      } else if is_pstring(sp) {
+        let __sv = get_pstring_value(sp)
+        let __si = str_table_index_of(st = ctx.str_table, s = __sv)
+        if __si >= 0 {
+          let (__seq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+          match_emit_load(buf = buf, scrut_local = scrut_local, path = path, ctx = ctx)
+          emit_str_ref_slot(buf = buf, ctx = ctx, slot = __si)
+          emit_call(buf = buf, func_idx = __seq_fi)
+          emit_i32_wrap_i64(buf)
+        } else {
+          // String literal absent from the table: conservatively match (the
+          // prior behavior emitted no test at all).
+          emit_i32_const(buf = buf, value = 1)
+        }
+      } else if is_pctor(sp) {
+        let __ncname = get_pctor_name(sp)
+        let __nci = ctor_table_index_of(ct = ctx.ctor_table, name = __ncname)
+        let __ntag = if __nci >= 0 {
+          Array::get(ctx.ctor_table.tags, at = __nci)
+        } else {
+          -1
+        }
+        match_emit_load(buf = buf, scrut_local = scrut_local, path = path, ctx = ctx)
+        emit_i64_const(buf = buf, value = -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf = buf, align = 2, offset = 0)
+        emit_ctor_tag(buf = buf, ctx = ctx, tag = __ntag)
+        emit_i32_eq(buf)
+        let __nargs = get_pctor_args(sp)
+        // #705: payload sub-tests must NOT run when the tag test above
+        // failed. The value may be a different constructor (or a scalar)
+        // whose slot at `8 + k*8` is not a valid value of this ctor's field
+        // type; a nested tag test would dereference that garbage — a
+        // data-dependent OOB that crashed the RC-built compiler's
+        // check_expr / seed_var_types on `Some(TDEnum(..))`-style patterns.
+        // Guard the sub-tests behind the tag test with `if (result i32)`
+        // so the AND short-circuits. Binds/wildcards add no test.
+        let mut __nany = false
+        let mut __nj = 0
+        while __nj < Array::length(__nargs) {
+          let __np = Array::get(__nargs, at = __nj)
+          if is_pbind(__np) || is_pwild(__np) {
+            ()
+          } else {
+            __nany = true
+          }
+          __nj = __nj + 1
+        }
+        if __nany {
+          bytebuf_push(buf = buf, byte = 4)
+          bytebuf_push(buf = buf, byte = 127)
+          emit_i32_const(buf = buf, value = 1)
+          let mut __nk = 0
+          while __nk < Array::length(__nargs) {
+            let __nkk = __nk
+            let __np2 = Array::get(__nargs, at = __nkk)
+            if is_pbind(__np2) || is_pwild(__np2) {
+              ()
+            } else {
+              match_emit_pat_test(buf = buf, sp = __np2, path = match_path_then(path = path, kind = 0, k = __nkk, scratch = 0), scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+              bytebuf_push(buf = buf, byte = 113)
+            }
+            __nk = __nk + 1
+          }
+          emit_else(buf)
+          emit_i32_const(buf = buf, value = 0)
+          emit_end(buf)
+        } else {
+          ()
+        }
+      } else if is_ptuple(sp) {
+        emit_i32_const(buf = buf, value = 1)
+        let __tpats = get_ptuple_pats(sp)
+        let mut __tk = 0
+        while __tk < Array::length(__tpats) {
+          let __tkk = __tk
+          match_emit_pat_test(buf = buf, sp = Array::get(__tpats, at = __tkk), path = match_path_then(path = path, kind = 1, k = __tkk, scratch = tuple_probe_local), scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+          bytebuf_push(buf = buf, byte = 113)
+          __tk = __tk + 1
+        }
+      } else {
+        // PBind / PWild: always matches.
+        emit_i32_const(buf = buf, value = 1)
+      }
+    }
+  }
+}
+
+/// AND a position's match test onto the accumulator already on the stack.
+/// Bindings/wildcards add no constraint, so they emit nothing (keeping the
+/// accumulator untouched) rather than `const 1; and`.
+fn match_emit_sub_tests(buf: Bytes, sp: Pat, path: Array[(Int, Int, Int)], scrut_local: Int, tuple_probe_local: Int, ctx: CompileCtx) -> Unit with Exception {
+  if is_pbind(sp) || is_pwild(sp) {
+    ()
+  } else {
+    match_emit_pat_test(buf = buf, sp = sp, path = path, scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+    bytebuf_push(buf = buf, byte = 113)
+  }
+}
+
+/// The test of a conditional arm whose pattern is none of the shapes
+/// `compile_match` tests inline: or-patterns and the literals they join.
+fn match_emit_or_check(buf: Bytes, pat: Pat, scrut_local: Int, tuple_probe_local: Int, ctx: CompileCtx) -> Unit with Exception {
+  match pat {
+    POr(left, right) => {
+      match_emit_or_check(buf = buf, pat = left, scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+      match_emit_or_check(buf = buf, pat = right, scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+      bytebuf_push(buf = buf, byte = 114)
+    },
+    PInt(n) => {
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_i64_const(buf = buf, value = n)
+      if ctx.enable_rc {
+        emit_i64_const(buf = buf, value = 1)
+        emit_i64_shl(buf)
+      }
+      emit_i64_eq(buf)
+    },
+    PFloat(fv) => {
+      // A float or-branch (`0.0|180.0`) previously fell through to
+      // `_ => const 1` (always-true). Same f64 compare as
+      // match_emit_pat_test's PFloat branch.
+      emit_local_get(buf = buf, idx = scrut_local)
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      } else {
+        ()
+      }
+      emit_f64_reinterpret_i64(buf)
+      emit_f64_const_lohi(buf = buf, lo = Float64::to_i64_bits_lo(fv), hi = Float64::to_i64_bits_hi(fv))
+      emit_f64_eq(buf)
+    },
+    PCtor(cname, cargs) => {
+      let ci = ctor_table_index_of(ct = ctx.ctor_table, name = pattern_ctor_base_name(cname))
+      let ctag = if ci >= 0 {
+        Array::get(ctx.ctor_table.tags, at = ci)
+      } else {
+        -1
+      }
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_i64_const(buf = buf, value = -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf = buf, align = 2, offset = 0)
+      emit_ctor_tag(buf = buf, ctx = ctx, tag = ctag)
+      emit_i32_eq(buf)
+      if Array::length(cargs) == 1 {
+        match Array::get(cargs, at = 0) {
+          PInt(n) => {
+            emit_local_get(buf = buf, idx = scrut_local)
+            emit_i64_const(buf = buf, value = -2)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf = buf, align = 3, offset = 8)
+            emit_i64_const(buf = buf, value = n)
+            if ctx.enable_rc {
+              emit_i64_const(buf = buf, value = 1)
+              emit_i64_shl(buf)
+            }
+            emit_i64_eq(buf)
+            bytebuf_push(buf = buf, byte = 113)
+          },
+          _ => ()
+        }
+      }
+    },
+    PBool(b) => {
+      // An or-branch boolean literal (`true | ..`) previously fell
+      // through to `_ => const 1` (always-true), so `"a"|"b"` /
+      // `(1,_)|(2,_)` / bool ors silently matched everything.
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_i64_const(buf = buf, value = if b {
+        if ctx.enable_rc {
+          2
+        } else {
+          1
+        }
+      } else {
+        0
+      })
+      emit_i64_eq(buf)
+    },
+    PString(sv) => {
+      let __si = str_table_index_of(st = ctx.str_table, s = sv)
+      if __si >= 0 {
+        let (__eqfi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+        emit_local_get(buf = buf, idx = scrut_local)
+        emit_str_ref_slot(buf = buf, ctx = ctx, slot = __si)
+        emit_call(buf = buf, func_idx = __eqfi)
+        emit_i32_wrap_i64(buf)
+      } else {
+        emit_i32_const(buf = buf, value = 1)
+      }
+    },
+    PTuple(tpats) => {
+      // A tuple or-branch (`(1, _) | (2, _)`): no tag to test, so
+      // start from `true` and AND-in a field-vs-literal test for
+      // every literal element (binds/wildcards add none).
+      emit_i32_const(buf = buf, value = 1)
+      let mut __ok = 0
+      while __ok < Array::length(tpats) {
+        let __okk = __ok
+        match_emit_sub_tests(buf = buf, sp = Array::get(tpats, at = __okk), path = [
+          (1, __okk, scrut_local)
+        ], scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
+        __ok = __ok + 1
+      }
+    },
+    _ => emit_i32_const(buf = buf, value = 1)
+  }
+}
+
 export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let __match_scrutinee = get_match_scrutinee(expr)
   let __match_arms = get_match_arms(expr)
@@ -1333,172 +1634,6 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
   // but was loaded through the ref-cell path (garbage in the bump lane; the
   // RC lane α-renames shadows first). Restore it with the same discipline.
   let ref_cells_at_match = Array::length(ctx.ref_cell_names)
-  // #613 follow-up: discriminate literal sub-patterns at EVERY nesting level,
-  // not just the top constructor-argument level. `load_field` is a thunk that
-  // pushes the (tagged) value at this position. `emit_pat_test` emits a single
-  // i32 boolean ("does the value at this position match `sp`?") with NO trailing
-  // AND, recursing through ctor args, tuple elements, and or-branches. Without
-  // recursing, `N(W(false), n)` matched `N(W(true), _)`, `T((false, n))` matched
-  // `T((true, _))`, and or-branches `(1, _) | (2, _)` / `"a" | "b"` matched
-  // anything — silent wrong results. Bindings/wildcards always match (push 1).
-  let rec emit_pat_test: (Pat, () -> Unit) -> Unit = (sp, load_field) -> {
-    match sp {
-      POr(__l, __r) => {
-        // (left matches) OR (right matches) at this same position.
-        emit_pat_test(__l, load_field)
-        emit_pat_test(__r, load_field)
-        bytebuf_push(buf = buf, byte = 114)
-      },
-      _ => {
-        if is_pfloat(sp) {
-          // Bit-exact f64 compare: bump lane holds raw bits, RC lane a boxed
-          // pointer (unbox first). f64.eq gives `==` semantics (0.0 == -0.0).
-          load_field()
-          if ctx.enable_rc {
-            emit_unbox_float(buf)
-          } else {
-            ()
-          }
-          emit_f64_reinterpret_i64(buf)
-          let __pfv = get_pfloat_value(sp)
-          emit_f64_const_lohi(buf = buf, lo = Float64::to_i64_bits_lo(__pfv), hi = Float64::to_i64_bits_hi(__pfv))
-          emit_f64_eq(buf)
-        } else if is_pint(sp) {
-          load_field()
-          emit_i64_const(buf = buf, value = get_pint_value(sp))
-          if ctx.enable_rc {
-            emit_i64_const(buf = buf, value = 1)
-            emit_i64_shl(buf)
-          }
-          emit_i64_eq(buf)
-        } else if is_pbool(sp) {
-          load_field()
-          emit_i64_const(buf = buf, value = if get_pbool_value(sp) {
-            1
-          } else {
-            0
-          })
-          if ctx.enable_rc {
-            emit_i64_const(buf = buf, value = 1)
-            emit_i64_shl(buf)
-          }
-          emit_i64_eq(buf)
-        } else if is_pstring(sp) {
-          let __sv = get_pstring_value(sp)
-          let __si = str_table_index_of(st = ctx.str_table, s = __sv)
-          if __si >= 0 {
-            let (__seq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
-            load_field()
-            emit_str_ref_slot(buf = buf, ctx = ctx, slot = __si)
-            emit_call(buf = buf, func_idx = __seq_fi)
-            emit_i32_wrap_i64(buf)
-          } else {
-            // String literal absent from the table: conservatively match (the
-            // prior behavior emitted no test at all).
-            emit_i32_const(buf = buf, value = 1)
-          }
-        } else if is_pctor(sp) {
-          let __ncname = get_pctor_name(sp)
-          let __nci = ctor_table_index_of(ct = ctx.ctor_table, name = __ncname)
-          let __ntag = if __nci >= 0 {
-            Array::get(ctx.ctor_table.tags, at = __nci)
-          } else {
-            -1
-          }
-          load_field()
-          emit_i64_const(buf = buf, value = -2)
-          emit_i64_and(buf)
-          emit_i32_wrap_i64(buf)
-          emit_i32_load(buf = buf, align = 2, offset = 0)
-          emit_ctor_tag(buf = buf, ctx = ctx, tag = __ntag)
-          emit_i32_eq(buf)
-          let __nargs = get_pctor_args(sp)
-          // #705: payload sub-tests must NOT run when the tag test above
-          // failed. The value may be a different constructor (or a scalar)
-          // whose slot at `8 + k*8` is not a valid value of this ctor's field
-          // type; a nested tag test would dereference that garbage — a
-          // data-dependent OOB that crashed the RC-built compiler's
-          // check_expr / seed_var_types on `Some(TDEnum(..))`-style patterns.
-          // Guard the sub-tests behind the tag test with `if (result i32)`
-          // so the AND short-circuits. Binds/wildcards add no test.
-          let mut __nany = false
-          let mut __nj = 0
-          while __nj < Array::length(__nargs) {
-            let __np = Array::get(__nargs, at = __nj)
-            if is_pbind(__np) || is_pwild(__np) {
-              ()
-            } else {
-              __nany = true
-            }
-            __nj = __nj + 1
-          }
-          if __nany {
-            bytebuf_push(buf = buf, byte = 4)
-            bytebuf_push(buf = buf, byte = 127)
-            emit_i32_const(buf = buf, value = 1)
-            let mut __nk = 0
-            while __nk < Array::length(__nargs) {
-              let __nkk = __nk
-              let __np2 = Array::get(__nargs, at = __nkk)
-              if is_pbind(__np2) || is_pwild(__np2) {
-                ()
-              } else {
-                let __nload: () -> Unit = () -> {
-                  load_field()
-                  emit_i64_const(buf = buf, value = -2)
-                  emit_i64_and(buf)
-                  emit_i32_wrap_i64(buf)
-                  emit_i64_load(buf = buf, align = 3, offset = 8 + __nkk * 8)
-                }
-                emit_pat_test(__np2, __nload)
-                bytebuf_push(buf = buf, byte = 113)
-              }
-              __nk = __nk + 1
-            }
-            emit_else(buf)
-            emit_i32_const(buf = buf, value = 0)
-            emit_end(buf)
-          } else {
-            ()
-          }
-        } else if is_ptuple(sp) {
-          emit_i32_const(buf = buf, value = 1)
-          let __tpats = get_ptuple_pats(sp)
-          let mut __tk = 0
-          while __tk < Array::length(__tpats) {
-            let __tkk = __tk
-            let __tload: () -> Unit = () -> {
-              load_field()
-              emit_match_fields_base(buf = buf, scratch = tuple_probe_local, constant_header = ctx.enable_rc)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
-                8 + __tkk * 8
-              } else {
-                __tkk * 8
-              })
-            }
-            emit_pat_test(Array::get(__tpats, at = __tkk), __tload)
-            bytebuf_push(buf = buf, byte = 113)
-            __tk = __tk + 1
-          }
-        } else {
-          // PBind / PWild: always matches.
-          emit_i32_const(buf = buf, value = 1)
-        }
-      }
-    }
-  }
-  // AND a position's match test onto the accumulator already on the stack.
-  // Bindings/wildcards add no constraint, so they emit nothing (keeping the
-  // accumulator untouched) rather than `const 1; and`.
-  let emit_sub_tests: (Pat, () -> Unit) -> Unit = (sp, load_field) -> {
-    if is_pbind(sp) || is_pwild(sp) {
-      ()
-    } else {
-      emit_pat_test(sp, load_field)
-      bytebuf_push(buf = buf, byte = 113)
-    }
-  }
   while ai < num_cond_arms {
     Array::truncate(local_names, length = names_len_at_match)
     Array::truncate(ctx.ref_cell_names, length = ref_cells_at_match)
@@ -1517,7 +1652,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
     let (__cond_p, __arm_body) = Array::get(__match_arms, at = ai)
     let __cond_done = if is_pfloat(__cond_p) {
       // Top-level float literal arm (`match d { 0.0 => .. }`): same f64
-      // compare as emit_pat_test's PFloat branch.
+      // compare as match_emit_pat_test's PFloat branch.
       emit_local_get(buf = buf, idx = scrut_local)
       if ctx.enable_rc {
         emit_unbox_float(buf)
@@ -1581,7 +1716,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           // `match stmt { SEnum(false, ...) => ... }` in the compiler's own
           // namespace pass, mis-namespacing exported enums.
           let __cargs_cond = get_pctor_args(__cond_p)
-          // #705: same short-circuit guard as `emit_pat_test` — payload
+          // #705: same short-circuit guard as `match_emit_pat_test` — payload
           // sub-tests only run when the arm's tag test matched, else a nested
           // tag test dereferences a slot that is not a valid tagged value.
           let mut __cany = false
@@ -1602,14 +1737,9 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             let mut __ck = 0
             while __ck < Array::length(__cargs_cond) {
               let __ckk = __ck
-              let __cload: () -> Unit = () -> {
-                emit_local_get(buf = buf, idx = scrut_local)
-                emit_i64_const(buf = buf, value = -2)
-                emit_i64_and(buf)
-                emit_i32_wrap_i64(buf)
-                emit_i64_load(buf = buf, align = 3, offset = 8 + __ckk * 8)
-              }
-              emit_sub_tests(Array::get(__cargs_cond, at = __ckk), __cload)
+              match_emit_sub_tests(buf = buf, sp = Array::get(__cargs_cond, at = __ckk), path = [
+                (0, __ckk, 0)
+              ], scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
               __ck = __ck + 1
             }
             emit_else(buf)
@@ -1635,7 +1765,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             0
           } else if is_ptuple(__cond_p) {
             // A bare tuple cond pattern (`(false, n) => ..`) has no tag to test;
-            // previously it fell through to `emit_or_check`'s `_ => const 1`,
+            // previously it fell through to `match_emit_or_check`'s `_ => const 1`,
             // making the arm UNCONDITIONALLY match — `(false, n)` matched
             // `(true, 5)` (silent wrong result, the #613 unsoundness for bare
             // tuples). Start from a `true` accumulator and AND-in a recursive
@@ -1646,140 +1776,15 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             let mut __tck = 0
             while __tck < Array::length(__tpats_cond) {
               let __tckk = __tck
-              let __tcload: () -> Unit = () -> {
-                emit_local_get(buf = buf, idx = scrut_local)
-                emit_match_fields_base(buf = buf, scratch = scrut_local, constant_header = ctx.enable_rc)
-                emit_i32_wrap_i64(buf)
-                emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
-                  8 + __tckk * 8
-                } else {
-                  __tckk * 8
-                })
-              }
-              emit_sub_tests(Array::get(__tpats_cond, at = __tckk), __tcload)
+              match_emit_sub_tests(buf = buf, sp = Array::get(__tpats_cond, at = __tckk), path = [
+                (1, __tckk, scrut_local)
+              ], scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
               __tck = __tck + 1
             }
             emit_if_i64(buf)
             0
           } else {
-            let rec emit_or_check: (Pat) -> Unit = (pat) -> {
-              match pat {
-                POr(left, right) => {
-                  emit_or_check(left)
-                  emit_or_check(right)
-                  bytebuf_push(buf = buf, byte = 114)
-                },
-                PInt(n) => {
-                  emit_local_get(buf = buf, idx = scrut_local)
-                  emit_i64_const(buf = buf, value = n)
-                  if ctx.enable_rc {
-                    emit_i64_const(buf = buf, value = 1)
-                    emit_i64_shl(buf)
-                  }
-                  emit_i64_eq(buf)
-                },
-                PFloat(fv) => {
-                  // A float or-branch (`0.0|180.0`) previously fell through to
-                  // `_ => const 1` (always-true). Same f64 compare as
-                  // emit_pat_test's PFloat branch.
-                  emit_local_get(buf = buf, idx = scrut_local)
-                  if ctx.enable_rc {
-                    emit_unbox_float(buf)
-                  } else {
-                    ()
-                  }
-                  emit_f64_reinterpret_i64(buf)
-                  emit_f64_const_lohi(buf = buf, lo = Float64::to_i64_bits_lo(fv), hi = Float64::to_i64_bits_hi(fv))
-                  emit_f64_eq(buf)
-                },
-                PCtor(cname, cargs) => {
-                  let ci = ctor_table_index_of(ct = ctx.ctor_table, name = pattern_ctor_base_name(cname))
-                  let ctag = if ci >= 0 {
-                    Array::get(ctx.ctor_table.tags, at = ci)
-                  } else {
-                    -1
-                  }
-                  emit_local_get(buf = buf, idx = scrut_local)
-                  emit_i64_const(buf = buf, value = -2)
-                  emit_i64_and(buf)
-                  emit_i32_wrap_i64(buf)
-                  emit_i32_load(buf = buf, align = 2, offset = 0)
-                  emit_ctor_tag(buf = buf, ctx = ctx, tag = ctag)
-                  emit_i32_eq(buf)
-                  if Array::length(cargs) == 1 {
-                    match Array::get(cargs, at = 0) {
-                      PInt(n) => {
-                        emit_local_get(buf = buf, idx = scrut_local)
-                        emit_i64_const(buf = buf, value = -2)
-                        emit_i64_and(buf)
-                        emit_i32_wrap_i64(buf)
-                        emit_i64_load(buf = buf, align = 3, offset = 8)
-                        emit_i64_const(buf = buf, value = n)
-                        if ctx.enable_rc {
-                          emit_i64_const(buf = buf, value = 1)
-                          emit_i64_shl(buf)
-                        }
-                        emit_i64_eq(buf)
-                        bytebuf_push(buf = buf, byte = 113)
-                      },
-                      _ => ()
-                    }
-                  }
-                },
-                PBool(b) => {
-                  // An or-branch boolean literal (`true | ..`) previously fell
-                  // through to `_ => const 1` (always-true), so `"a"|"b"` /
-                  // `(1,_)|(2,_)` / bool ors silently matched everything.
-                  emit_local_get(buf = buf, idx = scrut_local)
-                  emit_i64_const(buf = buf, value = if b {
-                    if ctx.enable_rc {
-                      2
-                    } else {
-                      1
-                    }
-                  } else {
-                    0
-                  })
-                  emit_i64_eq(buf)
-                },
-                PString(sv) => {
-                  let __si = str_table_index_of(st = ctx.str_table, s = sv)
-                  if __si >= 0 {
-                    let (__eqfi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
-                    emit_local_get(buf = buf, idx = scrut_local)
-                    emit_str_ref_slot(buf = buf, ctx = ctx, slot = __si)
-                    emit_call(buf = buf, func_idx = __eqfi)
-                    emit_i32_wrap_i64(buf)
-                  } else {
-                    emit_i32_const(buf = buf, value = 1)
-                  }
-                },
-                PTuple(tpats) => {
-                  // A tuple or-branch (`(1, _) | (2, _)`): no tag to test, so
-                  // start from `true` and AND-in a field-vs-literal test for
-                  // every literal element (binds/wildcards add none).
-                  emit_i32_const(buf = buf, value = 1)
-                  let mut __ok = 0
-                  while __ok < Array::length(tpats) {
-                    let __okk = __ok
-                    let __oload: () -> Unit = () -> {
-                      emit_local_get(buf = buf, idx = scrut_local)
-                      emit_match_fields_base(buf = buf, scratch = scrut_local, constant_header = ctx.enable_rc)
-                      emit_i32_wrap_i64(buf)
-                      emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
-                        8 + __okk * 8
-                      } else {
-                        __okk * 8
-                      })
-                    }
-                    emit_sub_tests(Array::get(tpats, at = __okk), __oload)
-                    __ok = __ok + 1
-                  }
-                },
-                _ => emit_i32_const(buf = buf, value = 1)
-              }
-            }
-            emit_or_check(__cond_p)
+            match_emit_or_check(buf = buf, pat = __cond_p, scrut_local = scrut_local, tuple_probe_local = tuple_probe_local, ctx = ctx)
             emit_if_i64(buf)
             0
           }
