@@ -2117,7 +2117,7 @@ middleware lanes. Both run in phase B of `scripts/test_wasi_p3_guarantee_gate.sh
 
 | item | scope | owner |
 |---|---|---|
-| Component Model subtasks as `TaskGroup`'s backend | tasks are guest fibers inside one instance; start a task as a Component Model async subtask with its own handle, joined through the shared waitable set, with `TaskHandle::cancel` reaching it as `subtask.cancel` | #3147 |
+| Component Model subtasks as `TaskGroup`'s backend | tasks are guest fibers inside one instance; start a task as a Component Model async subtask with its own handle, joined through the shared waitable set, with `TaskHandle::cancel` reaching it as `subtask.cancel`; the mapping and its probes are [component-subtask-taskgroup.md](component-subtask-taskgroup.md) (ADR-0125, proposed) | #3147 |
 | the guest importing `wasi:http/client` directly | vibe bindings for the `request` / `response` / `fields` resources; a request with a method, headers and a streamed body | #3142 |
 | promoting the suspendable-task lane | `TaskGroup::spawn` runs a suspending body, `TaskGroup::run` drives parked tasks itself, and the lane's names move into `@vibe/concurrent`'s contract | #3200 |
 | a `handle` that reaches `Async` across an await | abortive handles split with the body (#1537); a `handle` that resumes, or that handles `Async` itself, is still refused | no open issue |

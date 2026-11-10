@@ -197,6 +197,47 @@ fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], 
   }
 }
 
+/// #4023: hide every occurrence of `name` in `ctx.loop_borrowed_names` for
+/// the scope that rebinds or moves it, and return the slots it held.
+///
+/// The list is a STACK: each loop and each borrow-bound `let` restores it
+/// with `Array::truncate` to the length it saw on entry. So the mask must not
+/// move any other entry. Removing the name used to compact the list, and the
+/// name was pushed back on TOP afterwards. A scope that had pushed above the
+/// removed slot then truncated the re-pushed name away, and kept one of its
+/// own entries below its mark. After `x = f(x)` inside a nested loop, the
+/// outer loop's `x` was no longer loop-borrowed. Every later owning call on
+/// it went without its retain and released the binding's only reference.
+/// Each slot is blanked in place instead (`[masked]` is not an identifier,
+/// and nothing asks for it).
+fn mask_loop_borrowed_name(names: Array[String], name: String) -> Array[Int] {
+  let slots: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(names, at = i) == name {
+      Array::set(names, at = i, value = "[masked]")
+      Array::push(slots, value = i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  slots
+}
+
+/// #4023: undo `mask_loop_borrowed_name`, at the same slots. Every scope
+/// opened since the mask has truncated back to a mark at or above them.
+fn unmask_loop_borrowed_name(names: Array[String], name: String, slots: Array[Int]) -> Unit {
+  for slot in slots {
+    if slot < Array::length(names) {
+      Array::set(names, at = slot, value = name)
+    } else {
+      Array::push(names, value = name)
+    }
+  }
+  ()
+}
+
 export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let __tag = expr_tag(expr)
   if __tag == 9 {
@@ -395,27 +436,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // one -- a spurious rc_dup now, and (via loop_consumed_names) a spurious extra
     // epilogue rc_drop for a parameter this `let` never touches. Mask every
     // existing occurrence of `name` out of loop_borrowed_names for exactly the
-    // scope of `body`, then restore the same count after; membership is all
-    // `array_contains_str` ever tests, so compacting out of order is safe.
-    let mut lb_shadow_removed = 0
-    if ctx.enable_rc {
-      let lb_arr = ctx.loop_borrowed_names
-      let lb_n = Array::length(lb_arr)
-      let mut lb_w = 0
-      let mut lb_i = 0
-      while lb_i < lb_n {
-        let e = Array::get(lb_arr, at = lb_i)
-        if e == name {
-          lb_shadow_removed = lb_shadow_removed + 1
-        } else {
-          Array::set(lb_arr, at = lb_w, value = e)
-          lb_w = lb_w + 1
-        }
-        lb_i = lb_i + 1
-      }
-      Array::truncate(lb_arr, length = lb_w)
+    // scope of `body`, IN PLACE (#4023: see mask_loop_borrowed_name), and put
+    // it back at the same slots after.
+    let lb_shadow_slots = if ctx.enable_rc {
+      mask_loop_borrowed_name(names = ctx.loop_borrowed_names, name = name)
     } else {
-      ()
+      []
     }
     // #708 follow-up: scope `name` into loop_borrowed_names for exactly the
     // extent of `body`'s compilation (push before, truncate after), so a bare
@@ -616,11 +642,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     // #712: restore the shadow-masked occurrences now that `body` (the only
     // scope where `name` shadows the outer loop-borrowed binding) is compiled.
-    let mut lb_restore_i = 0
-    while lb_restore_i < lb_shadow_removed {
-      Array::push(ctx.loop_borrowed_names, value = name)
-      lb_restore_i = lb_restore_i + 1
-    }
+    unmask_loop_borrowed_name(names = ctx.loop_borrowed_names, name = name, slots = lb_shadow_slots)
     let nl_let = if ctx.enable_rc && rc_kind > 0 && array_contains_str(arr = ctx.rc_drop_names, s = name) {
       if reuse_fusion {
         // ADR-0092: drop only when no arm consumed the block via reuse.
@@ -1247,25 +1269,10 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // old value is consumed and the binding takes the result, so
         // nothing carries across the back-edge but the new value.
         let self_moves = is_heap_mut && is_self && md_self_reassign_move_arg(value = value, name = name, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
-        let mut sm_removed = 0
-        if self_moves {
-          let lb_arr = ctx.loop_borrowed_names
-          let lb_n = Array::length(lb_arr)
-          let mut lb_w = 0
-          let mut lb_i = 0
-          while lb_i < lb_n {
-            let e = Array::get(lb_arr, at = lb_i)
-            if e == name {
-              sm_removed = sm_removed + 1
-            } else {
-              Array::set(lb_arr, at = lb_w, value = e)
-              lb_w = lb_w + 1
-            }
-            lb_i = lb_i + 1
-          }
-          Array::truncate(lb_arr, length = lb_w)
+        let sm_slots = if self_moves {
+          mask_loop_borrowed_name(names = ctx.loop_borrowed_names, name = name)
         } else {
-          ()
+          []
         }
         let value_for_compile = if ctx.enable_rc && slot_owning {
           rc_mut_rec_transfer_value(e = value, local_names = local_names, ctx = ctx, shadowed = [
@@ -1274,10 +1281,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           value
         }
         let nl = compile_expr(buf, value_for_compile, local_names, next_local, ctx, ld)
-        while sm_removed > 0 {
-          Array::push(ctx.loop_borrowed_names, value = name)
-          sm_removed = sm_removed - 1
-        }
+        unmask_loop_borrowed_name(names = ctx.loop_borrowed_names, name = name, slots = sm_slots)
         if is_heap_mut && !is_self && tails_retained {
           emit_local_get(buf = buf, idx = idx)
           emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)

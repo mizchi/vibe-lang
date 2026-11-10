@@ -1,0 +1,76 @@
+// #2827: a parameter read only through its fields is borrowed, so the caller
+// keeps the reference for the call and the callee neither dups nor drops it.
+// What makes that safe is that a field read off a name is a view a consumer
+// retains, owned name or borrowed: a field that escapes the callee -- returned,
+// stored, moved into an owning call -- carries its own reference. Each shape
+// below lets one escape and then lets the source die, so a missing retain is a
+// read of freed memory; the shadow lane traps on it.
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+fn run_value(wasm: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_borrow_projection_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes = wasm)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, at = 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes(src: String, label: String, expected: String) -> Unit with Exception + Fs + Process + Console {
+  inspect(run_value(wasm = compile_wasi(source = src, entry = "main"), label = String::concat(label, "_bump")), content = expected)
+  inspect(run_value(wasm = compile_wasi_rc(source = src, entry = "main"), label = String::concat(label, "_rc")), content = expected)
+  inspect(run_value(wasm = compile_wasi_rc_shadow(source = src, entry = "main"), label = String::concat(label, "_shadow")), content = expected)
+}
+
+let structs = "struct Inner {\n  v: Int;\n  ys: Array[Int]\n}\nstruct Ctx {\n  n: Int;\n  xs: Array[Int];\n  inner: Inner\n}\nfn mk(i: Int) -> Ctx {\n  Ctx::{ n: i, xs: [i, i + 1, i + 2], inner: Inner::{ v: i * 2, ys: [i * 3] } }\n}\n"
+
+test "a self-recursive field reader leaves its caller's struct live" {
+  let src = String::concat(structs, "fn walk(ctx: Ctx, k: Int) -> Int {\n  if k <= 0 { ctx.n }\n  else { walk(ctx, k - 1) + Array::length(ctx.xs) + ctx.inner.v }\n}\nfn main() -> Int {\n  let c = mk(5)\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    sum = sum + walk(c, 20) + Array::get(c.xs, 0)\n    i = i + 1\n  }\n  sum\n}")
+  assert_lanes(src = src, label = "walk", expected = "13500")
+}
+
+test "a returned field outlives the binding it was read from" {
+  let src = String::concat(structs, "fn items(ctx: Ctx) -> Array[Int] { ctx.xs }\nfn ys_of(ctx: Ctx) -> Array[Int] { ctx.inner.ys }\nfn grab(i: Int) -> Array[Int] {\n  let c = mk(i)\n  items(c)\n}\nfn grab_ys(i: Int) -> Array[Int] {\n  let c = mk(i)\n  ys_of(c)\n}\nfn main() -> Int {\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    let xs = grab(i)\n    let ys = grab_ys(i)\n    let churn = [9, 9, 9, 9]\n    sum = sum + Array::get(xs, 2) + Array::get(ys, 0) + Array::length(churn)\n    i = i + 1\n  }\n  sum\n}")
+  assert_lanes(src = src, label = "returned", expected = "5200")
+}
+
+test "a field stored into a new struct outlives its source" {
+  let src = String::concat(structs, "fn rewrap(ctx: Ctx) -> Inner { Inner::{ v: ctx.n, ys: ctx.xs } }\nfn inner_of(ctx: Ctx) -> Inner { ctx.inner }\nfn make(i: Int) -> Inner {\n  let c = mk(i)\n  rewrap(c)\n}\nfn make_inner(i: Int) -> Inner {\n  let c = mk(i)\n  inner_of(c)\n}\nfn main() -> Int {\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    let a = make(i)\n    let b = make_inner(i)\n    let churn = [7, 7, 7]\n    sum = sum + a.v + Array::get(a.ys, 1) + b.v + Array::get(b.ys, 0) + Array::length(churn)\n    i = i + 1\n  }\n  sum\n}")
+  assert_lanes(src = src, label = "stored", expected = "8775")
+}
+
+test "a field moved into an owning call leaves the source intact" {
+  let src = String::concat(structs, "fn keep(xs: Array[Int]) -> Array[Int] { xs }\nfn twice(ctx: Ctx) -> Int {\n  let a = keep(ctx.xs)\n  let b = keep(ctx.xs)\n  Array::length(a) + Array::get(b, 0) + ctx.n\n}\nfn main() -> Int {\n  let c = mk(4)\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    sum = sum + twice(c)\n    i = i + 1\n  }\n  sum + Array::get(c.xs, 2)\n}")
+  assert_lanes(src = src, label = "moved_field", expected = "556")
+}
+
+test "a reader called on one branch only releases nothing it did not take" {
+  let src = String::concat(structs, "fn use1(ctx: Ctx) -> Int { ctx.n + 1 }\nfn three(ctx: Ctx, c: Bool) -> Int {\n  if c { use1(ctx) + use1(ctx) + use1(ctx) } else { 0 }\n}\nfn main() -> Int {\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    let c = mk(i)\n    sum = sum + three(c, i % 2 == 0) + c.inner.v\n    i = i + 1\n  }\n  sum\n}")
+  assert_lanes(src = src, label = "three", expected = "4325")
+}
+
+test "a borrowed parameter's field writes release and retain like an owned one's" {
+  // `__set_field` already borrowed its receiver; the field READS here are
+  // what used to make `acc` owned.
+  let src = "struct Acc {\n  mut total: Int;\n  mut items: Array[Int]\n}\nfn add(acc: Acc, x: Int) -> Unit {\n  acc.items = [x, acc.total, Array::length(acc.items)]\n  acc.total = acc.total + x\n}\nfn main() -> Int {\n  let acc = Acc::{ total: 0, items: [] }\n  let mut i = 0\n  while i < 50 {\n    add(acc, i)\n    let churn = [1, 2, 3]\n    i = i + Array::length(churn) - 2\n  }\n  acc.total + Array::get(acc.items, 0) + Array::get(acc.items, 1) + Array::get(acc.items, 2)\n}"
+  assert_lanes(src = src, label = "field_write", expected = "2453")
+}
+
+// A branch whose value is a borrow-returning call bound by a branch-local
+// `let` (`{ let c = Array::get(cache, 0); c }`) hands the enclosing `let` a
+// view with no reference of its own, exactly like the bare call does -- and
+// the bare call's tail retain (#3103) did not reach it, so the enclosing
+// binding's release, or the owning callee it was moved into, freed the
+// element under the array. Before the fix the rc lane answered 809 and the
+// shadow lane trapped ("drop of freed value") on both callees. The `match`
+// and nested-`if` arms are the same tail one level down.
+let view_tail_src = "struct P {\n  mut n: Int;\n  xs: Array[Int]\n}\nfn reader(p: P) -> Int {\n  match p {\n    P::{ n, xs } => n + Array::length(xs)\n  }\n}\nfn owner(p: P) -> Int {\n  p.n + Array::length(p.xs)\n}\nfn pick(cache: Array[P], k: Int) -> P {\n  if k == 0 {\n    P::{ n: 1, xs: [1] }\n  } else if k == 1 {\n    let c = Array::get(cache, 0)\n    c\n  } else {\n    match k {\n      2 => {\n        let d = Array::get(cache, 1)\n        let unused = 0\n        d\n      }\n      _ => if k > 5 {\n        let e = Array::get(cache, 0)\n        e\n      } else {\n        P::{ n: 2, xs: [] }\n      }\n    }\n  }\n}\nfn by_read(cache: Array[P], k: Int) -> Int {\n  let p = if k < 100 {\n    let c = pick(cache, k)\n    c\n  } else {\n    P::{ n: 0, xs: [] }\n  }\n  reader(p)\n}\nfn get(cache: Array[P], k: Int) -> Int {\n  let p = if k == 1 {\n    let c = Array::get(cache, 0)\n    c\n  } else if k == 2 {\n    let d = Array::get(cache, 1)\n    d\n  } else {\n    P::{ n: 1, xs: [1] }\n  }\n  owner(p) + by_read(cache, k)\n}\nfn main() -> Int {\n  let cache = [P::{ n: 5, xs: [1, 2, 3] }, P::{ n: 7, xs: [4] }]\n  let mut i = 0\n  let mut acc = 0\n  while i < 100 {\n    acc = acc + get(cache, i % 8)\n    let churn = [i, i, i, i]\n    acc = acc + Array::length(churn)\n    i = i + 1\n  }\n  acc + Array::length(Array::get(cache, 0).xs) + Array::length(Array::get(cache, 1).xs)\n}"
+
+test "a branch-local view binding returned as a branch value keeps its element" {
+  assert_lanes(src = view_tail_src, label = "view_tail", expected = "1260")
+}

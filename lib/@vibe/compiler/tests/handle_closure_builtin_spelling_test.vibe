@@ -1,0 +1,47 @@
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_report
+}
+
+// #3255: the handle-escape check (`hce_callee_may_keep`, #3540) lets a
+// handle-bound closure be handed to a builtin that only calls it --
+// `Array::map`, `filter`, `fold`, `any`, `all`, `find`. It decided that from
+// the callee's spelling, so a program's own `fn Array::map` that pushes the
+// callback into a module-level array was waved through as the builtin: on
+// main the program checked clean, and the kept closure answered `g=6` from
+// the dead handler, on linear and wasm-gc alike. The same function under any
+// other name is refused. The check now asks whether the call reaches the
+// builtin (`builtin_resolves_at`), and a program function of the spelling is
+// judged by its body, as `keep` is.
+
+let prelude = "effect Ask {\n  Get() -> Int\n}\n\nlet saved: Array[() -> Int] = []\n\n"
+
+/// A program function spelled `name` that keeps the callback it is handed,
+/// called inside a `handle` with a closure that performs what it answers.
+fn keeping_program(_ name: String) -> String {
+  let def = "fn \{name}(_ xs: Array[Int], f: () -> Int) -> Array[Int] {\n  Array::push(saved, value = f)\n  xs\n}\n\n"
+  let main = "fn main() -> Int {\n  let _ = handle {\n    let _ = \{name}([1], f = () -> perform Ask::Get() + 1)\n    ()\n  } with { Ask::Get() => resume(5) }\n  let g = Array::get(saved, at = 0)\n  g()\n}\n"
+  String::concat(prelude, String::concat(def, main))
+}
+
+test "a program function spelled like a calls-only builtin is judged by its body" {
+  for op in ["map", "filter", "fold", "any", "all", "find"] {
+    let name = "Array::\{op}"
+    let report = check_source_report(keeping_program(name))
+    assert(String::contains(report, needle = "so handing it to `\{name}`, which may keep it past the handle"))
+  }
+}
+
+test "the same function under another name is refused the same way" {
+  let report = check_source_report(keeping_program("keep_it"))
+  assert(String::contains(report, needle = "so handing it to `keep_it`, which may keep it past the handle"))
+}
+
+test "a program function of the spelling that only calls the callback is accepted" {
+  let src = String::concat(prelude, "fn Array::fold(_ xs: Array[Int], f: () -> Int) -> Int {\n  f() + Array::length(xs)\n}\n\nfn main() -> Int {\n  handle {\n    Array::fold([1, 2], f = () -> perform Ask::Get() + 1)\n  } with { Ask::Get() => resume(5) }\n}\n")
+  assert(check_source_ok(src))
+}
+
+test "the builtins themselves still only call the callback" {
+  let src = String::concat(prelude, "fn main() -> Int {\n  handle {\n    let ys = Array::map([1, 2], f = (x) -> x + perform Ask::Get())\n    let n = Array::fold(ys, init = 0, f = (acc, x) -> acc + x + perform Ask::Get())\n    if Array::any(ys, f = (x) -> x == perform Ask::Get()) {\n      n\n    } else {\n      n + 1\n    }\n  } with { Ask::Get() => resume(5) }\n}\n")
+  assert(check_source_ok(src))
+}

@@ -1,0 +1,194 @@
+//# Imports
+
+// #3718 slice 3: `vibe rc-validate` on paths that leave a binding's scope by
+// an early exit, and its reference-cycle warning. A `return`, and a `break`
+// / `continue` at the loop depth a binding was declared at, skip the
+// scope-end drops; the plan's exit rows (#3141) release what the binding
+// still holds there instead. The mutation cases edit ONE exit row of a real
+// plan through the test seam and pin the line the validator gives for it.
+
+import @vibe/compiler/query {
+  rc_plan_source, rc_validate_source, rc_validate_source_edited, rc_validate_source_mutated
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction, pa_is_exit_drop, pa_is_exit_site
+}
+
+//# Functions
+
+// `keep` consumes its argument (it stores it), `len` only reads it.
+let prologue = "enum D {\n  A(Array[Int])\n}\nlet keep: (D) -> Int = (d) -> {\n  let b = [d]\n  Array::length(b)\n}\nlet len: (D) -> Int = (d) -> {\n  match d {\n    A(xs) => Array::length(xs) + 0\n  }\n}\n"
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  run(true)\n}"
+
+/// `body` (which defines `run`) between the shared prologue and a `main`.
+fn program(_ body: String) -> String {
+  String::concat(prologue, String::concat(body, epilogue))
+}
+
+/// The validator's lines for `run`.
+fn validate(_ body: String) -> String with Exception {
+  rc_validate_source(source = program(body), fn_filter = "run")
+}
+
+/// `run`'s collapsed plan, as `vibe rc-plan` prints it.
+fn plan(_ body: String) -> String with Exception {
+  rc_plan_source(source = program(body), fn_filter = "run")
+}
+
+/// The validator's lines for `run`'s plan as `edit` rewrites it.
+fn edited(body: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception {
+  rc_validate_source_edited(source = program(body), fn_filter = "run", edit = edit)
+}
+
+/// `out` under `tag`, with an empty answer spelled `clean`: each snapshot
+/// gets an expected literal of its own, so `vibe test --update` can tell
+/// which call a failing answer belongs to.
+fn tagged(tag: String, out: String) -> String {
+  let body = if out == "" {
+    "clean"
+  } else {
+    out
+  }
+  tag + ": " + body
+}
+
+/// The plan with every row `pick` accepts rewritten by `change`.
+fn rewrite(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool, change: (PerceusAction) -> PerceusAction) -> Array[PerceusAction] {
+  let out: Array[PerceusAction] = []
+  for a in plan {
+    if pick(a) {
+      Array::push(out, value = change(a))
+    } else {
+      Array::push(out, value = a)
+    }
+  }
+  out
+}
+
+/// `a` with its `extra` replaced.
+fn with_extra(a: PerceusAction, extra: Int) -> PerceusAction {
+  PerceusAction::{
+    kind: a.kind,
+    name: a.name,
+    binding_id: a.binding_id,
+    use_offset: a.use_offset,
+    extra: extra
+  }
+}
+
+/// `a` moved to exit ordinal `ord`.
+fn at_exit(a: PerceusAction, ord: Int) -> PerceusAction {
+  PerceusAction::{
+    kind: a.kind,
+    name: a.name,
+    binding_id: a.binding_id,
+    use_offset: ord,
+    extra: a.extra
+  }
+}
+
+// `e` is live across the early return, which only reads it, and consumed
+// after it, so the return must release it through its exit row.
+let held_across = "let run: (Bool) -> Int = (c) -> {\n  let e = A([2])\n  if c {\n    return len(e)\n  } else {\n    ()\n  }\n  keep(e)\n}"
+
+// A guard that returns through a consume of `d`, which the fall-through
+// consumes too. The plan takes a dup at the declaration for the guard's
+// consume and releases it at the exit, so the fall-through, which never
+// reaches the exit, keeps it: 112 B per call, measured.
+let consumed_both = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  keep(d)\n}"
+
+//# Balanced exits
+
+test "a binding live across a return is released by its exit row" {
+  inspect(plan(held_across), content = "run e exit_site:0:0 1\nrun e dup 1\nrun __seq0 drop 1\nrun e drop 1\nrun e exit_drop:0:2 1")
+  inspect(tagged(tag = "held across", out = validate(held_across)), content = "held across: clean")
+}
+
+test "a break out of the declaring loop body is released by its exit row" {
+  inspect(tagged(tag = "break", out = validate("let run: (Bool) -> Int = (c) -> {\n  let mut k = 0\n  while k < 3 {\n    let d = A([k])\n    if c {\n      break\n    }\n    k = k + keep(d)\n  }\n  k\n}")), content = "break: clean")
+}
+
+//# Known leaks
+
+test "a dup taken for a consume on the exit path leaks on the fall-through" {
+  inspect(plan(consumed_both), content = "run d dup 1\nrun d exit_site:0:0 1\nrun __seq0 drop 1\nrun d exit_drop:0:1 1")
+  inspect(validate(consumed_both), content = "run d if1:else: owned value not consumed")
+}
+
+//# Mutated exit rows
+
+test "a deleted exit row leaks on the path that returns" {
+  let out = edited(body = held_across, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    rewrite(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_exit_drop(a) && a.name == "e"
+    }, change = (a: PerceusAction) -> PerceusAction {
+      with_extra(a = a, extra = 0)
+    })
+  })
+  inspect(out, content = "run e if1:then: owned value not consumed (2 references)")
+}
+
+test "an inflated exit row releases one more than held" {
+  let src = program(held_across)
+  inspect(rc_validate_source_mutated(source = src, fn_filter = "run", mutation = "inflate-exit-drops"), content = "run e if1:then: owned value released 1 more than held")
+}
+
+test "an exit numbered apart from the plan is not checked" {
+  let out = edited(body = held_across, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    rewrite(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_exit_site(a)
+    }, change = (a: PerceusAction) -> PerceusAction {
+      with_extra(a = a, extra = a.extra + 1)
+    })
+  })
+  inspect(out, content = "run e -: not checked: early exit: the plan numbers its exits apart from this walk")
+}
+
+test "an exit row at an exit that does not leave the scope is not checked" {
+  let out = edited(body = held_across, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    rewrite(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_exit_drop(a) && a.name == "e"
+    }, change = (a: PerceusAction) -> PerceusAction {
+      at_exit(a = a, ord = 7)
+    })
+  })
+  inspect(out, content = "run e -: not checked: early exit: an exit-drop row at an exit that does not leave its scope")
+}
+
+//# Throws
+
+// A throw outside every `handle` body leaves the function like a `return`;
+// `d`'s exit row releases it there.
+test "an uncaught throw is released by its exit row" {
+  inspect(tagged(tag = "uncaught throw", out = validate("let run: (Bool) -> Int with Exception = (c) -> {\n  let d = A([1])\n  if c {\n    throw(\"x\")\n  } else {\n    ()\n  }\n  keep(d)\n}")), content = "uncaught throw: clean")
+}
+
+test "a throw a handle body may catch is not checked" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let n = handle {\n    if c {\n      throw(\"x\")\n    } else {\n      ()\n    }\n    1\n  } with {\n    Exception::Throw(_) => 0\n  }\n  n + keep(d)\n}"), content = "run d -: not checked: early exit: throw inside a handle body\nrun __exn_payload0 -: not checked: early exit: throw inside a handle body")
+}
+
+//# Reference cycles
+
+// The same recursion spelled two ways: through a `let mut` the closure
+// captures (a cycle: 40 B per evaluation, measured), and as a `let rec`
+// (no cycle since #3234: its self slot is weak).
+test "a closure stored into the let mut it captures is a reference cycle" {
+  inspect(tagged(tag = "read capture", out = validate("let run: (Bool) -> Int = (c) -> {\n  let mut f = (n: Int) -> n\n  f = (n: Int) -> if n > 9 {\n    n\n  } else {\n    f(n + 5)\n  }\n  f(7)\n}")), content = "read capture: run * -: not checked: 0 pattern binders, 1 let mut\nrun * -: not checked: lambda body\nrun f -: warning: reference cycle (a closure stored into the let mut it captures); RC cannot free it")
+}
+
+// The closure only assigns the cell, so no identifier in its body names it,
+// but codegen captures an assignment target all the same (40 B per
+// evaluation when the closure is never called, measured).
+test "a closure that only assigns the let mut it is stored into is a reference cycle" {
+  inspect(tagged(tag = "write-only capture", out = validate("let run: (Bool) -> Int = (c) -> {\n  let mut f = () -> ()\n  f = () -> {\n    f = () -> ()\n  }\n  0\n}")), content = "write-only capture: run * -: not checked: 0 pattern binders, 1 let mut\nrun * -: not checked: lambda body\nrun f -: warning: reference cycle (a closure stored into the let mut it captures); RC cannot free it")
+}
+
+test "a let rec closure's self-reference is not a cycle" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let rec go = (n: Int) -> Int {\n    if n > 9 {\n      n\n    } else {\n      go(n + 5)\n    }\n  }\n  go(7)\n}"), content = "run go -: not checked: let rec\nrun * -: not checked: lambda body")
+}
+
+test "a closure whose parameter shadows the let mut does not capture it" {
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let mut f = (f: Int) -> f\n  f = (f: Int) -> f + 1\n  f(7)\n}"), content = "run * -: not checked: 0 pattern binders, 1 let mut\nrun * -: not checked: lambda body")
+}

@@ -1,0 +1,83 @@
+// #3417: the `#einst:` row label has one writer and one reader in core
+// (`effect_inst_label_text` / `effect_inst_of_label`); the checker reads a
+// row's instantiations as `EffectInst` values (`effect_inst_labels`).
+
+import @vibe/compiler/core {
+  EffectInst, effect_inst_label_text, effect_inst_of_label, row_may_have_effect_inst
+}
+
+import @vibe/compiler/checker {
+  effect_inst_labels
+}
+
+/// One instantiation as `name/id`.
+fn show_inst(_ inst: EffectInst) -> String {
+  "\{inst.name}/\{inst.var_id}"
+}
+
+/// What `effect_inst_of_label` reads from `label`, or `-`.
+fn read_label(_ label: String) -> String {
+  match effect_inst_of_label(label) {
+    Some(inst) => show_inst(inst),
+    None => "-"
+  }
+}
+
+/// Every instantiation `effect_inst_labels` reads from `row`, in order.
+fn read_row(_ row: Option[String]) -> String {
+  let parts: Array[String] = []
+  for inst in effect_inst_labels(row) {
+    Array::push(parts, value = show_inst(inst))
+  }
+  String::join(parts, sep = " ")
+}
+
+test "the label text round-trips through the reader" {
+  inspect(effect_inst_label_text(EffectInst::{ name: "Box", var_id: 17 }), content = "#einst:Box:17")
+  inspect(read_label(effect_inst_label_text(EffectInst::{
+    name: "Box",
+    var_id: 17
+  })), content = "Box/17")
+  inspect(read_label(effect_inst_label_text(EffectInst::{
+    name: "Box",
+    var_id: 0
+  })), content = "Box/0")
+}
+
+test "a qualified effect name keeps its own colons" {
+  inspect(read_label(effect_inst_label_text(EffectInst::{
+    name: "pkg::Box",
+    var_id: 3
+  })), content = "pkg::Box/3")
+}
+
+test "a label that is not a well-formed instantiation reads as none" {
+  let labels = [
+    "IO",
+    "Box[Int]",
+    "#region_9",
+    "#param[0]",
+    "#einst:Box:",
+    "#einst::4",
+    "#einst:Box:1x",
+    "#einst:Box"
+  ]
+  let read: Array[String] = []
+  for label in labels {
+    Array::push(read, value = read_label(label))
+  }
+  inspect(String::join(read, sep = " "), content = "- - - - - - - -")
+}
+
+test "a row yields its top-level instantiations in order" {
+  inspect(read_row(Some("IO, #einst:Box:17, Exception[(Int, Int) -> Int], #einst:a::B:3")), content = "Box/17 a::B/3")
+  assert(Array::length(effect_inst_labels(Some("Box[Int], #region_2"))) == 0)
+  assert(Array::length(effect_inst_labels(None)) == 0)
+}
+
+test "the quick test admits a nested spelling that the reader then skips" {
+  let nested = "Exception[(Int) -> Int with #einst:Box:4]"
+  assert(row_may_have_effect_inst(nested))
+  assert(!row_may_have_effect_inst("IO, Box[Int]"))
+  assert(Array::length(effect_inst_labels(Some(nested))) == 0)
+}

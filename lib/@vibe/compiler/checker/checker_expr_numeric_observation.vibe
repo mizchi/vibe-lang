@@ -86,6 +86,29 @@ export fn record_add32_call(capture: Option[TypedOccurrenceRoleLaneCapture], off
   }
 }
 
+/// #2501: the receiver head of a dot-method call the checker resolved to a
+/// program function `<head>::<method>` (kind 23, a pair like every row of the
+/// carrier), filed at the method name's offset. The lowering builds the
+/// qualified call from this head instead of recovering the receiver's type
+/// from its spelling, which knows nothing about a `for` element, a `match`
+/// arm binder, a lambda parameter or an unannotated binding of a call result.
+export fn record_method_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, qualified: String, method: String) -> Unit {
+  let head_len = String::length(qualified) - String::length(method) - 2
+  match capture {
+    Some(c) => if !c.provenance_enabled && off >= 0 && head_len > 0 {
+      let name = String::substring(qualified, start = 0, end = head_len)
+      let head = CtNamed(name, [])
+      Array::push(c.binop_offsets, value = off)
+      Array::push(c.binop_kinds, value = 23)
+      Array::push(c.binop_types, value = head)
+      Array::push(c.binop_offsets, value = off)
+      Array::push(c.binop_kinds, value = 23)
+      Array::push(c.binop_types, value = head)
+    },
+    None => ()
+  }
+}
+
 export fn add_formal_for_type(ty: Type, env: TypeEnv, s: Subst) -> String {
   match ty {
     CtVar(id) => if Array::any(subst_bounds_for(s = s, id = id), f = (b) -> bound_entails_trait(env = env, bound = b, wanted = "Add") && bound_flat_self_add(env = env, bound = b)) {

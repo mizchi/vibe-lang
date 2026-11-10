@@ -68,9 +68,13 @@ import ./wit_parser.vibe {
   TyU32,
   TyU64,
   TyU8,
+  WIFunction,
+  WIInlineInterface,
+  WitFuncKind,
   WitInterfaceItem,
   WitTypeDef,
   WitTypeExpr,
+  WitWorldItem,
   wit_parse
 }
 
@@ -371,8 +375,11 @@ export fn from_wit_typedefs(_ defs: Array[WitTypeDef]) -> String with Exception 
 /// other function, an unversioned package, or two interfaces exporting the
 /// same function name is refused, named, rather than skipped: a binding file
 /// that silently lacks a function the interface declares is worse than none.
+/// The same holds for a `world`: a function, an inline interface with
+/// something to bind, or a resource with functions that it imports is refused
+/// (#3142), and a resource with functions anywhere is not bound yet.
 export fn from_wit_future_imports(_ source: String) -> String with Exception {
-  let (pkg, ifaces, _) = wit_parse(source)
+  let (pkg, ifaces, worlds) = wit_parse(source)
   let (ns, pname, version) = match pkg {
     Some(p) => p,
     None => throw(fw_refusal(what = "a WIT file without a `package` line", ctx = " (the import address needs the package)"))
@@ -464,9 +471,42 @@ export fn from_wit_future_imports(_ source: String) -> String with Exception {
         // A resource's functions are functions of the interface too; none is
         // a host-future import, so they are refused rather than silently
         // missing from the bindings (Codex on #3059).
-        IITypeDef(TDResource(rname, funcs, _)) => if Array::length(funcs) > 0 {
-          let (fname, _, _, _, _, _) = Array::get(funcs, at = 0)
-          throw(fw_refusal(what = "function `\{fname}` of resource `\{rname}` as a host-future import (only a freestanding `async func() -> s64` is admitted)", ctx = " (in interface `\{iname}`)"))
+        IITypeDef(TDResource(rname, funcs, _)) => fw_refuse_resource_funcs(rname = rname, funcs = funcs, site = "in interface `\{iname}`"),
+        _ => ()
+      }
+      k = k + 1
+    }
+    i = i + 1
+  }
+  fw_refuse_world_imports(worlds)
+  String::join(out, sep = "\n\n")
+}
+
+/// #3142: what a `world` imports is refused, not skipped. The bindings are
+/// addressed by a versioned package interface (`ns:pkg/iface@v#f`), which a
+/// world-level function or an inline `import x: interface { .. }` does not
+/// have, and a resource is not bound anywhere yet. Skipping them returned
+/// EMPTY bindings for a world that imports a resource with a constructor and
+/// a method. A world's exports are what the component provides, not imports,
+/// and `import iface;` names an interface the loop above already read.
+fn fw_refuse_world_imports(_ worlds: Array[(String, Option[String], Array[WitTypeDef], Array[WitWorldItem], Array[WitWorldItem])]) -> Unit with Exception {
+  let mut w = 0
+  while w < Array::length(worlds) {
+    let (wname, _, types, imports, _) = Array::get(worlds, at = w)
+    let mut t = 0
+    while t < Array::length(types) {
+      match Array::get(types, at = t) {
+        TDResource(rname, funcs, _) => fw_refuse_resource_funcs(rname = rname, funcs = funcs, site = "in world `\{wname}`"),
+        _ => ()
+      }
+      t = t + 1
+    }
+    let mut k = 0
+    while k < Array::length(imports) {
+      match Array::get(imports, at = k) {
+        WIFunction(fname, _, _, _, _, _) => throw(fw_refusal(what = "function `\{fname}`", ctx = " (imported by world `\{wname}`: declare it in `interface <name> { .. }` in the package and write `import <name>;` in the world)")),
+        WIInlineInterface(iname, _, items) => if fw_items_need_binding(items) {
+          throw(fw_refusal(what = "inline interface `\{iname}`", ctx = " (imported by world `\{wname}`: declare it as `interface \{iname} { .. }` in the package and write `import \{iname};` in the world)"))
         } else {
           ()
         },
@@ -474,9 +514,41 @@ export fn from_wit_future_imports(_ source: String) -> String with Exception {
       }
       k = k + 1
     }
+    w = w + 1
+  }
+}
+
+/// Would an interface with these items need a binding: a function, or a
+/// resource that declares one?
+fn fw_items_need_binding(_ items: Array[WitInterfaceItem]) -> Bool {
+  let mut need = false
+  let mut i = 0
+  while i < Array::length(items) {
+    match Array::get(items, at = i) {
+      IIFunction(_, _, _, _, _, _) => {
+        need = true
+      },
+      IITypeDef(TDResource(_, funcs, _)) => if Array::length(funcs) > 0 {
+        need = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
     i = i + 1
   }
-  String::join(out, sep = "\n\n")
+  need
+}
+
+/// A resource with functions has no binding yet (#3142); a bare `resource r;`
+/// needs none.
+fn fw_refuse_resource_funcs(rname: String, funcs: Array[(String, WitFuncKind, Bool, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String])], site: String) -> Unit with Exception {
+  if Array::length(funcs) > 0 {
+    let (fname, _, _, _, _, _) = Array::get(funcs, at = 0)
+    throw(fw_refusal(what = "function `\{fname}` of resource `\{rname}`", ctx = " (\{site}: resources are not bound yet -- reach one through a provider component that exports a freestanding `async func`)"))
+  } else {
+    ()
+  }
 }
 
 /// Does this interface bring `response` in from its package's `types`
