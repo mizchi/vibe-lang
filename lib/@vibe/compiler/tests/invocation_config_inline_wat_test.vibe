@@ -1,0 +1,63 @@
+//# Each inline-WAT assembly owns its Int representation (#1953).
+
+import @vibe/compiler/codegen/common_base {
+  compile_inline_wat, compile_inline_wat_array_params_for_int_representation
+}
+
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_impl
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn codes(_ bytes: Bytes) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Bytes::length(bytes) {
+    Array::push(out, value = Bytes::get(bytes, at = i))
+    i = i + 1
+  }
+  out
+}
+
+fn standard_untag() -> Array[Int] with Exception {
+  codes(compile_inline_wat(fn_name = "probe", wat = "(vibe.int.untag (i64.const 84))", param_names = [
+  ]))
+}
+
+test "the standard assembler untags an Int with the tagged representation" {
+  assert_eq(standard_untag(), [0x42, 0xd4, 0x00, 0x42, 0x01, 0x87])
+}
+
+test "a bump compile leaves the next independent assembly's representation alone" {
+  let before = standard_untag()
+  let _ = compile_wasi_module_impl(stmts = parse_program(lex("fn main() -> Int = wasm \"(i64.const 42)\"")), entry_name = "main")
+  assert_eq(standard_untag(), before)
+}
+
+test "a codegen exception leaves the next independent assembly's representation alone" {
+  let before = standard_untag()
+  let message = handle {
+    let _ = compile_wasi_module_impl(stmts = parse_program(lex("fn main() -> Int = wasm \"(i64.not_an_instruction)\"")), entry_name = "main")
+    "compiled"
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(message, needle = "inline wasm"))
+  assert_eq(standard_untag(), before)
+}
+
+fn nested_tag_untag(_ int_tagged: Bool) -> Array[Int] with Exception {
+  let (bytes, _n32, _n64, _nv) = compile_inline_wat_array_params_for_int_representation(fn_name = "probe", wat = "(vibe.int.tag (vibe.int.untag (i64.const 84)))", param_names = [
+  ], array_param_names = [], extra_base = 0, callees = [], int_tagged = int_tagged)
+  codes(bytes)
+}
+
+test "nested tag and untag use this assembly's explicit representation" {
+  let tagged = [0x42, 0xd4, 0x00, 0x42, 0x01, 0x87, 0x42, 0x01, 0x86]
+  let raw = [0x42, 0xd4, 0x00]
+  assert_eq(nested_tag_untag(true), tagged)
+  assert_eq(nested_tag_untag(false), raw)
+  assert_eq(nested_tag_untag(true), tagged)
+  assert_eq(standard_untag(), [0x42, 0xd4, 0x00, 0x42, 0x01, 0x87])
+}

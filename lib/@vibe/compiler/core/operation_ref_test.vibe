@@ -12,7 +12,7 @@ import ./operation_ref.vibe {
 }
 
 import ./standard_effect_policy.vibe {
-  is_entry_admitted_effect, standard_effect_catalog, standard_operation_ref
+  classify_label_in, effect_catalog_in, is_entry_admitted_effect, operation_ref_in, standard_effect_catalog, standard_operation_ref
 }
 
 import ./builtin_registry.vibe {
@@ -331,4 +331,73 @@ test "entry admission keys on the classified requirement" {
   assert(!is_entry_admitted_effect("State[Int]"))
   assert(!is_entry_admitted_effect("Fs["))
   assert(!is_entry_admitted_effect(""))
+}
+
+//# Declared effects (ADR-0094, #3143)
+
+/// A label lowered and classified against `declared`, rendered like
+/// `standard_outcome`.
+fn declared_outcome(label: String, declared: Array[(String, String)]) -> String {
+  match operation_ref_in(label = label, declared = declared) {
+    Some(operation) => {
+      let (verdict, result) = render_outcome(classify_row(catalog = effect_catalog_in(declared), operations = [
+        operation
+      ]))
+      "\{verdict} \{result}"
+    },
+    None => "malformed"
+  }
+}
+
+test "a declared resource parameter reaches the classifier through OperationRef" {
+  // `effect Kv[R: Store::Bucket]`, `effect Clock[_: Process::Root]`, an
+  // ordinary `effect Ask`, and a program's own `effect Fs[T]`, which takes no
+  // resource and so overrides the provider row of the same name.
+  let declared = [
+    ("Kv", "Store::Bucket"),
+    ("Clock", "Process::Root"),
+    ("Ask", ""),
+    ("Fs", "")
+  ]
+  let labels = [
+    "Kv[Posts]::Get",
+    "Kv::Get",
+    "Clock::Now",
+    "Ask::Get",
+    "Fs[Int]::Get",
+    "Env::get"
+  ]
+  let rows: Array[String] = []
+  for label in labels {
+    Array::push(rows, value = "\{label} => \{declared_outcome(label = label, declared = declared)}")
+  }
+  // `Kv::Get` names no one `Store::Bucket` resource and the kind has no
+  // singleton, so it is not a classifiable capability operation.
+  inspect(String::join(rows, sep = "\n"), content = "Kv[Posts]::Get => accept [capability(Kv:Get(resource:Posts);kind=Store::Bucket;resource=Posts)]\nKv::Get => reject none\nClock::Now => accept [capability(Clock:Now(resource:Process::Root);kind=Process::Root;resource=Process::Root)]\nAsk::Get => accept [algebraic(Ask:Get())]\nFs[Int]::Get => accept [algebraic(Fs:Get(type:Int))]\nEnv::get => accept [capability(Env:get(resource:Process::Root);kind=Process::Root;resource=Process::Root)]")
+}
+
+test "the standard lowering is the declared one with no declarations" {
+  for label in [
+    "Fs",
+    "Fs[SrcTree]::read_file",
+    "Exception[IoError]",
+    "Async",
+    "Ask::Get",
+    "State[Int]"
+  ] {
+    assert(declared_outcome(label = label, declared = []) == standard_outcome(label))
+  }
+}
+
+test "classify_label_in names the declared kind and resource" {
+  let declared = [("Kv", "Store::Bucket")]
+  match classify_label_in(label = "Kv[Posts]::Get", declared = declared) {
+    Some(CapabilityRequirement(_, kind, resource)) => inspect("\{kind} \{resource}", content = "Store::Bucket Posts"),
+    _ => assert(false)
+  }
+  // No one resource named and no singleton: not a classifiable requirement.
+  match classify_label_in(label = "Kv::Get", declared = declared) {
+    Some(_) => assert(false),
+    None => ()
+  }
 }
