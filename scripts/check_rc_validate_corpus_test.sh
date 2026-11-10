@@ -3,8 +3,9 @@
 # until it is known to be able to fail).
 #
 # The mutated input is a REAL plan: `vibe rc-validate --mutate drop-dups`
-# validates each plan of a real fixture with its dup rows deleted, which is a
-# plan that releases more than it holds. Each mutation is checked for having
+# validates each plan of a real fixture with its dup rows deleted, and
+# `--mutate inflate-exit-drops` with each early-exit release one higher;
+# both are plans that release more than they hold. Each mutation is checked for having
 # LANDED before its verdict is believed -- an edit that matches nothing passes
 # while proving nothing.
 set -euo pipefail
@@ -99,6 +100,27 @@ if run_gate "$GATE" "$PARAM_FIXTURE" --mutate drop-dups; then
   fail "RED 1b: the gate passed a parameter plan that releases more than it holds"
 fi
 
+# RED 1c: an early-exit release (#3718 slice 3). Every exit-drop count one
+# higher is a plan whose `return` releases a binding once more than it holds.
+# The verb must see it on a path that leaves by the exit -- which it could
+# not before slice 3, when every binding with an exit row was not checked.
+EXIT_FIXTURE="fixtures/rc_branch_dup_exit_leak_test.vibe"
+[ -f "$EXIT_FIXTURE" ] || fail "the exit red fixture $EXIT_FIXTURE is gone; pick another fixture whose plan has an exit-drop row on a checked binding"
+run_verb "$WORK/eplain.txt" "$EXIT_FIXTURE" || { cat "$WORK/eplain.txt.err" >&2; fail "RED 1c: the unmutated verb call failed"; }
+if grep -qE 'more than held$' "$WORK/eplain.txt"; then
+  fail "RED 1c: the unmutated exit fixture already reports an over-release; it is not a control"
+fi
+run_verb "$WORK/emutated.txt" --mutate inflate-exit-drops "$EXIT_FIXTURE" \
+  || { cat "$WORK/emutated.txt.err" >&2; fail "RED 1c: the mutated verb call failed"; }
+grep -qE '^let_guard v [^ ]+: owned value released [0-9]+ more than held$' "$WORK/emutated.txt" \
+  || { cat "$WORK/emutated.txt" >&2; fail "RED 1c mutation did not land (no over-release line for let_guard v under --mutate inflate-exit-drops)"; }
+if run_gate "$GATE" "$EXIT_FIXTURE" --mutate inflate-exit-drops; then
+  cat "$WORK/out" >&2
+  fail "RED 1c: the gate passed a plan whose early exit releases more than it holds"
+fi
+grep -qF 'found a plan that releases more than it holds' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 1c failed for the wrong reason"; }
+
 # RED 2: the case above must depend on the gate's own failure check. A copy of
 # the gate with that check disconnected must PASS the mutated corpus -- if it
 # still failed, RED 1 would be proving something other than the check.
@@ -128,4 +150,4 @@ fi
 grep -qF 'no fixtures matched' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"; }
 
-echo "[rc-validate-corpus-test] ok (green control + 5 red cases, each mutation verified to land)"
+echo "[rc-validate-corpus-test] ok (green control + 6 red cases, each mutation verified to land)"

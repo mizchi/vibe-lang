@@ -2071,6 +2071,75 @@ export fn is_effect_inst_label(_ label: String) -> Bool {
   String::starts_with(label, prefix = "#einst:")
 }
 
+/// #3417: the instantiation a function value's performs of a generic effect
+/// were checked against (#3341): the effect's name and the type variable
+/// that holds its payload. A stored row still carries it as an `#einst:`
+/// label. `effect_inst_label_text` is the only writer of that spelling and
+/// `effect_inst_of_label` the only reader, so a route reads this value and
+/// never the label text.
+export struct EffectInst {
+  name: String
+  var_id: Int
+}
+
+/// #3417: the row label that stores `inst`, `#einst:<effect>:<variable id>`.
+export fn effect_inst_label_text(_ inst: EffectInst) -> String {
+  String::concat("#einst:", String::concat(inst.name, String::concat(":", __to_string(inst.var_id))))
+}
+
+/// #3417: the instantiation a trimmed row label stores. `None` for any other
+/// label, and for an `#einst:` label without a name or a decimal variable id.
+/// The id follows the LAST `:`, so a qualified effect name keeps its own.
+export fn effect_inst_of_label(_ label: String) -> Option[EffectInst] {
+  if is_effect_inst_label(label) {
+    let rest = String::substring(label, start = 7, end = String::length(label))
+    let n = String::length(rest)
+    let mut cut = 0 - 1
+    let mut i = 0
+    while i < n {
+      if String::byte_at(rest, at = i) == 58 {
+        cut = i
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if cut > 0 && cut + 1 < n {
+      let mut id = 0
+      let mut digits = true
+      let mut p = cut + 1
+      while p < n {
+        let ch = String::byte_at(rest, at = p)
+        if ch >= 48 && ch <= 57 {
+          id = id * 10 + (ch - 48)
+        } else {
+          digits = false
+        }
+        p = p + 1
+      }
+      if digits {
+        Some(EffectInst::{
+          name: String::substring(rest, start = 0, end = cut),
+          var_id: id
+        })
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// #3417: may `row` store an instantiation? A cheap test ahead of splitting
+/// the row into labels; it also answers `true` for the spelling nested in a
+/// kind, which `effect_inst_of_label` on a top-level item then rejects.
+export fn row_may_have_effect_inst(_ row: String) -> Bool {
+  String::contains(row, needle = "#einst:")
+}
+
 fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool {
   let ls = effect_label_base_set(effect_label_list(left))
   let rs = effect_label_base_set(effect_label_list(right))

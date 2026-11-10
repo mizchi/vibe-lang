@@ -1,0 +1,296 @@
+// #1960: hover in a resident `vibe lsp --selfhost` session, for a document
+// that is a file on disk, is typed on the import-resolving lane -- the lane
+// `vibe type-at` and `vibe check` use -- and that typing is kept for the
+// revision it was built from.
+//
+// A revision is the document's path, its buffer text and the entry's walked
+// fingerprint, which covers every transitive dependency on disk. So the rows
+// below pin what must never be answered from a kept typing: an unsaved buffer
+// edit, a dependency edited on disk (public and private), a declaration moved
+// within the buffer, and a closed document. The oracle for each answer is
+// `type_at_fs`, the one-shot `vibe type-at` lane, run on the same text.
+//
+// The typing counter is cumulative for the process, so every row reads a
+// delta.
+
+//# Imports
+
+import .{
+  lsp_hover_fs_typings, lsp_hover_fs_walks, lsp_notify, lsp_request
+}
+
+import @vibe/compiler/query {
+  type_at_fs
+}
+
+import @vibe/json {
+  Json
+}
+
+//# Functions
+
+fn json_str(_ s: String) -> String {
+  Json::stringify(JStr(s))
+}
+
+fn uri_of(_ path: String) -> String {
+  String::concat("file://", path)
+}
+
+fn open_params(uri: String, text: String) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)},\"version\":1,\"text\":\{json_str(text)}}}")
+}
+
+fn change_params(uri: String, text: String) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)},\"version\":2},\"contentChanges\":[{\"text\":\{json_str(text)}}]}")
+}
+
+fn close_params(_ uri: String) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)}}}")
+}
+
+fn pos_params(uri: String, line0: Int, char0: Int) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)}},\"position\":{\"line\":\{line0},\"character\":\{char0}}}")
+}
+
+/// The type a hover response renders, or "" for a `null` response.
+fn hover_type(_ result: Json) -> String {
+  if Json::is_null(result) {
+    ""
+  } else {
+    let value = Json::string(Json::field(Json::field(result, key = "contents"), key = "value"))
+    let fence = "```vibe\n"
+    if String::starts_with(value, prefix = fence) {
+      let rest = value[String::length(fence): String::length(value)]
+      let mut end = 0
+      while end < String::length(rest) && String::byte_at(rest, at = end) != 10 {
+        end = end + 1
+      }
+      rest[0: end]
+    } else {
+      ""
+    }
+  }
+}
+
+fn hover(docs: Map[String, String], path: String, line0: Int, char0: Int) -> String with Env + Fs {
+  hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri_of(path), line0 = line0, char0 = char0), docs = docs))
+}
+
+fn dep_text(twice_ret: String, body: String) -> String {
+  "export fn twice(_ n: Int) -> \{twice_ret} {\n  \{body}\n}\n\nexport fn label(_ n: Int) -> String {\n  \"n=\\{n}\"\n}\n"
+}
+
+/// `x` is not constrained by its use, so a dependency edit that changes
+/// `twice`'s result type leaves this file well-typed: a file that does not
+/// check falls back to single-module typing, which is a different subject.
+fn main_text() -> String {
+  "import ./dep.vibe {\n  twice, label\n}\n\nfn show(_ n: Int) -> String {\n  let x = twice(n)\n  label(n)\n}\n"
+}
+
+/// A fresh project directory holding `dep.vibe` and `main.vibe`; answers the
+/// path of `main.vibe`.
+fn project(_ name: String) -> String with Fs {
+  let dir = String::concat("_build/lsp_fs_session_1960/", name)
+  Fs::mkdir_p(dir)
+  Fs::write_file(String::concat(dir, "/dep.vibe"), contents = dep_text(twice_ret = "Int", body = "n * 2"))
+  let main = String::concat(dir, "/main.vibe")
+  Fs::write_file(main, contents = main_text())
+  main
+}
+
+fn open_doc(path: String, text: String) -> Map[String, String] {
+  lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_of(path), text = text), docs = Map::new())
+}
+
+//# Tests
+
+test "#1960: an imported function is typed through its import" {
+  let main = project("imported")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Int")
+  inspect(hover(docs = docs, path = main, line0 = 6, char0 = 2), content = "(Int) -> String")
+}
+
+test "#1960: repeated hovers of one revision walk the project and type it once" {
+  let main = project("once")
+  let docs = open_doc(path = main, text = main_text())
+  let before = lsp_hover_fs_typings()
+  let walks = lsp_hover_fs_walks()
+  let _ = hover(docs = docs, path = main, line0 = 5, char0 = 10)
+  let _ = hover(docs = docs, path = main, line0 = 5, char0 = 6)
+  let _ = hover(docs = docs, path = main, line0 = 6, char0 = 2)
+  let _ = hover(docs = docs, path = main, line0 = 5, char0 = 10)
+  inspect(lsp_hover_fs_typings() - before, content = "1")
+  inspect(lsp_hover_fs_walks() - walks, content = "1")
+}
+
+test "#1960: a file event makes the next hover walk, and an unchanged walk keeps the typing" {
+  // A saved file, or a watched-file change, may put a file where an import
+  // looks -- which no kept dependency's stat token shows. The next hover
+  // walks; the walk finds the same fingerprint, so the typing is kept.
+  let main = project("file_event")
+  let docs = open_doc(path = main, text = main_text())
+  let _ = hover(docs = docs, path = main, line0 = 5, char0 = 10)
+  let before = lsp_hover_fs_typings()
+  let walks = lsp_hover_fs_walks()
+  let _ = lsp_notify(method = "textDocument/didSave", params = close_params(uri_of(main)), docs = docs)
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Int")
+  inspect(lsp_hover_fs_walks() - walks, content = "1")
+  inspect(lsp_hover_fs_typings() - before, content = "0")
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 6), content = "Int")
+  inspect(lsp_hover_fs_walks() - walks, content = "1")
+}
+
+test "#1960: an unsaved buffer edit is typed from the buffer, not the file" {
+  let main = project("buffer_edit")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 6), content = "Int")
+  let edited = "import ./dep.vibe {\n  twice, label\n}\n\nfn show(_ n: Int) -> String {\n  let x = label(n)\n  x\n}\n"
+  let docs2 = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri_of(main), text = edited), docs = docs)
+  let before = lsp_hover_fs_typings()
+  inspect(hover(docs = docs2, path = main, line0 = 5, char0 = 6), content = "String")
+  inspect(type_at_fs(path = main, source = edited, line = 6, col = 7), content = "String")
+  inspect(lsp_hover_fs_typings() - before, content = "1")
+  // The file on disk was never written.
+  inspect(Fs::read_file(main) == main_text(), content = "true")
+}
+
+test "#1960: a dependency's signature edited on disk is typed again" {
+  let main = project("public_dep_edit")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Int")
+  let dep = String::concat(main[0: String::length(main) - String::length("main.vibe")], "dep.vibe")
+  Fs::write_file(dep, contents = dep_text(twice_ret = "Bool", body = "n > 0"))
+  let before = lsp_hover_fs_typings()
+  // Same buffer, same positions: only the dependency changed, and no file
+  // event was sent -- the dependency's stat token is what moved.
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Bool")
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 6), content = "Bool")
+  inspect(type_at_fs(path = main, source = main_text(), line = 6, col = 11), content = "(Int) -> Bool")
+  inspect(lsp_hover_fs_typings() - before, content = "1")
+}
+
+test "#1960: a dependency's body edited on disk keeps the answer and is typed again" {
+  let main = project("private_dep_edit")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 6), content = "Int")
+  let dep = String::concat(main[0: String::length(main) - String::length("main.vibe")], "dep.vibe")
+  Fs::write_file(dep, contents = dep_text(twice_ret = "Int", body = "n + n"))
+  let before = lsp_hover_fs_typings()
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 6), content = "Int")
+  // The key is the walked fingerprint, which a body edit changes too: the
+  // typing is rebuilt rather than trusted across it.
+  inspect(lsp_hover_fs_typings() - before, content = "1")
+}
+
+test "#1960: a declaration moved within the buffer answers at its new line" {
+  let main = project("moved")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Int")
+  let moved = String::concat("// two lines\n// in front\n", main_text())
+  let docs2 = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri_of(main), text = moved), docs = docs)
+  inspect(hover(docs = docs2, path = main, line0 = 7, char0 = 10), content = "(Int) -> Int")
+  inspect(hover(docs = docs2, path = main, line0 = 7, char0 = 6), content = "Int")
+  // The old position is now the `fn show` line's parameter list.
+  inspect(hover(docs = docs2, path = main, line0 = 5, char0 = 10), content = type_at_fs(path = main, source = moved, line = 6, col = 11))
+}
+
+test "#1960: closing the document drops its kept typing" {
+  let main = project("closed")
+  let docs = open_doc(path = main, text = main_text())
+  let _ = hover(docs = docs, path = main, line0 = 5, char0 = 10)
+  let closed = lsp_notify(method = "textDocument/didClose", params = close_params(uri_of(main)), docs = docs)
+  let reopened = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri_of(main), text = main_text()), docs = closed)
+  let before = lsp_hover_fs_typings()
+  inspect(hover(docs = reopened, path = main, line0 = 5, char0 = 10), content = "(Int) -> Int")
+  inspect(lsp_hover_fs_typings() - before, content = "1")
+}
+
+test "#1960: a kept typing keeps its own local let rows" {
+  // The checker records local `let` rows in global tables that the next
+  // check of ANY source overwrites. Here an untitled buffer (typed alone,
+  // from the single-file memo) is checked between two hovers of the same
+  // revision of `main.vibe`, and puts a `String` row at the very offset of
+  // `main.vibe`'s `let x`. The second hover is answered from the kept typing
+  // and must still read its own row.
+  let main = project("kept_let_rows")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 6), content = "Int")
+  let other = "fn lab2(_ n: Int) -> String {\n  \"s\"\n}\nfn show(_ n: Int) -> String {\n  let x = lab2(n)\n  lab2(n)\n}\n"
+  // The same byte offset for `let x` in both buffers is what makes the row
+  // collide.
+  inspect(String::length("fn lab2(_ n: Int) -> String {\n  \"s\"\n}\nfn show(_ n: Int) -> String {\n"), content = "68")
+  inspect(String::length("import ./dep.vibe {\n  twice, label\n}\n\nfn show(_ n: Int) -> String {\n"), content = "68")
+  let docs2 = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = "untitled:other", text = other), docs = docs)
+  inspect(hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = "untitled:other", line0 = 4, char0 = 6), docs = docs2)), content = "String")
+  let before = lsp_hover_fs_typings()
+  inspect(hover(docs = docs2, path = main, line0 = 5, char0 = 6), content = "Int")
+  inspect(lsp_hover_fs_typings() - before, content = "0")
+}
+
+test "#1960: a package file is typed through its directory-shared imports" {
+  // The fixture's `index.vpkg` shares `import @vibe/random { seed }` with
+  // every sibling, so `impl.vibe` calls `seed` with no import line of its
+  // own. The checker types the file with the shared import lines in front of
+  // it, and the hover position is moved down past them. Before, the lane
+  // gave up on such a file and typed it alone, which knows no `seed`: main
+  // answers "no type is known for `seed`" here, and every file of a package
+  // that shares imports -- most of `lib/` -- had no import-resolved hover.
+  let path = "fixtures/contract_pkg_vpkg_shared_scope/impl.vibe"
+  let text = Fs::read_file(path)
+  let docs = open_doc(path = path, text = text)
+  inspect(hover(docs = docs, path = path, line0 = 3, char0 = 2), content = "(Int) -> Int")
+  inspect(hover(docs = docs, path = path, line0 = 2, char0 = 25), content = "Int")
+  inspect(type_at_fs(path = path, source = text, line = 4, col = 3), content = "(Int) -> Int")
+}
+
+test "#1960: an absolute, percent-escaped file URI inside the project is typed through its imports" {
+  // What an editor sends: the absolute path, with reserved bytes escaped --
+  // `@` arrives as `%40`. The walk reads an in-project file by its
+  // project-relative spelling, as every CLI verb does (#3948). Through the
+  // absolute spelling the loader takes the package's contract for an
+  // external root, which keeps no types module, so `ShResult` -- declared
+  // only in `lib/@vibe/process/index.vpkg` -- is unknown and the file has no
+  // import-resolved typing at all.
+  let path = "lib/@vibe/process/process.vibe"
+  let text = Fs::read_file(path)
+  let uri = String::concat("file://", String::concat(Fs::getcwd(), "/lib/%40vibe/process/process.vibe"))
+  let docs = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri, text = text), docs = Map::new())
+  // `let result = ShResult::{ .. }`, 1-based line 54.
+  inspect(hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri, line0 = 53, char0 = 6), docs = docs)), content = "ShResult")
+  inspect(type_at_fs(path = path, source = text, line = 54, col = 7), content = "ShResult")
+}
+
+test "#1960: the package's index.vpkg edited on disk is typed again" {
+  // A sibling's directory-shared imports come from its owning contract, which
+  // no import names, so the contract is tracked on its own. Here it changes
+  // what `pick` is, with no file event sent.
+  let dir = "_build/lsp_fs_session_1960/contract_edit/pkg"
+  Fs::mkdir_p(dir)
+  Fs::write_file(String::concat(dir, "/index.vpkg"), contents = "import @vibe/random { seed as pick }\n\nfn use_it(_ x: Int) -> Int\n")
+  let impl_text = "export fn use_it(_ x: Int) -> Int {\n  let r = pick(x)\n  0\n}\n"
+  let impl_path = String::concat(dir, "/impl.vibe")
+  Fs::write_file(impl_path, contents = impl_text)
+  let docs = open_doc(path = impl_path, text = impl_text)
+  inspect(hover(docs = docs, path = impl_path, line0 = 1, char0 = 6), content = "Int")
+  Fs::write_file(String::concat(dir, "/index.vpkg"), contents = "import @vibe/random { next as pick }\n\nfn use_it(_ x: Int) -> Int\n")
+  inspect(hover(docs = docs, path = impl_path, line0 = 1, char0 = 6), content = "(Int, Int)")
+  inspect(type_at_fs(path = impl_path, source = impl_text, line = 2, col = 7), content = "(Int, Int)")
+}
+
+test "#1960: a dependency deleted on disk is typed again rather than trusted" {
+  // The node runner raises a guest error for the stat of a missing path, so
+  // the freshness check asks whether the file exists first. With the import
+  // gone the file no longer checks on the import-resolving lane, and the
+  // hover falls back to the buffer typed alone.
+  let main = project("deleted_dep")
+  let docs = open_doc(path = main, text = main_text())
+  inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Int")
+  let dep = String::concat(main[0: String::length(main) - String::length("main.vibe")], "dep.vibe")
+  Fs::remove(dep)
+  let walks = lsp_hover_fs_walks()
+  let after = hover(docs = docs, path = main, line0 = 5, char0 = 10)
+  inspect(after == "(Int) -> Int", content = "false")
+  inspect(lsp_hover_fs_walks() - walks, content = "1")
+}

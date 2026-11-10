@@ -192,6 +192,12 @@ let prelude_module_executors: Array[(Array[Stmt], Array[Stmt], Int, Int, String,
 
 /// Install one independent executor only for this compile. Nested use is
 /// refused, and success or an exception restores the ordinary sequential lane.
+///
+/// The executor lowers one module through passes 4..10 and files what it
+/// produced before returning, the module's trait-dict refusals included
+/// (`desugar_module_reports_merge`, which `@vibe/lowering_worker`'s
+/// `prelude_module_product_merge` calls): the driver reports them once, after
+/// the last module, as the whole program does (#2826).
 export fn prelude_with_module_executor(executor: (Array[Stmt], Array[Stmt], Int, Int, String, Array[Int], Array[String], PreludeEnv, Array[String], PreludeTail, Array[String]) -> Unit with Exception, action: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
   enter_module_executor_scope()
   Array::push(prelude_module_executors, value = executor)
@@ -962,6 +968,14 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     None => prelude_module_batch_active(),
     Some(_) => false
   }
+  // #2826: one report for the program. Each module's trait-dict refusals are
+  // filed with the program's and thrown once, after the last module, in the
+  // whole-program pass's order -- see `desugar_trait_dicts_module_deferring`.
+  // The batch and executor routes lower a module elsewhere -- a worker
+  // instance, or the executor's own -- and send its refusals back with the
+  // module (`@vibe/lowering_worker`'s `prelude_module_product_merge`), filed
+  // here in module order; so the report is opened before either runs.
+  desugar_module_reports_begin()
   if execute_batch {
     let (context_pool, context_indices) = prelude_batch_context_indices(parts = parts, interfaces = ifaces, interface_keys = iface_keys, closure = import_closure)
     prelude_execute_module_batch(PreludeModuleBatch::{
@@ -978,12 +992,6 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       diagnostics: link.diags
     })
   } else ()
-  // #2826: one report for the program. Each module's trait-dict refusals are
-  // filed with the program's and thrown once, after the last module, in the
-  // whole-program pass's order -- see `desugar_trait_dicts_module_deferring`.
-  // The batch and executor routes above lower a module elsewhere and still
-  // report per module.
-  desugar_module_reports_begin()
   // #3976: every module is lowered against the same typed rows, and sorting
   // them by kind reads nothing else, so they are sorted once here instead of
   // once per module.

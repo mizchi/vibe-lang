@@ -1634,7 +1634,18 @@ export fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: A
     },
     // #3108 review: a handler's value is its body's, or an arm's.
     EHandle(hb, harms) => EHandle(retain_wrap_branch_tails(e = hb, local_names = local_names, inner = inner, ctx = ctx), retain_wrap_arms(arms = harms, local_names = local_names, inner = inner, ctx = ctx)),
-    ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(e = b, local_names = local_names, inner = with_name(inner = inner, n = n), ctx = ctx), soff),
+    ELet(n, v, b, soff) => {
+      let wrapped = retain_wrap_branch_tails(e = b, local_names = local_names, inner = with_name(inner = inner, n = n), ctx = ctx)
+      // A branch-local `let c = Array::get(..)` binds a VIEW (#708): it owns
+      // no reference, so a tail `c` hands the enclosing `let` a value its
+      // planned drop would release from under the container. Retain it like
+      // the bare borrow-returning call it stands for.
+      if call_returns_borrow(value = v, local_names = local_names, ctx = ctx) && !callee_bound_in(e = v, inner = inner) {
+        ELet(n, v, retain_wrap_view_tail(e = wrapped, n = n), soff)
+      } else {
+        ELet(n, v, wrapped, soff)
+      }
+    },
     ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(e = b, local_names = local_names, inner = with_name(inner = inner, n = n), ctx = ctx), soff),
     // #3108 review: `let rec` is a let form too; its binder is in scope for
     // both its value and the body, so it joins the inner scope here.
@@ -1684,7 +1695,7 @@ export fn value_has_borrowed_branch_tail(e: Expr, local_names: Array[String], in
       found
     },
     EHandle(hb, harms) => value_has_borrowed_branch_tail(e = hb, local_names = local_names, inner = inner, ctx = ctx) || arms_have_borrowed_tail(arms = harms, local_names = local_names, inner = inner, ctx = ctx),
-    ELet(n, _, b, _) => value_has_borrowed_branch_tail(e = b, local_names = local_names, inner = with_name(inner = inner, n = n), ctx = ctx),
+    ELet(n, v, b, _) => value_has_borrowed_branch_tail(e = b, local_names = local_names, inner = with_name(inner = inner, n = n), ctx = ctx) || call_returns_borrow(value = v, local_names = local_names, ctx = ctx) && !callee_bound_in(e = v, inner = inner) && view_tail_names(e = b, n = n),
     ELetMut(n, _, b, _) => value_has_borrowed_branch_tail(e = b, local_names = local_names, inner = with_name(inner = inner, n = n), ctx = ctx),
     ELetRec(n, _, b) => value_has_borrowed_branch_tail(e = b, local_names = local_names, inner = with_name(inner = inner, n = n), ctx = ctx),
     ESeq(_, b) => value_has_borrowed_branch_tail(e = b, local_names = local_names, inner = inner, ctx = ctx),
@@ -2036,6 +2047,69 @@ fn arms_have_borrowed_tail(arms: Array[(Pat, Expr)], local_names: Array[String],
 /// callee is one of them calls the LOCAL binding, not the top-level
 /// borrow-returning function of the same spelling, so it is left unretained
 /// (`local_names` covers only what was in scope at the enclosing `let`).
+/// Wrap every tail occurrence of the branch-local view binding `n` in the
+/// retain marker, stopping where `n` is rebound.
+fn retain_wrap_view_tail(e: Expr, n: String) -> Expr {
+  match e {
+    EIdent(x, p) => if x == n {
+      ECall(EIdent("__loop_tail_retain", -1), [EIdent(x, p)], -1, [])
+    } else {
+      e
+    },
+    EIf(c, t, el) => EIf(c, retain_wrap_view_tail(e = t, n = n), retain_wrap_view_tail(e = el, n = n)),
+    ESeq(a, b) => ESeq(a, retain_wrap_view_tail(e = b, n = n)),
+    ELet(m, v, b, soff) => if m == n {
+      e
+    } else {
+      ELet(m, v, retain_wrap_view_tail(e = b, n = n), soff)
+    },
+    ELetMut(m, v, b, soff) => if m == n {
+      e
+    } else {
+      ELetMut(m, v, retain_wrap_view_tail(e = b, n = n), soff)
+    },
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        let (apat, abody) = arm
+        let binds: Array[String] = []
+        collect_pattern_bindings(pat = apat, bindings = binds)
+        Array::push(out, value = (apat, if array_contains_str(arr = binds, s = n) {
+          abody
+        } else {
+          retain_wrap_view_tail(e = abody, n = n)
+        }))
+      }
+      EMatch(scrut, out)
+    },
+    _ => e
+  }
+}
+
+/// Does a tail position of `e` read the branch-local view binding `n`?
+fn view_tail_names(e: Expr, n: String) -> Bool {
+  match e {
+    EIdent(x, _) => x == n,
+    EIf(_, t, el) => view_tail_names(e = t, n = n) || view_tail_names(e = el, n = n),
+    ESeq(_, b) => view_tail_names(e = b, n = n),
+    ELet(m, _, b, _) => m != n && view_tail_names(e = b, n = n),
+    ELetMut(m, _, b, _) => m != n && view_tail_names(e = b, n = n),
+    EMatch(_, arms) => {
+      let mut found = false
+      for arm in arms {
+        let (apat, abody) = arm
+        let binds: Array[String] = []
+        collect_pattern_bindings(pat = apat, bindings = binds)
+        if !array_contains_str(arr = binds, s = n) && view_tail_names(e = abody, n = n) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
 fn callee_bound_in(e: Expr, inner: Array[String]) -> Bool {
   match e {
     ECall(EIdent(cn, _), _, _, _) => array_contains_str(arr = inner, s = cn),

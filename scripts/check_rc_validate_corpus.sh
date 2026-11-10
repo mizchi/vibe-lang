@@ -5,8 +5,9 @@
 # over-release, a borrowed parameter consumed without a dup, or a consume mark
 # on an occurrence that does not consume -- fails the gate: those are
 # use-after-free shapes. A leak line is the safe direction the planner accepts
-# today (#705), so it is counted and printed, not failed. A verb that errors
-# fails too: an unanswered file would read exactly like a clean one.
+# today (#705), so it is counted and printed, not failed; so is a
+# reference-cycle warning, which no plan can fix. A verb that errors fails
+# too: an unanswered file would read exactly like a clean one.
 #
 # The corpus is a GLOB: a fixture joins by being named fixtures/rc_*.vibe.
 #
@@ -15,10 +16,11 @@
 #   RC_VALIDATE_CORPUS_STAGE2=<stage2.wasm> bash scripts/check_rc_validate_corpus.sh
 #   bash scripts/check_rc_validate_corpus.sh --mutate drop-dups   # self-test only
 #
-# `--mutate drop-dups` is passed to every verb call. It validates each plan
-# with its dup rows deleted, which only scripts/check_rc_validate_corpus_test.sh
-# uses: it is how the self-test shows a wrong plan in a real fixture fails
-# this gate.
+# `--mutate MUTATION` is passed to every verb call. It validates each plan
+# deliberately broken (`drop-dups`: its dup rows deleted;
+# `inflate-exit-drops`: each exit-drop count one higher), which only
+# scripts/check_rc_validate_corpus_test.sh uses: it is how the self-test
+# shows a wrong plan in a real fixture fails this gate.
 set -euo pipefail
 # Overridable ONLY so this gate's own self-test can run a MUTATED COPY of this
 # script from a scratch directory. Unset on every real invocation.
@@ -52,6 +54,7 @@ trap 'rm -rf "$WORK"' EXIT
 files=0
 leaks=0
 skips=0
+cycles=0
 for src in $FIXTURE_GLOB; do
   [ -f "$src" ] || continue
   files=$((files + 1))
@@ -77,6 +80,7 @@ for src in $FIXTURE_GLOB; do
   fi
   leaks=$((leaks + $(grep -c ': owned value not consumed' "$WORK/out.txt" || true)))
   skips=$((skips + $(grep -c ': not checked: ' "$WORK/out.txt" || true)))
+  cycles=$((cycles + $(grep -c ': warning: reference cycle ' "$WORK/out.txt" || true)))
 done
 
 if [ "$files" -eq 0 ]; then
@@ -85,4 +89,4 @@ if [ "$files" -eq 0 ]; then
   exit 1
 fi
 
-echo "[rc-validate-corpus] ok ($files files, $leaks leak lines, $skips not-checked lines)"
+echo "[rc-validate-corpus] ok ($files files, $leaks leak lines, $cycles cycle warnings, $skips not-checked lines)"

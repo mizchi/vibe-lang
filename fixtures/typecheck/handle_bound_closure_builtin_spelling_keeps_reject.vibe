@@ -1,0 +1,26 @@
+// #3255: a closure that performs what a `handle` answers must not outlive
+// that handle, also when the function it is handed is spelled like a builtin
+// that only calls its callback. This `Array::map` is the program's own, and
+// it pushes the callback into a module-level array. The escape check used to
+// trust the spelling: `vibe check` was clean, and `g()` answered `6` from the
+// dead handler. handle_bound_closure_module_array_keeps_reject.vibe is the
+// same program with the function named `keep`.
+effect Ask {
+  Get() -> Int
+}
+
+let saved: Array[() -> Int] = []
+
+fn Array::map(_ xs: Array[Int], f: () -> Int) -> Array[Int] {
+  Array::push(saved, value = f)
+  xs
+}
+
+fn main() -> Unit allows Console {
+  handle {
+    let _ = Array::map([1], f = () -> perform Ask::Get() + 1)
+    ()
+  } with { Ask::Get() => resume(5) }
+  let g = Array::get(saved, at = 0)
+  println("g=\{g()}")
+}

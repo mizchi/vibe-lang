@@ -500,10 +500,21 @@ could give.
 
 ### normalize
 
-Canonicalize a source file via the in-compiler normalize engine (#882):
-parse -> module-flatten -> DCE from exported roots -> section layout
-(`//# Imports / Types / Functions / Tests`) re-rendered through the AST
-printer. The default rewrites the file in place.
+Respell each `recv.method(args)` whose receiver type the file itself
+declares as the canonical `Type::method(recv, args)` -- with the receiver
+labeled when the declaration labels that parameter, `Cart::push(c = cart,
+item = 1)` (ADR-0081; the rules are in the cheatsheet's "Canonical on-disk
+form"). That is the only rewrite:
+every other byte of the file -- comments, layout, declaration order,
+unexported declarations, `test` / `bench` blocks -- is kept, and a file with
+nothing to respell is left byte for byte as it was. Layout is `vibe fmt`'s
+job. The default rewrites the file in place.
+
+Each respelling is proved before anything is written: the result must
+re-parse to the program the input means. A call whose text cannot be
+respelled that way (a piped call, `x |> recv.m(a)`; a parenthesized
+receiver) stays in dot form. A source with a `#cfg` directive, or one that
+does not parse, is refused with a message and left untouched (#4027).
 
 ```
 vibe normalize <file.vibe>            # rewrite in place
@@ -527,7 +538,7 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | `symbols [--legend] <file>` | Declaration outline (`NAME KIND START END [DOC]` per line) |
 | `rc-classify <file>` | RC classifier sets (`NAME SET[,SET...]`; empty = none) |
 | `rc-plan [--fn NAME] <file>` | Perceus plan (`FN BINDING ACTION COUNT`; empty = no actions) |
-| `rc-validate [--fn NAME] [--mutate drop-dups] <file>` | Each Perceus plan checked against the linear ownership discipline (`FN BINDING PATH: MESSAGE` per violation or skipped binding; empty = every checked binding balances on every path). The file is checked alone, the build's `elaborate_heap_params` / `return_control_annotate_calls` rewrites do not run, and a heap value the planner classified as scalar is not caught in general. `--mutate drop-dups` is a self-test seam: it validates each plan with every dup row deleted, so `scripts/check_rc_validate_corpus_test.sh` can show the corpus gate fails on a wrong plan |
+| `rc-validate [--fn NAME] [--mutate drop-dups\|inflate-exit-drops] <file>` | Each Perceus plan checked against the linear ownership discipline (`FN BINDING PATH: MESSAGE` per violation or skipped binding; empty = every checked binding balances on every path, paths that leave by an early `return`, `break`, `continue` or uncaught `throw` included, and no reference cycle was found). A closure stored into the `let mut` it captures is reported as `FN NAME -: warning: reference cycle (...)`: RC cannot free it whatever the plan says (a `let rec` closure's self-reference is not a cycle). The file is checked alone, the build's `elaborate_heap_params` / `return_control_annotate_calls` rewrites do not run, and a heap value the planner classified as scalar is not caught in general. `--mutate` is a self-test seam: `drop-dups` validates each plan with every dup row deleted and `inflate-exit-drops` with every early-exit release one higher, so `scripts/check_rc_validate_corpus_test.sh` can show the corpus gate fails on a wrong plan |
 | `deps [--direct] <file>` | Resolved import closure, dependency first |
 | `grep --pattern '<pat>' [paths]` | AST pattern search, with checker-backed filters |
 | `hash [--write] <pkg_dir>` | Package content hash |
