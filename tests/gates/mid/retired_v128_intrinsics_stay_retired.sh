@@ -554,6 +554,36 @@ fi
 rm -rf "$bxdir"
 echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
 
+# 40e9. #1980: a path that skips two or more of a branch's consumes releases
+# every dup it holds. pe_dup_merge's guarded path drop released one
+# reference, so `if c { sink(v) + sink(v) } else { 0 }` kept a dup on every
+# call that took the `else`. It now releases `M - S` (one PaPathDrop row
+# each): the larger arm's consumes less the most a smaller arm has, the
+# least over the binding's merges. The fixture measured 6,162,004 B at
+# N=20000 before; the bound is 4,000. Its controls keep the consumed values
+# past the call, so the shadow run is what proves no path drop released a
+# value still held, and the answer is checked on bump, rc, shadow and gc.
+echo "[compiler-gate] 40e9/40 RC branch-dup short-by-two guard"
+gate_workdir sbdir "_build/_gate_rc_branch_dup_short_by_two"
+for sb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$sb_lane" "fixtures/rc_branch_dup_short_by_two_test.vibe" "$sbdir/sb.wasm" main
+  gate_require_artifact "$sbdir/sb.wasm" "rc_branch_dup_short_by_two fixture did not compile on the $sb_lane lane (#1980)"
+  gate_run sb_out last "$sbdir/sb.wasm"
+  gate_require_eq "$sb_out" "0" "rc_branch_dup_short_by_two got '$sb_out' on the $sb_lane lane (want 0). A trap means a path drop released a value a path still held (#1980)."
+  if [ "$sb_lane" = rc ]; then
+    sb_json="$(node scripts/measure_heap.mjs "$sbdir/sb.wasm" main 2>/dev/null)"
+    sb_used="$(printf '%s' "$sb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sb_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_branch_dup_short_by_two heap ($sb_json)" >&2; exit 1
+    fi
+    if [ "$sb_used" -ge 4000 ]; then
+      echo "[compiler-gate] FAIL: rc_branch_dup_short_by_two heap_used=$sb_used >= 4000 (a branch-dup path drop releases fewer references than the path holds; measured 6162004 at N=20000 when it released one)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$sbdir"
+echo "[compiler-gate] RC branch-dup short-by-two guard ok (0 on bump/rc/shadow/gc, rc heap_used=$sb_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a

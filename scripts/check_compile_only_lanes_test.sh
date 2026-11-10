@@ -8,12 +8,17 @@
 #   2. leak       -- a named wasm that defines a function of a dropped lane
 #                    (a probe program spelling `compile_file_fs_mode_gc`):
 #                    the absence check must name it.
-#                    Also run for a component-tool family (#2499).
+#                    Also run for a component-tool family (#2499) and the
+#                    ingestion-pipeline telemetry encoder (#2498).
 #   3. lost       -- a named wasm with no async component composition: the
 #                    presence check must say the production lane is gone.
 #   4. accepted   -- the full CLI stage2, invoked as `cli_main`: it serves
 #                    VIBE_BACKEND=gc, so the refusal check must fail; and it
 #                    serves VIBE_EMIT_WIT=1, so the tool refusal must fail.
+#   4b. telemetry -- the same stage2, flattened WITH the compiler's
+#                    `telemetry` cfg flag (#2498): it publishes the
+#                    ingestion-pipeline sidecar, so --telemetry-only must
+#                    fail.
 #   5. control    -- the real compile-only artifact passes.
 #
 # Fixture: the named compile-only artifact the gate builds
@@ -127,6 +132,7 @@ check_leak() { # <source-level name of a forbidden family>
 check_leak compile_file_fs_mode_gc
 check_leak codegen_body_cache_replay
 check_leak adapter_serve_component
+check_leak ingestion_pipeline_telemetry_json
 
 # 3. lost: a named build with no forbidden name and no async component lane.
 # The same probe shape as a leak, under a name no pattern matches, so the
@@ -167,6 +173,10 @@ check_lost
 # fails before, so the tool half is asked on its own.
 expect_fail accepted "VIBE_BACKEND=gc was ACCEPTED" --artifact "$STAGE2" --entry cli_main
 expect_fail accepted_tool "VIBE_EMIT_WIT=1 was ACCEPTED" --artifact "$STAGE2" --entry cli_main --tools-only
+
+# 4b. telemetry: the generation's stage2 keeps the counters, so it publishes
+# the sidecar the compile-only artifact must refuse.
+expect_fail telemetry "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --telemetry-only
 
 # 5. control.
 if ! bash "$GATE" --artifact "$ART" --entry cli_main_compile_only >"$TMP/control.log" 2>&1; then

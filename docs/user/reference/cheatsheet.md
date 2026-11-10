@@ -2650,6 +2650,37 @@ How a resource parameter behaves:
 - **Handling.** The effect is handled like any other:
   `handle { .. } with { Kv::Get(k) => resume(..) }`.
 
+### Host-provided effects: `extern effect` (ADR-0124, #2656)
+
+`extern effect` declares an effect whose operations the HOST provides. Its
+operations are on the capability track: they are spelled in snake_case and
+called directly, the way `Fs::read_file(p)` is, and the effect is the row of
+every function that reaches one:
+
+```vibe skip
+// doctest-skip: `vibe check` accepts this; a build refuses it until a host
+// provider can be bound (below)
+extern effect Kv {
+  get(String) -> String
+  put(String, String) -> Unit
+}
+
+fn copy_key(from: String, to: String) -> Unit with Kv {
+  Kv::put(to, Kv::get(from))
+}
+```
+
+What is refused, each with the edit:
+
+- `perform Kv::get(k)`: call the operation without `perform`.
+- a `handle` arm for `Kv::get`: the program cannot handle a host effect.
+- an `extern effect` named like a standard effect (`Fs`, `Env`, ...), or one
+  with type or resource parameters.
+
+Binding a provider at run time is not implemented yet, so an entry point
+(`main`, a `test`) that needs `Kv` is still refused: `cannot discharge { Kv }`,
+with a note that names `extern effect`.
+
 ## Module System
 
 <!-- doctest-skip: 存在しない import 先 (./lib.vibe) を参照する構文一覧 -->
