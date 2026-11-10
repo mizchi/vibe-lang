@@ -231,6 +231,80 @@ use super::{vibe_alloc_packed_str, vibe_read_packed_bytes, HostState};
 
 pub(super) const COMPONENT_PREFIX: &str = "vibe:component:";
 
+/// ADR-0124 (#2656): the core import module of an `extern effect`,
+/// `vibe:effect:<effect id>` (`vibe:effect:./Kv`). It is bridged exactly like
+/// a component import, to the provider component bound for the effect.
+pub(super) const EFFECT_PREFIX: &str = "vibe:effect:";
+
+/// The effect name an `extern effect` module id ends in (`./Kv` -> `Kv`).
+fn effect_name_of(module: &str) -> &str {
+    let id = &module[EFFECT_PREFIX.len()..];
+    match id.rsplit_once('/') {
+        Some((_, name)) => name,
+        None => id,
+    }
+}
+
+/// The providers `vibe run --provide <Effect>=<component>` bound, one
+/// `<Effect>=<path>` per line of `VIBE_PROVIDE`.
+fn bound_providers() -> Result<Vec<(String, PathBuf)>> {
+    let mut out = Vec::new();
+    if let Some(raw) = std::env::var_os("VIBE_PROVIDE") {
+        let text = raw.to_string_lossy().into_owned();
+        for line in text.split('\n').map(str::trim).filter(|l| !l.is_empty()) {
+            match line.split_once('=') {
+                Some((effect, path)) if !effect.is_empty() && !path.is_empty() => {
+                    out.push((effect.to_string(), PathBuf::from(path)))
+                }
+                _ => bail!("--provide `{line}`: write `--provide <Effect>=<component.wasm>`"),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// ADR-0124 / ADR-0088 L3: every `extern effect` the module imports needs a
+/// bound provider, checked before anything is instantiated so `main` never
+/// starts without one. The refusal names each effect, the operations it
+/// imports and the flag that binds a provider.
+fn effect_provider_paths(module: &Module, names: &[String]) -> Result<Vec<Option<PathBuf>>> {
+    let bound = bound_providers()?;
+    let mut paths = Vec::with_capacity(names.len());
+    let mut missing: Vec<String> = Vec::new();
+    for name in names {
+        if !name.starts_with(EFFECT_PREFIX) {
+            paths.push(None);
+            continue;
+        }
+        let effect = effect_name_of(name);
+        match bound.iter().find(|(e, _)| e == effect) {
+            Some((_, path)) => paths.push(Some(path.clone())),
+            None => {
+                let ops: Vec<String> = module
+                    .imports()
+                    .filter(|i| i.module() == name.as_str())
+                    .map(|i| match i.name().rsplit_once('#') {
+                        Some((op, _)) => format!("{effect}::{op}"),
+                        None => format!("{effect}::{}", i.name()),
+                    })
+                    .collect();
+                missing.push(format!(
+                    "`{effect}` ({}): bind one with `vibe run --provide {effect}=<component.wasm>`",
+                    ops.join(", ")
+                ));
+                paths.push(None);
+            }
+        }
+    }
+    if !missing.is_empty() {
+        bail!(
+            "no host provider is bound for the extern effect(s) this program needs, so it was not started:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+    Ok(paths)
+}
+
 /// A WIT type's name as the compiler spells it in a component field
 /// (`wib_cv_name`); `?` for a type the bridge does not carry, which can never
 /// equal a compiled signature.
@@ -317,8 +391,24 @@ fn cval_to_int(field: &str, v: &CVal) -> Result<i64> {
     Ok(wide as i64)
 }
 
+/// Where a `vibe:component:<path>` module's component lives: `<path>`,
+/// relative to `VIBE_WASM_LINK_DIR` when that is set.
+fn component_path(rel: &str) -> PathBuf {
+    let rel = PathBuf::from(rel);
+    if rel.is_absolute() {
+        rel
+    } else {
+        match std::env::var_os("VIBE_WASM_LINK_DIR") {
+            Some(dir) => PathBuf::from(dir).join(rel),
+            None => rel,
+        }
+    }
+}
+
 /// Instantiate and bridge every `vibe:component:<path>` module `module`
-/// imports. A component that itself imports anything is refused with the list.
+/// imports, and every `vibe:effect:<id>` module to its bound provider
+/// component (ADR-0124). A component that itself imports anything is refused
+/// with the list.
 pub(super) fn link_component_modules(
     linker: &mut Linker<HostState>,
     store: &mut Store<HostState>,
@@ -327,24 +417,20 @@ pub(super) fn link_component_modules(
     let mut names: Vec<String> = Vec::new();
     for import in module.imports() {
         let m = import.module();
-        if m.starts_with(COMPONENT_PREFIX) && !names.iter().any(|n| n == m) {
+        if (m.starts_with(COMPONENT_PREFIX) || m.starts_with(EFFECT_PREFIX)) && !names.iter().any(|n| n == m) {
             names.push(m.to_string());
         }
     }
     if names.is_empty() {
         return Ok(0);
     }
+    let providers = effect_provider_paths(module, &names)?;
     linker.allow_shadowing(true);
     let engine = store.engine().clone();
-    for name in &names {
-        let rel = PathBuf::from(&name[COMPONENT_PREFIX.len()..]);
-        let path = if rel.is_absolute() {
-            rel
-        } else {
-            match std::env::var_os("VIBE_WASM_LINK_DIR") {
-                Some(dir) => PathBuf::from(dir).join(rel),
-                None => rel,
-            }
+    for (name, provider) in names.iter().zip(providers) {
+        let path = match provider {
+            Some(path) => path,
+            None => component_path(&name[COMPONENT_PREFIX.len()..]),
         };
         let component = Component::from_file(&engine, &path)
             .map_err(|e| format_err!("cannot link '{name}': reading {}: {e}", path.display()))?;

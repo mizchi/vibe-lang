@@ -1643,3 +1643,50 @@ test "user check scans refuse a missing or non-directory root" {
   } with { Exception::Throw(e) => e }
   assert(String::starts_with(not_dir, prefix = "check: /tmp/vibe_user_dispatch_scan_root.vibe is not a directory"))
 }
+
+/// ADR-0124 (#2656): without `--provide` a run plan is `run-guest` in the
+/// layout the committed seed's compiler writes -- guest argv from line 13 --
+/// and with it the plan is its own kind, the bindings on line 3, so a
+/// launcher never reads a guest argument as a binding or the other way round.
+test "user run plan keeps the run-guest layout and gives provider bindings their own kind" {
+  let src_path = "/tmp/vibe_user_dispatch_run_provide.vibex"
+  Fs::write_bytes(src_path, bytes = string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  let plain_path = "/tmp/vibe_user_dispatch_run_provide_plain.txt"
+  assert(selfhost_cli_run_plan_args(args = [
+    "run",
+    src_path,
+    "--",
+    "--root",
+    "fixture"
+  ], action_path = plain_path, checked_error_row = false) == 0)
+  let plain = String::split(Fs::read_file(plain_path), sep = "\n")
+  assert(Array::get(plain, at = 1) == "run-guest")
+  assert(Array::get(plain, at = 12) == "--root")
+  assert(Array::get(plain, at = 13) == "fixture")
+  let bound_path = "/tmp/vibe_user_dispatch_run_provide_bound.txt"
+  assert(selfhost_cli_run_plan_args(args = [
+    "run",
+    "--provide",
+    "Kv=kv.wasm",
+    "--provide=Log=log.wasm",
+    src_path,
+    "--",
+    "--root",
+    "fixture"
+  ], action_path = bound_path, checked_error_row = false) == 0)
+  let bound = String::split(Fs::read_file(bound_path), sep = "\n")
+  assert(Array::get(bound, at = 1) == "run-guest-provide")
+  assert(Array::get(bound, at = 2) == "Kv=kv.wasm\tLog=log.wasm")
+  assert(Array::get(bound, at = 13) == "--root")
+  assert(Array::get(bound, at = 14) == "fixture")
+  let refused = handle {
+    let _ = selfhost_cli_run_plan_args(args = [
+      "run",
+      "--provide",
+      "Kv",
+      src_path
+    ], action_path = bound_path, checked_error_row = false)
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(refused, needle = "--provide takes <Effect>=<component.wasm>"))
+}

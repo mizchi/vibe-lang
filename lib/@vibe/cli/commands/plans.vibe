@@ -1256,7 +1256,21 @@ fn refuse_gc_coverage() -> Unit with Exception + Env {
   }
 }
 
-fn parse_run_flags(_ args: Array[String]) -> (String, Bool, Bool, String, Bool, String, Bool, String, String, String, Array[String]) with Exception {
+/// ADR-0124 (#2656): one `--provide <Effect>=<component.wasm>` binding. The
+/// plan carries the bindings on one line, tab-separated, so neither half may
+/// hold a tab or a newline.
+fn run_provide_binding(_ spec: String) -> String with Exception {
+  let at = String::index_of(spec, needle = "=")
+  if at <= 0 || at == String::length(spec) - 1 {
+    throw("run: --provide takes <Effect>=<component.wasm>, got `\{spec}`")
+  } else if String::contains(spec, needle = "\t") || String::contains(spec, needle = "\n") {
+    throw("run: --provide `\{spec}` holds a tab or a newline")
+  } else {
+    spec
+  }
+}
+
+fn parse_run_flags(_ args: Array[String]) -> (String, Bool, Bool, String, Bool, String, Bool, String, String, String, Array[String], Array[String]) with Exception {
   let mut src = ""
   let mut coverage = false
   let mut trace = false
@@ -1269,6 +1283,7 @@ fn parse_run_flags(_ args: Array[String]) -> (String, Bool, Bool, String, Bool, 
   let mut guest_profile = ""
   let mut guest_interval = "1000"
   let guest_args: Array[String] = []
+  let provides: Array[String] = []
   let mut after_separator = false
   let mut i = 1
   while i < Array::length(args) {
@@ -1316,6 +1331,13 @@ fn parse_run_flags(_ args: Array[String]) -> (String, Bool, Bool, String, Bool, 
     } else if String::starts_with(arg, prefix = "--guest-profile-interval-us=") {
       guest_interval = arg[28: String::length(arg)]
       i = i + 1
+    } else if arg == "--provide" {
+      i = i + 1
+      Array::push(provides, value = run_provide_binding(need_value(args = args, index = i, command = "run", flag = arg)))
+      i = i + 1
+    } else if String::starts_with(arg, prefix = "--provide=") {
+      Array::push(provides, value = run_provide_binding(arg[10: String::length(arg)]))
+      i = i + 1
     } else if String::starts_with(arg, prefix = "-") {
       throw(String::concat("run: unknown option ", arg))
     } else if src == "" {
@@ -1326,17 +1348,21 @@ fn parse_run_flags(_ args: Array[String]) -> (String, Bool, Bool, String, Bool, 
     }
   }
   if src == "" {
-    throw("usage: vibe run [--trace] [--coverage] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibex> [-- args]")
+    throw("usage: vibe run [--trace] [--coverage] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] [--provide <Effect>=<component.wasm>] <file.vibex> [-- args]")
   } else if !is_vibex_path(src) {
     throw(String::concat("vibe run requires a .vibex executable root: ", src))
   } else if brk && break_spec == "" {
     throw("usage: vibe run --break <fn>[,<fn>...] <file.vibex>")
+  } else if coverage && Array::length(provides) > 0 {
+    // The coverage report comes from the node runner, which cannot bind a
+    // component provider.
+    throw("vibe run: --coverage cannot be combined with --provide; the coverage runner cannot bind a provider")
   } else if coverage && (trace || brk || allocsite) {
     // Each of these selects its own instrumented compile, and one artifact
     // carries one instrumentation.
     throw("vibe run: --coverage cannot be combined with --trace, --break or --alloc-site; run them separately")
   } else {
-    (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args)
+    (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args, provides)
   }
 }
 
@@ -1377,7 +1403,7 @@ fn args_contain_newline(_ args: Array[String]) -> Bool {
 
 export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String, checked_error_row: Bool) -> Int with Exception + Fs + Env {
   let (run_args, allows, denies) = split_capability_flags(args)
-  let (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(run_args)
+  let (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args, provides) = parse_run_flags(run_args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else if String::contains(src, needle = "\n") || String::contains(guest_profile, needle = "\n") {
@@ -1415,7 +1441,16 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String, c
     // every other line one further down. A separate kind, not a new line in
     // `run-guest`: a launcher reads `run-guest` positionally, guest argv
     // last, so an extra line there would arrive as a guest argument.
-    if coverage {
+    // ADR-0124 (#2656): a plan that binds extern-effect providers is its own
+    // kind, with the bindings (tab-separated) on line 3 and every `run-guest`
+    // line one further down. `run-guest` keeps its layout byte for byte: a
+    // launcher reads it positionally, guest argv last, and the committed
+    // seed's compiler still writes it.
+    if Array::length(provides) > 0 {
+      StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-guest-provide\n")
+      StringBuilder::push(acc, value = String::join(provides, sep = "\t"))
+      StringBuilder::push(acc, value = "\n")
+    } else if coverage {
       StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-guest-coverage\n")
       StringBuilder::push(acc, value = String::concat(out[0: String::length(out) - 5], ".cov.json"))
       StringBuilder::push(acc, value = "\n")

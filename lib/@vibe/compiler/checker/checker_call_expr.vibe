@@ -174,7 +174,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_int32.vibe {
-  int32_literal_adapt
+  int32_literal_adapt, int32_literal_adapt_args
 }
 
 import ./checker_expr_numeric_observation.vibe {
@@ -1481,7 +1481,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           // #3387: see `Array::map`.
           let s5 = effect_inst_rowless_arg_check(env = env, arg = Array::get(args, at = 2), arg_ty = fn_ty, s = s5_elem, callee_name = name, defs = defs, errors = errors)
           // #3360: the callback's writes of its parameters, now typed.
-          lambda_arg_elem_write_check(arg = checker_call_argument_value(Array::get(args, at = 2)), recv_ty = recv_ty, pidx = 1, s = s5, env = env, defs = defs, c = c3, errors = errors, check_child = check_child)
+          lambda_arg_elem_write_check(arg = checker_call_argument_value(Array::get(args, at = 2)), recv = checker_call_argument_value(Array::get(args, at = 0)), recv_ty = recv_ty, fn_ty = fn_ty, pidx = 1, s = s5, env = env, defs = defs, c = c3, errors = errors, check_child = check_child)
           (tab_call_ty(tytab = tytab, call_off = call_off, ty = subst_apply(s = s5, ty = init_ty), capture = capture, lane = lane), s5, c3)
         } else if arm == "Array::map" {
           // `Array::map(a, f)` returns `Array[R]` where R is f's return type —
@@ -1504,7 +1504,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           // once its parameter has the element type.
           let s3 = effect_inst_rowless_arg_check(env = env, arg = Array::get(args, at = 1), arg_ty = fn_ty, s = s3_elem, callee_name = name, defs = defs, errors = errors)
           // #3360: the callback's writes of its parameter, now typed.
-          lambda_arg_elem_write_check(arg = checker_call_argument_value(Array::get(args, at = 1)), recv_ty = recv_ty, pidx = 0, s = s3, env = env, defs = defs, c = c2, errors = errors, check_child = check_child)
+          lambda_arg_elem_write_check(arg = checker_call_argument_value(Array::get(args, at = 1)), recv = checker_call_argument_value(Array::get(args, at = 0)), recv_ty = recv_ty, fn_ty = fn_ty, pidx = 0, s = s3, env = env, defs = defs, c = c2, errors = errors, check_child = check_child)
           let result = match subst_apply(s = s3, ty = fn_ty) {
             CtFn(_, ret, _) => CtArray(ret),
             _ => CtUnknown
@@ -1955,7 +1955,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 let elem_s = check_hof_param_vs_elem(recv_ty = subst_apply(s = s2, ty = Array::get(direct_arg_tys, at = 0)), fn_ty = subst_apply(s = s2, ty = Array::get(direct_arg_tys, at = 1)), pidx = 0, s = s2, errors = errors, msg = String::concat(name, " function parameter type mismatch"))
                 let eff_s = effect_inst_rowless_arg_check(env = env, arg = Array::get(args, at = 1), arg_ty = Array::get(direct_arg_tys, at = 1), s = elem_s, callee_name = name, defs = defs, errors = errors)
                 // #3360: the callback's writes of its parameter, now typed.
-                lambda_arg_elem_write_check(arg = checker_call_argument_value(Array::get(args, at = 1)), recv_ty = Array::get(direct_arg_tys, at = 0), pidx = 0, s = eff_s, env = env, defs = defs, c = c2, errors = errors, check_child = check_child)
+                lambda_arg_elem_write_check(arg = checker_call_argument_value(Array::get(args, at = 1)), recv = checker_call_argument_value(Array::get(args, at = 0)), recv_ty = Array::get(direct_arg_tys, at = 0), fn_ty = Array::get(direct_arg_tys, at = 1), pidx = 0, s = eff_s, env = env, defs = defs, c = c2, errors = errors, check_child = check_child)
                 eff_s
               } else {
                 s2
@@ -2514,11 +2514,13 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       // #3343: a function stored in a field has no body the
                       // checker can see.
                       retention_expr_callee_region_check(callee = EUnit, label = method, marker_off = qcall_field_off, args = Array::slice(all_args, start = 1, end = Array::length(all_args)), env = env, defs = defs, s = s3, c = c3, errors = errors, check_child = check_child)
-                      let explicit = Array::slice(arg_tys, start = 1, end = Array::length(arg_tys))
+                      let field_args = Array::slice(all_args, start = 1, end = Array::length(all_args))
+                      // An integer literal takes an `Int32` / `UInt32`
+                      // parameter's type, as in a call to a declared function.
+                      let explicit = int32_literal_adapt_args(args = field_args, param_tys = fpts, arg_tys = Array::slice(arg_tys, start = 1, end = Array::length(arg_tys)), s = s3, errors = errors)
                       if Array::length(fpts) != Array::length(explicit) {
                         Array::push(errors, value = String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(Array::length(fpts)), String::concat(" args, got ", __to_string(Array::length(explicit))))))), off_marker_len(off = call_off, len = String::length(qualified))))
                       }
-                      let field_args = Array::slice(all_args, start = 1, end = Array::length(all_args))
                       let s4_unified = unify_call_args(param_tys = fpts, arg_tys = explicit, arg_exprs = field_args, s = s3, errors = errors, label = qualified, off = call_off)
                       // #3387: see the named-call path.
                       let s4 = effect_inst_unnamed_args_check(env = env, args = field_args, arg_tys = explicit, param_tys = fpts, s = s4_unified, callee_name = method, defs = defs, errors = errors)
@@ -2843,6 +2845,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   if alen3 != plen2 {
                     Array::push(errors, value = String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
                   }
+                  // An integer literal takes an `Int32` / `UInt32`
+                  // parameter's type, as in a call to a declared function.
+                  let arg_tys = int32_literal_adapt_args(args = args, param_tys = call_param_tys, arg_tys = arg_tys, s = s2, errors = errors)
                   let s3_unified = unify_call_args(param_tys = call_param_tys, arg_tys = arg_tys, arg_exprs = args, s = s2, errors = errors, label = "<expr>", off = call_off)
                   // #3387: see the named-call path.
                   let s3_args = effect_inst_unnamed_args_check(env = env, args = args, arg_tys = arg_tys, param_tys = call_param_tys, s = s3_unified, callee_name = "", defs = defs, errors = errors)
