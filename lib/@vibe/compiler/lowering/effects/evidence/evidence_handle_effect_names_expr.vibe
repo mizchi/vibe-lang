@@ -51,6 +51,10 @@ import @vibe/compiler/lowering/effects/queries {
   scps_ty_has_fn
 }
 
+import ./evidence_slot_facts.vibe {
+  edp_slot_facts_stmt
+}
+
 import ./evidence_poison_expr.vibe {
   edp_collect_handle_sites_expr,
   edp_find_fn_body,
@@ -2123,7 +2127,8 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
 /// in it. The next two are its effect sites (`edp_mf_sites_expr`), from which
 /// the handle index and the isolation's census are read, then
 /// edp_perform_raw of its body, from which vacuity's perform facts are, and
-/// its dce_statement_refs, from which the pass's reachability is (#4040).
+/// its dce_statement_refs, from which the pass's reachability is, and its
+/// edp_slot_facts_stmt, which bound the slot stamp's pre-checks (#4040).
 export struct EdpStmtFacts {
   lambda_names: Array[String];
   lambda_bodies: Array[Expr];
@@ -2136,7 +2141,8 @@ export struct EdpStmtFacts {
   handles: Array[Array[String]];
   performs: Array[String];
   perform_raw: Option[(Bool, Array[String], Array[String])];
-  dce_refs: (Array[String], Bool, Array[String], Bool)
+  dce_refs: (Array[String], Bool, Array[String], Bool);
+  slot: (Bool, Array[String], Array[String], Array[String], Array[String], Array[String], Array[TypeExpr])
 }
 
 /// Facts of each statement, valid for the tree as of the last refresh.
@@ -2196,7 +2202,8 @@ fn edp_mf_stmt_facts(_ stmt: Stmt) -> EdpStmtFacts {
     handles: handles,
     performs: performs,
     perform_raw: raw,
-    dce_refs: dce_statement_refs(stmt)
+    dce_refs: dce_statement_refs(stmt),
+    slot: edp_slot_facts_stmt(stmt)
   }
 }
 
@@ -2613,4 +2620,9 @@ export fn edp_mf_row_lit_scan(facts: Option[Array[EdpStmtFacts]], stmts: Array[S
     },
     None => edp_row_lit_scan(stmts = stmts, ename = ename, needing = needing, es_names = es_names, es_members_list = es_members_list, binds = binds, lits = lits)
   }
+}
+
+/// Statement `i`'s edp_slot_facts_stmt, from facts refreshed for it.
+export fn edp_mf_slot_facts(facts: Array[EdpStmtFacts], i: Int) -> (Bool, Array[String], Array[String], Array[String], Array[String], Array[String], Array[TypeExpr]) {
+  Array::get(facts, at = i).slot
 }

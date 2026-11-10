@@ -28,6 +28,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
   edp_is_identity_ascription,
+  edp_mf_dirty_count,
   edp_mf_set_stmt,
   edp_pat_binds,
   edp_rq_fold,
@@ -39,7 +40,7 @@ import ./evidence_fn_statement_index.vibe {
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
-  edp_append_ctor_inert_names, edp_mf_binders, edp_mf_refresh, struct EdpStmtFacts
+  edp_append_ctor_inert_names, edp_mf_binders, edp_mf_refresh, edp_mf_slot_facts, struct EdpStmtFacts
 }
 
 import ./evidence_poison_expr.vibe {
@@ -128,6 +129,7 @@ import ./evidence_declared_slots.vibe {
   edp_slot_fn_type,
   edp_slot_row_or_empty,
   edp_slot_wrapper,
+  edp_stamp_prechecks_hit,
   edp_tuple_result_types
 }
 
@@ -273,7 +275,11 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   Array::push(edp_snap_program, value = (stmts, fn_defs))
   Array::truncate(edp_snap_facts, length = 0)
   match facts {
-    Some(known) => Array::push(edp_snap_facts, value = known),
+    Some(known) => {
+      // Brought up to the program the pre-checks below read (#4040).
+      edp_mf_refresh(facts = known, stmts = stmts)
+      Array::push(edp_snap_facts, value = known)
+    },
     None => ()
   }
   edp_note_program_aliases(stmts)
@@ -296,7 +302,17 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     }
     Array::set(edp_snap_counter, at = 0, value = owner_before)
     generated_owner_enter(cell = edp_snap_owner, source = owner, suffix = "")
+    let writes_before = edp_mf_dirty_count()
     edp_stamp_returned_closure(stmts = stmts, i = i, pure_names = pure_names)
+    // The statement facts describe statement `i` unless that call replaced it.
+    let known_slot = match facts {
+      Some(known) => if edp_mf_dirty_count() == writes_before && i < Array::length(known) {
+        Some(edp_mf_slot_facts(facts = known, i = i))
+      } else {
+        None
+      },
+      None => None
+    }
     let stmt = Array::get(stmts, at = i)
     let body = match stmt {
       SLet(_, _, _, _, e) => Some(e),
@@ -308,7 +324,10 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
       _ => None
     }
     match body {
-      Some(e) => if edp_expr_passes_literal_arg(e = e, pure_names = pure_names, stmts = stmts) || edp_expr_passes_value_to_slot(e = e, slot_callees = slot_callees) || edp_expr_builds_row_field(e) {
+      Some(e) => if match known_slot {
+        Some(sf) => edp_stamp_prechecks_hit(e = e, facts = sf, pure_names = pure_names, slot_callees = slot_callees, stmts = stmts),
+        None => edp_expr_passes_literal_arg(e = e, pure_names = pure_names, stmts = stmts) || edp_expr_passes_value_to_slot(e = e, slot_callees = slot_callees) || edp_expr_builds_row_field(e)
+      } {
         // #3611: an annotated top-level record takes the annotation's
         // type arguments into its fields' rows.
         let ann = match stmt {
