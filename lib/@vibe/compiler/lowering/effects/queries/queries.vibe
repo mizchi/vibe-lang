@@ -80,6 +80,11 @@ export enum EdpReadQuery {
   // sets the flag on an opaque call, and collects known callees exactly as
   // RQPerformSummary does on a tree it does not hit. See edp_perform_facts.
   RQPerformFacts(MutSet[String], MutSet[String], Array[String], Array[String], Array[Bool]);
+  // RQPerformFacts before the program's name sets are applied: the same
+  // walk, recording every named callee rather than only the known ones, and
+  // setting the flag only on a call through anything but a name. See
+  // edp_perform_raw (#4040).
+  RQPerformRaw(Array[String], Array[String], Array[Bool]);
   RQEdpBindsName(String);
   RQIdentUses(String);
   RQSafeClosureBindings(String, String, Array[String], Array[String], Array[String], Array[Array[String]]);
@@ -363,6 +368,18 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
           ()
         },
         ECall(_, _, _, _) => Array::set(opaque, at = 0, value = true),
+        _ => ()
+      }
+      0
+    },
+    RQPerformRaw(callees, effects, unnamed) => {
+      let performed = edp_user_perform_effect_of(e)
+      if String::length(performed) > 0 && !edp_str_array_contains(arr = effects, v = performed) {
+        Array::push(effects, value = performed)
+      }
+      match e {
+        ECall(EIdent(name, _), _, _, _) => Array::push(callees, value = name),
+        ECall(_, _, _, _) => Array::set(unnamed, at = 0, value = true),
         _ => ()
       }
       0
@@ -664,6 +681,39 @@ export fn edp_perform_facts(e: Expr, inert: MutSet[String], fn_names: MutSet[Str
   let opaque = [false]
   edp_rq_fold(q = RQPerformFacts(inert, fn_names, calls, effects, opaque), e = e)
   (Array::get(opaque, at = 0), effects, calls)
+}
+
+/// The facts edp_perform_facts gives `e` before the name sets are applied:
+/// whether it calls through anything but a name, the effects it performs
+/// directly, and every named callee, in visit order. They are a function of
+/// `e` alone, so a statement's can be kept with it and the sets applied when
+/// they are known (`edp_perform_facts_from_raw`).
+export fn edp_perform_raw(_ e: Expr) -> (Bool, Array[String], Array[String]) {
+  let callees: Array[String] = []
+  let effects: Array[String] = []
+  let unnamed = [false]
+  edp_rq_fold(q = RQPerformRaw(callees, effects, unnamed), e = e)
+  (Array::get(unnamed, at = 0), effects, callees)
+}
+
+/// edp_perform_facts of the tree `raw` describes (edp_perform_raw). Both
+/// queries visit the same nodes in the same order -- neither ever hits, so
+/// the fold walks every node -- and RQPerformFacts tests each named callee
+/// with exactly the classification applied here: an unresolvable name makes
+/// the tree opaque, a resolvable one is a known callee when it is a program
+/// function.
+export fn edp_perform_facts_from_raw(raw: (Bool, Array[String], Array[String]), inert: MutSet[String], fn_names: MutSet[String]) -> (Bool, Array[String], Array[String]) {
+  let (unnamed, effects, callees) = raw
+  let mut opaque = unnamed
+  let calls: Array[String] = []
+  for name in callees {
+    if !edp_callee_is_resolvable(nm = name, inert = inert, fn_names = fn_names) {
+      opaque = true
+    } else if MutSet::has(fn_names, x = name) {
+      Array::push(calls, value = name)
+    } else ()
+  }
+  (opaque, effects, calls)
 }
 
 /// Would RQPerformSummary(effect) or RQPerformsUserEffect(effect) hit the
