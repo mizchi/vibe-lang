@@ -1,11 +1,11 @@
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr
 }
 import @vibe/core {
   struct MutSet
 }
 import @vibe/compiler/lowering/effects/queries {
-  edp_collect_program_binders, edp_mf_dirty_indices, edp_mf_dirty_reset, edp_mf_set_stmt
+  edp_collect_program_binders, edp_handle_statement_index, edp_mf_dirty_indices, edp_mf_dirty_reset, edp_mf_set_stmt
 }
 import @vibe/compiler/lowering/effects/evidence {
   edp_append_ctor_inert_names,
@@ -15,6 +15,9 @@ import @vibe/compiler/lowering/effects/evidence {
   edp_etawrap_stmts_in,
   edp_mf_base,
   edp_mf_binders,
+  edp_mf_effect_sites,
+  edp_mf_handle_count,
+  edp_mf_handle_statement_index,
   edp_mf_new,
   edp_mf_refresh,
   edp_mf_row_lit_scan,
@@ -61,7 +64,7 @@ fn same_members(a: MutSet[String], b: MutSet[String]) -> Bool {
 
 // Refresh, then demand exactly the walked answer: same names in the same
 // order, and the same binder census.
-fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt]) -> Bool {
+fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String], Array[Array[String]], Array[String])], stmts: Array[Stmt]) -> Bool {
   edp_mf_refresh(facts = facts, stmts = stmts)
   let from_facts = String::join(edp_mf_base(facts = facts, stmts = stmts, fn_defs = edp_collect_fn_defs(stmts)), sep = ",")
   from_facts == walked_base(stmts) && same_members(a = edp_mf_binders(facts), b = edp_collect_program_binders(stmts))
@@ -184,7 +187,7 @@ fn row_lambda(_ body: Expr) -> Expr {
 
 // The facts-filtered scan must collect exactly what the whole scan collects:
 // the same binding names in the same order, and as many literals.
-fn row_scans_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], needing: Array[String]) -> String {
+fn row_scans_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String], Array[Array[String]], Array[String])], stmts: Array[Stmt], needing: Array[String]) -> String {
   let es_names: Array[String] = []
   let es_members: Array[Array[String]] = []
   let whole_binds: Array[String] = []
@@ -310,4 +313,65 @@ test "the statements naming a needing function, whatever their names look like" 
   inspect(naming(stmts = stmts, needing = needing, lets = false), content = "1,3,5")
   inspect(naming(stmts = stmts, needing = needing, lets = true), content = "1,3,4,5")
   inspect(naming(stmts = stmts, needing = [], lets = true), content = "")
+}
+
+fn handle_of(effect: String, body: Expr) -> Expr {
+  EHandle(body, [
+    (PCtor(effect + "::Get", []), EInt(1)),
+    (PCtor(effect + "::Put", []), EInt(2))
+  ])
+}
+
+fn perform_of(_ effect: String) -> Expr {
+  ECall(EIdent("perform", -1), [ECall(EIdent(effect + "::Get", -1), [], -1, [])], -1, [
+  ])
+}
+
+fn render_index(_ index: Array[(String, Array[Int])]) -> String {
+  let parts: Array[String] = []
+  for row in index {
+    let (name, statements) = row
+    let ns: Array[String] = []
+    for i in statements {
+      Array::push(ns, value = Int::to_string(i))
+    }
+    Array::push(parts, value = name + "=" + String::join(ns, sep = ","))
+  }
+  String::join(parts, sep = " ")
+}
+
+// The handle index and the effect sites read from the facts, beside the walk
+// of the statements they replace (#4040).
+fn sites_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String], Array[Array[String]], Array[String])], stmts: Array[Stmt]) -> Bool {
+  edp_mf_refresh(facts = facts, stmts = stmts)
+  render_index(edp_mf_handle_statement_index(facts)) == render_index(edp_handle_statement_index(stmts))
+}
+
+test "the handle index and effect sites come from the facts, through marked rewrites and appends" {
+  let stmts = [
+    // Two handles, the inner one nested in the outer's body; `Log` is first
+    // indexed here, `Ask` is not.
+    top_fn(name = "both", params = [], body = handle_of(effect = "Log", body = handle_of(effect = "Ask", body = perform_of("Ask")))),
+    SEnum(false, "Choice", [], [("Yes", []), ("No", [])], []),
+    SExpr(ESeq(perform_of("Log"), handle_of(effect = "Ask", body = EInt(0)))),
+    // A `let` pattern statement is not one of the five forms the index reads.
+    SLetPat(PBind("p"), handle_of(effect = "Gone", body = EInt(0)))
+  ]
+  let facts = edp_mf_new()
+  assert(sites_agree(facts = facts, stmts = stmts))
+  inspect(render_index(edp_mf_handle_statement_index(facts)), content = "Log=0 Ask=0,2")
+  inspect(edp_mf_handle_count(facts = facts, i = 0), content = "2")
+  inspect(edp_mf_handle_count(facts = facts, i = 1), content = "0")
+  inspect(edp_mf_handle_count(facts = facts, i = 2), content = "1")
+  let (qnames, performs) = edp_mf_effect_sites(facts)
+  inspect(String::join(qnames, sep = ","), content = "Log::Get,Log::Put,Ask::Get,Ask::Put,Ask::Get,Ask::Put")
+  inspect(String::join(performs, sep = ","), content = "Ask,Log")
+  // A marked rewrite drops statement 0's handles and adds one of `Tick`.
+  edp_mf_set_stmt(stmts = stmts, i = 0, stmt = top_fn(name = "both", params = [], body = handle_of(effect = "Tick", body = EInt(0))))
+  assert(sites_agree(facts = facts, stmts = stmts))
+  inspect(render_index(edp_mf_handle_statement_index(facts)), content = "Tick=0 Ask=2")
+  // An appended statement is walked as new.
+  Array::push(stmts, value = SExpr(handle_of(effect = "Log", body = perform_of("Log"))))
+  assert(sites_agree(facts = facts, stmts = stmts))
+  inspect(render_index(edp_mf_handle_statement_index(facts)), content = "Tick=0 Ask=2 Log=4")
 }
