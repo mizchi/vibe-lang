@@ -27,6 +27,9 @@
 #   vibe run --coverage <file.vibex>      run an instrumented build; function /
 #                                         branch hits go to a JSON report beside
 #                                         the artifact (node runner only)
+#   vibe run --provide <Effect>=<component.wasm> <file.vibex>
+#                                         bind the provider of an `extern
+#                                         effect` (ADR-0124; viberun only)
 #   vibe profile <file.vibex> [--out FILE] [--interval-us N]
 #                                         capture a Wasmtime guest CPU profile
 #   vibe compile <file.vibe> [-o <out>]   compile to a .wasm (default:
@@ -566,6 +569,9 @@ host_run_guest() {
   [ -n "$atop" ] && envp+=("VIBE_ALLOC_SITE_TOP=$atop")
   [ -n "$gprof" ] && envp+=("VIBE_GUEST_PROFILE=$gprof" "VIBE_GUEST_PROFILE_INTERVAL_US=$gint")
   [ -s "$wasm.funcmap" ] && envp+=("VIBE_FUNCMAP=$wasm.funcmap")
+  # ADR-0124 (#2656): `vibe run --provide <Effect>=<component>` bindings, one
+  # per line, for the runner's `vibe:effect:` linking.
+  [ -n "${VIBE_RUN_PROVIDE:-}" ] && envp+=("VIBE_PROVIDE=$VIBE_RUN_PROVIDE")
   # Runtime traps point at the SOURCE LINE: the runner's stderr goes through
   # annotate_run_stream, which appends ` (<basename>:<line>)` to each frame
   # naming a funcmap function (`<unknown>!boom (prog.vibex:1)`,
@@ -816,8 +822,9 @@ execute_host_action() {
       ;;
     run-guest)
       wasm="$(sed -n '3p' "$plan")"
+      VIBE_RUN_PROVIDE="$(sed -n '13p' "$plan" | tr '\t' '\n')"
       local args=()
-      while IFS= read -r line; do args+=("$line"); done < <(sed -n '13,$p' "$plan")
+      while IFS= read -r line; do args+=("$line"); done < <(sed -n '14,$p' "$plan")
       host_run_guest "$wasm" "$(sed -n '4p' "$plan")" "$(sed -n '5p' "$plan")" "$(sed -n '6p' "$plan")" \
         "$(sed -n '7p' "$plan")" "$(sed -n '8p' "$plan")" "$(sed -n '9p' "$plan")" \
         "$(sed -n '10p' "$plan")" "$(sed -n '11p' "$plan")" "$(sed -n '12p' "$plan")" \
@@ -831,8 +838,9 @@ execute_host_action() {
       # is said rather than read as "nothing was covered".
       local cov_out cov_status=0
       cov_out="$(sed -n '3p' "$plan")"; wasm="$(sed -n '4p' "$plan")"
+      VIBE_RUN_PROVIDE="$(sed -n '14p' "$plan" | tr '\t' '\n')"
       local args=()
-      while IFS= read -r line; do args+=("$line"); done < <(sed -n '14,$p' "$plan")
+      while IFS= read -r line; do args+=("$line"); done < <(sed -n '15,$p' "$plan")
       case "$cov_out" in /*) ;; *) cov_out="$PROJECT_ROOT/$cov_out" ;; esac
       rm -f "$cov_out"
       VIBE_COV_OUT="$cov_out" host_run_guest "$wasm" "$(sed -n '5p' "$plan")" "$(sed -n '6p' "$plan")" "$(sed -n '7p' "$plan")" \

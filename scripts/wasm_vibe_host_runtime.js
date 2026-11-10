@@ -2722,6 +2722,7 @@ const foreignPath = require("node:path");
 
 const FOREIGN_PREFIX = "vibe:wasm:";
 const COMPONENT_PREFIX = "vibe:component:";
+const EFFECT_PREFIX = "vibe:effect:";
 
 const FOREIGN_MEMORY_PREFIX = "vibe:wasm-memory:";
 
@@ -2775,6 +2776,18 @@ async function linkForeignWasmModules(wasmModule, opts = {}) {
   if (components.length > 0) {
     throw new Error(
       `cannot link '${components[0]}': importing a wasm component runs on viberun; the node runner cannot instantiate components`,
+    );
+  }
+  // ADR-0124 (#2656): an `extern effect` (`vibe:effect:<id>`) is bridged to
+  // a provider COMPONENT, which this runner cannot instantiate. Refused for
+  // the same reason as above: the fallback stub would answer every host
+  // operation with 0.
+  const effects = WebAssembly.Module.imports(wasmModule)
+    .filter((i) => i.module.startsWith(EFFECT_PREFIX))
+    .map((i) => i.module);
+  if (effects.length > 0) {
+    throw new Error(
+      `cannot link '${effects[0]}': an extern effect's provider is a wasm component, which runs on viberun (\`vibe run --provide <Effect>=<component.wasm>\`); the node runner cannot instantiate components`,
     );
   }
   const out = {};
