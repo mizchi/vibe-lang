@@ -1,0 +1,136 @@
+// lib/@vibe/compiler/checker/effects — an entry row's algebraic labels
+// (ADR-0124 decision 3, #2656).
+//
+// An entry row splits into labels the host or the runtime provides and
+// labels naming an effect the program declares and handles itself. The second
+// kind grants no authority: it records that the entry's own body handles the
+// effect. So the body is walked, and the row is admitted, WITHOUT those
+// labels -- the residual requirement is what reaches the entry with no handler
+// in the way, and it must be covered by what the host provides -- and each of
+// them must be discharged by a `handle` inside the entry.
+
+import @vibe/compiler/core {
+  Expr, expr_children_into, is_entry_admitted_effect
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checker_effects_decl_authorizes_effect.vibe {
+  authority_is_optional, entry_user_operation_requires_handler
+}
+
+import ./checker_effects_mutability_expr_into.vibe {
+  EffectError, label_is_effect_var, no_str_labels, row_label_base
+}
+
+import ./checker_effects_throw_payload_kind.vibe {
+  collect_handle_effects, effect_name_of_op, entry_declared_effect_kinds, entry_host_provided_effects
+}
+
+/// Whether `label`, written on an entry row, names an ALGEBRAIC effect: one
+/// the program declares without `extern` and without a resource parameter
+/// (`Db`), or an operation it declares (`Db::Get`). A label with the optional
+/// grade, a row variable, an `extern effect`, an effect that acts on a
+/// resource (a capability by its declaration, #3143), a bare label the host
+/// policy admits, and an operation the effect does not declare are not
+/// algebraic; the ordinary entry admission judges those.
+export fn entry_label_is_algebraic(_ label: String) -> Bool {
+  if authority_is_optional(label) || label_is_effect_var(label) {
+    false
+  } else {
+    let base = row_label_base(effect_name_of_op(label))
+    let mut declared = false
+    for entry in entry_declared_effect_kinds {
+      if entry.0 == base && entry.1 == "" {
+        declared = true
+      }
+    }
+    let mut host = false
+    for name in entry_host_provided_effects {
+      if name == base {
+        host = true
+      }
+    }
+    if !declared || host {
+      false
+    } else if String::index_of(label, needle = "::") > 0 {
+      entry_user_operation_requires_handler(label)
+    } else {
+      // A bare label the host policy admits (`Profiler`, which the CLI also
+      // declares) stays a host grant: the spelling of a declaration does not
+      // take a provider's authority away.
+      !is_entry_admitted_effect(label)
+    }
+  }
+}
+
+/// The algebraic labels of an entry row, in order.
+export fn entry_algebraic_labels(_ labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  for label in labels {
+    if entry_label_is_algebraic(label) {
+      Array::push(out, value = label)
+    }
+  }
+  out
+}
+
+/// `labels` without its algebraic labels: the row an entry's body is walked
+/// under and the one its host admission judges. The walk never runs with an
+/// algebraic label on the row: under `allows Db` it reads a call to a `with
+/// Db` callee outside every handler as satisfied, and the run would reach an
+/// unhandled `Db`.
+export fn labels_without_algebraic(_ labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  for label in labels {
+    if !entry_label_is_algebraic(label) {
+      Array::push(out, value = label)
+    }
+  }
+  out
+}
+
+/// Whether a `handle` in `body` discharges `label`: one of its arms names that
+/// operation, or, for a bare effect label, any operation of that effect.
+fn body_handles_label(body: Expr, label: String) -> Bool {
+  let want_op = String::index_of(label, needle = "::") > 0
+  let want = if want_op {
+    label
+  } else {
+    row_label_base(label)
+  }
+  let stack = Array::slice([body], start = 0, end = 1)
+  let mut found = false
+  while Array::length(stack) > 0 && !found {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
+    match expr {
+      EHandle(_, arms) => {
+        for d in collect_handle_effects(arms) {
+          if d == want || (!want_op && String::index_of(d, needle = "::") < 0 && row_label_base(d) == want) {
+            found = true
+          }
+        }
+      },
+      _ => ()
+    }
+    expr_children_into(expr = expr, out = stack)
+  }
+  found
+}
+
+/// An algebraic label the entry's body never handles grants nothing and
+/// records a handler that does not exist, so it is refused with the edit
+/// that removes it.
+export fn entry_vacuous_algebraic_errors(entry_name: String, labels: Array[String], body: Expr, off: Int) -> Array[EffectError] {
+  let errors = array_empty()
+  for label in entry_algebraic_labels(labels) {
+    if !body_handles_label(body = body, label = label) {
+      Array::push(errors, value = EEVacuousEntryEffect(entry_name, label, off))
+    }
+  }
+  errors
+}

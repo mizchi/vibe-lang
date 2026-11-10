@@ -1835,11 +1835,19 @@ kind may not name a type parameter of its declaration (`with Exception[T]`,
 generic function's own `handle`, or return it as a `Result`.
 
 The ordered default and cache-safe owners preserve their existing output.
-At a program entry (`main` or `_start`), the checker admits only the union of
-host-provider labels and entry/runtime-managed labels. A user effect such as
-`Ask` / `Ask::Get` must be discharged by `handle ... with Ask` before that
-boundary; adding it to `main`'s `allows` row is rejected with a located
-diagnostic (#1683). Ordinary helper functions still fix a missing effect by adding it to
+At a program entry (`main` or `_start`, and a `test` / `bench` / `example`
+block), what may reach the boundary is the union of host-provider labels and
+entry/runtime-managed labels. A user effect such as `Ask` / `Ask::Get` must be
+discharged by `handle ... with Ask` before it gets there, and an operation that
+reaches the entry outside every handler -- directly, through a callee's row, a
+callback or a row variable -- is refused at its site (#1683). The entry's
+`allows` row may still NAME such an effect when the entry's own body handles
+it (ADR-0124 decision 3, #2656): `fn main allows Console + Ask { handle { .. }
+with { Ask::Get() => .. } }` is admitted, the label records that handler and
+grants no host authority, and the body is checked as if the label were absent.
+A label nothing in the entry handles is refused with the edit that removes it
+(``entry point 'main' allows `Ask`, which nothing in its body handles``).
+Ordinary helper functions still fix a missing effect by adding it to
 their row so callers can decide where to handle it. WIT mapping and handler
 behavior are unchanged. Provider spelling alone grants no authority:
 `Fs::Custom` from `effect Fs { Custom() -> Int }` is still a user operation and
