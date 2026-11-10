@@ -43,10 +43,17 @@ import @vibe/compiler/syntax {
 /// The checker's answer for the whole file, typed with its imports resolved
 /// (#3834): the per-node table, the final substitution and the final
 /// environment. With none, the source is typed as a single module.
+///
+/// `lets` is the local `let` / `let rec` rows of that check (#3050, #3106).
+/// `None` reads them from the checker's global tables, which hold the rows
+/// of the LAST check of any source -- right only when the hover is answered
+/// immediately after this check. A typing kept across requests (#1960) holds
+/// its own copy.
 export struct TypeAtTyped {
   table: Array[(Int, Type)];
   subst: Subst;
-  env: TypeEnv
+  env: TypeEnv;
+  lets: Option[(Array[(Int, Type)], Array[(Int, Type)])]
 }
 
 //# Functions
@@ -55,7 +62,21 @@ export fn type_at_typed(table: Array[(Int, Type)], subst: Subst, env: TypeEnv) -
   TypeAtTyped::{
     table: table,
     subst: subst,
-    env: env
+    env: env,
+    lets: None
+  }
+}
+
+/// `type_at_typed` for a typing that outlives the next check: copies the
+/// local `let` and `let rec` rows that check just recorded.
+export fn type_at_typed_kept(table: Array[(Int, Type)], subst: Subst, env: TypeEnv) -> TypeAtTyped {
+  let lets = local_let_types()
+  let recs = local_let_rec_types()
+  TypeAtTyped::{
+    table: table,
+    subst: subst,
+    env: env,
+    lets: Some((Array::slice(lets, start = 0, end = Array::length(lets)), Array::slice(recs, start = 0, end = Array::length(recs))))
   }
 }
 
@@ -264,11 +285,24 @@ fn tat_env_after_table(typing: TypeAtTyping, stmts: Array[Stmt]) -> TypeEnv with
 
 /// The local `let` rows (`recursive = false`) or `let rec` rows (`recursive = true`) of
 /// the table check this hover read. Cold and import-resolved hovers read the
-/// checker's global tables right after that check; a memo reads its copy.
+/// checker's global tables right after that check; a memo, and a kept
+/// import-resolved typing, read their copy.
 fn tat_let_rows(typing: TypeAtTyping, recursive: Bool) -> Array[(Int, Type)] with Exception {
   match typing {
     TatMemo(m) => type_at_memo_let_rows(memo = m, recursive = recursive),
-    _ => if recursive {
+    TatFs(t) => match t.lets {
+      Some((lets, recs)) => if recursive {
+        recs
+      } else {
+        lets
+      },
+      None => if recursive {
+        local_let_rec_types()
+      } else {
+        local_let_types()
+      }
+    },
+    TatCold => if recursive {
       local_let_rec_types()
     } else {
       local_let_types()
