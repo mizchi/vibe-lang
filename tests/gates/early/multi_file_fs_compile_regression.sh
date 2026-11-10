@@ -1811,19 +1811,21 @@ fi
 rm -rf "$ldir"
 echo "[compiler-gate] labeled-param round-trip regression ok"
 
-# 9. constant-folding regression (#594): `vibe normalize` folds `+ - *` over int
-#    literals. The folded value must replace the expression and the result must
-#    compile + run unchanged.
-echo "[compiler-gate] 9/9 constant-folding regression"
+# 9. constant-expression round-trip regression (#594, #4027): `vibe normalize`
+#    used to fold `+ - *` over int literals (#594's engine re-printed the
+#    folded, dead-code-eliminated program). Since #4027 it rewrites nothing
+#    but dot calls, so `40 + 2 * 10` must come back byte for byte, and the
+#    program must still compile + run to the same value.
+echo "[compiler-gate] 9/9 constant-expression round-trip regression"
 gate_workdir fdir "_build/_gate_fold"
 printf 'let x = 40 + 2 * 10\nexport let run: () -> Int = () -> { x }\nexport { run }\n' > "$fdir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fdir/in.vibe" "$fdir/out.vibe" >/dev/null 2>&1
-# 40 + 2*10 = 60; the arithmetic must be gone and `60` present.
-if ! grep -q "let x: Int = 60" "$fdir/out.vibe" || grep -q "40 + 2" "$fdir/out.vibe"; then
-  echo "[compiler-gate] FAIL: constant folding incorrect" >&2
-  cat "$fdir/out.vibe" >&2; exit 1
+  "$fdir/in.vibe" "$fdir/out.vibe" >/dev/null 2>&1 || true
+gate_require_artifact "$fdir/out.vibe" "constant-expression normalize produced no output"
+if ! cmp -s "$fdir/in.vibe" "$fdir/out.vibe"; then
+  echo "[compiler-gate] FAIL: normalize rewrote a constant expression (#4027)" >&2
+  diff "$fdir/in.vibe" "$fdir/out.vibe" >&2 || true; exit 1
 fi
 cp "$fdir/out.vibe" "$fdir/compile.vibe"
 printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$fdir/compile.vibe"
@@ -1832,10 +1834,10 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$fdir/compile.vibe" "$fdir/out.wasm" _start >/dev/null 2>&1
 gate_run fold_out digits --invoke _start "$fdir/out.wasm"
 if [ "$fold_out" != "60" ]; then
-  echo "[compiler-gate] FAIL: folded program did not run to 60 (got '$fold_out')" >&2; exit 1
+  echo "[compiler-gate] FAIL: normalized program did not run to 60 (got '$fold_out')" >&2; exit 1
 fi
 rm -rf "$fdir"
-echo "[compiler-gate] constant-folding regression ok"
+echo "[compiler-gate] constant-expression round-trip regression ok"
 
 # 10. nested constructor sub-pattern regression (#608): a constructor pattern
 #     whose argument is itself a constructor (`SL(_, None, _)` vs
