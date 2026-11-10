@@ -4,8 +4,15 @@ import @vibe/compiler/core {
   Stmt, TypeExpr, namespace_rename_originals_restore, namespace_rename_originals_snapshot
 }
 import @vibe/compiler/normalize/desugar {
+  DesugarModuleReports,
   ModuleTraitFacts,
+  desugar_module_reports_begin,
+  desugar_module_reports_merge,
+  desugar_module_reports_none,
+  desugar_module_reports_take,
+  desugar_trait_dicts_module_deferring,
   desugar_trait_dicts_module_with_facts,
+  desugar_typed_rows,
   dtd_eq_deferred_requests,
   dtd_eq_deferred_types,
   dtd_eq_invisible_nominals,
@@ -33,12 +40,15 @@ export struct ModuleLoweringDeferred {
   refusals: Array[String]
 }
 
+/// `reports` holds the module's trait-dict refusals when the job ran
+/// deferring (`run_module_lowering_job_deferring`), and none otherwise.
 export struct ModuleLoweringProduct {
   own: Array[Stmt];
   synthesized: Array[Stmt];
   synthesis_requests: Array[String];
   deferred: ModuleLoweringDeferred;
-  invisible_nominals: Array[String]
+  invisible_nominals: Array[String];
+  reports: DesugarModuleReports
 }
 
 export fn module_lowering_deferred_snapshot() -> ModuleLoweringDeferred {
@@ -74,7 +84,7 @@ export fn module_lowering_deferred_merge(_ product: ModuleLoweringDeferred) -> U
   ()
 }
 
-fn restore_job_boundary(renames: Array[(String, String)], deferred: ModuleLoweringDeferred, invisible: Array[String]) -> Unit {
+fn restore_job_boundary(renames: Array[(String, String)], deferred: ModuleLoweringDeferred, invisible: Array[String], reports: DesugarModuleReports) -> Unit {
   namespace_rename_originals_restore(renames)
   eq_deferred_reset()
   module_lowering_deferred_merge(deferred)
@@ -82,6 +92,8 @@ fn restore_job_boundary(renames: Array[(String, String)], deferred: ModuleLoweri
   for name in invisible {
     Array::push(dtd_eq_invisible_nominals, value = name)
   }
+  desugar_module_reports_begin()
+  desugar_module_reports_merge(reports)
   ()
 }
 
@@ -89,35 +101,72 @@ fn restore_job_boundary(renames: Array[(String, String)], deferred: ModuleLoweri
 /// this entry is not safe for simultaneous calls within one instance.
 /// The coordinator's cross-module ledger and merge metadata are restored on
 /// success AND failure. The equality ledger and namespace metadata cross this boundary explicitly.
+///
+/// The job is lowered as a program of its own: a trait-dict refusal is thrown
+/// here, and `reports` is empty.
 export fn run_module_lowering_job(_ job: ModuleLoweringJob) -> ModuleLoweringProduct with Exception {
+  module_lowering_job_run(job = job, deferring = false)
+}
+
+/// #2826: the same job as one module of a program a coordinator reports once
+/// for. Its trait-dict refusals are not thrown: they travel back in
+/// `reports`, and the coordinator files every module's, in module order, with
+/// the program's (`desugar_module_reports_merge`) and reports them after the
+/// last (`desugar_module_reports_flush`) -- the whole program's text and
+/// order, with a 32-bit `Add` row consumed when any module consumed it.
+/// Thrown per module, a first module's refusal hid a later module's `==`
+/// refusal, outranked it when its family is reported later, and a row only
+/// another module's call consumes refused a valid program.
+export fn run_module_lowering_job_deferring(_ job: ModuleLoweringJob) -> ModuleLoweringProduct with Exception {
+  module_lowering_job_run(job = job, deferring = true)
+}
+
+fn module_lowering_job_run(job: ModuleLoweringJob, deferring: Bool) -> ModuleLoweringProduct with Exception {
   if Array::length(job.typed_offsets) != Array::length(job.typed_keys) {
     throw("module lowering: typed row lengths differ")
   } else ()
   let renames = namespace_rename_originals_snapshot()
   let deferred = module_lowering_deferred_snapshot()
   let invisible = eq_invisible_nominals_list()
+  // A coordinator lowering a module in its own instance (a module executor)
+  // keeps the program's reports so far; this job files only its own.
+  let program_reports = desugar_module_reports_take()
   namespace_rename_originals_restore(job.namespace_originals)
   eq_deferred_reset()
   eq_invisible_nominals_reset()
+  desugar_module_reports_begin()
   handle {
-    let synthesized = desugar_trait_dicts_module_with_facts(own = job.own, ctx = job.interfaces, module_tag = job.module_tag, typed_eq_offsets = job.typed_offsets, typed_eq_keys = job.typed_keys, facts = job.facts)
+    let synthesized = if deferring {
+      desugar_trait_dicts_module_deferring(own = job.own, ctx = job.interfaces, module_tag = job.module_tag, rows = desugar_typed_rows(typed_eq_offsets = job.typed_offsets, typed_eq_keys = job.typed_keys), ctx_int32_free = false, facts = job.facts)
+    } else {
+      desugar_trait_dicts_module_with_facts(own = job.own, ctx = job.interfaces, module_tag = job.module_tag, typed_eq_offsets = job.typed_offsets, typed_eq_keys = job.typed_keys, facts = job.facts)
+    }
     let product = ModuleLoweringProduct::{
       own: job.own,
       synthesized: synthesized,
       synthesis_requests: eq_synthesis_requests_list(),
       deferred: module_lowering_deferred_snapshot(),
-      invisible_nominals: eq_invisible_nominals_list()
+      invisible_nominals: eq_invisible_nominals_list(),
+      reports: if deferring {
+        desugar_module_reports_take()
+      } else {
+        desugar_module_reports_none()
+      }
     }
-    restore_job_boundary(renames = renames, deferred = deferred, invisible = invisible)
+    restore_job_boundary(renames = renames, deferred = deferred, invisible = invisible, reports = program_reports)
     product
   } with { Exception::Throw(message) => {
-    restore_job_boundary(renames = renames, deferred = deferred, invisible = invisible)
+    restore_job_boundary(renames = renames, deferred = deferred, invisible = invisible, reports = program_reports)
     throw(message)
   } }
 }
 
 export fn ModuleLoweringJob::run_module_lowering_job(_ recv: ModuleLoweringJob) -> ModuleLoweringProduct with Exception {
   run_module_lowering_job(recv)
+}
+
+export fn ModuleLoweringJob::run_module_lowering_job_deferring(_ recv: ModuleLoweringJob) -> ModuleLoweringProduct with Exception {
+  run_module_lowering_job_deferring(recv)
 }
 
 export fn ModuleLoweringDeferred::module_lowering_deferred_merge(_ recv: ModuleLoweringDeferred) -> Unit {

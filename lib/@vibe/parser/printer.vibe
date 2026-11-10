@@ -11,6 +11,7 @@ import @vibe/ast {
   Pat,
   Stmt,
   TypeExpr,
+  is_builtin_ref_offset,
   match_scrutinee_temp,
   resource_param_kind,
   trait_ref_from_key,
@@ -655,6 +656,62 @@ fn print_block_chain(_ e: Expr) -> String {
   String::join(ArrayBuilder::freeze(parts), sep = "")
 }
 
+/// Whether `key` is a literal a scalar-keyed `Map::from_pairs` takes: an
+/// `Int` (a `Char` lexes as one), a negated `Int`, or a `Bool`.
+fn scalar_pair_key_literal(_ key: Expr) -> Bool {
+  match source_expr(key) {
+    EInt(_) => true,
+    EBool(_) => true,
+    EUnaryOp(op, inner) => op == "-" && (source_expr(inner) is EInt(_)),
+    _ => false
+  }
+}
+
+/// #2334: the (key, value) pairs, in source order, of a scalar-keyed
+/// `Map::from_pairs([..])`, which the parser desugars to nested builtin
+/// `Map::set` calls over an empty map, each keyed by a literal; None for any
+/// other expression.
+fn scalar_from_pairs_chain(_ e: Expr) -> Option[Array[(Expr, Expr)]] {
+  let rev: Array[(Expr, Expr)] = []
+  let mut cur = e
+  let mut ok = false
+  let mut done = false
+  while !done {
+    match source_expr(cur) {
+      ECall(callee, args, _, _) => {
+        let is_set = match source_expr(callee) {
+          EIdent(name, off) => name == "Map::set" && is_builtin_ref_offset(off),
+          _ => false
+        }
+        if is_set && Array::length(args) == 3 && scalar_pair_key_literal(Array::get(args, at = 1)) {
+          Array::push(rev, value = (Array::get(args, at = 1), Array::get(args, at = 2)))
+          cur = Array::get(args, at = 0)
+        } else {
+          done = true
+        }
+      },
+      EMap(fields) => {
+        ok = Array::length(fields) == 0 && Array::length(rev) > 0
+        done = true
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  if ok {
+    let pairs: Array[(Expr, Expr)] = []
+    let mut i = Array::length(rev) - 1
+    while i >= 0 {
+      Array::push(pairs, value = Array::get(rev, at = i))
+      i = i - 1
+    }
+    Some(pairs)
+  } else {
+    None
+  }
+}
+
 fn print_expr_tree(_ e: Expr) -> String {
   match source_expr(e) {
     EInt(n) => __to_string(n),
@@ -776,6 +833,19 @@ fn print_expr_tree(_ e: Expr) -> String {
         }
       } else {
         String::concat(print_expr_tree(callee), String::concat("(", String::concat(join(arr = map_to_strings(exprs = args, f = print_expr_tree), sep = ", "), ")")))
+      },
+      // #2334: a scalar-keyed `Map::from_pairs` is desugared to builtin
+      // `Map::set` calls over an empty map; print it back as written, so the
+      // printed source re-parses into the same calls.
+      EIdent("Map::set", _) => match scalar_from_pairs_chain(e) {
+        Some(pairs) => {
+          let parts = for pair in pairs {
+            let (k, v) = pair
+            String::concat("(", String::concat(print_expr_tree(k), String::concat(", ", String::concat(print_expr_tree(v), ")"))))
+          }
+          String::concat("Map::from_pairs([", String::concat(join(arr = parts, sep = ", "), "])"))
+        },
+        None => String::concat(print_expr_tree(peel_empty_handles(callee)), String::concat("(", String::concat(join(arr = map_to_strings(exprs = args, f = print_expr_tree), sep = ", "), ")")))
       },
       // #726: an immediately-invoked lambda callee must be parenthesized —
       // `(x: T) -> { x }(args)` re-parses with the CALL inside the lambda

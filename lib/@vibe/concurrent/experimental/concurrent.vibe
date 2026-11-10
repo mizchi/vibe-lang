@@ -1218,7 +1218,71 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () 
   // cell. A push/pop bracket (not set/clear) because task bodies may
   // spawn nested suspendable tasks.
   conc_running_push(h.cell)
-  let step = handle {
+  let step = conc_first_leg(n = n, h = h, f = f)
+  conc_running_pop()
+  TaskHandle::settle(h, step = step)
+  h
+}
+
+/// #3200: a suspendable task started the way `TaskGroup::spawn` starts a
+/// task. It is queued Ready and dispatched in FIFO order with the group's
+/// run-to-completion tasks, by `join`, a channel `send` / `recv`, or the
+/// group's close; `spawn_suspend` instead runs the first leg at the call.
+/// Once dispatched, the task is a suspendable one: the first leg runs under
+/// the same `Async` handle (`conc_first_leg`), and a wait parks it for the
+/// pump. A cancel or a sibling's failure before dispatch resolves it
+/// Cancelled without running it, as for `spawn`.
+///
+/// COMPILER-FACING: this is the target the suspend lowering will give a
+/// `TaskGroup::spawn` whose task closure uses `Async` (#3200 step b). A
+/// program does not call it by name.
+export fn __conc_spawn_async[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () -> T with Async + Exception) -> TaskHandle[rg, e, T] {
+  let h = TaskGroup::spawn(n, f = () -> {
+    conc_unreachable_runner(ResCell::{
+      value: None
+    })
+  })
+  let cell = h.cell
+  let rc = h.result
+  // Replace the placeholder runner with the suspendable start. `spawn`
+  // already queued the cell (status Ready) at index count - 1.
+  let runner: () -> Unit with e = () -> {
+    // Pump-visible from its first leg on: a wait parks it like any adopted
+    // task, and close / join / a blocked send or recv resume it.
+    Array::push(n.adopted, value = cell)
+    let th = TaskHandle::{
+      group: n,
+      cell: cell,
+      result: rc
+    }
+    // drive_one already brackets this runner with the running stack.
+    let step = conc_first_leg(n = n, h = th, f = f)
+    TaskHandle::settle(th, step = step)
+  }
+  Array::set(n.runners, at = n.count - 1, value = runner)
+  h
+}
+
+/// The placeholder task `__conc_spawn_async` queues before it installs its
+/// own runner. Never called: the cell it holds is always empty.
+fn conc_unreachable_runner[T](_ none: ResCell[T]) -> T {
+  match none.value {
+    Some(v) => v,
+    None => {
+      abort("vibe: internal: a queued suspendable task ran its placeholder runner")
+      conc_unreachable_runner(none)
+    }
+  }
+}
+
+/// The first leg of a suspendable task: run `f` up to its first suspension
+/// under the `Async` handle whose arm parks the continuation in the task's
+/// cell, or to its end. A throw on this leg fails the task and the group
+/// (fail-fast), as in `spawn`'s runner. Shared by `spawn_suspend` (which runs
+/// it at the call) and `__conc_spawn_async` (which runs it at dispatch). The
+/// caller brackets it with the running stack.
+fn conc_first_leg[rg, e, T](n: TaskGroup[rg, e], h: TaskHandle[rg, e, T], f: () -> T with Async + Exception) -> TaskStep[T] {
+  handle {
     handle {
       let v = f()
       SDone(v)
@@ -1257,9 +1321,6 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () 
     conc_fail_cell(n = n, cell = h.cell, msg = conc_exn_message(rendered = "\{msg}", kind = __exn_kind()))
     SParked
   } }
-  conc_running_pop()
-  TaskHandle::settle(h, step = step)
-  h
 }
 
 /// Register a suspendable task with the group. The body runs (to its

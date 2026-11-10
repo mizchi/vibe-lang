@@ -4,10 +4,13 @@ import @vibe/compiler/core {
   Stmt
 }
 import ./module_job.vibe {
-  ModuleLoweringDeferred, ModuleLoweringJob, run_module_lowering_job
+  ModuleLoweringDeferred, ModuleLoweringJob, module_lowering_deferred_merge, run_module_lowering_job_deferring
 }
 import @vibe/compiler/codegen/wasi {
   PreludeEnv, PreludeTail, lc_apply_pass_recording, lc_collect_stdin_provider_diag, oracle_stmt_key, prelude_tail_new, prelude_tail_record
+}
+import @vibe/compiler/normalize/desugar {
+  DesugarModuleReports, desugar_module_reports_merge, desugar_module_reports_refused, dtd_eq_invisible_nominals, eq_invisible_nominals_reset
 }
 
 export struct PreludeModuleJob {
@@ -28,11 +31,18 @@ export struct PreludeModuleProduct {
   deferred: ModuleLoweringDeferred;
   inline_names: Array[String];
   inline_wats: Array[String];
-  invisible_nominals: Array[String]
+  invisible_nominals: Array[String];
+  reports: DesugarModuleReports
 }
 
 /// The input was normalized through pass 3 before its bodyless interfaces
 /// were constructed. Workers run exactly 4..10, in the existing order.
+///
+/// #2826: the module's trait-dict refusals are not thrown here; they travel
+/// back in `reports` for the coordinator to report once for the program
+/// (`prelude_module_product_merge`, then the driver's
+/// `desugar_module_reports_flush`). A refused module runs none of 5..10, as in
+/// the in-process driver: the program is refused at the end of pass 4.
 export fn run_prelude_module_job(_ job: PreludeModuleJob) -> PreludeModuleProduct with Exception {
   let inline_names: Array[String] = []
   let inline_wats: Array[String] = []
@@ -49,7 +59,7 @@ export fn run_prelude_module_job(_ job: PreludeModuleJob) -> PreludeModuleProduc
     aw_note: job.aw_note,
     trait_facts: job.trait_job.facts
   }
-  let result = run_module_lowering_job(job.trait_job)
+  let result = run_module_lowering_job_deferring(job.trait_job)
   let part = result.own
   let keys: Array[String] = []
   let diags: Array[String] = []
@@ -60,7 +70,11 @@ export fn run_prelude_module_job(_ job: PreludeModuleJob) -> PreludeModuleProduc
     prelude_tail_record(tail = tail, key = key, pass = 4)
     Array::push(part, value = synthesized)
   }
-  let mut pass = 5
+  let mut pass = if desugar_module_reports_refused(result.reports) {
+    11
+  } else {
+    5
+  }
   while pass < 11 {
     lc_apply_pass_recording(k = pass, part = part, part_entry = job.entry_name, checker_eq_offsets = job.trait_job.typed_offsets, checker_eq_type_keys = job.trait_job.typed_keys, synth_keys = keys, tail = tail, errs = diags, env = env, exports_stripped = false)
     if pass == 5 {
@@ -78,10 +92,51 @@ export fn run_prelude_module_job(_ job: PreludeModuleJob) -> PreludeModuleProduc
     deferred: result.deferred,
     inline_names: inline_names,
     inline_wats: inline_wats,
-    invisible_nominals: result.invisible_nominals
+    invisible_nominals: result.invisible_nominals,
+    reports: result.reports
   }
+}
+
+/// File one module's product with its coordinator's program state: the
+/// module's statements replace `own`, and every side channel -- synthesized
+/// keys, the tail ranks, diagnostics, inline wasm, the equality ledger, the
+/// invisible nominals and the trait-dict refusals -- is merged. Call it once
+/// per module, in module order, after the module's job ran, wherever it ran;
+/// the driver reports the merged refusals once, after the last module.
+export fn prelude_module_product_merge(product: PreludeModuleProduct, own: Array[Stmt], env: PreludeEnv, synth: Array[String], tail: PreludeTail, diagnostics: Array[String]) -> Unit {
+  Array::truncate(own, length = 0)
+  for stmt in product.own {
+    Array::push(own, value = stmt)
+  }
+  for key in product.synth_keys {
+    Array::push(synth, value = key)
+  }
+  let mut i = 0
+  while i < Array::length(product.tail.keys) {
+    prelude_tail_record(tail = tail, key = Array::get(product.tail.keys, at = i), pass = Array::get(product.tail.passes, at = i))
+    i = i + 1
+  }
+  for diag in product.diagnostics {
+    Array::push(diagnostics, value = diag)
+  }
+  for name in product.inline_names {
+    Array::push(env.iw_names, value = name)
+  }
+  for wat in product.inline_wats {
+    Array::push(env.iw_wats, value = wat)
+  }
+  module_lowering_deferred_merge(product.deferred)
+  eq_invisible_nominals_reset()
+  for name in product.invisible_nominals {
+    Array::push(dtd_eq_invisible_nominals, value = name)
+  }
+  desugar_module_reports_merge(product.reports)
 }
 
 export fn PreludeModuleJob::run_prelude_module_job(_ recv: PreludeModuleJob) -> PreludeModuleProduct with Exception {
   run_prelude_module_job(recv)
+}
+
+export fn PreludeModuleProduct::prelude_module_product_merge(_ recv: PreludeModuleProduct, own: Array[Stmt], env: PreludeEnv, synth: Array[String], tail: PreludeTail, diagnostics: Array[String]) -> Unit {
+  prelude_module_product_merge(product = recv, own = own, env = env, synth = synth, tail = tail, diagnostics = diagnostics)
 }
