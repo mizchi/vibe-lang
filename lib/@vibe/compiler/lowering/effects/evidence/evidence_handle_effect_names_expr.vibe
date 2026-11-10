@@ -6,6 +6,7 @@ import @vibe/compiler/core {
   Stmt,
   TypeExpr,
   dce_keep_flags,
+  dce_statement_refs,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -2120,9 +2121,9 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
 /// without a map or a set per statement. The next three decide whether
 /// edp_row_lit_scan, the eta-wrap gate or the escape check can find anything
 /// in it. The next two are its effect sites (`edp_mf_sites_expr`), from which
-/// the handle index and the isolation's census are read, and the last is
-/// edp_perform_raw of its body, from which vacuity's perform facts are
-/// (#4040).
+/// the handle index and the isolation's census are read, then
+/// edp_perform_raw of its body, from which vacuity's perform facts are, and
+/// its dce_statement_refs, from which the pass's reachability is (#4040).
 export struct EdpStmtFacts {
   lambda_names: Array[String];
   lambda_bodies: Array[Expr];
@@ -2134,7 +2135,8 @@ export struct EdpStmtFacts {
   ident_args: Array[String];
   handles: Array[Array[String]];
   performs: Array[String];
-  perform_raw: Option[(Bool, Array[String], Array[String])]
+  perform_raw: Option[(Bool, Array[String], Array[String])];
+  dce_refs: (Array[String], Bool, Array[String], Bool)
 }
 
 /// Facts of each statement, valid for the tree as of the last refresh.
@@ -2193,7 +2195,8 @@ fn edp_mf_stmt_facts(_ stmt: Stmt) -> EdpStmtFacts {
     ident_args: ident_args,
     handles: handles,
     performs: performs,
-    perform_raw: raw
+    perform_raw: raw,
+    dce_refs: dce_statement_refs(stmt)
   }
 }
 
@@ -2280,6 +2283,16 @@ export fn edp_mf_refresh_perform_facts(facts: Array[EdpStmtFacts], out: Array[Op
     } else ()
   }
   ()
+}
+
+/// Each statement's share of the reachability graph (dce_statement_refs),
+/// from facts refreshed for them, for dce_keep_flags_from_refs.
+export fn edp_mf_dce_refs(_ facts: Array[EdpStmtFacts]) -> Array[(Array[String], Bool, Array[String], Bool)] {
+  let out: Array[(Array[String], Bool, Array[String], Bool)] = Array::with_capacity(Array::length(facts))
+  for fact in facts {
+    Array::push(out, value = fact.dce_refs)
+  }
+  out
 }
 
 /// Every handler arm's pattern name and every `perform`'s effect in the
