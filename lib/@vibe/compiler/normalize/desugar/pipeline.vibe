@@ -43,12 +43,13 @@ import @vibe/compiler/core {
   typed_int32_row_head,
   typed_map_key_row_head,
   typed_map_scalar_key_verdict,
+  typed_method_row_head,
   typed_render_row_head,
   typed_scalar_local_row_head
 }
 
 import @vibe/ast {
-  impl_target_key
+  impl_target_from_key, impl_target_key
 }
 
 import @vibe/core {
@@ -103,6 +104,10 @@ import ./float_rounding.vibe {
   refuse_rowless_float_program, rewrite_float_arith_stmts
 }
 
+import ./extern_effect.vibe {
+  note_extern_effects
+}
+
 import ./int32.vibe {
   program_mentions_int32, refuse_int32_owned_decls, refuse_rowless_int32_program, rewrite_int32_stmts_vouched
 }
@@ -124,7 +129,7 @@ import ./lambda_hoist.vibe {
 }
 
 import ./models.vibe {
-  DtdTypedRows, ModuleTraitFacts
+  DesugarModuleReports, DtdTypedRows, ModuleTraitFacts
 }
 
 import ./railway_binds.vibe {
@@ -144,7 +149,14 @@ import ./rewrite.vibe {
 }
 
 import ./add32_rows.vibe {
-  dtd_add32_insert, dtd_add32_report, dtd_add32_reset, dtd_add32_split_collect, dtd_add32_split_report, dtd_add32_split_reset
+  dtd_add32_insert,
+  dtd_add32_report,
+  dtd_add32_reset,
+  dtd_add32_split_collect,
+  dtd_add32_split_merge,
+  dtd_add32_split_report,
+  dtd_add32_split_reset,
+  dtd_add32_split_rows
 }
 
 import ./state.vibe {
@@ -166,7 +178,9 @@ import ./state.vibe {
   dtd_typed_forin_offs,
   dtd_typed_forin_verdicts,
   dtd_typed_index_offs,
-  dtd_typed_index_verdicts
+  dtd_typed_index_verdicts,
+  dtd_typed_method_heads,
+  dtd_typed_method_offs
 }
 
 import ./trait_bounds.vibe {
@@ -245,6 +259,8 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
   // #3730: an impl or a method owned by `Int32` / `UInt32` cannot survive
   // their erasure to `Int`.
   refuse_int32_owned_decls(stmts)
+  // ADR-0124 (#2656): code generation refuses an `extern effect` call.
+  note_extern_effects(stmts)
   Array::set(dtd_rowless_build, at = 0, value = rowless_build)
   // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
   // (interpolation, structural `==`, iteration), which must reach the
@@ -533,6 +549,13 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
   ]))
   let render_head_len = String::index_of(render_prefix, needle = impl_target_key(TyName("Int")))
   let render_head = String::substring(render_prefix, start = 0, end = render_head_len)
+  // #2501: the dot-method rows, split off the same way; each names its head.
+  let method_prefix = impl_target_key(TyApp(typed_method_row_head(), [
+    TyName("Int")
+  ]))
+  let method_head = String::substring(method_prefix, start = 0, end = String::index_of(method_prefix, needle = impl_target_key(TyName("Int"))))
+  let method_offs: Array[Int] = []
+  let method_heads: Array[String] = []
   // #3133: the index-receiver rows, split off the same way.
   let index_offs: Array[Int] = []
   let index_verdicts: Array[String] = []
@@ -665,6 +688,16 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
       dtd_typed_row_insert(dtd_typed_index_offs = forin_offs, dtd_typed_index_verdicts = forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
     } else if tkey == index_seq_key {
       dtd_typed_row_insert(dtd_typed_index_offs = index_offs, dtd_typed_index_verdicts = index_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_seq_verdict())
+    } else if String::starts_with(tkey, prefix = method_head) {
+      match impl_target_from_key(tkey) {
+        Some(TyApp(_, args)) => if Array::length(args) == 1 {
+          match Array::get(args, at = 0) {
+            TyName(head) => dtd_typed_row_insert(dtd_typed_index_offs = method_offs, dtd_typed_index_verdicts = method_heads, off = Array::get(typed_eq_offsets, at = teq_i), verdict = head),
+            _ => ()
+          }
+        },
+        _ => ()
+      }
     } else if render_head_len > 0 && String::starts_with(tkey, prefix = render_head) {
       dtd_typed_render_insert_into(offs = render_offs, keys = render_keys, off = Array::get(typed_eq_offsets, at = teq_i), key = tkey)
     } else {
@@ -697,7 +730,9 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
     i32_neg: i32_neg_offs,
     u32_not: u32_not_offs,
     scalar_local: scalar_local_offs,
-    map_scalar: map_scalar_offs
+    map_scalar: map_scalar_offs,
+    method_offs: method_offs,
+    method_heads: method_heads
   }
 }
 
@@ -721,6 +756,10 @@ fn dtd_typed_rows_install(_ rows: DtdTypedRows) -> Unit {
   dtd_append_strings(dst = dtd_typed_index_verdicts, src = rows.index_verdicts)
   dtd_append_ints(dst = dtd_typed_forin_offs, src = rows.forin_offs)
   dtd_append_strings(dst = dtd_typed_forin_verdicts, src = rows.forin_verdicts)
+  Array::truncate(dtd_typed_method_offs, length = 0)
+  Array::truncate(dtd_typed_method_heads, length = 0)
+  dtd_append_ints(dst = dtd_typed_method_offs, src = rows.method_offs)
+  dtd_append_strings(dst = dtd_typed_method_heads, src = rows.method_heads)
   dtd_add32_reset()
   let mut i = 0
   while i < Array::length(rows.add32_offs) {
@@ -1168,6 +1207,62 @@ export fn desugar_module_reports_flush() -> Unit with Exception {
   } else {
     dtd_add32_split_report()
   }
+}
+
+/// A copy of the refusals filed since `desugar_module_reports_begin`. A
+/// worker that lowers one module of a program calls `begin`, lowers it with
+/// `desugar_trait_dicts_module_deferring`, and sends this back, so that its
+/// coordinator can file the module with the program's
+/// (`desugar_module_reports_merge`).
+export fn desugar_module_reports_take() -> DesugarModuleReports {
+  let (offs, types, used) = dtd_add32_split_rows()
+  DesugarModuleReports::{
+    eq: dtd_split_strings_copy(dtd_split_eq_refusals),
+    show: dtd_split_strings_copy(dtd_split_show_refusals),
+    index: dtd_split_strings_copy(dtd_split_index_refusals),
+    add32_offs: offs,
+    add32_types: types,
+    add32_used: used
+  }
+}
+
+/// File refusals another run took (`desugar_module_reports_take`) with the
+/// program's, exactly as that run's own module would have been filed:
+/// deduplicated, in order, and a 32-bit `Add` row consumed when either side
+/// consumed it. Merging each module's reports in module order gives the
+/// program the reports one in-process driver would have collected.
+export fn desugar_module_reports_merge(_ reports: DesugarModuleReports) -> Unit {
+  dtd_split_collect_into(dst = dtd_split_eq_refusals, src = reports.eq)
+  dtd_split_collect_into(dst = dtd_split_show_refusals, src = reports.show)
+  dtd_split_collect_into(dst = dtd_split_index_refusals, src = reports.index)
+  dtd_add32_split_merge(offs = reports.add32_offs, types = reports.add32_types, used = reports.add32_used)
+}
+
+/// No refusals: what a module that was not refused sends back.
+export fn desugar_module_reports_none() -> DesugarModuleReports {
+  DesugarModuleReports::{
+    eq: [],
+    show: [],
+    index: [],
+    add32_offs: [],
+    add32_types: [],
+    add32_used: []
+  }
+}
+
+/// Do `reports` hold a refusal? Then so does the program, and -- as
+/// `desugar_module_reports_pending` says -- the module they came from runs
+/// none of the passes after this one. Rows alone are not a refusal.
+export fn desugar_module_reports_refused(_ reports: DesugarModuleReports) -> Bool {
+  Array::length(reports.eq) > 0 || Array::length(reports.show) > 0 || Array::length(reports.index) > 0
+}
+
+fn dtd_split_strings_copy(_ src: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for s in src {
+    Array::push(out, value = s)
+  }
+  out
 }
 
 /// File this module's refusals with the program's.

@@ -285,6 +285,23 @@ for the final output because it is one generation old: an edit to
 `merge_sources.vibe` and friends would not take effect until the next seed
 bump, and the output would still look valid.
 
+**Which `#cfg` flags the compiler is built with.** The final flatten resolves
+every `#cfg(flag)` / `#cfg(not(flag))` declaration in the compiler's own
+sources, so the flag set it runs with decides what the stage2 contains. That
+set is `VIBE_COMPILER_CFG`: the flatten runs with `VIBE_CFG` set to it whatever
+the caller exported, because an exported `VIBE_CFG` is the cfg of a program a
+compiler compiles and must not change which compiler gets built. Its default is
+`telemetry` (#2498): the observation counters and sidecar encoders the oracles,
+the KPI and CI read stay in the generation's stage2 and in the five files
+above, which `ensure_generated.sh` always produces in that default flavor.
+`scripts/build_compile_only.sh` flattens with `VIBE_COMPILER_CFG=""`, so the
+compile-only artifact carries the `#cfg(not(telemetry))` twins instead, which
+refuse a sidecar request by name; `scripts/check_compile_only_lanes.sh`
+checks both from the named artifact. `VIBE_COMPILER_CFG= bash
+scripts/generations.sh build --out-dir DIR` builds a stage2 without telemetry.
+The flatten tool itself is always bootstrapped with no flag, so one tool serves
+every flavor.
+
 `coverage_drivers.sh`'s exact-path exposure (#1633) keeps the same generation
 boundary. Its internal mode is run by `compiler_cov.wasm`, built from current
 source, which emits ordinary vibe source DCE'd from a driver entry. The pinned
@@ -387,7 +404,7 @@ The canonical builders of a compiler wasm:
 | artifact | builder | output | role |
 |---|---|---|---|
 | stage2 | `scripts/generations.sh build` | `_build/selfhost/generations/<gen>/stage2.wasm` | The candidate self-reproduced from the pinned seed; the source of a bootstrap bump and of a release's CLI. |
-| compile-only | `scripts/build_compile_only.sh` | `_build/compile_only/vibe_compile_only.wasm` | The same env-mode CLI as stage2, DCE-rooted at `main_compile_only` (cli_adapter.vibe): only the two production allocator lanes; the gc backend, the coverage / trace / break instrumentation, rc-shadow and the cache / telemetry twins are absent from the wasm, and their switches are refused by name (#2497, gate `scripts/check_compile_only_lanes.sh`). The lane switches that reach codegen as `Bool` parameters (`coverage`, `debug_trace`, `debug_break`, `rc_shadow` of `compile_wasi_module_linked_impl`) fold to their literal in this build, because every remaining caller passes the same one (`fold_const_bool_params`, core), so the instrumented arms inside the shared codegen are gone too. Invoke it as `cli_main_compile_only`. |
+| compile-only | `scripts/build_compile_only.sh` | `_build/compile_only/vibe_compile_only.wasm` | The same env-mode CLI as stage2, DCE-rooted at `main_compile_only` (cli_adapter.vibe): only the two production allocator lanes; the gc backend, the coverage / trace / break instrumentation, rc-shadow and the cache / telemetry twins are absent from the wasm, and their switches are refused by name (#2497, gate `scripts/check_compile_only_lanes.sh`). The component tools of the positional protocol (`VIBE_EMIT_WIT`, `VIBE_SERVE_COMPONENT`, `VIBE_BUILD_COMPONENT`) are absent and refused the same way, through a tool table only `cli_main` installs (#2499); the async component composition a user program's `Async` export needs stays. The lane switches that reach codegen as `Bool` parameters (`coverage`, `debug_trace`, `debug_break`, `rc_shadow` of `compile_wasi_module_linked_impl`) fold to their literal in this build, because every remaining caller passes the same one (`fold_const_bool_params`, core), so the instrumented arms inside the shared codegen are gone too. Invoke it as `cli_main_compile_only`. |
 
 Of the release assets, `vibe-compiler-<tag>.wasm` is the adopted seed itself
 (a past stage2), published by `scripts/build_release_assets.sh` /

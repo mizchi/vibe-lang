@@ -1,10 +1,10 @@
 // Shared source ingestion and dependency typing for grep and label queries.
 // Keep the final parse/check in each consumer: they record different answers.
 import @vibe/compiler/core {
-  TypeEnv, ensure_regular_source_fs
+  TypeEnv, dir_of_path, ensure_regular_source_fs, normalize_path, vpkg_path_in_dir
 }
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 import @vibe/compiler/incremental {
   RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
@@ -19,7 +19,7 @@ import @vibe/compiler/config {
   target_cfg_ambient
 }
 import @vibe/compiler/cache {
-  cache_read_source_fs
+  cache_read_source_fs, cache_source_memo_token
 }
 
 // These caches are keyed by dependency path, never by the current entry.
@@ -89,6 +89,9 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
   }
   let mut rdb = state.rdb
   let mut entry_source = current
+  let closure_tokens: Array[(String, Int)] = []
+  let contract_dirs: MutSet[String] = MutSet::new_string()
+  query_project_note_contracts(path = path, seen = contract_dirs, tokens = closure_tokens)
   let mut gi = 0
   while gi < Array::length(groups) {
     let (_, sources) = Array::get(groups, at = gi)
@@ -99,13 +102,14 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
       if p == path {
         entry_source = text
       } else {
-        ()
+        Array::push(closure_tokens, value = (p, query_project_source_token(p)))
       }
+      query_project_note_contracts(path = p, seen = contract_dirs, tokens = closure_tokens)
       si = si + 1
     }
     gi = gi + 1
   }
-  let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path, cfg = cfg)
+  let (entry_fingerprint, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path, cfg = cfg)
   let deps = match ripple_get_deps(db = walked, path = path) {
     Some(d) => d,
     None => array_empty()
@@ -113,6 +117,8 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
   let import_env = projected_import_env_for_test(source = entry_source, path = path, deps = deps, full_cache = query_project_fill_dep_envs(rdb = walked, env_cache = env_cache, deps = deps))
   QueryProjectContext::{
     entry_source: entry_source,
+    entry_fingerprint: entry_fingerprint,
+    closure_tokens: closure_tokens,
     import_env: import_env,
     state: QueryProjectState::{
       env_cache: env_cache,
@@ -120,6 +126,79 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
       dep_sources: dep_sources
     }
   }
+}
+
+/// The stat token `path`'s text was read under: the one the loader's source
+/// memo stored before reading it, or the current one when the memo holds no
+/// text for `path` (a module this walk did not read through the memo).
+fn query_project_source_token(_ path: String) -> Int with Fs {
+  let token = cache_source_memo_token(path)
+  if token >= 0 {
+    token
+  } else {
+    query_project_path_token(path)
+  }
+}
+
+/// `path`'s current stat token, or `query_project_absent_token()` when no file
+/// is there. The existence test comes first: the node runner raises a guest
+/// error for the stat of a missing path, where viberun answers 0, so a
+/// dependency deleted after it was read must be asked about this way.
+fn query_project_path_token(_ path: String) -> Int with Fs {
+  if Fs::exists(path) {
+    Fs::stat_token(path)
+  } else {
+    query_project_absent_token()
+  }
+}
+
+/// The token of a path with no file: no stat token takes this value
+/// (viberun's are 61-bit non-negative, -1 marks a symlink, 0 a failed stat).
+fn query_project_absent_token() -> Int {
+  0 - 2
+}
+
+/// Record the token of every `index.vpkg` that could own `path`: the one in
+/// its directory and in each directory above it. The owning contract is an
+/// input to the typing although no import names it -- it is where a file's
+/// directory-shared imports come from (`vpkg_shared_prefix_owner`, which looks
+/// in the file's directory and, for some files, up the tree) -- and creating
+/// one changes the owner, so a contract that is absent is recorded too.
+fn query_project_note_contracts(path: String, seen: MutSet[String], tokens: Array[(String, Int)]) -> Unit with Fs {
+  let mut dir = dir_of_path(normalize_path(path))
+  let mut going = true
+  while going {
+    if MutSet::has(seen, x = dir) {
+      going = false
+    } else {
+      MutSet::add(seen, x = dir)
+      let candidate = vpkg_path_in_dir(dir)
+      Array::push(tokens, value = (candidate, query_project_path_token(candidate)))
+      let parent = dir_of_path(dir)
+      if parent == dir {
+        going = false
+      } else {
+        dir = parent
+      }
+    }
+  }
+}
+
+/// Whether every module of a context's closure, and every contract that could
+/// own one, still has the stat token it was read under -- the test the
+/// loader's own source memo applies before it trusts a text it holds (#3577).
+/// False as soon as one was written, replaced, removed or created.
+export fn query_project_tokens_unchanged(_ tokens: Array[(String, Int)]) -> Bool with Fs {
+  let mut same = true
+  let mut i = 0
+  while same && i < Array::length(tokens) {
+    let (p, token) = Array::get(tokens, at = i)
+    if query_project_path_token(p) != token {
+      same = false
+    } else ()
+    i = i + 1
+  }
+  same
 }
 
 /// Persistent hits need hydration only when this exact module has no env row.

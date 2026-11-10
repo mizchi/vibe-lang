@@ -462,68 +462,248 @@ fn desugar_placeholder_args(args: Array[Expr], context: Option[ParserBinderConte
 }
 
 /// #960: `Map::new()` / `Map::from_pairs([("k", v), ...])` are the ONLY
-/// spellings for building a string-keyed map (Stage 2 removed the
+/// spellings for building a map from literals (Stage 2 removed the
 /// `map { ... }` literal; the printer emits these spellings for EMap). They
 /// are desugared HERE, at the parse-postfix call-build site — the same layer
-/// as the `throw(x)` -> `perform Exception::Throw(x)` desugar (#640 Stage 2) —
-/// into the exact `EMap` node the literal used to produce, so every
-/// downstream stage (checker, normalize, both codegen backends) sees ONE
-/// form and needs ZERO changes. Parse-level
-/// placement also keeps the two names from ever reaching the checker's
-/// generic `Map::` builtin lookup (a residual non-call mention, e.g.
-/// `x |> Map::from_pairs`, is rejected there as `unknown name` — an error,
-/// never a silent miscompile). Only an array LITERAL of (string-literal,
-/// value) tuple LITERALS is accepted for now; anything else throws a located
-/// parse error. `pos` is the token index of the call's `(`, the "at #N"
-/// located-diagnostic anchor (#816).
+/// as the `throw(x)` -> `perform Exception::Throw(x)` desugar (#640 Stage 2).
+/// String keys become the exact `EMap` node the literal used to produce, so
+/// every downstream stage sees ONE form for them. Parse-level placement also
+/// keeps the two names from ever reaching the checker's generic `Map::`
+/// builtin lookup (a residual non-call mention, e.g. `x |> Map::from_pairs`,
+/// is rejected there as `unknown name` — an error, never a silent
+/// miscompile). Only an array LITERAL of (literal key, value) tuple LITERALS
+/// is accepted for now; anything else throws a located parse error. `pos` is
+/// the token index of the call's `(`, the "at #N" located-diagnostic anchor
+/// (#816).
 fn empty_map_fields() -> Array[(String, Expr)] {
   Array::slice([("", EUnit)], start = 0, end = 0)
 }
 
-fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] with Exception {
+/// The kind of a `Map::from_pairs` pair key, and the literal's identity for
+/// the repeated-key check: 0 for a String literal; 1 for an `Int` literal or a
+/// `Char` one, which the lexer reads as its code point (the integer); 2 for a
+/// `Bool` literal (1 or 0); -1 for anything else.
+fn map_pair_key_kind(_ key: Expr) -> (Int, Int) {
+  match source_expr(key) {
+    EString(_, _) => (0, 0),
+    EInt(n) => (1, n),
+    EUnaryOp(op, inner) => if op == "-" {
+      match source_expr(inner) {
+        EInt(n) => (1, 0 - n),
+        _ => (0 - 1, 0)
+      }
+    } else {
+      (0 - 1, 0)
+    },
+    EBool(b) => if b {
+      (2, 1)
+    } else {
+      (2, 0)
+    },
+    _ => (0 - 1, 0)
+  }
+}
+
+/// How a pair-key kind of `map_pair_key_kind` is named in a diagnostic,
+/// with its article.
+fn map_pair_kind_name(_ kind: Int) -> String {
+  if kind == 0 {
+    "a String"
+  } else if kind == 1 {
+    "an Int or Char"
+  } else {
+    "a Bool"
+  }
+}
+
+/// The located shape refusal of `Map::from_pairs`, with `detail` after the
+/// general rule.
+fn map_from_pairs_shape_error(_ detail: String, pos: Int) -> String {
+  "Map::from_pairs requires an array literal of (literal key, value) pairs for now (#960)\{detail} at #\{pos}"
+}
+
+/// The pairs of a `Map::from_pairs` argument, after the shape checks: each
+/// element is a (key, value) tuple literal.
+fn map_from_pairs_pairs(args: Array[Expr], pos: Int) -> Array[(Expr, Expr)] with Exception {
   if Array::length(args) != 1 {
-    throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960) at #\{pos}")
+    throw(map_from_pairs_shape_error("", pos = pos))
   }
   match source_expr(Array::get(args, at = 0)) {
     EArray(elems) => {
       let b = ArrayBuilder::new()
-      let mut i = 0
-      while i < Array::length(elems) {
-        match source_expr(Array::get(elems, at = i)) {
+      for elem in elems {
+        match source_expr(elem) {
           ETuple(kv) => if Array::length(kv) == 2 {
-            match source_expr(Array::get(kv, at = 0)) {
-              EString(k, _) => {
-                // A repeated key built a map holding the key twice: `size`
-                // counted both, `m["a"]` answered the first and `keys` listed
-                // it twice, while `MapBuilder` and `Map::set` keep one entry.
-                // The keys are literals, so the repeat is visible here.
-                let mut j = 0
-                while j < i {
-                  match source_expr(Array::get(elems, at = j)) {
-                    ETuple(prev) => match source_expr(Array::get(prev, at = 0)) {
-                      EString(pk, _) => if pk == k {
-                        throw("Map::from_pairs lists the key \"\{k}\" twice: a map holds each key once, so remove one of the pairs at #\{pos}")
-                      },
-                      _ => ()
-                    },
-                    _ => ()
-                  }
-                  j = j + 1
-                }
-                ArrayBuilder::push(b, value = (k, Array::get(kv, at = 1)))
-              },
-              _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): pair key is not a string literal at #\{pos}")
-            }
+            ArrayBuilder::push(b, value = (Array::get(kv, at = 0), Array::get(kv, at = 1)))
           } else {
-            throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): each pair must be a 2-tuple literal at #\{pos}")
+            throw(map_from_pairs_shape_error(": each pair must be a 2-tuple literal", pos = pos))
           },
-          _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): each element must be a tuple literal at #\{pos}")
+          _ => throw(map_from_pairs_shape_error(": each element must be a tuple literal", pos = pos))
         }
-        i = i + 1
       }
       ArrayBuilder::freeze(b)
     },
-    _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960) at #\{pos}")
+    _ => throw(map_from_pairs_shape_error("", pos = pos))
+  }
+}
+
+/// #2334: the byte offset where each element of `Map::from_pairs`'s array
+/// literal starts, read from the tokens after the call's `(` at `pos`. Each
+/// becomes the call offset of the `Map::set` that element desugars to, and
+/// the checker files that call's key row under it. A tuple literal's `(` is
+/// no other node's offset. An offset-less parse (empty `starts`) answers -1
+/// for every element, as it does for a written `Map::set`.
+fn map_from_pairs_elem_offsets(tokens: Array[Token], starts: Array[Int], pos: Int, count: Int) -> Array[Int] {
+  let out: Array[Int] = []
+  if Array::length(starts) == 0 {
+    let mut i = 0
+    while i < count {
+      Array::push(out, value = 0 - 1)
+      i = i + 1
+    }
+  } else {
+    let mut p = pos + 1
+    while peek(tokens = tokens, pos = p) is TLParen {
+      p = p + 1
+    }
+    if peek(tokens = tokens, pos = p) is TLBracket {
+      let mut depth = 0
+      let mut at_elem = true
+      let mut done = false
+      p = p + 1
+      while !done && p < Array::length(tokens) {
+        let tok = peek(tokens = tokens, pos = p)
+        if depth == 0 && (tok is TRBracket || tok is TEof) {
+          done = true
+        } else {
+          if at_elem {
+            Array::push(out, value = field_offset_at(starts = starts, p = p))
+            at_elem = false
+          }
+          match tok {
+            TLParen => {
+              depth = depth + 1
+            },
+            TLBracket => {
+              depth = depth + 1
+            },
+            TLBrace => {
+              depth = depth + 1
+            },
+            TRParen => {
+              depth = depth - 1
+            },
+            TRBracket => {
+              depth = depth - 1
+            },
+            TRBrace => {
+              depth = depth - 1
+            },
+            TComma => if depth == 0 {
+              at_elem = true
+            },
+            _ => ()
+          }
+          p = p + 1
+        }
+      }
+    }
+  }
+  out
+}
+
+/// The element offsets `build_call_expr` needs for `callee(args)`: those of
+/// `Map::from_pairs`'s array literal, and none for any other call.
+fn map_from_pairs_call_elem_offsets(tokens: Array[Token], starts: Array[Int], pos: Int, callee: Expr, args: Array[Expr]) -> Array[Int] {
+  let is_from_pairs = match source_expr(callee) {
+    EIdent(name, _) => name == "Map::from_pairs",
+    _ => false
+  }
+  if is_from_pairs && Array::length(args) == 1 {
+    match source_expr(Array::get(args, at = 0)) {
+      EArray(elems) => map_from_pairs_elem_offsets(tokens = tokens, starts = starts, pos = pos, count = Array::length(elems)),
+      _ => []
+    }
+  } else {
+    []
+  }
+}
+
+/// Whether two literal keys of kind `kind` are the same key.
+fn map_pair_keys_equal(kind: Int, a: Expr, b: Expr) -> Bool {
+  if kind == 0 {
+    match (source_expr(a), source_expr(b)) {
+      (EString(x, _), EString(y, _)) => x == y,
+      _ => false
+    }
+  } else {
+    let (_, x) = map_pair_key_kind(a)
+    let (_, y) = map_pair_key_kind(b)
+    x == y
+  }
+}
+
+/// `Map::from_pairs([...])`. String keys build the `EMap` node. `Int`,
+/// `Char` and `Bool` keys (#2334) build the calls a program would write,
+/// `Map::set(.. Map::set(Map::new(), k1, v1) .., kn, vn)`, the i-th at its
+/// pair's offset `elem_offs[i]`, so the checker types every key and the
+/// desugar gives each call the scalar operation. Every key of one call has
+/// one kind, and each key is listed once.
+fn map_from_pairs_expr(args: Array[Expr], pos: Int, elem_offs: Array[Int]) -> Expr with Exception {
+  let pairs = map_from_pairs_pairs(args = args, pos = pos)
+  let mut kind = 0
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (key, _) = Array::get(pairs, at = i)
+    let (k, _) = map_pair_key_kind(key)
+    if k < 0 {
+      throw(map_from_pairs_shape_error(": pair key is not a String, Int, Char or Bool literal; build a map with any other key with Map::set", pos = pos))
+    }
+    if i == 0 {
+      kind = k
+    } else if k != kind {
+      throw("Map::from_pairs mixes key types: pair 1 has \{map_pair_kind_name(kind)} key and pair \{i + 1} \{map_pair_kind_name(k)} key; a map has one key type, so give every key the same type at #\{pos}")
+    }
+    // A repeated key built a map holding the key twice: `size` counted both,
+    // `m["a"]` answered the first and `keys` listed it twice, while
+    // `MapBuilder` and `Map::set` keep one entry. The keys are literals, so
+    // the repeat is visible here.
+    let mut j = 0
+    while j < i {
+      let (prev, _) = Array::get(pairs, at = j)
+      if map_pair_keys_equal(kind = k, a = prev, b = key) {
+        match source_expr(key) {
+          EString(name, _) => throw("Map::from_pairs lists the key \"\{name}\" twice: a map holds each key once, so remove one of the pairs at #\{pos}"),
+          _ => throw("Map::from_pairs lists one key in pairs \{j + 1} and \{i + 1}: a map holds each key once, so remove one of the pairs at #\{pos}")
+        }
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  if kind == 0 {
+    let b = ArrayBuilder::new()
+    for pair in pairs {
+      let (key, v) = pair
+      match source_expr(key) {
+        EString(name, _) => ArrayBuilder::push(b, value = (name, v)),
+        _ => ()
+      }
+    }
+    EMap(ArrayBuilder::freeze(b))
+  } else {
+    if Array::length(elem_offs) != Array::length(pairs) {
+      throw(map_from_pairs_shape_error(": its pairs could not be located in the source; write each pair as a tuple literal", pos = pos))
+    }
+    let mut acc = EMap(empty_map_fields())
+    let mut n = 0
+    while n < Array::length(pairs) {
+      let (key, v) = Array::get(pairs, at = n)
+      acc = ECall(builtin_ref("Map::set"), [acc, key, v], Array::get(elem_offs, at = n), [
+      ])
+      n = n + 1
+    }
+    acc
   }
 }
 
@@ -604,7 +784,7 @@ fn call_site_offset(callee: Expr, lparen_off: Int) -> Int {
 /// at this was partial (5a14721e). A callee can HAVE an offset without OWNING
 /// it: `mkf()()` and `mkh().f()` borrow the inner call's, so the outer and
 /// inner nodes key the same table entry. `call_site_offset` is the full rule.
-fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> Expr with Exception {
+fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int, elem_offs: Array[Int]) -> Expr with Exception {
   let ctor_name = match source_expr(expr) {
     EIdent(name, _) => name,
     _ => ""
@@ -616,7 +796,7 @@ fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> 
       throw("Map::new takes no arguments (#960): use Map::from_pairs([(\"key\", value), ...]) to build a non-empty map at #\{pos}")
     }
   } else if ctor_name == "Map::from_pairs" {
-    EMap(map_from_pairs_fields(args = args, pos = pos))
+    map_from_pairs_expr(args = args, pos = pos, elem_offs = elem_offs)
   } else {
     ECall(expr, args, call_site_offset(callee = expr, lparen_off = lparen_off), [
     ])
@@ -626,7 +806,8 @@ fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> 
 /// The `(args)` suffix of a call whose callee `expr` ends just before `pos`.
 fn parse_postfix_call(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int, expr: Expr, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens = tokens, pos = pos + 1) {
-    TRParen => parse_postfix(tokens = tokens, starts = starts, first = first, pos = pos + 2, expr = build_call_expr(expr = expr, args = empty_exprs(), pos = pos, lparen_off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context),
+    TRParen => parse_postfix(tokens = tokens, starts = starts, first = first, pos = pos + 2, expr = build_call_expr(expr = expr, args = empty_exprs(), pos = pos, lparen_off = field_offset_at(starts = starts, p = pos), elem_offs = [
+    ]), parse_recur = parse_recur, context = context),
     _ => {
       let b = ArrayBuilder::new()
       let row_marks = match context {
@@ -650,7 +831,8 @@ fn parse_postfix_call(tokens: Array[Token], starts: Array[Int], first: Int, pos:
       } else {
         args
       }
-      parse_postfix(tokens = tokens, starts = starts, first = first, pos = close_pos, expr = build_call_expr(expr = expr, args = call_args, pos = pos, lparen_off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context)
+      let elem_offs = map_from_pairs_call_elem_offsets(tokens = tokens, starts = starts, pos = pos, callee = expr, args = call_args)
+      parse_postfix(tokens = tokens, starts = starts, first = first, pos = close_pos, expr = build_call_expr(expr = expr, args = call_args, pos = pos, lparen_off = field_offset_at(starts = starts, p = pos), elem_offs = elem_offs), parse_recur = parse_recur, context = context)
     }
   }
 }

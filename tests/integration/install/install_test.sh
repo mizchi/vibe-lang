@@ -133,14 +133,16 @@ check "vibe check good exit" "0" "$rc"
 "$VIBE" check "$proj/bad.vibex" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe check bad exit" "1" "$rc"
 
-# normalize (#882): --check flags an unnormalized file, in-place write fixes it
-printf 'fn nrm_helper(x: Int) -> Int {\n  x + 1\n}\n\nexport fn nrm_entry(n: Int) -> Int {\n  nrm_helper(x = n)\n}\n' > "$proj/nrm.vibe"
+# normalize (#882, #4027): --check flags a dot call it would respell, the
+# in-place write respells it and keeps the unexported helper.
+printf 'struct Nrm { n: Int }\n\nfn Nrm::get(v: Nrm) -> Int {\n  v.n\n}\n\nfn nrm_helper(v: Nrm) -> Int {\n  v.get()\n}\n' > "$proj/nrm.vibe"
 "$VIBE" normalize --check "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe normalize --check flags unnormalized" "1" "$rc"
 "$VIBE" normalize "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe normalize write exit" "0" "$rc"
 "$VIBE" normalize --check "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe normalize --check clean after write" "0" "$rc"
+check "vibe normalize respelled in place" "yes" "$(grep -q 'Nrm::get(v = v)' "$proj/nrm.vibe" && grep -q 'fn nrm_helper' "$proj/nrm.vibe" && echo yes || echo no)"
 
 # diagnostic: the seed predates the .diag sidecar, so only assert the launcher
 # reports failure cleanly. A freshly built compiler additionally yields a real

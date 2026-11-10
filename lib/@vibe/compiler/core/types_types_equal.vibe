@@ -1296,7 +1296,7 @@ fn type_def_params(_ td: TypeDef) -> Array[String] {
     TDEnum(_, params, _) => params,
     TDStruct(_, _, _, params) => params,
     TDAlias(_, params, _) => params,
-    TDEffect(_, _, params, _) => params,
+    TDEffect(_, _, params, _, _) => params,
     TDEffectSet(_, _) => array_empty()
   }
 }
@@ -1354,7 +1354,7 @@ export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], sh
             TDEnum(n, _, _) => CtEnum(n),
             TDStruct(n, _, _, _) => CtStruct(n),
             TDAlias(_, _, t) => t,
-            TDEffect(_, _, _, _) => CtNamed(name, array_empty()),
+            TDEffect(_, _, _, _, _) => CtNamed(name, array_empty()),
             TDEffectSet(_, _) => CtNamed(name, array_empty())
           },
           None => CtNamed(name, array_empty())
@@ -2044,7 +2044,7 @@ fn effect_label_base_set(_ labels: Array[String]) -> Array[String] {
   let mut i = 0
   while i < Array::length(labels) {
     let raw = Array::get(labels, at = i)
-    let provenance = String::starts_with(raw, prefix = "#region_") || String::starts_with(raw, prefix = "#capture[") || String::starts_with(raw, prefix = "#param[") || String::starts_with(raw, prefix = "#aliasparam[") || String::starts_with(raw, prefix = "#fieldparam[") || is_effect_inst_label(raw)
+    let provenance = is_row_provenance_label(raw)
     let base = effect_label_base_name(raw)
     let mut seen = false
     let mut j = 0
@@ -2069,6 +2069,85 @@ fn effect_label_base_set(_ labels: Array[String]) -> Array[String] {
 /// publication skip it.
 export fn is_effect_inst_label(_ label: String) -> Bool {
   String::starts_with(label, prefix = "#einst:")
+}
+
+/// #3417: is this trimmed row label provenance the checker records in a row,
+/// rather than an effect? That is a region skolem (`#region_<n>`), a capture,
+/// a parameter, an aliased parameter or a field parameter
+/// (`#capture[..]`, `#param[..]`, `#aliasparam[..]`, `#fieldparam[..]`), or
+/// an instantiation (`#einst:`, `effect_inst_of_label`). Row comparison,
+/// display, publication and the effect checks skip these labels.
+export fn is_row_provenance_label(_ label: String) -> Bool {
+  String::starts_with(label, prefix = "#region_") || String::starts_with(label, prefix = "#capture[") || String::starts_with(label, prefix = "#param[") || String::starts_with(label, prefix = "#aliasparam[") || String::starts_with(label, prefix = "#fieldparam[") || is_effect_inst_label(label)
+}
+
+/// #3417: the instantiation a function value's performs of a generic effect
+/// were checked against (#3341): the effect's name and the type variable
+/// that holds its payload. A stored row still carries it as an `#einst:`
+/// label. `effect_inst_label_text` is the only writer of that spelling and
+/// `effect_inst_of_label` the only reader, so a route reads this value and
+/// never the label text.
+export struct EffectInst {
+  name: String
+  var_id: Int
+}
+
+/// #3417: the row label that stores `inst`, `#einst:<effect>:<variable id>`.
+export fn effect_inst_label_text(_ inst: EffectInst) -> String {
+  String::concat("#einst:", String::concat(inst.name, String::concat(":", __to_string(inst.var_id))))
+}
+
+/// #3417: the instantiation a trimmed row label stores. `None` for any other
+/// label, and for an `#einst:` label without a name or a decimal variable id.
+/// The id follows the LAST `:`, so a qualified effect name keeps its own.
+export fn effect_inst_of_label(_ label: String) -> Option[EffectInst] {
+  if is_effect_inst_label(label) {
+    let rest = String::substring(label, start = 7, end = String::length(label))
+    let n = String::length(rest)
+    let mut cut = 0 - 1
+    let mut i = 0
+    while i < n {
+      if String::byte_at(rest, at = i) == 58 {
+        cut = i
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if cut > 0 && cut + 1 < n {
+      let mut id = 0
+      let mut digits = true
+      let mut p = cut + 1
+      while p < n {
+        let ch = String::byte_at(rest, at = p)
+        if ch >= 48 && ch <= 57 {
+          id = id * 10 + (ch - 48)
+        } else {
+          digits = false
+        }
+        p = p + 1
+      }
+      if digits {
+        Some(EffectInst::{
+          name: String::substring(rest, start = 0, end = cut),
+          var_id: id
+        })
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// #3417: may `row` store an instantiation? A cheap test ahead of splitting
+/// the row into labels; it also answers `true` for the spelling nested in a
+/// kind, which `effect_inst_of_label` on a top-level item then rejects.
+export fn row_may_have_effect_inst(_ row: String) -> Bool {
+  String::contains(row, needle = "#einst:")
 }
 
 fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool {
@@ -2103,7 +2182,7 @@ fn effect_opt_is_var(_ eff: Option[String]) -> Bool {
   let mut count = 0
   let mut variable = false
   for label in labels {
-    if !String::starts_with(label, prefix = "#region_") && !String::starts_with(label, prefix = "#capture[") && !String::starts_with(label, prefix = "#param[") && !String::starts_with(label, prefix = "#aliasparam[") && !String::starts_with(label, prefix = "#fieldparam[") && !is_effect_inst_label(label) {
+    if !is_row_provenance_label(label) {
       count = count + 1
       variable = is_effect_var_name(label)
     }
@@ -2120,7 +2199,7 @@ fn semantic_effect_opt(_ eff: Option[String]) -> Option[String] {
       let labels = effect_label_list(eff)
       let semantic = array_empty()
       for label in labels {
-        if !String::starts_with(label, prefix = "#region_") && !String::starts_with(label, prefix = "#capture[") && !String::starts_with(label, prefix = "#param[") && !String::starts_with(label, prefix = "#aliasparam[") && !String::starts_with(label, prefix = "#fieldparam[") && !is_effect_inst_label(label) {
+        if !is_row_provenance_label(label) {
           Array::push(semantic, value = label)
         }
       }

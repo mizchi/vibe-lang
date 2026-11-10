@@ -1,6 +1,7 @@
 // Wire boundary for one independent trait-dictionary lowering job.
 import @vibe/compiler/cache {
   AstBinaryReader,
+  ast_binary_read_bool_checked,
   ast_binary_read_count_checked,
   ast_binary_read_module,
   ast_binary_read_string_checked,
@@ -8,6 +9,7 @@ import @vibe/compiler/cache {
   ast_binary_read_type_expr,
   ast_binary_reader_new,
   ast_binary_reader_remaining,
+  ast_binary_write_bool,
   ast_binary_write_module,
   ast_binary_write_string,
   ast_binary_write_svarint,
@@ -18,7 +20,7 @@ import ./module_job.vibe {
   ModuleLoweringDeferred, ModuleLoweringJob, ModuleLoweringProduct
 }
 import @vibe/compiler/normalize/desugar {
-  ModuleTraitFacts
+  DesugarModuleReports, ModuleTraitFacts
 }
 import @vibe/compiler/core {
   Stmt, TypeExpr
@@ -117,9 +119,58 @@ export fn decode_module_lowering_job(_ b: Bytes) -> ModuleLoweringJob with Excep
     namespace_originals: renames
   }
 }
+/// The product's wire format. Version 2 (#2826) appends the module's
+/// trait-dict refusals (`write_module_reports`).
+fn module_product_magic() -> String {
+  "vibe-module-trait-product-2"
+}
+
+/// One module's refusals: the `==`, renderer and index refusals in the order
+/// the run filed them, then each 32-bit `Add` row as (offset, type,
+/// consumed).
+fn write_module_reports(b: Bytes, reports: DesugarModuleReports) -> Unit {
+  write_strings(b = b, values = reports.eq)
+  write_strings(b = b, values = reports.show)
+  write_strings(b = b, values = reports.index)
+  ast_binary_write_varint(buf = b, v = Array::length(reports.add32_offs))
+  let mut i = 0
+  while i < Array::length(reports.add32_offs) {
+    ast_binary_write_svarint(buf = b, v = Array::get(reports.add32_offs, at = i))
+    ast_binary_write_string(buf = b, s = Array::get(reports.add32_types, at = i))
+    ast_binary_write_bool(buf = b, b = Array::get(reports.add32_used, at = i))
+    i = i + 1
+  }
+  ()
+}
+
+fn read_module_reports(_ r: AstBinaryReader) -> DesugarModuleReports with Exception {
+  let eq = read_strings(r)
+  let show = read_strings(r)
+  let index = read_strings(r)
+  let offs: Array[Int] = []
+  let types: Array[String] = []
+  let used: Array[Bool] = []
+  let n = ast_binary_read_count_checked(r)
+  let mut i = 0
+  while i < n {
+    Array::push(offs, value = ast_binary_read_svarint_checked(r))
+    Array::push(types, value = ast_binary_read_string_checked(r))
+    Array::push(used, value = ast_binary_read_bool_checked(r))
+    i = i + 1
+  }
+  DesugarModuleReports::{
+    eq: eq,
+    show: show,
+    index: index,
+    add32_offs: offs,
+    add32_types: types,
+    add32_used: used
+  }
+}
+
 export fn encode_module_lowering_product(_ product: ModuleLoweringProduct) -> Bytes {
   let b = Bytes::new()
-  ast_binary_write_string(buf = b, s = "vibe-module-trait-product-1")
+  ast_binary_write_string(buf = b, s = module_product_magic())
   ast_binary_write_module(buf = b, stmts = product.own)
   ast_binary_write_module(buf = b, stmts = product.synthesized)
   write_strings(b = b, values = product.synthesis_requests)
@@ -129,6 +180,7 @@ export fn encode_module_lowering_product(_ product: ModuleLoweringProduct) -> By
   }
   write_strings(b = b, values = product.deferred.refusals)
   write_strings(b = b, values = product.invisible_nominals)
+  write_module_reports(b = b, reports = product.reports)
   b
 }
 export fn decode_module_lowering_product(_ b: Bytes) -> ModuleLoweringProduct with Exception {
@@ -137,7 +189,7 @@ export fn decode_module_lowering_product(_ b: Bytes) -> ModuleLoweringProduct wi
 
 /// Decode exactly one product from a bounded cursor, including its end check.
 export fn read_module_lowering_product(_ r: AstBinaryReader) -> ModuleLoweringProduct with Exception {
-  read_magic(r = r, expected = "vibe-module-trait-product-1")
+  read_magic(r = r, expected = module_product_magic())
   let own = ast_binary_read_module(r)
   let synthesized = ast_binary_read_module(r)
   let synthesis_requests = read_strings(r)
@@ -151,13 +203,15 @@ export fn read_module_lowering_product(_ r: AstBinaryReader) -> ModuleLoweringPr
   }
   let refusals = read_strings(r)
   let invisible = read_strings(r)
+  let reports = read_module_reports(r)
   require_end(r)
   ModuleLoweringProduct::{
     own: own,
     synthesized: synthesized,
     synthesis_requests: synthesis_requests,
     deferred: ModuleLoweringDeferred::{ requests: requests, refusals: refusals },
-    invisible_nominals: invisible
+    invisible_nominals: invisible,
+    reports: reports
   }
 }
 

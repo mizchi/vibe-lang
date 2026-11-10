@@ -18,7 +18,7 @@
 //     the function entry, once per row, on every path;
 //   - the scope-end drop releases one reference when any `PaDrop` row names
 //     the binding (a parameter's only from the plan's parameter suffix);
-//   - a `PaPathDrop` releases one more on a path that reached no
+//   - each `PaPathDrop` row releases one more on a path that reached no
 //     `PaConsumeMark` occurrence;
 //   - `let a = x` retains `x` when a `PaAliasDup(a)` row exists, does
 //     nothing when `a` is never mentioned and has no drop (the dead-alias
@@ -1408,7 +1408,7 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, param: Bool, 
       } else if pa_is_drop(a) && i >= drop_from {
         drop = 1
       } else if pa_is_path_drop(a) {
-        path_drop = 1
+        path_drop = path_drop + 1
       } else {
         ()
       }
@@ -1445,12 +1445,15 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, param: Bool, 
     } else {
       init + dups
     }
-    let unguarded = if path_drop == 1 && !o.marked {
-      1
+    let unguarded = if path_drop > 0 && !o.marked {
+      path_drop
     } else {
       0
     }
-    let guarded = if o.xg && !o.marked && !param && path_drop == 1 {
+    // The guarded `-1` exit row releases once, as codegen does: only a
+    // #2389 split binding gets one, and its path drop is a single row. A
+    // count of rows here would model a release codegen never emits.
+    let guarded = if o.xg && !o.marked && !param && path_drop > 0 {
       1
     } else {
       0

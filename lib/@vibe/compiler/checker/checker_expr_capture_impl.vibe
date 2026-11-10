@@ -174,6 +174,7 @@ import ./checker_closure_capture_row.vibe {
   builtin_ident_value_type,
   call_only_builtin_ident_error,
   let_generalize,
+  let_rec_without_self_capture,
   railway_anchor_off,
   railway_ident_lookup_name,
   railway_is_ident,
@@ -486,16 +487,15 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       ELetRec(name, val, body) => {
         let (tv, c1b) = fresh_var(c1)
         let err_before = Array::length(errors)
-        let (vt, ns, nc) = ce(val, checker_bind_call_header(env = cenv, name = name, ty = tv, value = val), defs, s1, c1b, errors, tytab, capture, lane)
+        let (vt0, ns, nc) = ce(val, checker_bind_call_header(env = cenv, name = name, ty = tv, value = val), defs, s1, c1b, errors, tytab, capture, lane)
         attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
-        let s2 = match unify(a = tv, b = vt, s = ns) {
+        // #4054: a value that names its own binder must not bind `tv` to a row naming `tv`.
+        let s2 = match unify(a = tv, b = let_rec_without_self_capture(vt = vt0, binder = tv, s = ns), s = ns) {
           Some(su) => su,
           None => ns
         }
-        // #2447 / Codex round 3: the recursive binder takes the same value
-        // restriction as ELet above -- `let rec get = () -> { xs }` returns
-        // the same captured array every call, and this site generalized
-        // unconditionally.
+        // #2447 / Codex round 3: the recursive binder takes ELet's value restriction
+        // -- `let rec get = () -> { xs }` returns one captured array every call.
         // #2892: generalize the value's RESOLVED type, not the bare recursive
         // binder variable. `tv` is the fresh var bound for the recursive
         // occurrence; `let_generalize(val, tv, ..)` produced a scheme whose
@@ -2011,7 +2011,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       if Array::length(hx_eff) > 0 {
         match find_typedef(defs = defs, name = Array::get(hx_eff, at = 0)) {
-          Some(TDEffect(_, hx_decl_ops, _, _)) => {
+          Some(TDEffect(_, hx_decl_ops, _, _, _)) => {
             let mut hoi = 0
             while hoi < Array::length(hx_decl_ops) {
               let (hx_op_name, _, _) = Array::get(hx_decl_ops, at = hoi)

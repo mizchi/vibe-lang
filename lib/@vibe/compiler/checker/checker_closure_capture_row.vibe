@@ -1338,6 +1338,93 @@ export fn captured_escape_tvars(body: Expr, params: Array[(String, Option[TypeEx
   out
 }
 
+/// #4054: a local `let rec` value that names its own binder as a value
+/// (`let g = walk`, `Array::map(xs, f = walk)`) captures itself. While the
+/// value is checked the binder is the free variable `v`, so
+/// `closure_capture_row` labels the lambda's row `#capture[v]`, and binding
+/// `v` to that type made the substitution cyclic: resolving the label applies
+/// the substitution to `v` again, and the check died of a stack overflow.
+/// A closure that captures itself carries no provenance beyond what its own
+/// row already names, so each self label in `vt` is replaced by the other
+/// provenance labels of `vt`'s row. In that row the label simply goes; in a
+/// closure the value returns, which captured the binder, it becomes the
+/// value's own provenance.
+export fn let_rec_without_self_capture(vt: Type, binder: Type, s: Subst) -> Type {
+  let self_labels: Array[String] = []
+  for t in [binder, subst_apply(s = s, ty = binder)] {
+    match t {
+      CtVar(id) => append_row_label(labels = self_labels, label = String::concat("#capture[", String::concat(__to_string(id), "]"))),
+      _ => ()
+    }
+  }
+  let own: Array[String] = []
+  match vt {
+    CtFn(_, _, Some(row)) => for raw in String::split(row, sep = ",") {
+      let label = String::trim(raw)
+      if (String::starts_with(label, prefix = "#region_") || String::starts_with(label, prefix = "#capture[") || String::starts_with(label, prefix = "#param[")) && !checker_string_array_has(items = self_labels, wanted = label) {
+        append_row_label(labels = own, label = label)
+      }
+    },
+    _ => ()
+  }
+  if Array::length(self_labels) == 0 {
+    vt
+  } else {
+    replace_self_capture(t = vt, self_labels = self_labels, own = own)
+  }
+}
+
+fn replace_self_capture(t: Type, self_labels: Array[String], own: Array[String]) -> Type {
+  match t {
+    CtFn(params, ret, row) => CtFn(for p in params {
+      replace_self_capture(t = p, self_labels = self_labels, own = own)
+    }, replace_self_capture(t = ret, self_labels = self_labels, own = own), replace_self_capture_row(row = row, self_labels = self_labels, own = own)),
+    CtArray(elem) => CtArray(replace_self_capture(t = elem, self_labels = self_labels, own = own)),
+    CtOption(elem) => CtOption(replace_self_capture(t = elem, self_labels = self_labels, own = own)),
+    CtTuple(items) => CtTuple(for item in items {
+      replace_self_capture(t = item, self_labels = self_labels, own = own)
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, field_ty) = field
+      (name, replace_self_capture(t = field_ty, self_labels = self_labels, own = own))
+    }),
+    CtNamed(name, args) => CtNamed(name, for arg in args {
+      replace_self_capture(t = arg, self_labels = self_labels, own = own)
+    }),
+    CtApplied(head, args) => CtApplied(replace_self_capture(t = head, self_labels = self_labels, own = own), for arg in args {
+      replace_self_capture(t = arg, self_labels = self_labels, own = own)
+    }),
+    CtForAll(ids, bounds, body) => CtForAll(ids, bounds, replace_self_capture(t = body, self_labels = self_labels, own = own)),
+    _ => t
+  }
+}
+
+fn replace_self_capture_row(row: Option[String], self_labels: Array[String], own: Array[String]) -> Option[String] {
+  match row {
+    Some(text) => if String::index_of(text, needle = "#capture[") < 0 {
+      row
+    } else {
+      let labels: Array[String] = []
+      for raw in String::split(text, sep = ",") {
+        let label = String::trim(raw)
+        if checker_string_array_has(items = self_labels, wanted = label) {
+          for o in own {
+            append_row_label(labels = labels, label = o)
+          }
+        } else if String::length(label) > 0 {
+          Array::push(labels, value = label)
+        }
+      }
+      if Array::length(labels) == 0 {
+        None
+      } else {
+        Some(String::join(labels, sep = ", "))
+      }
+    },
+    None => None
+  }
+}
+
 /// Add closure-capture provenance to the checked row. The labels beginning
 /// with `#` are not effects and cannot be written by source; core/types keeps
 /// them through ordinary substitution while excluding them from effect-set

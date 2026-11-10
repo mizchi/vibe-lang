@@ -619,11 +619,13 @@ Pinned by `fixtures/underscore_pipe_slot_section_test.vibe`.
 record { x: 1, y: 2 }
 record { x, y }
 Map::from_pairs([("key", 42)])
+Map::from_pairs([(1, "one"), (2, "two")])
 Map::new()
 ```
 
 The former `map { "key": 42 }` literal was removed (#960); the `Map::` API
-spellings above are parse-level desugars into the same map node, and the old
+spellings above are parse-level desugars into the same map node (an `Int`,
+`Char` or `Bool` key becomes the `Map::set` calls that add each pair), and the old
 literal reports a located parse error naming the replacement.
 
 ### Effects And Error Boundaries

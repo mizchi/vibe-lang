@@ -511,8 +511,8 @@ at entry; each `ensures` condition sees the returned value bound as
 `result` and asserts at every exit, the tail and each `return` alike (#3715,
 one nested in a loop or a `match` arm included); a violating call traps. The
 conditions read the function's parameters even where the body shadows one.
-`result` shadows any user binding of that name inside ensures conditions. `vibe normalize` and the AST printer
-round-trip fn declarations in fn + where form — fn sources are no longer
+`result` shadows any user binding of that name inside ensures conditions. The AST printer
+round-trips fn declarations in fn + where form — fn sources are no longer
 refused or rewritten to `let rec`.
 
 A loop takes the same block, with `invariant` and `decreases` (#3716,
@@ -540,9 +540,9 @@ asserted non-negative at the same points and strictly smaller than at the
 previous one. A violation traps, as a function contract does. The clauses
 read the variables in scope at the loop, never a binding the body declares,
 and a `for` clause cannot name the loop's own element. A `break` leaves
-without a check. Unlike a function's `where`, the printer and
-`vibe normalize` show the loop's clauses lowered to `assert`s, as they
-already show `loop` lowered to `while`.
+without a check. Unlike a function's `where`, the AST printer shows the
+loop's clauses lowered to `assert`s, as it already shows `loop` lowered to
+`while`.
 
 The entry is the one exception to "full annotations required", and it is
 deliberate (#3119). `fn main { .. }` and `fn main allows R { .. }` omit both
@@ -1171,10 +1171,20 @@ the callee's type from the qualified spelling but not from bare
 is what should land in git history/diffs/greps, while the terser dot
 spelling stays legal to type. This does **not** help positional-argument-order
 ambiguity between same-typed parameters — that's a separate problem no call
-notation solves (`eval/call-style/scenarios/02_arg_order`). Implementation:
-`normalize_dot_calls` in
+notation solves (`eval/call-style/scenarios/02_arg_order`). The receiver
+takes the label its parameter has: `fn Cart::push(c: Cart, item: Int)` makes
+`cart.push(item = 1)` into `Cart::push(c = cart, item = 1)`, because a
+qualified call must label every labeled parameter (`Cart::push(cart, item =
+1)` does not check); `fn Cart::size(_ c: Cart)` makes `cart.size()` into
+`Cart::size(cart)`. This respelling
+is the ONLY rewrite `vibe normalize` makes: it splices the qualified spelling
+into the source and keeps every other byte, comments and unexported code
+included, so an already-canonical file is left identical (#4027; it used to
+re-print a dead-code-eliminated program and emptied an export-less file).
+Implementation: `normalize_dot_calls` in
 [`lib/@vibe/compiler/normalize/normalize.vibe`](../../../lib/@vibe/compiler/normalize/normalize.vibe);
-tests in `lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe`.
+tests in `lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe` and
+`lib/@vibe/compiler/tests/normalize_preserves_source_test.vibe`.
 
 ### Function combinators (point-free)
 
@@ -1641,6 +1651,7 @@ let nv = {                            // destructure also works in fn/block body
 // rejected -- written or inferred. For another key type, use `MutMap[K, V]`
 // from `@vibe/core` (below).
 let m = Map::from_pairs([("key", 42)])
+let im = Map::from_pairs([(1, "one"), (2, "two")]) // literal keys: String, Int, Char or Bool
 let e = Map::new()                    // empty map
 let mv = m["key"]
 // `Map::set` is FUNCTIONAL: it returns a new map and leaves the receiver
@@ -2639,6 +2650,37 @@ How a resource parameter behaves:
 - **Handling.** The effect is handled like any other:
   `handle { .. } with { Kv::Get(k) => resume(..) }`.
 
+### Host-provided effects: `extern effect` (ADR-0124, #2656)
+
+`extern effect` declares an effect whose operations the HOST provides. Its
+operations are on the capability track: they are spelled in snake_case and
+called directly, the way `Fs::read_file(p)` is, and the effect is the row of
+every function that reaches one:
+
+```vibe skip
+// doctest-skip: `vibe check` accepts this; a build refuses it until a host
+// provider can be bound (below)
+extern effect Kv {
+  get(String) -> String
+  put(String, String) -> Unit
+}
+
+fn copy_key(from: String, to: String) -> Unit with Kv {
+  Kv::put(to, Kv::get(from))
+}
+```
+
+What is refused, each with the edit:
+
+- `perform Kv::get(k)`: call the operation without `perform`.
+- a `handle` arm for `Kv::get`: the program cannot handle a host effect.
+- an `extern effect` named like a standard effect (`Fs`, `Env`, ...), or one
+  with type or resource parameters.
+
+Binding a provider at run time is not implemented yet, so an entry point
+(`main`, a `test`) that needs `Kv` is still refused: `cannot discharge { Kv }`,
+with a note that names `extern effect`.
+
 ## Module System
 
 <!-- doctest-skip: 存在しない import 先 (./lib.vibe) を参照する構文一覧 -->
@@ -3150,9 +3192,12 @@ A `for-in` comprehension desugars to these builder operations internally.
 
 **Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Int32`,
 `UInt32`, `Char` or `Bool` key (#2334, #3730); `StringMap[V]` is `Map[String, V]` (no import needed; the
-operations keep the `Map::` qualifier). A map literal and
-`Map::from_pairs([...])` take string-literal keys; a map with another key
-starts from `Map::new()`, and the first keyed call decides its key type:
+operations keep the `Map::` qualifier). `Map::from_pairs([...])` takes
+literal keys of one type -- String, `Int`, `Char` or `Bool` literals, each
+listed once: `Map::from_pairs([(7, "seven")])` is a `Map[Int, String]`, and
+builds the same map as the `Map::set` calls that would add its pairs one by
+one. A map keyed by anything else, or by a computed key, starts from
+`Map::new()`, and the first keyed call decides its key type:
 `Map::set(Map::new(), 7, "seven")` is a `Map[Int, String]`. An annotation
 naming any other key (`fn f(m: Map[Double, String])`) is rejected where it is
 written, and points at `MutMap[K, V]` from `@vibe/core`.
@@ -3405,7 +3450,7 @@ let run_mode = () -> Int { run() }
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
 - `#cfg(not(flag))` keeps the declaration only when `flag` is inactive. It uses the same active set, including file-local `#cfg_enable(flag)`, so one flag can select an implementation and its fallback. Only a single negated flag is supported; nested conditions and expressions in `#cfg_enable` are rejected. `#cfg(not)` still selects the ordinary flag named `not`.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
-- `vibe normalize` refuses a `#cfg` source (it prints the parsed program, and an inactive statement is no longer in it). `vibe fmt` is token-based and keeps every directive and both arms, so `#cfg` sources format and pass `check_vibe_fmt.sh` (measured on `fixtures/cfg_flag_test.vibe`).
+- `vibe normalize` refuses a `#cfg` source (it proves each rewrite against the parsed program, and an inactive statement is no longer in it). `vibe fmt` is token-based and keeps every directive and both arms, so `#cfg` sources format and pass `check_vibe_fmt.sh` (measured on `fixtures/cfg_flag_test.vibe`).
 - The compiler's own sources may use it: the committed seed (seed/cfg-spans-emission-2026-09-04 and later) resolves `#cfg` in module-source emission, so the flattened self-build carries the active statements as themselves. Module-source emission and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) all resolve against the same active set (#2497 step 0, #2516).
 - The pinned `seed/cfg-negation-2026-11-09` supports `not(flag)` in parsing and module-source emission. Compiler declarations can use both forms; subsequent seed updates must preserve that support (see docs/internal/operations/bootstrap.md).
 

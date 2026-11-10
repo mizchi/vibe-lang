@@ -96,6 +96,7 @@ import @vibe/compiler/core {
   typed_int32_row_head,
   typed_lowering_arg_offset,
   typed_lowering_float_key,
+  typed_method_row_head,
   typed_render_row_offset
 }
 
@@ -1221,6 +1222,67 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
     out_i = out_i + 1
   }
   add32_call_rows(checked = checked, capture = capture, offs = out_offs, keys = out_keys)
+  (out_offs, out_keys)
+}
+
+/// #2501: the dot-method rows (kind 23, `record_method_receiver`) --
+/// `(method name offset, impl_target_key(#method[H]))`, sorted by offset. An
+/// offset claimed by checks that resolved different heads (one shared generic
+/// body seen at two types) files nothing, because the body is lowered once;
+/// the lowering then reads the receiver's spelling, as it does with no row.
+export fn method_receiver_rows_from_capture(_ capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+  let offs: Array[Int] = []
+  let heads: Array[String] = []
+  let n = Array::length(capture.binop_offsets)
+  let mut i = 0
+  while i + 1 < n {
+    match (Array::get(capture.binop_kinds, at = i), Array::get(capture.binop_types, at = i)) {
+      (23, CtNamed(head, _)) => {
+        let off = Array::get(capture.binop_offsets, at = i)
+        let mut lo = 0
+        let mut hi = Array::length(offs)
+        while lo < hi {
+          let mid = (lo + hi) / 2
+          if Array::get(offs, at = mid) < off {
+            lo = mid + 1
+          } else {
+            hi = mid
+          }
+        }
+        if lo < Array::length(offs) && Array::get(offs, at = lo) == off {
+          if Array::get(heads, at = lo) != head {
+            Array::set(heads, at = lo, value = "")
+          }
+        } else {
+          Array::push(offs, value = off)
+          Array::push(heads, value = head)
+          let mut k = Array::length(offs) - 1
+          while k > lo {
+            Array::set(offs, at = k, value = Array::get(offs, at = k - 1))
+            Array::set(heads, at = k, value = Array::get(heads, at = k - 1))
+            k = k - 1
+          }
+          Array::set(offs, at = lo, value = off)
+          Array::set(heads, at = lo, value = head)
+        }
+      },
+      _ => ()
+    }
+    i = i + 2
+  }
+  let out_offs: Array[Int] = []
+  let out_keys: Array[String] = []
+  let mut j = 0
+  while j < Array::length(offs) {
+    let head = Array::get(heads, at = j)
+    if head != "" {
+      Array::push(out_offs, value = Array::get(offs, at = j))
+      Array::push(out_keys, value = impl_target_key(TyApp(typed_method_row_head(), [
+        TyName(head)
+      ])))
+    }
+    j = j + 1
+  }
   (out_offs, out_keys)
 }
 

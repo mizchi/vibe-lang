@@ -414,6 +414,9 @@ fn bind_trait_bound_self_reference(key: String, binder: String) -> String
 fn bind_trait_bound_tparams(key: String, tparams: Array[String], ids: Array[Int]) -> String
 fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Option[Type]
 fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef], c: Int) -> Option[Type]
+fn effect_is_host_provided(defs: Array[TypeDef], name: String) -> Bool
+fn host_effect_operation_type(defs: Array[TypeDef], qname: String) -> Option[Type]
+fn host_effect_operation_misuse(defs: Array[TypeDef], qname: String, use_kind: String) -> Option[String]
 fn expr_ident_name_or_empty(_ expr: Expr) -> String
 fn railway_expr_off(_ e: Expr) -> Int
 fn first_perform_off(e: Expr, eff: String) -> Int
@@ -446,6 +449,7 @@ fn esc_ids_intersect(a: Array[Int], b: Array[Int]) -> Bool
 fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Option[String]) -> Array[Int]
 fn captured_escape_tvars(body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Array[(String, Array[Int])]
 fn closure_capture_row(effect: Option[String], body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Option[String]
+fn let_rec_without_self_capture(vt: Type, binder: Type, s: Subst) -> Type
 fn nursery_write_escape_message() -> String
 fn region_write_escape_message(ty: Type, env: TypeEnv, region_message: String) -> String
 fn assignment_crosses_region(name: String, ty: Type, env: TypeEnv) -> Bool
@@ -685,7 +689,7 @@ fn generic_bare_row_payload_errors(pairs: Array[(String, Int)], tparams: Array[S
 fn bind_lambda_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String]) -> TypeEnv
 fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String], s: Subst, c: Int, top_level: Bool, generic: Bool) -> (TypeEnv, Subst, Int, Array[(String, Int)])
 fn lambda_effect_inst_row(effect: Option[String], row: Option[String], pairs: Array[(String, Int)]) -> Option[String]
-fn effect_inst_labels(_ row: Option[String]) -> Array[(String, Int)]
+fn effect_inst_labels(_ row: Option[String]) -> Array[EffectInst]
 fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee: Option[(Type, Type)], callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst
 fn bind_struct_field_effect_instantiations(t: Type, recv: Type, defs: Array[TypeDef], s: Subst, c: Int) -> (Type, Subst, Int)
 fn bind_generic_value_effect_instantiations(scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst, c: Int, own_row: Bool) -> (Type, Subst, Int)
@@ -703,8 +707,8 @@ fn retaining_write_region_check(name: String, operation: Int, args: Array[Expr],
 fn retaining_write_argument_mask(source_name: String, operation: Int) -> Int
 fn retaining_write_call_mask(env: TypeEnv, name: String, operation: Int) -> Int
 fn retaining_write_alias_operation(env: TypeEnv, name: String) -> Int
-fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type], s: Subst, env: TypeEnv, errors: Array[String]) -> Unit
-fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, errors: Array[String]) -> Unit
+fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type], s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
+fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
 fn tail_region_closed_ground_fn(_ expr: Expr) -> Bool
 fn tail_formal_args(args: Array[Expr], cell: Array[Int], index: Int) -> Array[Expr]
 fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_name: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool
@@ -717,7 +721,10 @@ fn retention_end_module(_ saved: (Array[(String, Expr)], Array[(Expr, String, Bo
 fn retention_note_module_env(_ env: TypeEnv) -> Unit
 fn take_retention_param_override() -> Option[Array[(Type, Array[String], String, Array[String])]]
 fn retention_bind_param_callee(env: TypeEnv, name: String, callee: String) -> TypeEnv
-fn retention_local_closure_literal(env: TypeEnv, name: String) -> Option[(Expr, TypeEnv)]
+fn retention_local_closure_literal(env: TypeEnv, name: String) -> Option[(Expr, TypeEnv, String)]
+fn retention_counter_gap() -> Int
+fn retention_active_regions(_ env: TypeEnv) -> Array[(String, Bool)]
+fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, found: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String])
 fn retention_bind_module_summaries(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> TypeEnv
 fn retention_summary_region() -> String
 fn retention_fn_param_types(_ ty: Type) -> Option[Array[Type]]
@@ -815,6 +822,7 @@ fn bind_annotation_return(env: TypeEnv, name: String, ann: Option[TypeExpr], def
 fn bind_value_or_annotation_return(env: TypeEnv, name: String, val: Expr, ann: Option[TypeExpr], defs: Array[TypeDef]) -> TypeEnv
 fn struct_derives_has(derives: Array[String], name: String) -> Bool
 fn float_width_decl_name_error(kind: String, name: String, errors: Array[String]) -> Unit
+fn extern_effect_decl_errors(name: String, params: Array[String], owner: EffectOwner, errors: Array[String]) -> Unit
 fn builtin_spelling_decl_error(kind: String, name: String, arity: Int, errors: Array[String]) -> Unit
 fn declaring_module_path_set(path: String, ships_owned_heads: Bool) -> Unit
 fn declaring_module_path_clear() -> Unit
@@ -894,6 +902,7 @@ fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccur
 fn forin_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String])
 fn float_arith_rows_from_capture(_ capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String])
 fn int32_arith_rows_from_capture(_ capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String])
+fn method_receiver_rows_from_capture(_ capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String])
 fn irc_resolves_to_scalar(s: Subst, ty: Type, want_bool: Bool) -> Bool
 fn irc_resolves_to_unrenderable(s: Subst, ty: Type) -> Bool
 fn irc_shim_set(_ names: Array[String]) -> Int
@@ -968,6 +977,7 @@ fn checker_call_header_probe_end(_ saved: Option[Array[(Int, Array[String], Int,
 fn float_operand_binop(op: String, result: Type, left: Type, right: Type) -> Bool
 fn record_add_formal(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, ty: Type, env: TypeEnv, s: Subst) -> Unit
 fn record_add32_call(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, vid: Int, bounds: Array[String], env: TypeEnv) -> Unit
+fn record_method_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, qualified: String, method: String) -> Unit
 fn add_formal_for_type(ty: Type, env: TypeEnv, s: Subst) -> String
 
 fn checker_seed_mut_call_headers(_ env: TypeEnv) -> TypeEnv
