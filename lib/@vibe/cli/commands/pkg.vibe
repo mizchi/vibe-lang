@@ -177,20 +177,20 @@ fn remove_if_present(_ path: String) -> Unit with Fs {
 
 /// The current-write identities of the contract at `index`: the package id
 /// (`pkg:b3:<64hex>`, no leading `#`) and the contract hash.
-fn package_hashes(_ index: String) -> (String, String) with Env + Exception + Fs {
-  contract_package_hashes_fs(index)
+fn package_hashes(_ index: String, checked_error_row: Bool) -> (String, String) with Env + Exception + Fs {
+  contract_package_hashes_fs(index, checked_error_row = checked_error_row)
 }
 
 /// Whether the contract at `index` hashes to `recorded` under the algorithm
 /// `recorded` names (a historical `pkg:sha1:` row verifies under SHA-1).
-fn hash_matches_index(recorded: String, index: String) -> Bool with Env + Exception + Fs {
+fn hash_matches_index(recorded: String, index: String, checked_error_row: Bool) -> Bool with Env + Exception + Fs {
   match parse_pkg_id(recorded) {
     None => false,
     Some(id) => {
       let (got, _) = if id.algo == "sha1" {
-        contract_package_hashes_fs_algo(path = index, algo = "sha1")
+        contract_package_hashes_fs_algo(path = index, algo = "sha1", checked_error_row = checked_error_row)
       } else {
-        contract_package_hashes_fs(index)
+        contract_package_hashes_fs(index, checked_error_row = checked_error_row)
       }
       got == PkgId::to_string(id)
     }
@@ -338,7 +338,7 @@ fn log_client_verify(paths: PkgPaths, key: String, hash: String) -> String with 
 
 /// Copy `name@version` out of the CAS into its install root and re-verify
 /// the copy against the recorded id.
-fn materialize(paths: PkgPaths, name: String, version: String, hash: String, store: Bool) -> Unit with Env + Exception + Fs + Console {
+fn materialize(paths: PkgPaths, name: String, version: String, hash: String, store: Bool, checked_error_row: Bool) -> Unit with Env + Exception + Fs + Console {
   let cas = cas_of(paths = paths, hash = hash)
   if !Fs::exists(index_of_dir(cas)) {
     throw("cache is missing \{name}@\{version} (\{hash}) at \{cas}")
@@ -346,7 +346,7 @@ fn materialize(paths: PkgPaths, name: String, version: String, hash: String, sto
   let dest = "\{install_root(paths = paths, store = store)}/\{name}"
   remove_if_present(dest)
   copy_package_files(src = cas, dest = dest)
-  if !hash_matches_index(recorded = hash, index = index_of_dir(dest)) {
+  if !hash_matches_index(recorded = hash, index = index_of_dir(dest), checked_error_row = checked_error_row) {
     Fs::remove_tree(dest)
     throw("materialized copy of \{name}@\{version} does not match recorded #\{hash} — rejected (version->hash is immutable)")
   } else ()
@@ -356,7 +356,7 @@ fn materialize(paths: PkgPaths, name: String, version: String, hash: String, sto
 
 //# publish
 
-fn pkg_publish(paths: PkgPaths, dir: String) -> Int with Env + Exception + Fs + Console {
+fn pkg_publish(paths: PkgPaths, dir: String, checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   if dir == "" || !Fs::exists(index_of_dir(dir)) {
     throw("usage: vibe pkg publish <pkg_dir> (with index.vpkg)")
   } else ()
@@ -383,11 +383,11 @@ fn pkg_publish(paths: PkgPaths, dir: String) -> Int with Env + Exception + Fs + 
       throw("publish gate rejected \{name} \{prev} -> \{version}: \{String::join(errors, sep = "; ")}")
     } else ()
   } else ()
-  let (computed, contract_hash) = package_hashes(index)
+  let (computed, contract_hash) = package_hashes(index, checked_error_row = checked_error_row)
   let key = "\{name}@\{version}"
   let recorded = versions_lookup(versions = versions, key = key)
   if recorded != "" {
-    if recorded == computed || hash_matches_index(recorded = recorded, index = index) {
+    if recorded == computed || hash_matches_index(recorded = recorded, index = index, checked_error_row = checked_error_row) {
       // Idempotent, but REPAIR a missing transparency record first: a publish
       // that died between the versions.tsv append and the log append would
       // otherwise stay mapped without a record, and every retry would return
@@ -408,7 +408,7 @@ fn pkg_publish(paths: PkgPaths, dir: String) -> Int with Env + Exception + Fs + 
     let cas = cas_of(paths = paths, hash = computed)
     remove_if_present(cas)
     copy_package_files(src = dir, dest = cas)
-    if !hash_matches_index(recorded = computed, index = index_of_dir(cas)) {
+    if !hash_matches_index(recorded = computed, index = index_of_dir(cas), checked_error_row = checked_error_row) {
       throw("CAS self-check failed: \{cas} does not match #\{computed}")
     } else ()
     Fs::mkdir_p(paths.cache)
@@ -424,7 +424,7 @@ fn pkg_publish(paths: PkgPaths, dir: String) -> Int with Env + Exception + Fs + 
 
 //# install
 
-fn pkg_install(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn pkg_install(paths: PkgPaths, args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe pkg install @scope/name@x.y.z [--store] [--allow-yanked]"
   let mut spec = ""
   let mut store = false
@@ -461,7 +461,7 @@ fn pkg_install(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception
       throw("\{spec} is yanked in the registry log — refusing to install (pass --allow-yanked to override; existing pins keep working)")
     }
   } else ()
-  materialize(paths = paths, name = name, version = version, hash = hash, store = store)
+  materialize(paths = paths, name = name, version = version, hash = hash, store = store, checked_error_row = checked_error_row)
   0
 }
 
@@ -473,7 +473,7 @@ fn pkg_install(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception
 /// untrusted; an expected pin refuses before any cache or install effect.
 /// The last stdout row is machine-readable for the launcher's `vibe add`:
 /// `added<TAB>name<TAB>version<TAB>id<TAB>spec<TAB>commit<TAB>pinned-spec`.
-fn pkg_add_fetched(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn pkg_add_fetched(paths: PkgPaths, args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe pkg add-fetched <src_dir> <source-spec> <commit> [#pkg:b3:<64hex>|#pkg:sha1:<40hex>] [--store]"
   let positional: Array[String] = []
   let mut expected = ""
@@ -510,11 +510,11 @@ fn pkg_add_fetched(paths: PkgPaths, args: Array[String]) -> Int with Env + Excep
   if version == "" {
     throw("fetched package \{name} has no `version = x.y.z` directive in index.vpkg (#754)")
   } else ()
-  let (computed, _) = package_hashes(index)
+  let (computed, _) = package_hashes(index, checked_error_row = checked_error_row)
   // A SHA-1 expected pin still verifies under SHA-1 of the same payload, so
   // a historical pin can be restored when its CAS entry is absent (#2829).
   let hash = if expected != "" && computed != expected {
-    if hash_matches_index(recorded = expected, index = index) {
+    if hash_matches_index(recorded = expected, index = index, checked_error_row = checked_error_row) {
       expected
     } else {
       throw("hash mismatch for \{name}@\{version} from \{spec}: fetched #\{computed}, expected #\{expected} — rejected")
@@ -525,7 +525,7 @@ fn pkg_add_fetched(paths: PkgPaths, args: Array[String]) -> Int with Env + Excep
   let key = "\{name}@\{version}"
   let recorded = versions_lookup(versions = read_or_empty(paths.versions), key = key)
   let final_hash = if recorded != "" && recorded != hash {
-    if hash_matches_index(recorded = recorded, index = index) {
+    if hash_matches_index(recorded = recorded, index = index, checked_error_row = checked_error_row) {
       recorded
     } else {
       throw("known version \{key} is #\{recorded} but \{spec} serves #\{hash} — rejected (version->hash is immutable, ADR-0065)")
@@ -542,7 +542,7 @@ fn pkg_add_fetched(paths: PkgPaths, args: Array[String]) -> Int with Env + Excep
   let cas = cas_of(paths = paths, hash = final_hash)
   remove_if_present(cas)
   copy_package_files(src = src, dest = cas)
-  if !hash_matches_index(recorded = final_hash, index = index_of_dir(cas)) {
+  if !hash_matches_index(recorded = final_hash, index = index_of_dir(cas), checked_error_row = checked_error_row) {
     throw("CAS self-check failed: \{cas} does not match #\{final_hash}")
   } else ()
   Fs::mkdir_p(paths.cache)
@@ -557,7 +557,7 @@ fn pkg_add_fetched(paths: PkgPaths, args: Array[String]) -> Int with Env + Excep
     Fs::append(paths.provenance, contents = String::concat(line, "\n"))
   } else ()
   say("fetched \{key} from \{spec} @ \{commit}")
-  materialize(paths = paths, name = name, version = version, hash = final_hash, store = store)
+  materialize(paths = paths, name = name, version = version, hash = final_hash, store = store, checked_error_row = checked_error_row)
   println("added\t\{name}\t\{version}\t\{final_hash}\t\{spec}\t\{commit}\t\{SourceSpec::pinned(parsed, commit = commit)}")
   0
 }
@@ -604,7 +604,7 @@ fn enqueue_pins(queue: Array[(String, String, String, String)], index: String) -
 /// `need<TAB>name<TAB>version<TAB>id<TAB>source` for the launcher to fetch
 /// (`pkg add-fetched`) before it runs this again. A `@vibe/*` pin with no
 /// source resolves from the toolchain.
-fn pkg_fetch_pins(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn pkg_fetch_pins(paths: PkgPaths, args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe pkg fetch-pins <index.vpkg> [--store]"
   let mut manifest = ""
   let mut store = false
@@ -643,7 +643,7 @@ fn pkg_fetch_pins(paths: PkgPaths, args: Array[String]) -> Int with Env + Except
       } else {
         let hash = id_text(pin)
         let dest = "\{root}/\{name}"
-        let current = Fs::exists(index_of_dir(dest)) && hash_matches_index(recorded = hash, index = index_of_dir(dest))
+        let current = Fs::exists(index_of_dir(dest)) && hash_matches_index(recorded = hash, index = index_of_dir(dest), checked_error_row = checked_error_row)
         if current {
           up_to_date = up_to_date + 1
           enqueue_pins(queue = queue, index = index_of_dir(dest))
@@ -652,7 +652,7 @@ fn pkg_fetch_pins(paths: PkgPaths, args: Array[String]) -> Int with Env + Except
             say("\{name} at \{dest} does not match pin #\{hash}: replacing it")
           } else ()
           if Fs::exists(index_of_dir(cas_of(paths = paths, hash = hash))) {
-            materialize(paths = paths, name = name, version = version, hash = hash, store = store)
+            materialize(paths = paths, name = name, version = version, hash = hash, store = store, checked_error_row = checked_error_row)
             fetched = fetched + 1
             enqueue_pins(queue = queue, index = index_of_dir(dest))
           } else if src != "" {
@@ -856,7 +856,7 @@ fn report_surface_change(old_lines: Array[String], new_lines: Array[String], old
   } else ()
 }
 
-fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn pkg_update(paths: PkgPaths, args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe pkg update @scope/name [--store]"
   let mut name = ""
   let mut store = false
@@ -886,7 +886,7 @@ fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception 
     throw("no published versions known (empty cache index)")
   } else ()
   let all = versions_of(versions = Fs::read_file(paths.versions), name = name)
-  let (cur_computed, cur_contract) = package_hashes(installed_index)
+  let (cur_computed, cur_contract) = package_hashes(installed_index, checked_error_row = checked_error_row)
   // The current version is a reverse lookup of the installed copy; a
   // historical `pkg:sha1:` row verifies under SHA-1.
   let mut cur_version = ""
@@ -903,7 +903,7 @@ fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception 
     let mut s = 0
     while cur_version == "" && s < Array::length(all) {
       let (v, h) = Array::get(all, at = s)
-      if hash_matches_index(recorded = h, index = installed_index) {
+      if hash_matches_index(recorded = h, index = installed_index, checked_error_row = checked_error_row) {
         cur_version = v
         cur_hash = h
       } else ()
@@ -938,7 +938,7 @@ fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception 
     if !Fs::exists(best_index) {
       throw("cache is missing \{name}@\{best} (\{best_hash})")
     } else ()
-    let (_, best_contract) = package_hashes(best_index)
+    let (_, best_contract) = package_hashes(best_index, checked_error_row = checked_error_row)
     let from = if cur_version == "" {
       "<untracked local copy>"
     } else {
@@ -951,7 +951,7 @@ fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception 
       say("contract surface: \{cur_contract} -> \{best_contract}")
       report_surface_change(old_lines = contract_surface_lines_fs(installed_index), new_lines = contract_surface_lines_fs(best_index), old_effects = contract_surface_effects_fs(installed_index), new_effects = contract_surface_effects_fs(best_index), label = "\{installed_index} -> \{name}@\{best}")
     }
-    materialize(paths = paths, name = name, version = best, hash = best_hash, store = store)
+    materialize(paths = paths, name = name, version = best, hash = best_hash, store = store, checked_error_row = checked_error_row)
     0
   }
 }
@@ -1156,7 +1156,7 @@ let pkg_usage: String = "usage: vibe pkg publish <pkg_dir> | install @scope/name
 /// `vibe pkg <subcommand> ...`. `add` and the source-fetching half of
 /// `fetch-pins` need git, so the launcher drives those through `spec`,
 /// `add-fetched` and the `need` rows of `fetch-pins`.
-export fn selfhost_cli_user_pkg_args(_ args: Array[String]) -> Int with Env + Exception + Fs + Console {
+export fn selfhost_cli_user_pkg_args(_ args: Array[String], checked_error_row: Bool) -> Int with Env + Exception + Fs + Console {
   let sub = if Array::length(args) > 1 {
     Array::get(args, at = 1)
   } else {
@@ -1168,18 +1168,18 @@ export fn selfhost_cli_user_pkg_args(_ args: Array[String]) -> Int with Env + Ex
       Array::get(args, at = 2)
     } else {
       ""
-    }),
-    "install" => pkg_install(paths = paths, args = args),
-    "add-fetched" => pkg_add_fetched(paths = paths, args = args),
+    }, checked_error_row = checked_error_row),
+    "install" => pkg_install(paths = paths, args = args, checked_error_row = checked_error_row),
+    "add-fetched" => pkg_add_fetched(paths = paths, args = args, checked_error_row = checked_error_row),
     "spec" => pkg_spec(args),
     "authority" => pkg_authority(args),
-    "fetch-pins" => pkg_fetch_pins(paths = paths, args = args),
+    "fetch-pins" => pkg_fetch_pins(paths = paths, args = args, checked_error_row = checked_error_row),
     "yank" => pkg_yank(paths = paths, spec = if Array::length(args) > 2 {
       Array::get(args, at = 2)
     } else {
       ""
     }),
-    "update" => pkg_update(paths = paths, args = args),
+    "update" => pkg_update(paths = paths, args = args, checked_error_row = checked_error_row),
     "--help" => {
       println(pkg_usage)
       0

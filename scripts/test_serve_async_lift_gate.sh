@@ -104,7 +104,7 @@ import @vibe/compiler/codegen/component {
 }
 
 fn main() -> Int allows Env + Exception + Fs {
-  let core = compile_file_wasi_only(entry_path = "$HANDLER_SRC", entry_name = "__no_entry__")
+  let core = compile_file_wasi_only(entry_path = "$HANDLER_SRC", entry_name = "__no_entry__", checked_error_row = false)
   let comp = comp_emit_component_wasm_string_handler_async(core_wasm = core, target_func_name = "handler", export_name = "handler", param_names = [
     "method",
     "url",

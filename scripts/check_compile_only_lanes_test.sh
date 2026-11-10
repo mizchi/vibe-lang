@@ -21,12 +21,10 @@
 #                    fail.
 #   5. control    -- the real compile-only artifact passes.
 #
-# Fixture: the named compile-only artifact the gate builds
-# (_build/compile_only/vibe_compile_only.names.wasm); built here when absent.
-# In release-check this task depends on check-compile-only-lanes, so the gate
-# has finished writing it before this reads it; the gate's own scratch is a
-# private mktemp directory, so the two never share a path even when run side
-# by side. COMPILE_ONLY_STAGE2 overrides the compiler, as for the gate.
+# Fixture: a fresh named compile-only artifact built with the selected compiler
+# in this test's private scratch directory. An existing shared artifact can
+# belong to older sources even when the selected stage2 is current.
+# COMPILE_ONLY_STAGE2 overrides the compiler, as for the gate.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -43,12 +41,10 @@ GATE="scripts/check_compile_only_lanes.sh"
 # (AGENTS.md, "Which compiler answered?"), in a gate whose subject is what a
 # build dropped.
 STAGE2="$(resolve_stage2 compile-only-lanes-test "${COMPILE_ONLY_STAGE2:-${VIBE_STAGE2_WASM:-}}")" || exit 1
-ART="$ROOT_DIR/_build/compile_only/vibe_compile_only.names.wasm"
-if [ ! -s "$ART" ]; then
-  bash scripts/build_compile_only.sh --names --out "$ART" --compiler "$STAGE2" >&2
-fi
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/compile_only_lanes_test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+ART="$TMP/vibe_compile_only.names.wasm"
+bash scripts/build_compile_only.sh --names --out "$ART" --compiler "$STAGE2" >&2
 
 expect_fail() { # <case> <needle> <gate args...>
   local label="$1" needle="$2"; shift 2

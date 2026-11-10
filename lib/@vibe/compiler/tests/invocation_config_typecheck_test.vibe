@@ -47,7 +47,7 @@ import @vibe/parser {
 fn typecheck_cfg_reset() -> Unit with Env + Exception {
   set_cfg_ambient_flags([])
   set_persistent_cache_cfg_flags("")
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }
 
 fn typecheck_cfg_files(_ root: String) -> (String, String, TypeDb) with Fs {
@@ -61,7 +61,7 @@ fn typecheck_cfg_files(_ root: String) -> (String, String, TypeDb) with Fs {
   Fs::write_file(a, contents = sa)
   Fs::write_file(b, contents = sb)
   Fs::write_file(path, contents = source)
-  let db = db_set_source(db = db_new(), path = a, source = sa)
+  let db = db_set_source(db = db_new(checked_error_row = false), path = a, source = sa)
   let db = db_set_source(db = db, path = b, source = sb)
   (path, source, db_set_source(db = db, path = path, source = source))
 }
@@ -120,10 +120,10 @@ test "planning and dependency-list disk entries use the captured namespace" {
   set_persistent_cache_cfg_flags("poison")
   handle {
     let (plan_a, _) = handle {
-      module_plan_manifest_fs_configured(path)
+      module_plan_manifest_fs_configured(path, checked_error_row = false)
     } with { Config::CfgFlags() => resume("alpha") }
     let (plan_b, _) = handle {
-      module_plan_manifest_fs_configured(path)
+      module_plan_manifest_fs_configured(path, checked_error_row = false)
     } with { Config::CfgFlags() => resume("beta") }
     assert(String::contains(plan_a, needle = "/alpha.vibe"))
     assert(!String::contains(plan_a, needle = "/beta.vibe"))
@@ -148,7 +148,7 @@ test "checked-module disk reuse and first semantic use remain configuration-spec
   let (path, source, db) = typecheck_cfg_files("_build/config_typecheck_artifact_\{Profiler::now_us()}")
   set_cfg_ambient_flags(["poison"])
   set_persistent_cache_cfg_flags("poison")
-  set_checked_module_cache_mode("on")
+  set_checked_module_cache_mode("on", checked_error_row = false)
   handle {
     let alpha = typecheck_cfg_run(db = db, path = path, flags = "alpha")
     let a = typecheck_cfg_env(db = alpha, path = path)
@@ -178,7 +178,7 @@ test "successful and failing nested checks leave the outer configuration availab
     let expected = typecheck_cfg_run(db = db, path = path, flags = "alpha")
     let calls = [0]
     handle {
-      check_file_fs_configured(path)
+      check_file_fs_configured(path, checked_error_row = false)
     } with { Config::CfgFlags() => {
       Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
       let inner_checked = typecheck_cfg_run(db = inner, path = inner_path, flags = "beta")
@@ -199,7 +199,7 @@ test "conservative fingerprints and transported alias keys bind exact target fla
   let source = "#cfg(alpha)\nexport fn result() -> Int { 1 }\n#cfg(beta)\nexport fn result() -> Bool { true }\n"
   let alpha = target_cfg_from_csv("alpha")
   let beta = target_cfg_from_csv("beta")
-  let semantics = typing_semantics_seed()
+  let semantics = typing_semantics_seed(checked_error_row = false)
   let a = typecheck_fs_build_fingerprint_with_config(path = "scoped.vibe", source = source, dep_fps = [
   ], semantics_seed = semantics, cfg = alpha)
   let b = typecheck_fs_build_fingerprint_with_config(path = "scoped.vibe", source = source, dep_fps = [
@@ -224,34 +224,34 @@ test "a checked-module payload moved across flag namespaces is rejected and repa
   Fs::write_file(path, contents = source)
   set_cfg_ambient_flags(["poison"])
   set_persistent_cache_cfg_flags("poison")
-  set_checked_module_cache_mode("on")
+  set_checked_module_cache_mode("on", checked_error_row = false)
   handle {
-    let db = db_set_source(db = db_new(), path = path, source = source)
+    let db = db_set_source(db = db_new(checked_error_row = false), path = path, source = source)
     let alpha = typecheck_cfg_run(db = db, path = path, flags = "alpha")
     let a = typecheck_cfg_env(db = alpha, path = path)
     let beta = typecheck_cfg_run(db = alpha, path = path, flags = "beta")
     let b = typecheck_cfg_env(db = beta, path = path)
     assert(a != b)
-    let ia = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(), deps = [
-    ], namespace = target_cfg_namespace(target_cfg_from_csv("alpha")))
-    let ib = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(), deps = [
-    ], namespace = target_cfg_namespace(target_cfg_from_csv("beta")))
+    let ia = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(checked_error_row = false), deps = [
+    ], namespace = target_cfg_namespace(target_cfg_from_csv("alpha")), checked_error_row = false)
+    let ib = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(checked_error_row = false), deps = [
+    ], namespace = target_cfg_namespace(target_cfg_from_csv("beta")), checked_error_row = false)
     let fa = checked_module_input_fingerprint(ia)
     let fb = checked_module_input_fingerprint(ib)
-    let payload = match load_persistent_artifact_with_cfg(kind = "checked-module-v1", entry_name = path, fingerprint = fa, cfg_csv = "alpha") {
+    let payload = match load_persistent_artifact_with_cfg(kind = "checked-module-v1", entry_name = path, fingerprint = fa, cfg_csv = "alpha", checked_error_row = false) {
       Some(bytes) => bytes,
       None => throw("the alpha check did not publish its checked-module payload")
     }
     // Re-encode the valid outer storage envelope for beta. The inner product
     // must still refuse alpha's exact inputs rather than trust its filename.
-    store_persistent_artifact_with_cfg(kind = "checked-module-v1", entry_name = path, fingerprint = fb, bytes = payload, cfg_csv = "beta")
-    let fresh = db_set_source(db = db_new(), path = path, source = source)
+    store_persistent_artifact_with_cfg(kind = "checked-module-v1", entry_name = path, fingerprint = fb, bytes = payload, cfg_csv = "beta", checked_error_row = false)
+    let fresh = db_set_source(db = db_new(checked_error_row = false), path = path, source = source)
     let repaired = typecheck_cfg_run(db = fresh, path = path, flags = "beta")
     let (reused, checked, _) = checked_module_cache_stats()
     assert_eq(reused, 0)
     assert_eq(checked, 1)
     assert_eq(typecheck_cfg_env(db = repaired, path = path), b)
-    let fresh_again = db_set_source(db = db_new(), path = path, source = source)
+    let fresh_again = db_set_source(db = db_new(checked_error_row = false), path = path, source = source)
     let warm = typecheck_cfg_run(db = fresh_again, path = path, flags = "beta")
     let (reused_again, checked_again, _) = checked_module_cache_stats()
     assert_eq(reused_again, 1)
@@ -290,7 +290,7 @@ test "compatibility logical keys retain input-only behavior under ambient flag c
 test "legacy in-memory flag checks retain warm reuse and invalidate flag changes" {
   let path = "config_memory/main.vibe"
   let source = "#cfg(alpha)\nexport fn result() -> Int { 1 }\n#cfg(beta)\nexport fn result() -> Bool { true }\n"
-  let db = db_set_source(db = db_new(), path = path, source = source)
+  let db = db_set_source(db = db_new(checked_error_row = false), path = path, source = source)
   set_cfg_ambient_flags(["alpha"])
   set_persistent_cache_cfg_flags("alpha")
   handle {

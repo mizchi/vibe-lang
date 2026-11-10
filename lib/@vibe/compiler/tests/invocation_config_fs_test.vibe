@@ -34,12 +34,12 @@ fn reset_fs_cfg_compatibility() -> Unit {
 
 fn fs_cfg_parse(path: String, cfg: String) -> Array[Stmt] with Env + Exception + Fs {
   handle {
-    parse_program_located_shared_fs_configured(path = path, source = fs_cfg_source)
+    parse_program_located_shared_fs_configured(path = path, source = fs_cfg_source, checked_error_row = false)
   } with { Config::CfgFlags() => resume(cfg) }
 }
 
 fn fs_cfg_cache_path(path: String, cfg: String) -> String with Env {
-  persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = path, fingerprint = compact_source_fingerprint_memo(path = path, source = fs_cfg_source), cfg_csv = cfg)
+  persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = path, fingerprint = compact_source_fingerprint_memo(path = path, source = fs_cfg_source), cfg_csv = cfg, checked_error_row = false)
 }
 
 fn fs_cfg_remove_cache(_ path: String) -> Unit with Env + Fs {
@@ -86,15 +86,15 @@ test "compatibility shared parses preserve flags passed directly to the setter" 
   set_cfg_ambient_flags([" alpha ", "beta,alpha"])
   handle {
     assert_eq(Array::length(parse_program_located_shared(path = "/tmp/invocation-config-raw-pure.vibe", source = fs_cfg_source)), 0)
-    assert_eq(Array::length(parse_program_located_shared_fs(path = "/tmp/invocation-config-raw-fs.vibe", source = fs_cfg_source)), 0)
+    assert_eq(Array::length(parse_program_located_shared_fs(path = "/tmp/invocation-config-raw-fs.vibe", source = fs_cfg_source, checked_error_row = false)), 0)
     set_cfg_ambient_flags(["beta,alpha"])
     let path = "/tmp/invocation-config-comma-fs.vibe"
-    assert_eq(Array::length(parse_program_located_shared_fs(path = path, source = fs_cfg_source)), 0)
+    assert_eq(Array::length(parse_program_located_shared_fs(path = path, source = fs_cfg_source, checked_error_row = false)), 0)
     assert_eq(Array::length(fs_cfg_parse(path = path, cfg = "beta,alpha")), 3)
     // A memo or prefetch of the canonical CSV must not serve the literal
     // comma-containing flag when the compatibility caller asks again.
-    assert(!ast_cache_prefetch_fs(path = path, source = fs_cfg_source))
-    assert_eq(Array::length(parse_program_located_shared_fs(path = path, source = fs_cfg_source)), 0)
+    assert(!ast_cache_prefetch_fs(path = path, source = fs_cfg_source, checked_error_row = false))
+    assert_eq(Array::length(parse_program_located_shared_fs(path = path, source = fs_cfg_source, checked_error_row = false)), 0)
     assert(parse_program_located_shared_ran_parser())
     reset_fs_cfg_compatibility()
   } with { Exception::Throw(message) => {
@@ -108,12 +108,12 @@ test "an FS parse resumes after successful and failing inner Config invocations"
   set_persistent_cache_cfg_flags("poison")
   handle {
     let outer = handle {
-      parse_program_located_shared_fs_configured(path = "/tmp/invocation-config-fs-reentrant.vibe", source = fs_cfg_source)
+      parse_program_located_shared_fs_configured(path = "/tmp/invocation-config-fs-reentrant.vibe", source = fs_cfg_source, checked_error_row = false)
     } with { Config::CfgFlags() => {
       assert_eq(Array::length(fs_cfg_parse(path = "/tmp/invocation-config-fs-reentrant.vibe", cfg = "beta")), 2)
       let failed = handle {
         handle {
-          let _ = parse_program_located_shared_fs_configured(path = "/tmp/invocation-config-fs-fail.vibe", source = "#cfg(fail)\nexport let broken =\n")
+          let _ = parse_program_located_shared_fs_configured(path = "/tmp/invocation-config-fs-fail.vibe", source = "#cfg(fail)\nexport let broken =\n", checked_error_row = false)
           false
         } with { Config::CfgFlags() => resume("fail") }
       } with { Exception::Throw(_) => true }
@@ -133,30 +133,30 @@ test "an FS parse resumes after successful and failing inner Config invocations"
 
 test "explicit AST namespaces survive a different legacy cache setting" {
   set_persistent_cache_cfg_flags("")
-  let empty_path = persistent_artifact_cache_path(kind = "selfhost_ast_v1", entry_name = "identity.vibe", fingerprint = "source")
-  assert_eq(empty_path, persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = "identity.vibe", fingerprint = "source", cfg_csv = ""))
+  let empty_path = persistent_artifact_cache_path(kind = "selfhost_ast_v1", entry_name = "identity.vibe", fingerprint = "source", checked_error_row = false)
+  assert_eq(empty_path, persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = "identity.vibe", fingerprint = "source", cfg_csv = "", checked_error_row = false))
   set_persistent_cache_cfg_flags("poison")
   handle {
     let path = "/tmp/invocation-config-fs-stored-\{Profiler::now_us()}.vibe"
     let fingerprint = compact_source_fingerprint_memo(path = path, source = fs_cfg_source)
     let alpha = fs_cfg_parse(path = path, cfg = "alpha")
     let beta = fs_cfg_parse(path = path, cfg = "beta")
-    store_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, stmts = alpha, cfg_csv = "alpha")
-    store_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, stmts = beta, cfg_csv = "beta")
+    store_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, stmts = alpha, cfg_csv = "alpha", checked_error_row = false)
+    store_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, stmts = beta, cfg_csv = "beta", checked_error_row = false)
     assert(fs_cfg_cache_path(path = path, cfg = "alpha") != fs_cfg_cache_path(path = path, cfg = "beta"))
-    match load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "alpha") {
+    match load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "alpha", checked_error_row = false) {
       Some(stmts) => assert_eq(Array::length(stmts), 1),
       None => assert(false)
     }
-    match load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "beta") {
+    match load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "beta", checked_error_row = false) {
       Some(stmts) => assert_eq(Array::length(stmts), 2),
       None => assert(false)
     }
-    assert(load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "poison") is None)
+    assert(load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "poison", checked_error_row = false) is None)
     store_persistent_artifact_with_cfg(kind = "selfhost_ast_v1", entry_name = path, fingerprint = fingerprint, bytes = Bytes::from_array([
       255
-    ]), cfg_csv = "poison")
-    assert(load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "poison") is None)
+    ]), cfg_csv = "poison", checked_error_row = false)
+    assert(load_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, cfg_csv = "poison", checked_error_row = false) is None)
     fs_cfg_remove_cache(path)
     reset_fs_cfg_compatibility()
   } with { Exception::Throw(message) => {
@@ -188,7 +188,7 @@ test "configured FS cold and disk-warm parses agree when AST caching is enabled"
       // cache identity even when the legacy namespace cell disagrees.
       set_cfg_ambient_flags(["alpha"])
       fs_cfg_evict_memo(path)
-      assert_eq(Array::length(parse_program_located_shared_fs(path = path, source = fs_cfg_source)), 1)
+      assert_eq(Array::length(parse_program_located_shared_fs(path = path, source = fs_cfg_source, checked_error_row = false)), 1)
       assert(!parse_program_located_shared_ran_parser())
       fs_cfg_remove_cache(path)
       reset_fs_cfg_compatibility()

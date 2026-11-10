@@ -117,14 +117,14 @@ export let compiler_print_program: (Array[Stmt]) -> String = print_program
 
 export let compiler_print_type_expr: (TypeExpr) -> String = print_type_expr
 
-fn build_cli_adapter_bytes() -> Bytes with Env + Exception {
+fn build_cli_adapter_bytes(checked_error_row: Bool) -> Bytes with Env + Exception {
   let module_source = cli_adapter_module_source()
   if module_source == "" {
     throw("cli_adapter_module_source is empty")
   }
   let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
   let source_groups = cli_adapter_source_groups()
-  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(db = db_new(), main_source = module_source, main_path = adapter_path, source_groups = source_groups, entry_name = "cli_main")
+  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(db = db_new(checked_error_row = checked_error_row), main_source = module_source, main_path = adapter_path, source_groups = source_groups, entry_name = "cli_main")
   bytes
 }
 
@@ -132,14 +132,14 @@ fn build_cli_adapter_bytes() -> Bytes with Env + Exception {
 /// Compiles the WHOLE compiler (its own embedded module source) under
 /// the Perceus RC backend. Running this through stage1 is the decisive
 /// whole-compiler-under-RC validity signal for the cutover.
-fn build_cli_adapter_bytes_rc() -> Bytes with Env + Exception {
+fn build_cli_adapter_bytes_rc(checked_error_row: Bool) -> Bytes with Env + Exception {
   let module_source = cli_adapter_module_source()
   if module_source == "" {
     throw("cli_adapter_module_source is empty")
   }
   let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
   let source_groups = cli_adapter_source_groups()
-  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_rc(db = db_new(), main_source = module_source, main_path = adapter_path, source_groups = source_groups, entry_name = "cli_main")
+  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_rc(db = db_new(checked_error_row = checked_error_row), main_source = module_source, main_path = adapter_path, source_groups = source_groups, entry_name = "cli_main")
   bytes
 }
 
@@ -154,11 +154,11 @@ fn string_to_bytes(_ s: String) -> Bytes {
   out
 }
 
-fn compile_cli_adapter_to(_ output_path: String) -> Int with Env + Exception + Fs {
+fn compile_cli_adapter_to(_ output_path: String, checked_error_row: Bool) -> Int with Env + Exception + Fs {
   if output_path == "" {
     1
   } else {
-    let bytes = build_cli_adapter_bytes()
+    let bytes = build_cli_adapter_bytes(checked_error_row = checked_error_row)
     Fs::write_bytes(output_path, bytes = bytes)
     0
   }
@@ -185,7 +185,7 @@ let cli_module_dump_path = "_build/bench/cli_adapter/cli_adapter_module_dump.vib
 export fn selfbuild_entry() -> Int with Env + Exception + Fs {
   handle {
     if Fs::exists(cli_trigger_path) {
-      compile_cli_adapter_to(cli_stage1_path)
+      compile_cli_adapter_to(cli_stage1_path, checked_error_row = false)
     } else {
       0
     }
@@ -193,7 +193,7 @@ export fn selfbuild_entry() -> Int with Env + Exception + Fs {
 }
 
 export fn selfbuild_write_cli_adapter() -> Int with Env + Exception + Fs {
-  compile_cli_adapter_to(cli_stage1_path)
+  compile_cli_adapter_to(cli_stage1_path, checked_error_row = false)
 }
 
 export fn selfbuild_dump_cli_adapter_merged_source() -> Int with Exception + Fs {
@@ -251,7 +251,7 @@ export fn selfbuild_cli_env_entry() -> Int with Exception + Fs + Env {
   }
   else {
     let source = Fs::read_file(input_path)
-    let bytes = compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false)
+    let bytes = compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false, checked_error_row = false)
     Fs::write_bytes(output_path, bytes = bytes)
     0
   }
@@ -267,7 +267,7 @@ export fn selfbuild_probe_cli_env_compile_len() -> Int with Exception + Fs + Env
   let input_path = Env::get("VIBE_INPUT")
   let entry_name = Env::get("VIBE_ENTRY")
   let source = Fs::read_file(input_path)
-  let bytes = compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false)
+  let bytes = compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false, checked_error_row = false)
   Bytes::length(bytes)
 }
 
@@ -293,7 +293,7 @@ export fn selfbuild_probe_cli_args_compile_len() -> Int with Exception + Fs + En
     ""
   }
   let source = Fs::read_file(input_path)
-  let bytes = compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false)
+  let bytes = compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false, checked_error_row = false)
   Bytes::length(bytes)
 }
 
@@ -332,9 +332,9 @@ export fn selfbuild_cli_args_entry() -> Int with Exception + Fs + Env {
     // they self-reproduce byte-identically on the proven bump path until an
     // RC compiler self-build fixpoint is validated; everything else reclaims.
     let bytes = if Env::get("VIBE_RC") != "0" {
-      compile_source_wasi_only_rc(source = source, entry_name = entry_name)
+      compile_source_wasi_only_rc(source = source, entry_name = entry_name, checked_error_row = false)
     } else {
-      compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false)
+      compile_source_wasi_only(source = source, entry_name = entry_name, exports_stripped = false, checked_error_row = false)
     }
     Fs::write_bytes(output_path, bytes = bytes)
     0
@@ -342,6 +342,8 @@ export fn selfbuild_cli_args_entry() -> Int with Exception + Fs + Env {
 }
 
 export fn selfbuild_cli_entry() -> Int with Exception + Fs + Env {
+  // This probe is an independent unchecked library invocation.
+  let checked_error_row = false
   let input_path = "_build/bench/cli_adapter/adapter_input.vibe"
   let output_path = "_build/bench/cli_adapter/adapter_output.wasm"
   if input_path == "" {
@@ -351,7 +353,7 @@ export fn selfbuild_cli_entry() -> Int with Exception + Fs + Env {
     1
   }
   else {
-    let (bytes, _) = compile_file_fs_cached(db = db_new(), entry_path = input_path, entry_name = "main")
+    let (bytes, _) = compile_file_fs_cached(db = db_new(checked_error_row = checked_error_row), entry_path = input_path, entry_name = "main")
     Fs::write_bytes(output_path, bytes = bytes)
     0
   }
@@ -363,7 +365,7 @@ export fn selfbuild_compile_stage2() -> Bytes with Exception {
   if main_source == "" {
     throw("selfbuild_runtime_entry_source is empty")
   }
-  compile_source_wasi_only(source = main_source, entry_name = "selfbuild_entry", exports_stripped = false)
+  compile_source_wasi_only(source = main_source, entry_name = "selfbuild_entry", exports_stripped = false, checked_error_row = false)
 }
 
 /// #1262: the same selfbuild, through the wasm-gc backend.
@@ -396,11 +398,11 @@ export fn selfbuild_compile_stage2_gc() -> Bytes with Exception {
   if main_source == "" {
     throw("selfbuild_runtime_entry_source is empty")
   }
-  compile_source_gc_only(source = main_source, entry_name = "selfbuild_entry", exports_stripped = false)
+  compile_source_gc_only(source = main_source, entry_name = "selfbuild_entry", exports_stripped = false, checked_error_row = false)
 }
 
 export fn selfbuild_compile_cli_adapter() -> Bytes with Env + Exception {
-  build_cli_adapter_bytes()
+  build_cli_adapter_bytes(checked_error_row = false)
 }
 
 /// ADR-0055 #493 cutover: whole-compiler-under-RC entry. Writes the RC-compiled
@@ -411,7 +413,7 @@ export fn selfbuild_compile_cli_adapter_rc_env() -> Int with Exception + Fs + En
   if output_path == "" {
     1
   } else {
-    let bytes = build_cli_adapter_bytes_rc()
+    let bytes = build_cli_adapter_bytes_rc(checked_error_row = false)
     Fs::write_bytes(output_path, bytes = bytes)
     0
   }
@@ -424,29 +426,35 @@ export fn selfbuild_compile_cli_adapter_env() -> Int with Exception + Fs + Env {
   if output_path == "" {
     1
   } else {
-    let bytes = build_cli_adapter_bytes()
+    let bytes = build_cli_adapter_bytes(checked_error_row = false)
     Fs::write_bytes(output_path, bytes = bytes)
     0
   }
 }
 
 export fn selfbuild_probe_compile_cli_adapter_embedded_module_len() -> Int with Env + Exception {
-  let bytes = build_cli_adapter_bytes()
+  let bytes = build_cli_adapter_bytes(checked_error_row = false)
   Bytes::length(bytes)
 }
 
 export fn selfbuild_probe_compile_env_get_len() -> Int with Exception {
-  let bytes = compile_source_wasi(source = "let main: () -> Int = () -> { let _x = perform Env::Get(\"VIBE_INPUT\"); 0 }", entry_name = "main")
+  // This probe is an independent unchecked library invocation.
+  let checked_error_row = false
+  let bytes = compile_source_wasi(source = "let main: () -> Int = () -> { let _x = perform Env::Get(\"VIBE_INPUT\"); 0 }", entry_name = "main", checked_error_row = checked_error_row)
   Bytes::length(bytes)
 }
 
 export fn selfbuild_probe_compile_fs_read_file_len() -> Int with Exception {
-  let bytes = compile_source_wasi(source = "let main: () -> Int = () -> { let _x = perform Fs::ReadFile(\"/tmp/in.txt\"); 0 }", entry_name = "main")
+  // This probe is an independent unchecked library invocation.
+  let checked_error_row = false
+  let bytes = compile_source_wasi(source = "let main: () -> Int = () -> { let _x = perform Fs::ReadFile(\"/tmp/in.txt\"); 0 }", entry_name = "main", checked_error_row = checked_error_row)
   Bytes::length(bytes)
 }
 
 export fn selfbuild_probe_compile_fs_write_bytes_len() -> Int with Exception {
-  let bytes = compile_source_wasi(source = "let main: () -> Int = () -> { Fs::write_bytes(\"/tmp/out.wasm\", Bytes::from_array([1])); 0 }", entry_name = "main")
+  // This probe is an independent unchecked library invocation.
+  let checked_error_row = false
+  let bytes = compile_source_wasi(source = "let main: () -> Int = () -> { Fs::write_bytes(\"/tmp/out.wasm\", Bytes::from_array([1])); 0 }", entry_name = "main", checked_error_row = checked_error_row)
   Bytes::length(bytes)
 }
 
@@ -463,15 +471,17 @@ export fn selfbuild_stage1_probe_type_db_cache_counts() -> Int with Env + Except
 }
 
 export fn selfbuild_stage1_probe_type_db_fs_parse_counts() -> Int with Env + Exception + Fs {
+  // This probe is an independent unchecked library invocation.
+  let checked_error_row = false
   let helper_path = "_build/persistent_type_env_probe_helper.vibe"
   let main_path = "_build/persistent_type_env_probe_main.vibe"
   let helper_source = "export let add: () -> Int = () -> { 1 }"
   let main_source = "import ./persistent_type_env_probe_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
   Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
-  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = checked_error_row), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let count1 = db_parse_count(db1)
-  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = checked_error_row), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let count2 = db_parse_count(db2)
   count1 * 1000 + count2
 }

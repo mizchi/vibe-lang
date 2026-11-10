@@ -28,11 +28,11 @@ fn program(_ body: String) -> String {
 }
 
 fn validate(_ body: String) -> String with Exception {
-  rc_validate_source(source = program(body), fn_filter = "run")
+  rc_validate_source(source = program(body), fn_filter = "run", checked_error_row = false)
 }
 
 fn plan(_ body: String) -> String with Exception {
-  rc_plan_source(source = program(body), fn_filter = "run")
+  rc_plan_source(source = program(body), fn_filter = "run", checked_error_row = false)
 }
 
 /// `out` under `tag`, with an empty answer spelled `clean`: each snapshot
@@ -97,7 +97,7 @@ fn move_marks(plan: Array[PerceusAction], name: String, off: Int) -> Array[Perce
 }
 
 fn edited(body: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception {
-  rc_validate_source_edited(source = program(body), fn_filter = "run", edit = edit)
+  rc_validate_source_edited(source = program(body), fn_filter = "run", edit = edit, checked_error_row = false)
 }
 
 let two_consumes = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  keep(d) + keep(d)\n}"
@@ -223,8 +223,8 @@ test "a consume mark on a borrowed occurrence is structural" {
 
 test "a borrowed parameter consumed without a dup" {
   let src = program("let run: (Bool) -> Int = (c) -> {\n  sink(d = A([1]))\n}\nlet sink: (D) -> Int = (d) -> {\n  keep(d)\n}")
-  inspect(rc_validate_source_borrowing(source = src, fn_filter = "sink", borrow_fn = "sink", borrow_mask = 1), content = "sink d -: borrowed parameter consumed without a dup")
-  inspect(rc_validate_source(source = src, fn_filter = "sink"), content = "")
+  inspect(rc_validate_source_borrowing(source = src, fn_filter = "sink", borrow_fn = "sink", borrow_mask = 1, checked_error_row = false), content = "sink d -: borrowed parameter consumed without a dup")
+  inspect(rc_validate_source(source = src, fn_filter = "sink", checked_error_row = false), content = "")
 }
 
 //# Known leaks
@@ -374,12 +374,12 @@ test "the pre-#3879 for-iterable plan leaks the outer binding" {
 
 test "a parameter retained in a loop with no planned drop is not checked" {
   let src = String::concat(prologue, "let sink: (D) -> Int = (d) -> {\n  let mut k = 0\n  while k < 2 {\n    k = k + keep(d)\n  }\n  k\n}\nlet main: () -> Int = () -> {\n  sink(A([1]))\n}")
-  inspect(rc_validate_source(source = src, fn_filter = "sink"), content = "")
+  inspect(rc_validate_source(source = src, fn_filter = "sink", checked_error_row = false), content = "")
   let out = rc_validate_source_edited(source = src, fn_filter = "sink", edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
     drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
       pa_is_drop(a) && a.name == "d"
     })
-  })
+  }, checked_error_row = false)
   inspect(out, content = "sink d -: not checked: loop: a parameter retained in a loop with no planned drop")
 }
 
