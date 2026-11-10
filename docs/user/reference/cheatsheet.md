@@ -2646,7 +2646,9 @@ operations are on the capability track: they are spelled in snake_case and
 called directly, the way `Fs::read_file(p)` is, and the effect is the row of
 every function that reaches one:
 
-```vibe
+```vibe skip
+// doctest-skip: `vibe check` accepts this; a build refuses it until a host
+// provider can be bound (below)
 extern effect Kv {
   get(String) -> String
   put(String, String) -> Unit
