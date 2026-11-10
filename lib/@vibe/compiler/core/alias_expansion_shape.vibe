@@ -1,0 +1,517 @@
+// Higher-kinded alias preflight. Unlike a scalar size, this compact shape
+// retains constructor bodies until application. A substituted argument is
+// shared here, with its cached size; the real resolver will clone it. Thus
+// Dup[Dup[...]] is counted with saturation before allocating the expanded Type.
+import ./ast.vibe {
+  TypeExpr
+}
+import ./types_env_cache.vibe {
+  Type, TypeDef, hkt_app_name, hkt_ctor_prefix, type_expr_name_is_shadowed, type_expr_shadowed_arity
+}
+import ./types_types_equal.vibe {
+  resolve_builtin
+}
+import @vibe/ast {
+  type_param_arity, type_param_name
+}
+
+enum AliasExpansionShape {
+  ShapeName(String, Array[AliasExpansionShape], Int);
+  ShapeConstructor(String, Int);
+  ShapeApplication(AliasExpansionShape, Array[AliasExpansionShape], Int);
+  ShapeChildren(Array[AliasExpansionShape], Int);
+  ShapeClosed(Int)
+}
+
+fn shape_size(_ shape: AliasExpansionShape) -> Int {
+  match shape {
+    ShapeName(_, _, size) => size,
+    ShapeConstructor(_, _) => 1,
+    ShapeApplication(_, _, size) => size,
+    ShapeChildren(_, size) => size,
+    ShapeClosed(size) => size
+  }
+}
+
+fn shape_add(total: Int, extra: Int, limit: Int) -> Int {
+  if total > limit || extra > limit || total > limit - extra {
+    limit + 1
+  } else {
+    total + extra
+  }
+}
+
+fn shape_children_size(children: Array[AliasExpansionShape], root: Int, limit: Int) -> Int {
+  let mut total = root
+  let mut i = 0
+  while i < Array::length(children) && total <= limit {
+    total = shape_add(total = total, extra = shape_size(Array::get(children, at = i)), limit = limit)
+    i = i + 1
+  }
+  total
+}
+
+fn shape_name(name: String, args: Array[AliasExpansionShape], limit: Int) -> AliasExpansionShape {
+  ShapeName(name, args, shape_children_size(children = args, root = 1, limit = limit))
+}
+
+fn shape_application(head: AliasExpansionShape, args: Array[AliasExpansionShape], limit: Int) -> AliasExpansionShape {
+  ShapeApplication(head, args, shape_children_size(children = args, root = shape_add(total = 1, extra = shape_size(head), limit = limit), limit = limit))
+}
+
+fn shape_children(args: Array[AliasExpansionShape], limit: Int) -> AliasExpansionShape {
+  ShapeChildren(args, shape_children_size(children = args, root = 1, limit = limit))
+}
+
+fn shape_from_types(types: Array[Type], limit: Int) -> Array[AliasExpansionShape] {
+  let out: Array[AliasExpansionShape] = []
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(types) && total <= limit {
+    let shape = shape_from_type(ty = Array::get(types, at = i), limit = limit)
+    total = shape_add(total = total, extra = shape_size(shape), limit = limit)
+    Array::push(out, value = shape)
+    i = i + 1
+  }
+  out
+}
+
+fn shape_from_type(ty: Type, limit: Int) -> AliasExpansionShape {
+  match ty {
+    CtNamed(name, args) => shape_name(name = name, args = shape_from_types(types = args, limit = limit), limit = limit),
+    CtConstructor(name, arity) => ShapeConstructor(name, arity),
+    CtApplied(head, args) => shape_application(head = shape_from_type(ty = head, limit = limit), args = shape_from_types(types = args, limit = limit), limit = limit),
+    CtArray(elem) => shape_children(args = [
+      shape_from_type(ty = elem, limit = limit)
+    ], limit = limit),
+    CtOption(elem) => shape_children(args = [
+      shape_from_type(ty = elem, limit = limit)
+    ], limit = limit),
+    CtTuple(elems) => shape_children(args = shape_from_types(types = elems, limit = limit), limit = limit),
+    CtFn(params, ret, _) => {
+      let children = shape_from_types(types = params, limit = limit)
+      Array::push(children, value = shape_from_type(ty = ret, limit = limit))
+      shape_children(args = children, limit = limit)
+    },
+    // resolve_type_alias_params clones these without substituting inside.
+    CtForAll(_, _, body) => ShapeClosed(shape_add(total = 1, extra = shape_size(shape_from_type(ty = body, limit = limit)), limit = limit)),
+    CtRecord(fields) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(fields) && total <= limit {
+        let (_, ty) = Array::get(fields, at = i)
+        total = shape_add(total = total, extra = shape_size(shape_from_type(ty = ty, limit = limit)), limit = limit)
+        i = i + 1
+      }
+      ShapeClosed(total)
+    },
+    _ => ShapeClosed(1)
+  }
+}
+
+fn shape_param_index(params: Array[String], name: String) -> Int {
+  let mut at = 0 - 1
+  let mut i = 0
+  while i < Array::length(params) {
+    if type_param_name(Array::get(params, at = i)) == name {
+      at = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  at
+}
+
+// The peak includes eagerly evaluated arguments, even if the constructor
+// ignores them. Count the result separately from these temporary children.
+fn shape_apply(head: AliasExpansionShape, args: Array[AliasExpansionShape], legacy: Bool, limit: Int) -> AliasExpansionShape {
+  if shape_size(head) > limit || shape_children_size(children = args, root = 0, limit = limit) > limit {
+    ShapeClosed(limit + 1)
+  } else {
+    let result = match head {
+      ShapeApplication(tag, meta, _) => match tag {
+        ShapeName(name, tag_args, _) => if name == "#alias_ctor" && Array::length(tag_args) == 0 && Array::length(meta) > 0 {
+          // Outer substitution may replace a binder node. Like the real
+          // resolver, compare arity only after filtering surviving names.
+          let params: Array[String] = []
+          let mut i = 1
+          while i < Array::length(meta) {
+            match Array::get(meta, at = i) {
+              ShapeName(n, _, _) => Array::push(params, value = n),
+              _ => ()
+            }
+            i = i + 1
+          }
+          if Array::length(params) == Array::length(args) {
+            shape_substitute(shape = Array::get(meta, at = 0), params = params, args = args, limit = limit)
+          } else {
+            shape_application(head = head, args = args, limit = limit)
+          }
+        } else {
+          shape_application(head = head, args = args, limit = limit)
+        },
+        _ => shape_application(head = head, args = args, limit = limit)
+      },
+      ShapeConstructor(name, arity) => if !legacy && arity == Array::length(args) {
+        if (name == "Array" || name == "Option") && arity == 1 {
+          shape_children(args = args, limit = limit)
+        } else {
+          shape_name(name = name, args = args, limit = limit)
+        }
+      } else if legacy {
+        shape_legacy_application(head = head, args = args, limit = limit)
+      } else {
+        shape_application(head = head, args = args, limit = limit)
+      },
+      _ => if legacy {
+        shape_legacy_application(head = head, args = args, limit = limit)
+      } else {
+        shape_application(head = head, args = args, limit = limit)
+      }
+    }
+    let held = shape_children_size(children = args, root = shape_size(head), limit = limit)
+    if shape_add(total = held, extra = shape_size(result), limit = limit) > limit {
+      ShapeClosed(limit + 1)
+    } else {
+      result
+    }
+  }
+}
+
+fn shape_legacy_application(head: AliasExpansionShape, args: Array[AliasExpansionShape], limit: Int) -> AliasExpansionShape {
+  match head {
+    ShapeName(name, previous, _) => if Array::length(args) == 0 {
+      head
+    } else if name == hkt_app_name() {
+      let all = for a in previous {
+        a
+      }
+      for a in args {
+        Array::push(all, value = a)
+      }
+      shape_name(name = name, args = all, limit = limit)
+    } else if Array::length(previous) == 0 && String::starts_with(name, prefix = hkt_ctor_prefix()) {
+      shape_legacy_application(head = shape_name(name = name[String::length(hkt_ctor_prefix()): String::length(name)], args = [
+      ], limit = limit), args = args, limit = limit)
+    } else if Array::length(previous) == 0 && !String::starts_with(name, prefix = "#hktformal.") {
+      if (name == "Array" || name == "Option") && Array::length(args) == 1 {
+        shape_children(args = args, limit = limit)
+      } else {
+        shape_name(name = name, args = args, limit = limit)
+      }
+    } else {
+      let all = [head]
+      for a in args {
+        Array::push(all, value = a)
+      }
+      shape_name(name = hkt_app_name(), args = all, limit = limit)
+    },
+    _ => {
+      let all = [head]
+      for a in args {
+        Array::push(all, value = a)
+      }
+      shape_name(name = hkt_app_name(), args = all, limit = limit)
+    }
+  }
+}
+
+fn shape_substitute_children(children: Array[AliasExpansionShape], params: Array[String], args: Array[AliasExpansionShape], limit: Int) -> Array[AliasExpansionShape] {
+  let out: Array[AliasExpansionShape] = []
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(children) && total <= limit {
+    let child = shape_substitute(shape = Array::get(children, at = i), params = params, args = args, limit = limit - total)
+    total = shape_add(total = total, extra = shape_size(child), limit = limit)
+    Array::push(out, value = child)
+    i = i + 1
+  }
+  out
+}
+
+fn shape_substitute(shape: AliasExpansionShape, params: Array[String], args: Array[AliasExpansionShape], limit: Int) -> AliasExpansionShape {
+  if shape_size(shape) > limit {
+    ShapeClosed(limit + 1)
+  } else {
+    match shape {
+      ShapeName(name, children, _) => {
+        let at = shape_param_index(params = params, name = name)
+        if at >= 0 && at < Array::length(args) {
+          let replacement = Array::get(args, at = at)
+          if Array::length(children) == 0 {
+            replacement
+          } else {
+            shape_apply(head = replacement, args = shape_substitute_children(children = children, params = params, args = args, limit = limit), legacy = true, limit = limit)
+          }
+        } else {
+          shape_name(name = name, args = shape_substitute_children(children = children, params = params, args = args, limit = limit), limit = limit)
+        }
+      },
+      ShapeApplication(head, children, _) => {
+        let resolved_head = shape_substitute(shape = head, params = params, args = args, limit = limit)
+        let held = shape_size(resolved_head)
+        if held > limit {
+          ShapeClosed(limit + 1)
+        } else {
+          shape_apply(head = resolved_head, args = shape_substitute_children(children = children, params = params, args = args, limit = limit - held), legacy = false, limit = limit)
+        }
+      },
+      ShapeChildren(children, _) => shape_children(args = shape_substitute_children(children = children, params = params, args = args, limit = limit), limit = limit),
+      _ => shape
+    }
+  }
+}
+
+fn shape_def_index(defs: Array[TypeDef], name: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(defs) && found < 0 {
+    let n = match Array::get(defs, at = i) {
+      TDAlias(n, _, _) => n,
+      TDEnum(n, _, _) => n,
+      TDStruct(n, _, _, _) => n,
+      TDEffect(n, _, _, _, _) => n,
+      TDEffectSet(n, _) => n
+    }
+    if n == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn shape_named_expr(name: String, source_args: Array[TypeExpr], defs: Array[TypeDef], shadow: Array[String], capped: Array[Int], limit: Int) -> (AliasExpansionShape, Int) {
+  let args: Array[AliasExpansionShape] = []
+  let mut peak = 0
+  let mut total = 0
+  for te in source_args {
+    let (shape, child_peak) = shape_expr(te = te, defs = defs, shadow = shadow, capped = capped, limit = limit)
+    let live = shape_add(total = total, extra = child_peak, limit = limit)
+    if live > peak {
+      peak = live
+    } else {
+      ()
+    }
+    Array::push(args, value = shape)
+    total = shape_add(total = total, extra = shape_size(shape), limit = limit)
+  }
+  if peak > limit {
+    (ShapeClosed(limit + 1), limit + 1)
+  } else if type_expr_name_is_shadowed(shadow = shadow, name = name) {
+    let shape = if type_expr_shadowed_arity(shadow = shadow, name = name) > 0 && Array::length(args) > 0 {
+      shape_application(head = shape_name(name = name, args = [], limit = limit), args = args, limit = limit)
+    } else {
+      shape_name(name = name, args = args, limit = limit)
+    }
+    (shape, if shape_size(shape) > peak {
+      shape_size(shape)
+    } else {
+      peak
+    })
+  } else {
+    let idx = shape_def_index(defs = defs, name = name)
+    let mut is_capped = false
+    for at in capped {
+      if at == idx {
+        is_capped = true
+      } else {
+        ()
+      }
+    }
+    if idx >= 0 && is_capped {
+      (ShapeClosed(limit + 1), limit + 1)
+    } else {
+      let mut result = if name == "Array" && Array::length(args) == 1 || name == "Option" && Array::length(args) == 1 {
+        shape_children(args = args, limit = limit)
+      } else if name == "StringMap" && Array::length(args) == 1 && idx < 0 {
+        shape_name(name = "Map", args = [
+          ShapeClosed(1),
+          Array::get(args, at = 0)
+        ], limit = limit)
+      } else {
+        shape_name(name = name, args = args, limit = limit)
+      }
+      if idx >= 0 && !(name == "Array" && Array::length(args) == 1) && !(name == "Option" && Array::length(args) == 1) {
+        match Array::get(defs, at = idx) {
+          TDAlias(_, params, body) => {
+            let reified: Array[AliasExpansionShape] = []
+            let mut i = 0
+            while i < Array::length(args) {
+              let mut arg = Array::get(args, at = i)
+              if i < Array::length(params) && type_param_arity(Array::get(params, at = i)) > 0 {
+                match Array::get(source_args, at = i) {
+                  TyName(n) => if type_expr_shadowed_arity(shadow = shadow, name = n) <= 0 {
+                    let di = shape_def_index(defs = defs, name = n)
+                    if di >= 0 {
+                      match Array::get(defs, at = di) {
+                        TDAlias(_, ps, b) => if Array::length(ps) > 0 {
+                          let meta = [shape_from_type(ty = b, limit = limit)]
+                          for param in ps {
+                            Array::push(meta, value = shape_name(name = param, args = [
+                            ], limit = limit))
+                          }
+                          arg = shape_application(head = shape_name(name = "#alias_ctor", args = [
+                          ], limit = limit), args = meta, limit = limit)
+                        } else {
+                          ()
+                        },
+                        TDStruct(n, _, _, ps) => arg = ShapeConstructor(n, Array::length(ps)),
+                        TDEnum(n, ps, _) => arg = ShapeConstructor(n, Array::length(ps)),
+                        _ => ()
+                      }
+                    } else {
+                      arg = ShapeConstructor(n, type_param_arity(Array::get(params, at = i)))
+                    }
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              }
+              Array::push(reified, value = arg)
+              i = i + 1
+            }
+            let held_args = shape_children_size(children = reified, root = 0, limit = limit)
+            result = if held_args > limit {
+              ShapeClosed(limit + 1)
+            } else if Array::length(source_args) == 0 {
+              shape_from_type(ty = body, limit = limit)
+            } else {
+              shape_substitute(shape = shape_from_type(ty = body, limit = limit), params = params, args = reified, limit = limit - held_args)
+            }
+            let own_peak = shape_add(total = shape_children_size(children = reified, root = 0, limit = limit), extra = shape_size(result), limit = limit)
+            if own_peak > peak {
+              peak = own_peak
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      if shape_size(result) > peak {
+        peak = shape_size(result)
+      } else {
+        ()
+      }
+      (result, peak)
+    }
+  }
+}
+
+fn shape_expr(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped: Array[Int], limit: Int) -> (AliasExpansionShape, Int) {
+  match te {
+    TyUnit => (ShapeClosed(1), 1),
+    TyName(name) => if type_expr_name_is_shadowed(shadow = shadow, name = name) {
+      (shape_name(name = name, args = [], limit = limit), 1)
+    } else {
+      match resolve_builtin(name) {
+        Some(_) => (ShapeClosed(1), 1),
+        None => shape_named_expr(name = name, source_args = [], defs = defs, shadow = shadow, capped = capped, limit = limit)
+      }
+    },
+    TyApp(name, args) => shape_named_expr(name = name, source_args = args, defs = defs, shadow = shadow, capped = capped, limit = limit),
+    TyTuple(elems) => {
+      let (shape, peak) = shape_named_expr(name = "", source_args = elems, defs = defs, shadow = shadow, capped = capped, limit = limit)
+      match shape {
+        ShapeName(_, children, _) => (shape_children(args = children, limit = limit), peak),
+        _ => (shape, peak)
+      }
+    },
+    TyFn(params, ret, _) => {
+      let children = for p in params {
+        p
+      }
+      Array::push(children, value = ret)
+      let (shape, peak) = shape_named_expr(name = "", source_args = children, defs = defs, shadow = shadow, capped = capped, limit = limit)
+      match shape {
+        ShapeName(_, args, _) => (shape_children(args = args, limit = limit), peak),
+        _ => (shape, peak)
+      }
+    }
+  }
+}
+
+export fn kinded_alias_expansion_peak(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped: Array[Int], limit: Int) -> Int {
+  shape_expr(te = te, defs = defs, shadow = shadow, capped = capped, limit = limit).1
+}
+
+fn type_has_application(_ ty: Type) -> Bool {
+  match ty {
+    CtApplied(_, _) => true,
+    CtNamed(_, children) => types_have_application(children),
+    CtTuple(children) => types_have_application(children),
+    CtArray(t) => type_has_application(t),
+    CtOption(t) => type_has_application(t),
+    CtFn(ps, ret, _) => types_have_application(ps) || type_has_application(ret),
+    _ => false
+  }
+}
+
+fn types_have_application(_ types: Array[Type]) -> Bool {
+  let mut found = false
+  for ty in types {
+    if !found && type_has_application(ty) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+export fn alias_expr_needs_shapes(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Bool {
+  match te {
+    TyName(n) => shape_name_needs_shapes(name = n, defs = defs, shadow = shadow),
+    TyApp(n, args) => shape_name_needs_shapes(name = n, defs = defs, shadow = shadow) || alias_args_need_shapes(args = args, defs = defs, shadow = shadow),
+    TyTuple(args) => alias_args_need_shapes(args = args, defs = defs, shadow = shadow),
+    TyFn(ps, ret, _) => alias_args_need_shapes(args = ps, defs = defs, shadow = shadow) || alias_expr_needs_shapes(te = ret, defs = defs, shadow = shadow),
+    TyUnit => false
+  }
+}
+
+fn alias_args_need_shapes(args: Array[TypeExpr], defs: Array[TypeDef], shadow: Array[String]) -> Bool {
+  let mut found = false
+  for arg in args {
+    if !found && alias_expr_needs_shapes(te = arg, defs = defs, shadow = shadow) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn shape_name_needs_shapes(name: String, defs: Array[TypeDef], shadow: Array[String]) -> Bool {
+  let idx = shape_def_index(defs = defs, name = name)
+  if type_expr_name_is_shadowed(shadow = shadow, name = name) {
+    // A kinded formal has an encoded binder key. Keep it on the shape lane
+    // rather than letting the scalar count look up a bare global alias.
+    type_expr_shadowed_arity(shadow = shadow, name = name) > 0
+  } else if idx < 0 {
+    false
+  } else {
+    match Array::get(defs, at = idx) {
+      TDAlias(_, ps, body) => {
+        let mut kinded = false
+        for p in ps {
+          if type_param_arity(p) > 0 {
+            kinded = true
+          } else {
+            ()
+          }
+        }
+        kinded || type_has_application(body)
+      },
+      _ => false
+    }
+  }
+}

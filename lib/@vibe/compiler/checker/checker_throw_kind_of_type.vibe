@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  alias_expansion_node_limit,
   apply_type_constructor,
   canonical_trait_arg_type_expr,
   canonical_trait_key,
@@ -60,6 +61,7 @@ import @vibe/compiler/core {
   trait_method_sig_binders_deep,
   trait_method_sig_deep,
   type_constructor_name,
+  type_expr_expansion_node_count,
   type_to_string,
   unify
 }
@@ -752,7 +754,15 @@ export fn record_decl_exception_kinds(stmts: Array[Stmt], defs: Array[TypeDef], 
           scratch
         }, record_kinds = true)
         if complete && exported {
-          refuse_unpublishable_exception_row(t = resolve_type_expr_shadowed(te = te, defs = defs, shadow = params), owner = name, anchor = name, defs = defs, errors = errors)
+          // Completion reports the primary expansion error. Collecting a
+          // secondary publication diagnostic must not resolve that same
+          // refused expression again (#3995).
+          let limit = alias_expansion_node_limit()
+          if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = limit) <= limit {
+            refuse_unpublishable_exception_row(t = resolve_type_expr_shadowed(te = te, defs = defs, shadow = params), owner = name, anchor = name, defs = defs, errors = errors)
+          } else {
+            ()
+          }
         } else {
           ()
         }

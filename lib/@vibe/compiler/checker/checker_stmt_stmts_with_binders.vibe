@@ -2332,7 +2332,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // #3536: an alias is expanded in place, so one that reaches itself
         // (`type A = B` / `type B = A`) names no type at all. It resolved to
         // a wildcard and accepted every value.
-        if alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = te) {
+        let recursive_alias = alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = te)
+        if recursive_alias {
           Array::push(errors, value = "type alias `\{name}` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type")
         } else {
           ()
@@ -2343,7 +2344,12 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // declaration order. Preflight before resolving too: dependency-first
         // alias declarations can already carry a completed exponential DAG at
         // this initial registration point, before the completion refresh runs.
-        let t = if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = alias_expansion_node_limit()) > alias_expansion_node_limit() {
+        // Keep the recursive declaration nominal from its first registration.
+        // Otherwise secondary diagnostics can apply its already expanded body
+        // again before the recursion error is returned (#3995).
+        let t = if recursive_alias {
+          CtNamed(name, array_empty())
+        } else if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = alias_expansion_node_limit()) > alias_expansion_node_limit() {
           report_alias_expansion_limit(name = name, errors = errors)
           CtNamed(name, array_empty())
         } else {
