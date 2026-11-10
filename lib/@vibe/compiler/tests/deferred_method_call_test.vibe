@@ -10,7 +10,24 @@
 // receiver gets.
 
 import @vibe/compiler/checker {
-  check_program
+  check_program,
+  check_program_with_env_direct_expression_return_observation,
+  check_program_with_env_typed_occurrence_expression_path_observation
+}
+
+import @vibe/compiler/checker/artifacts {
+  checked_direct_expression_return_observation_expression_path_at,
+  checked_direct_expression_return_observation_row_count,
+  checked_typed_occurrence_expression_path_observation_expression_path_at,
+  checked_typed_occurrence_expression_path_observation_row_count
+}
+
+import @vibe/compiler/core {
+  BindingOrigin, Expr, Stmt, Type, TypeEnv, TypeExpr, env_bind, env_bind_with_origin
+}
+
+import @vibe/core {
+  array_empty
 }
 
 import @vibe/compiler/syntax {
@@ -109,4 +126,81 @@ test "#4037: a string is still refused where a late method wants Int32" {
 
 test "#4037: a literal outside UInt32's range is refused" {
   inspect(first_check_error(int32_source("c.addu(k = -1)")), content = "integer literal -1 does not fit `UInt32` (0 .. 4294967295): use an `Int`, or write a value in range")
+}
+
+//# Typed-occurrence capture
+
+/// `apply(c = d, f = (c) -> c.add(k = n))`, built by hand so the capture
+/// lanes see exactly this tree; `ann` annotates the lambda's parameter.
+fn capture_stmts(_ ann: Option[TypeExpr]) -> Array[Stmt] {
+  [
+    SStruct(false, "Counter", [("n", TyName("Int"))], array_empty(), array_empty(), array_empty()),
+    SLet(false, false, "result", None, ECall(EIdent("apply", 10), [
+      ELabeledArg("c", "", EIdent("d", 15)),
+      ELabeledArg("f", "", EFn([], [], [("c", ann)], None, None, ECall(EDot(EIdent("c", 20), "add", 21, 22), [
+        ELabeledArg("k", "", EIdent("n", 30))
+      ], 25, [])))
+    ], 11, []))
+  ]
+}
+
+fn capture_env() -> TypeEnv {
+  let counter = CtNamed("Counter", [])
+  let with_values = env_bind(env = env_bind(env = EnvEmpty, name = "d", ty = counter), name = "n", ty = CtInt)
+  let with_method = env_bind_with_origin(env = with_values, name = "Counter::add", ty = CtFn([
+    counter,
+    CtInt
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["c", "k"]))
+  env_bind_with_origin(env = with_method, name = "apply", ty = CtFn([
+    counter,
+    CtFn([counter], CtInt, None)
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["c", "f"]))
+}
+
+fn render_path(_ path: Option[Array[Int]]) -> String {
+  match path {
+    Some(steps) => String::join(for step in steps {
+      __to_string(step)
+    }, sep = "."),
+    None => "none"
+  }
+}
+
+/// Every typed-occurrence row's expression path, then whether the direct
+/// expression-return observation could be built and its row paths.
+fn capture_paths(_ ann: Option[TypeExpr]) -> String with Exception {
+  let occurrence = match check_program_with_env_typed_occurrence_expression_path_observation(stmts = capture_stmts(ann), initial_env = capture_env()) {
+    Some(o) => {
+      let rows: Array[String] = []
+      let mut i = 0
+      while i < checked_typed_occurrence_expression_path_observation_row_count(o) {
+        Array::push(rows, value = render_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation = o, row_index = i)))
+        i = i + 1
+      }
+      String::join(rows, sep = " ")
+    },
+    None => "no occurrence observation"
+  }
+  let direct = match check_program_with_env_direct_expression_return_observation(stmts = capture_stmts(ann), initial_env = capture_env()) {
+    Some(o) => {
+      let rows: Array[String] = []
+      let mut i = 0
+      while i < checked_direct_expression_return_observation_row_count(o) {
+        Array::push(rows, value = render_path(checked_direct_expression_return_observation_expression_path_at(observation = o, row_index = i)))
+        i = i + 1
+      }
+      String::join(rows, sep = " ")
+    },
+    None => "no direct observation"
+  }
+  occurrence + " | " + direct
+}
+
+test "#4037: a late receiver's labeled argument keeps its capture paths" {
+  // Codex on #4046: the labeled wrapper stays in the checked tree, so `n` is
+  // at its child path (`..1.0`) and the direct-return frames line up, exactly
+  // as for the annotated receiver.
+  let annotated = capture_paths(Some(TyName("Counter")))
+  inspect(capture_paths(None) == annotated, content = "true")
+  inspect(annotated, content = "1.0 2.0.0.0.0 2.0.0.1.0 2.0.0  | no direct observation")
 }

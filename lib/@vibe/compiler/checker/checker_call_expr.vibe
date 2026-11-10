@@ -3,7 +3,11 @@ import ./checker_expr_capture_helpers.vibe {
 }
 
 import ./checker_call_arguments.vibe {
-  check_written_call_arguments, checker_call_argument_env, checker_call_argument_positions, checker_call_argument_value
+  check_written_call_arguments,
+  checker_call_argument_env,
+  checker_call_argument_positions,
+  checker_call_argument_value,
+  checker_known_labeled_argument_env
 }
 
 import ./checker_call_placement.vibe {
@@ -2415,12 +2419,14 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   }
                   // #4037: a labeled argument types as `CtUnknown` until a
                   // placement is published, and a late receiver's waits for
-                  // the receiver; its value is what the judgement compares.
-                  let (at, ns, nc) = check_child(if late_receiver >= 0 {
-                    checker_call_argument_value(marg)
+                  // the receiver. Its value's type is what the judgement
+                  // compares, so the wrapper is checked in a known-value
+                  // context; it stays in the tree, keeping capture paths.
+                  let (at, ns, nc) = if late_receiver >= 0 {
+                    check_child_original(marg, checker_known_labeled_argument_env(arg = marg, env = marg_env), defs, marg_s, c3, errors, tytab, capture, lane)
                   } else {
-                    marg
-                  }, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
+                    check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
+                  }
                   Array::push(arg_tys, value = at)
                   // #3341: see the named-call path.
                   s3 = if ai < Array::length(method_param_tys) {
