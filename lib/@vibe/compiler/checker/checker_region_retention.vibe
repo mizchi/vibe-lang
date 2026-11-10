@@ -1,3 +1,7 @@
+import ./checker_deferred_method_rows.vibe {
+  deferred_method_calls_restore, deferred_method_calls_snapshot, struct DeferredMethodCall
+}
+
 import ./checker_scalar_locals.vibe {
   scalar_local_sites_mark, scalar_local_sites_rewind
 }
@@ -330,8 +334,6 @@ export fn retention_type_may_hide_region(_ t: Type) -> Bool {
       for item in items {
         if retention_type_may_hide_region(item) {
           any = true
-        } else {
-          ()
         }
       }
       any
@@ -342,8 +344,6 @@ export fn retention_type_may_hide_region(_ t: Type) -> Bool {
         let (_, fty) = field
         if retention_type_may_hide_region(fty) {
           any = true
-        } else {
-          ()
         }
       }
       any
@@ -447,8 +447,6 @@ fn retention_union_into(out: Array[String], items: Array[String]) -> Unit {
   for item in items {
     if !retention_string_has(items = out, wanted = item) {
       Array::push(out, value = item)
-    } else {
-      ()
     }
   }
   ()
@@ -2443,6 +2441,7 @@ fn retention_args_predate(items: Array[Expr], env: TypeEnv) -> Array[String] {
 /// The per-run tables a check of a lambda body may change, as they were.
 struct RetentionCheckpoint {
   field_reads: Array[(Int, String, Int, Int, String, Int)];
+  method_calls: Array[DeferredMethodCall];
   eq_sites: Array[(Int, Type, String)];
   callee_inst: Int;
   value_inst: Int;
@@ -2457,6 +2456,7 @@ struct RetentionCheckpoint {
 fn retention_checkpoint() -> RetentionCheckpoint {
   RetentionCheckpoint::{
     field_reads: Array::slice(deferred_field_reads, start = 0, end = Array::length(deferred_field_reads)),
+    method_calls: deferred_method_calls_snapshot(),
     eq_sites: Array::slice(deferred_eq_sites, start = 0, end = Array::length(deferred_eq_sites)),
     callee_inst: Array::length(callee_inst_types_cell),
     value_inst: Array::length(value_inst_types_cell),
@@ -2474,6 +2474,7 @@ fn retention_restore(_ cp: RetentionCheckpoint) -> Unit {
   for row in cp.field_reads {
     Array::push(deferred_field_reads, value = row)
   }
+  deferred_method_calls_restore(cp.method_calls)
   Array::truncate(deferred_eq_sites, length = 0)
   for row in cp.eq_sites {
     Array::push(deferred_eq_sites, value = row)
@@ -2481,8 +2482,6 @@ fn retention_restore(_ cp: RetentionCheckpoint) -> Unit {
   rewind_call_records(callee_mark = cp.callee_inst, value_mark = cp.value_inst, map_site_mark = cp.map_sites)
   if Array::length(throw_payload_sites) > cp.throw_sites {
     Array::truncate(throw_payload_sites, length = cp.throw_sites)
-  } else {
-    ()
   }
   eq_formal_rows_restore(efn_mark = cp.efn_formals, mark = cp.formal_rows)
   Array::truncate(spawn_value_let_rhs_cell, length = 0)

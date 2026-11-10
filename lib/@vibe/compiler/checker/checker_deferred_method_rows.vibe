@@ -1,0 +1,62 @@
+// #4037: the dot calls `obj.method(args)` whose receiver was still an
+// unsolved type variable when the call was checked -- an unannotated lambda
+// parameter, typically, which meets its type only when the enclosing call
+// unifies the lambda with its parameter
+// (`Array::fold(xs, init = 0, f = (acc, c) -> acc + c.size())`). Such a call
+// names no `T::method` yet, so nothing could compare its arguments with a
+// signature. Each one is recorded here and judged again by
+// `resolve_deferred_method_calls` (checker_deferred_method_call.vibe) once
+// the receiver has resolved. This file holds only the table, so the files
+// that reset or checkpoint per-run state can reach it without reaching the
+// checker.
+
+import @vibe/compiler/core {
+  Expr, Type
+}
+
+/// One pending dot call. `recv` is the receiver's variable; `callee` is the
+/// written `obj.method` and `obj` its receiver; `method_off` is the method
+/// name's offset and `call_off` the call's; `cell` is the call's placement
+/// cell, published only once the call is judged; `args` and `arg_tys` are the
+/// written arguments and the types they checked at, in written order; and
+/// `result` is the variable the call was typed with.
+export struct DeferredMethodCall {
+  recv: Int;
+  callee: Expr;
+  obj: Expr;
+  method: String;
+  method_off: Int;
+  call_off: Int;
+  cell: Array[Int];
+  args: Array[Expr];
+  arg_tys: Array[Type];
+  result: Int
+}
+
+/// The pending rows, in recording order. Reset per run, since variable ids
+/// restart.
+let deferred_method_calls: Array[DeferredMethodCall] = []
+
+/// Record `row` for a later judgement.
+export fn defer_method_call(_ row: DeferredMethodCall) -> Unit {
+  Array::push(deferred_method_calls, value = row)
+}
+
+/// A copy of the pending rows, for a check whose effects are rolled back.
+export fn deferred_method_calls_snapshot() -> Array[DeferredMethodCall] {
+  Array::slice(deferred_method_calls, start = 0, end = Array::length(deferred_method_calls))
+}
+
+/// Put back the rows `deferred_method_calls_snapshot` copied.
+export fn deferred_method_calls_restore(_ rows: Array[DeferredMethodCall]) -> Unit {
+  Array::truncate(deferred_method_calls, length = 0)
+  for row in rows {
+    Array::push(deferred_method_calls, value = row)
+  }
+  ()
+}
+
+/// Drop every pending row: a new run numbers its variables from zero.
+export fn reset_deferred_method_calls() -> Unit {
+  Array::truncate(deferred_method_calls, length = 0)
+}

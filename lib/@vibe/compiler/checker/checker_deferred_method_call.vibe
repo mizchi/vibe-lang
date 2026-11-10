@@ -1,0 +1,314 @@
+// #4037: judge a dot call whose receiver was an unsolved variable when it was
+// checked, once that variable has resolved.
+//
+// `Array::fold(xs, init = 0, f = (acc, c) -> acc + c.size(99, "x"))` checks
+// the lambda before the fold unifies `c` with `Counter`, so the dot-call arm
+// saw a receiver with no type, found no `T::size`, and typed the call as
+// `CtUnknown` without comparing its arguments with anything. Measured on main
+// at 76e511a4a, that call checked clean and the build then failed with an
+// internal `unknown struct field: size`; through a function stored in a field
+// (`(v) -> v.f("abc")` with `f: (Int) -> Int`) it ran and printed a string's
+// address plus one. The arm now records the call (checker_deferred_method_rows)
+// and types it with a fresh result variable; the passes below judge it with
+// the arms an annotated receiver gets: arity, argument types and labels against
+// `T::method`, or against the field's function type, or the `no method` edit.
+
+import ./checker_deferred_method_rows.vibe {
+  deferred_method_calls_restore, deferred_method_calls_snapshot, struct DeferredMethodCall
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  lookup_builtin_in_env, receiver_struct_field_type, type_name_prefix, unify_call_args, unify_call_args_with_source_placement
+}
+
+import ./checker_expr_capture_helpers.vibe {
+  dot_call_field_companion_refusal, dot_call_qualified_name
+}
+
+import ./checker_infer_binop_type.vibe {
+  is_known_builtin_receiver_prefix
+}
+
+import ./checker_call_placement.vibe {
+  checker_capture_resolved_call_placement, checker_record_opaque_call_placement, checker_record_resolved_call_placement
+}
+
+import ./checker_label_sites.vibe {
+  checker_check_required_labels, checker_note_label_site
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  __to_string,
+  call_placement_get,
+  call_placement_is_identity,
+  call_placement_is_pending,
+  env_lookup,
+  find_typedef,
+  instantiate,
+  resolve_builtin,
+  subst_apply,
+  type_to_string,
+  unify
+}
+
+/// The edit for `x.method(..)` on a declared receiver `type_prefix` that has
+/// neither `type_prefix::method` nor a field `method`.
+export fn dot_call_no_method_message(env: TypeEnv, type_prefix: String, method: String, qualified: String) -> String {
+  // Codex P2 on #961: with no bare binding of this name, suggesting
+  // `x |> method` re-enters the same fallback and reproduces this diagnostic.
+  let bare_hint = match env_lookup(env = env, name = method) {
+    Some(_) => "(...)` (a bare `fn " + method + "` is only callable as `" + method + "(x)` or `x |> " + method + "`)",
+    None => "(...)`"
+  }
+  "no method `" + method + "` on `" + type_prefix + "`: declare a top-level `fn " + qualified + bare_hint
+}
+
+/// #994: the edit for `x.method(..)` on a builtin receiver (`String`,
+/// `Array`, ...) with no program `fn T::method`. Codegen compiles such a call
+/// as a struct-field read, so it is refused whatever its arguments: a builtin
+/// method is called by its qualified name, and #3163 leads with a builtin
+/// FUNCTION of that name when there is one.
+export fn dot_call_builtin_receiver_message(env: TypeEnv, type_prefix: String, method: String, qualified: String) -> String {
+  match lookup_builtin_in_env(env = env, name = qualified) {
+    Some(_) => "dot-call syntax is not supported for the builtin method `" + qualified + "` -- call it as `" + qualified + "(...)`",
+    None => {
+      let builtin_fn = match env_lookup(env = env, name = method) {
+        Some(_) => false,
+        None => lookup_builtin_in_env(env = env, name = method) is Some(_)
+      }
+      if builtin_fn {
+        "no method `" + method + "` on `" + type_prefix + "`: `" + method + "` is a function, not a method -- call it as `" + method + "(x)` or `x |> " + method + "`"
+      } else {
+        dot_call_no_method_message(env = env, type_prefix = type_prefix, method = method, qualified = qualified)
+      }
+    }
+  }
+}
+
+/// Judge every pending dot call whose receiver has resolved under `s`, in
+/// recording order, so a chained call whose receiver is an earlier row's
+/// result resolves in the same pass. A row whose receiver is still a variable
+/// is kept for a later pass -- a lambda's parameter is solved by a call in the
+/// ENCLOSING body -- unless `last` is set: the program-end pass gives such a
+/// row the placement it had before #4037 (a call through a value) and drops
+/// it. A receiver that stands for a type parameter stays a variable too, so
+/// a call that dispatches through a bound's witness is judged as it always
+/// was. Returns the substitution extended by the resolved results, and the
+/// next fresh variable.
+export fn resolve_deferred_method_calls(s: Subst, c: Int, env: TypeEnv, defs: Array[TypeDef], errors: Array[String], last: Bool) -> (Subst, Int) {
+  let rows = deferred_method_calls_snapshot()
+  deferred_method_calls_restore([])
+  let kept: Array[DeferredMethodCall] = []
+  let mut cur_s = s
+  let mut cur_c = c
+  for row in rows {
+    match subst_apply(s = cur_s, ty = CtVar(row.recv)) {
+      CtVar(_) => Array::push(kept, value = row),
+      CtUnknown => checker_record_opaque_call_placement(cell = row.cell, errors = errors),
+      resolved => {
+        let (ns, nc) = judge_deferred_method_call(row = row, recv = resolved, env = env, defs = defs, s = cur_s, c = cur_c, errors = errors)
+        cur_s = ns
+        cur_c = nc
+      }
+    }
+  }
+  // Judging checks no expression, so nothing was recorded meanwhile. The
+  // unresolved rows are placed only after every resolved one: a row filed by
+  // a discarded check shares its call's cell, and the first placement of a
+  // cell is the one that holds.
+  if last {
+    for row in kept {
+      checker_record_opaque_call_placement(cell = row.cell, errors = errors)
+    }
+    deferred_method_calls_restore([])
+  } else {
+    deferred_method_calls_restore(kept)
+  }
+  (cur_s, cur_c)
+}
+
+fn judge_deferred_method_call(row: DeferredMethodCall, recv: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (Subst, Int) {
+  let type_prefix = type_name_prefix(recv)
+  let qualified = dot_call_qualified_name(env = env, defs = defs, type_prefix = type_prefix, method = row.method)
+  let marker = off_marker_len(off = row.method_off, len = String::length(row.method))
+  match dot_call_field_companion_refusal(env = env, defs = defs, type_prefix = type_prefix, method = row.method) {
+    Some(message) => Array::push(errors, value = message + marker),
+    None => ()
+  }
+  let declared = find_typedef(defs = defs, name = type_prefix) is Some(_)
+  match env_lookup(env = env, name = qualified) {
+    Some(scheme) => judge_declared_method(row = row, recv = recv, scheme = scheme, qualified = qualified, env = env, defs = defs, s = s, c = c, errors = errors),
+    None => if !declared && is_known_builtin_receiver_prefix(type_prefix) {
+      Array::push(errors, value = dot_call_builtin_receiver_message(env = env, type_prefix = type_prefix, method = row.method, qualified = qualified) + marker)
+      (s, c)
+    } else {
+      match receiver_struct_field_type(defs = defs, recv = recv, field = row.method) {
+        // A function stored in a field: the receiver is not an argument, and
+        // the call passes its arguments by position.
+        Some(CtFn(fpts, fret, _)) => {
+          let before = Array::length(errors)
+          checker_record_opaque_call_placement(cell = row.cell, errors = errors)
+          if Array::length(errors) > before {
+            (s, c)
+          } else {
+            let explicit = Array::length(row.arg_tys)
+            if Array::length(fpts) != explicit {
+              Array::push(errors, value = arity_message(qualified = qualified, expected = Array::length(fpts), got = explicit) + off_marker_len(off = row.call_off, len = String::length(qualified)))
+            }
+            let ns = unify_call_args(param_tys = fpts, arg_tys = row.arg_tys, arg_exprs = written_values(row.args), s = s, errors = errors, label = qualified, off = row.call_off)
+            (unify_deferred_method_result(row = row, ret = fret, s = ns, defs = defs, errors = errors), c)
+          }
+        },
+        Some(_) => {
+          checker_record_opaque_call_placement(cell = row.cell, errors = errors)
+          (s, c)
+        },
+        None => {
+          if declared {
+            Array::push(errors, value = dot_call_no_method_message(env = env, type_prefix = type_prefix, method = row.method, qualified = qualified) + marker)
+          } else {
+            // A receiver of an imported type the merged program resolves.
+            checker_record_opaque_call_placement(cell = row.cell, errors = errors)
+          }
+          (s, c)
+        }
+      }
+    }
+  }
+}
+
+/// The resolved `T::method` arm: labels and placement exactly as the dot-call
+/// arm checks them for a receiver it can name, then arity and argument types
+/// in the placement's formal order, the receiver against the first parameter.
+fn judge_declared_method(row: DeferredMethodCall, recv: Type, scheme: Type, qualified: String, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (Subst, Int) {
+  let before = Array::length(errors)
+  checker_note_label_site(env = env, name = qualified, ident_offset = row.method_off, offset = row.call_off, args = row.args, method_call = true)
+  checker_check_required_labels(env = env, name = qualified, ident_offset = row.method_off, ident_len = String::length(row.method), offset = row.call_off, args = row.args, method_call = true, errors = errors)
+  checker_capture_resolved_call_placement(callee = row.callee, args = row.args, offset = row.call_off, cell = row.cell, env = env, name = qualified)
+  checker_record_resolved_call_placement(cell = row.cell, env = env, name = qualified, ident_offset = row.method_off, implicit_receiver = true, errors = errors)
+  let (mt, nc, _) = instantiate(ty = scheme, c = c)
+  if Array::length(errors) > before {
+    // The label diagnostic is the edit; the arguments are not placed.
+    (s, nc)
+  } else {
+    match mt {
+      CtFn(params, ret, _) => if Array::length(params) == 0 {
+        (s, nc)
+      } else {
+        let s1 = unify_call_args(param_tys = [Array::get(params, at = 0)], arg_tys = [
+          recv
+        ], arg_exprs = [row.obj], s = s, errors = errors, label = qualified, off = row.call_off)
+        let explicit = Array::slice(params, start = 1, end = Array::length(params))
+        let s2 = match deferred_call_slots(cell = row.cell, written = Array::length(row.args)) {
+          Some(slots) => {
+            let tys: Array[Type] = []
+            let exprs: Array[Expr] = []
+            for code in slots {
+              if code < 2 || code / 2 - 1 >= Array::length(row.arg_tys) {
+                // An omitted optional parameter takes its default.
+                Array::push(tys, value = CtUnknown)
+                Array::push(exprs, value = EUnit)
+              } else {
+                let at = Array::get(row.arg_tys, at = code / 2 - 1)
+                Array::push(tys, value = if code % 2 == 1 {
+                  CtOption(at)
+                } else {
+                  at
+                })
+                Array::push(exprs, value = written_value(Array::get(row.args, at = code / 2 - 1)))
+              }
+            }
+            unify_call_args_with_source_placement(param_tys = explicit, arg_tys = tys, arg_exprs = exprs, s = s1, errors = errors, label = qualified, off = row.call_off, placement = Some((slots, Array::length(row.args))))
+          },
+          None => {
+            if Array::length(row.args) + 1 != Array::length(params) {
+              Array::push(errors, value = arity_message(qualified = qualified, expected = Array::length(params), got = Array::length(row.args) + 1) + off_marker_len(off = row.call_off, len = String::length(qualified)))
+            }
+            unify_call_args(param_tys = explicit, arg_tys = row.arg_tys, arg_exprs = written_values(row.args), s = s1, errors = errors, label = qualified, off = row.call_off)
+          }
+        }
+        (unify_deferred_method_result(row = row, ret = ret, s = s2, defs = defs, errors = errors), nc)
+      },
+      _ => (s, nc)
+    }
+  }
+}
+
+/// The formal-order slots the placement published for the call, or `None`
+/// when its arguments are written in parameter order.
+fn deferred_call_slots(cell: Array[Int], written: Int) -> Option[Array[Int]] {
+  if call_placement_is_pending(cell) && !call_placement_is_identity(cell = cell, written = written) {
+    match call_placement_get(cell) {
+      Some((_, mode, slots)) => if mode == 0 {
+        Some(slots)
+      } else {
+        None
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
+fn arity_message(qualified: String, expected: Int, got: Int) -> String {
+  "function arity mismatch for " + qualified + ": expected " + __to_string(expected) + " args, got " + __to_string(got)
+}
+
+fn written_value(_ arg: Expr) -> Expr {
+  match arg {
+    ELabeledArg(_, _, value) => value,
+    _ => arg
+  }
+}
+
+fn written_values(_ args: Array[Expr]) -> Array[Expr] {
+  for arg in args {
+    written_value(arg)
+  }
+}
+
+/// Bind the call's result variable to the type the resolved method returns.
+/// A use that already fixed it to something else is the mismatch the
+/// variable exists to catch (`let r: String = .. + c.size()`). As for a
+/// deferred field read (`unify_deferred_field_result`), a mismatch against a
+/// nominal type that resolves to nothing -- a trait's erased type parameter
+/// -- is tolerated, since the call typed as `CtUnknown` before.
+fn unify_deferred_method_result(row: DeferredMethodCall, ret: Type, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  match unify(a = CtVar(row.result), b = ret, s = s) {
+    Some(ns) => ns,
+    None => {
+      let existing = subst_apply(s = s, ty = CtVar(row.result))
+      if !mentions_unresolved_name(ty = existing, defs = defs) && !mentions_unresolved_name(ty = ret, defs = defs) {
+        Array::push(errors, value = "the call `." + row.method + "(..)` returns " + type_to_string(subst_apply(s = s, ty = ret)) + " once its receiver is known, but its value was already used as " + type_to_string(existing) + off_marker_len(off = row.method_off, len = String::length(row.method)))
+      }
+      s
+    }
+  }
+}
+
+fn mentions_unresolved_name(ty: Type, defs: Array[TypeDef]) -> Bool {
+  match ty {
+    CtNamed(n, args) => if (find_typedef(defs = defs, name = n) is None) && (resolve_builtin(n) is None) {
+      true
+    } else {
+      let mut found = false
+      for arg in args {
+        found = found || mentions_unresolved_name(ty = arg, defs = defs)
+      }
+      found
+    },
+    CtArray(inner) => mentions_unresolved_name(ty = inner, defs = defs),
+    CtOption(inner) => mentions_unresolved_name(ty = inner, defs = defs),
+    _ => false
+  }
+}

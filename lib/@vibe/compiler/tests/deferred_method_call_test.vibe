@@ -1,0 +1,85 @@
+//# Imports
+
+// #4037: a dot call `c.m(..)` whose receiver is an unannotated lambda
+// parameter is checked before the enclosing call unifies that parameter with
+// its type (`Array::fold(xs, init = 0, f = (acc, c) -> acc + c.size())`). The
+// call is recorded and judged once the receiver resolves. These rows pin
+// that the correct spellings stay clean -- through fold, map, a generic
+// callback, a chain, and a receiver that stands for a bounded type parameter
+// -- and that the wrong ones are refused with the message an annotated
+// receiver gets.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The first line of the checker's report for `source`, or "" when it
+/// type-checks.
+fn first_check_error(_ source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => Array::get(String::split(msg, sep = "\n"), at = 0) }
+}
+
+/// The program prelude every row shares.
+fn counter_source(_ body: String) -> String {
+  "struct Counter {\n  n: Int\n}\nfn Counter::size(c: Counter) -> Int {\n  c.n\n}\nfn Counter::add(c: Counter, k: Int) -> Int {\n  c.n + k\n}\nfn Counter::twin(c: Counter) -> Counter {\n  c\n}\n" + body
+}
+
+//# Accepted
+
+test "#4037: correct calls on a late receiver stay clean" {
+  let fold = counter_source("fn main() -> Int {\n  let xs = [Counter::{ n: 1 }]\n  Array::fold(xs, init = 0, f = (acc, c) -> acc + c.size() + c.add(k = 10))\n}\n")
+  let map = counter_source("fn main() -> Array[Int] {\n  Array::map([Counter::{ n: 1 }], f = (c) -> c.add(k = 1))\n}\n")
+  let chain = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.twin().size())\n}\n")
+  let generic = counter_source("fn via[T](x: T, f: (T) -> Int) -> Int {\n  f(x)\n}\nfn main() -> Int {\n  via(x = Counter::{ n: 2 }, f = (c) -> c.size())\n}\n")
+  let bounded = "trait Sized {\n  size(Self) -> Int\n}\nfn total[T: Sized](xs: Array[T]) -> Int {\n  Array::fold(xs, init = 0, f = (acc, x) -> acc + x.size())\n}\nfn main() -> Int {\n  0\n}\n"
+  let field = "struct Holder {\n  f: (Int) -> Int\n}\nfn apply(h: Holder, g: (Holder) -> Int) -> Int {\n  g(h)\n}\nfn main() -> Int {\n  apply(h = Holder::{ f: (x) -> x + 1 }, g = (v) -> v.f(41))\n}\n"
+  inspect([
+    first_check_error(fold),
+    first_check_error(map),
+    first_check_error(chain),
+    first_check_error(generic),
+    first_check_error(bounded),
+    first_check_error(field)
+  ], content = "[, , , , , ]")
+}
+
+//# Rejected
+
+test "#4037: extra arguments, as for an annotated receiver" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.size(99, \"x\"))\n}\n")
+  inspect(first_check_error(src), content = "function arity mismatch for Counter::size: expected 1 args, got 3")
+}
+
+test "#4037: an argument of the wrong type" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.add(k = \"x\"))\n}\n")
+  inspect(first_check_error(src), content = "argument type mismatch for Counter::add: expected Int, got String")
+}
+
+test "#4037: a method the receiver does not have" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.nope())\n}\n")
+  inspect(first_check_error(src), content = "no method `nope` on `Counter`: declare a top-level `fn Counter::nope(...)`")
+}
+
+test "#4037: a result used at another type" {
+  let src = counter_source("fn main() -> String {\n  Array::fold([Counter::{ n: 1 }], init = \"\", f = (acc, c) -> acc + c.size())\n}\n")
+  inspect(first_check_error(src), content = "the call `.size(..)` returns Int once its receiver is known, but its value was already used as String")
+}
+
+test "#4037: a chained call on the resolved result" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.twin().size(1))\n}\n")
+  inspect(first_check_error(src), content = "function arity mismatch for Counter::size: expected 1 args, got 2")
+}
+
+test "#4037: a function stored in a field, called with the wrong type" {
+  let src = "struct Holder {\n  f: (Int) -> Int\n}\nfn apply(h: Holder, g: (Holder) -> Int) -> Int {\n  g(h)\n}\nfn main() -> Int {\n  apply(h = Holder::{ f: (x) -> x + 1 }, g = (v) -> v.f(\"abc\"))\n}\n"
+  inspect(first_check_error(src), content = "argument type mismatch for Holder::f: expected Int, got String")
+}
