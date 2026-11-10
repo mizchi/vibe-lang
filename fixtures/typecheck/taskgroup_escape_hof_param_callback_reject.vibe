@@ -1,0 +1,22 @@
+// #4049: a function parameter handed to `Array::map` inside the group. Its
+// body is not visible here, so it may keep each task handle -- the caller's
+// closure does -- and the call is refused, as `cb(h)` in a loop is. This
+// compiled, and the handle outlived its group.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+fn run_with(cb: (TaskHandle[Int]) -> Int) -> Int with Exception {
+  TaskGroup::run((n) -> {
+    let hs = [TaskGroup::spawn(n, f = () -> { 41 })]
+    let _ = Array::map(hs, f = cb)
+    1
+  })
+}
+
+fn main() -> Unit allows Exception + Console {
+  let outer: Array[TaskHandle[Int]] = []
+  let r = run_with(cb = (h) -> {
+    Array::push(outer, value = h)
+    0
+  })
+  println("r=\{r} kept=\{Array::length(outer) > 0}")
+}

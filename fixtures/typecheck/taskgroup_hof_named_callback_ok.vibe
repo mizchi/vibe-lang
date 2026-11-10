@@ -1,0 +1,28 @@
+// #4049 control: a top-level function handed by name to `Array::map`,
+// `Array::filter` and `Array::fold` inside a group that keeps nothing (it
+// joins the task) is checked by its body and accepted, as the same calls in a
+// loop are. A builtin passed by name is not a program function.
+import @vibe/concurrent { TaskError, TaskGroup, TaskHandle }
+
+fn peek(h: TaskHandle[Int]) -> Int with Exception[TaskError] {
+  TaskHandle::join(h)
+}
+
+fn done(h: TaskHandle[Int]) -> Bool with Exception[TaskError] {
+  TaskHandle::join(h) > 0
+}
+
+fn add(acc: Int, h: TaskHandle[Int]) -> Int with Exception[TaskError] {
+  acc + TaskHandle::join(h)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let r = TaskGroup::run((n) -> {
+    let hs = [TaskGroup::spawn(n, f = () -> { 41 }), TaskGroup::spawn(n, f = () -> { 1 })]
+    let got = Array::map(hs, f = peek)
+    let kept = Array::filter(hs, f = done)
+    let joined = Array::map(hs, f = TaskHandle::join)
+    Array::fold(hs, init = 0, f = add) + Array::get(got, at = 0) + Array::length(kept) + Array::get(joined, at = 1)
+  })
+  println("r=\{r}")
+}

@@ -87,6 +87,7 @@ import @vibe/compiler/query {
   type_at_fs_session_typings,
   type_at_fs_session_walks,
   type_at_memo_checks,
+  type_at_memo_error_row_checked,
   type_at_memo_new,
   type_at_memo_source,
   type_at_source_memo
@@ -819,22 +820,17 @@ fn lsp_diag_fallback(_ msg: String) -> Json {
 /// text. One slot: an editor hovers the document it is in, and a second
 /// document only costs the cold check it costs today.
 ///
-/// The identity is the buffer text alone, and that is the whole of what the
-/// answer depends on here: hover is single-file (it resolves no imports, so
-/// no dependency can change it), the compiler is fixed for the process, and
-/// no configuration reaches `type_at` (the ADR-0068 opt-in is diagnostics'
-/// alone). A `didChange` is therefore not an invalidation event to get right
-/// -- a different text simply misses, and `type_at_source_memo` itself
-/// answers cold rather than from a memo of other text.
+/// The identity is the buffer text and checked Exception-row policy. A
+/// different text or policy misses; type_at_source_memo checks both too.
 let lsp_hover_memo: Array[Option[TypeAtMemo]] = [None]
 
 /// How many revisions this session has typed for hover: the first hover of a
 /// text types it, every later position of the same text reuses it.
 let lsp_hover_memo_builds: Array[Int] = [0]
 
-fn lsp_hover_memo_for(_ source: String) -> TypeAtMemo {
+fn lsp_hover_memo_for(_ source: String, checked_error_row: Bool) -> TypeAtMemo {
   let kept = match Array::get(lsp_hover_memo, at = 0) {
-    Some(m) => if type_at_memo_source(m) == source {
+    Some(m) => if type_at_memo_source(m) == source && type_at_memo_error_row_checked(m) == checked_error_row {
       Some(m)
     } else {
       None
@@ -844,7 +840,7 @@ fn lsp_hover_memo_for(_ source: String) -> TypeAtMemo {
   match kept {
     Some(m) => m,
     None => {
-      let m = type_at_memo_new(source)
+      let m = type_at_memo_new(source, checked_error_row = checked_error_row)
       Array::set(lsp_hover_memo, at = 0, value = Some(m))
       Array::set(lsp_hover_memo_builds, at = 0, value = Array::get(lsp_hover_memo_builds, at = 0) + 1)
       m
@@ -955,17 +951,17 @@ fn lsp_hover_fs_path(_ uri: String) -> String with Fs {
 /// `vibe check` type it (#1960, #3834); the buffer's text is what is typed,
 /// not the file's. When that lane has no typing for it, and for every other
 /// document, the buffer is typed alone from the kept single-file memo.
-fn lsp_type_at(uri: String, source: String, line: Int, col: Int) -> String with Env + Fs {
+fn lsp_type_at(uri: String, source: String, line: Int, col: Int, checked_error_row: Bool) -> String with Env + Fs {
   let path = lsp_hover_fs_path(uri)
   let resolved = if path == "" {
     None
   } else {
     Array::set(lsp_hover_fs_doc, at = 0, value = (uri, path))
-    type_at_fs_session_answer(session = lsp_hover_fs_session(), path = path, source = source, line = line, col = col)
+    type_at_fs_session_answer(session = lsp_hover_fs_session(), path = path, source = source, line = line, col = col, checked_error_row = checked_error_row)
   }
   match resolved {
     Some(ty) => ty,
-    None => type_at_source_memo(source = source, line = line, col = col, memo = lsp_hover_memo_for(source))
+    None => type_at_source_memo(source = source, line = line, col = col, memo = lsp_hover_memo_for(source, checked_error_row = checked_error_row), checked_error_row = checked_error_row)
   }
 }
 
@@ -1023,8 +1019,8 @@ export fn lsp_hover_reuse_counters() -> (Int, Int) {
   (Array::get(lsp_hover_memo_builds, at = 0), checks)
 }
 
-fn lsp_handle_hover(uri: String, source: String, line0: Int, char0: Int) -> Json with Env + Fs {
-  let ty = lsp_type_at(uri = uri, source = source, line = line0 + 1, col = char0 + 1)
+fn lsp_handle_hover(uri: String, source: String, line0: Int, char0: Int, checked_error_row: Bool) -> Json with Env + Fs {
+  let ty = lsp_type_at(uri = uri, source = source, line = line0 + 1, col = char0 + 1, checked_error_row = checked_error_row)
   let doc = doc_at_source(source = source, line = line0 + 1, col = char0 + 1)
   if String::length(ty) == 0 && String::length(doc) == 0 {
     JNull
@@ -1119,8 +1115,8 @@ fn lsp_handle_document_symbol(_ source: String) -> Json with Exception {
   })
 }
 
-fn lsp_handle_diagnostics(_ source: String) -> Json with Exception {
-  lsp_handle_diagnostics_with_unstable(source = source, allow_unstable = true)
+fn lsp_handle_diagnostics(_ source: String, checked_error_row: Bool) -> Json with Exception {
+  lsp_handle_diagnostics_with_unstable(source = source, allow_unstable = true, checked_error_row = checked_error_row)
 }
 
 /// #2297: the ADR-0068 opt-in for this server run.
@@ -1141,15 +1137,15 @@ fn lsp_unstable_opt_in() -> Bool {
 /// ADR-0068 opt-in -- it calls this and nothing else, while the adapter spliced
 /// the verdict into the two `vibe check --single-file` forms. Taking it from
 /// `collect_all_diagnostics_with_unstable` means all three read one answer.
-fn lsp_handle_diagnostics_with_unstable(source: String, allow_unstable: Bool) -> Json with Exception {
-  lsp_handle_diagnostics_for_path(input_path = "", source = source, allow_unstable = allow_unstable)
+fn lsp_handle_diagnostics_with_unstable(source: String, allow_unstable: Bool, checked_error_row: Bool) -> Json with Exception {
+  lsp_handle_diagnostics_for_path(input_path = "", source = source, allow_unstable = allow_unstable, checked_error_row = checked_error_row)
 }
 
 /// #2297: the document path matters -- an `index.vpkg` buffer has to be read
 /// with the contract grammar, or the scan parses its header as statements,
 /// fails, and reports nothing (Codex review on #2313).
-fn lsp_handle_diagnostics_for_path(input_path: String, source: String, allow_unstable: Bool) -> Json with Exception {
-  let diags = collect_all_diagnostics_with_unstable_for_path(input_path = input_path, source = source, allow_unstable = allow_unstable)
+fn lsp_handle_diagnostics_for_path(input_path: String, source: String, allow_unstable: Bool, checked_error_row: Bool) -> Json with Exception {
+  let diags = collect_all_diagnostics_with_unstable_for_path(input_path = input_path, source = source, allow_unstable = allow_unstable, checked_error_row = checked_error_row)
   JArr(for msg in diags {
     lsp_parse_diag_line(source = source, msg = msg)
   })
@@ -1170,21 +1166,21 @@ fn lsp_document_symbol_safe(_ source: String) -> Json {
   } with { Exception::Throw(_) => JArr([]) }
 }
 
-export fn lsp_diagnostics_safe(_ source: String) -> Json {
+export fn lsp_diagnostics_safe(_ source: String, checked_error_row: Bool) -> Json {
   handle {
-    lsp_handle_diagnostics(source)
+    lsp_handle_diagnostics(source, checked_error_row = checked_error_row)
   } with { Exception::Throw(_) => JArr([]) }
 }
 
-export fn lsp_diagnostics_safe_with_unstable(source: String, allow_unstable: Bool) -> Json {
+export fn lsp_diagnostics_safe_with_unstable(source: String, allow_unstable: Bool, checked_error_row: Bool) -> Json {
   handle {
-    lsp_handle_diagnostics_with_unstable(source = source, allow_unstable = allow_unstable)
+    lsp_handle_diagnostics_with_unstable(source = source, allow_unstable = allow_unstable, checked_error_row = checked_error_row)
   } with { Exception::Throw(_) => JArr([]) }
 }
 
-export fn lsp_diagnostics_safe_for_path(input_path: String, source: String, allow_unstable: Bool) -> Json {
+export fn lsp_diagnostics_safe_for_path(input_path: String, source: String, allow_unstable: Bool, checked_error_row: Bool) -> Json {
   handle {
-    lsp_handle_diagnostics_for_path(input_path = input_path, source = source, allow_unstable = allow_unstable)
+    lsp_handle_diagnostics_for_path(input_path = input_path, source = source, allow_unstable = allow_unstable, checked_error_row = checked_error_row)
   } with { Exception::Throw(_) => JArr([]) }
 }
 
@@ -1208,8 +1204,8 @@ fn lsp_uri_to_path(_ uri: String) -> String {
 /// other diagnostics consumer (plain-text `vibe diagnostics`, this LSP
 /// handler) already produces. Output-layer-only: no checker/lexer/parser
 /// changes. `C-E` is the exclusive-end column from `[@off=N:M]` (#1941).
-export fn lsp_diagnostics_json_string(_ source: String) -> String {
-  Json::stringify(lsp_diagnostics_safe(source))
+export fn lsp_diagnostics_json_string(_ source: String, checked_error_row: Bool) -> String {
+  Json::stringify(lsp_diagnostics_safe(source, checked_error_row = checked_error_row))
 }
 
 /// #2277: the ADR-0068 opt-in diagnostic is produced by the ADAPTER, not by
@@ -1452,7 +1448,7 @@ fn lsp_signature_param_labels(_ ty: String) -> Array[String] {
   }
 }
 
-fn lsp_handle_signature_help(uri: String, source: String, line0: Int, byte_col: Int) -> Json with Env + Fs {
+fn lsp_handle_signature_help(uri: String, source: String, line0: Int, byte_col: Int, checked_error_row: Bool) -> Json with Env + Fs {
   let cursor = lsp_line_start_offset(source = source, line0 = line0) + byte_col
   let (open_off, commas) = lsp_call_open_paren(source = source, cursor = cursor)
   if open_off < 0 {
@@ -1486,7 +1482,7 @@ fn lsp_handle_signature_help(uri: String, source: String, line0: Int, byte_col: 
       } else {
         (l1, c1)
       }
-      let ty = lsp_type_at(uri = uri, source = source, line = tl, col = tc)
+      let ty = lsp_type_at(uri = uri, source = source, line = tl, col = tc, checked_error_row = checked_error_row)
       if String::length(ty) == 0 {
         JNull
       } else {
@@ -1636,7 +1632,7 @@ fn lsp_op_workspace_symbol() -> Int {
 /// header comment): re-executing the branch on `resume` re-evaluates the
 /// same deterministic `op` comparison and re-reaches the same (memoized)
 /// perform, nothing else.
-fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String]) -> Json with Env + Fs {
+fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
   handle {
     if op == lsp_op_hover() {
       perform Lsp::Hover(uri, l, c)
@@ -1659,7 +1655,7 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
     }
   } with { Lsp::Hover(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
-    lsp_handle_hover(uri = u2, source = src, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
+    lsp_handle_hover(uri = u2, source = src, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), checked_error_row = checked_error_row)
   }); Lsp::Definition(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
     lsp_handle_definition(source = src, uri = u2, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
@@ -1669,9 +1665,9 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
   }); Lsp::Rename(u2, l2, c2, nn) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
     lsp_handle_rename(source = src, uri = u2, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), new_name = nn)
-  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe_for_path(input_path = lsp_uri_to_path(u2), source = lsp_doc_text(docs = docs, uri = u2), allow_unstable = lsp_unstable_opt_in())); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
+  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe_for_path(input_path = lsp_uri_to_path(u2), source = lsp_doc_text(docs = docs, uri = u2), allow_unstable = lsp_unstable_opt_in(), checked_error_row = checked_error_row)); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
-    lsp_handle_signature_help(uri = u2, source = src, line0 = l2, byte_col = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2))
+    lsp_handle_signature_help(uri = u2, source = src, line0 = l2, byte_col = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), checked_error_row = checked_error_row)
   }); Lsp::WorkspaceSymbol(q) => resume(lsp_handle_workspace_symbol(query = q, docs = docs)) }
 }
 
@@ -1717,46 +1713,46 @@ fn lsp_initialize_result() -> Json {
 /// response). Returns Some(result_json) for a request, None for a
 /// notification or an unrecognized method the caller already replied `null`
 /// to.
-fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String]) -> Json with Env + Fs {
+fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
   if method == "initialize" {
     lsp_initialize_result()
   } else if method == "textDocument/hover" {
     let uri = jparam_uri(params)
     let l = jparam_line0(params)
     let c = jparam_char0(params)
-    lsp_run_with_handler(op = lsp_op_hover(), uri = uri, l = l, c = c, new_name = "", docs = docs)
+    lsp_run_with_handler(op = lsp_op_hover(), uri = uri, l = l, c = c, new_name = "", docs = docs, checked_error_row = checked_error_row)
   } else if method == "textDocument/definition" {
     let uri = jparam_uri(params)
     let l = jparam_line0(params)
     let c = jparam_char0(params)
-    lsp_run_with_handler(op = lsp_op_definition(), uri = uri, l = l, c = c, new_name = "", docs = docs)
+    lsp_run_with_handler(op = lsp_op_definition(), uri = uri, l = l, c = c, new_name = "", docs = docs, checked_error_row = checked_error_row)
   } else if method == "textDocument/references" {
     let uri = jparam_uri(params)
     let l = jparam_line0(params)
     let c = jparam_char0(params)
-    lsp_run_with_handler(op = lsp_op_references(), uri = uri, l = l, c = c, new_name = "", docs = docs)
+    lsp_run_with_handler(op = lsp_op_references(), uri = uri, l = l, c = c, new_name = "", docs = docs, checked_error_row = checked_error_row)
   } else if method == "textDocument/rename" {
     let uri = jparam_uri(params)
     let l = jparam_line0(params)
     let c = jparam_char0(params)
     let new_name = Json::string(Json::field(params, key = "newName"))
-    lsp_run_with_handler(op = lsp_op_rename(), uri = uri, l = l, c = c, new_name = new_name, docs = docs)
+    lsp_run_with_handler(op = lsp_op_rename(), uri = uri, l = l, c = c, new_name = new_name, docs = docs, checked_error_row = checked_error_row)
   } else if method == "textDocument/documentSymbol" {
     let uri = jparam_uri(params)
-    lsp_run_with_handler(op = lsp_op_document_symbol(), uri = uri, l = 0, c = 0, new_name = "", docs = docs)
+    lsp_run_with_handler(op = lsp_op_document_symbol(), uri = uri, l = 0, c = 0, new_name = "", docs = docs, checked_error_row = checked_error_row)
   } else if method == "textDocument/completion" {
     let uri = jparam_uri(params)
     let l = jparam_line0(params)
     let c = jparam_char0(params)
-    lsp_run_with_handler(op = lsp_op_completion(), uri = uri, l = l, c = c, new_name = "", docs = docs)
+    lsp_run_with_handler(op = lsp_op_completion(), uri = uri, l = l, c = c, new_name = "", docs = docs, checked_error_row = checked_error_row)
   } else if method == "textDocument/signatureHelp" {
     let uri = jparam_uri(params)
     let l = jparam_line0(params)
     let c = jparam_char0(params)
-    lsp_run_with_handler(op = lsp_op_signature_help(), uri = uri, l = l, c = c, new_name = "", docs = docs)
+    lsp_run_with_handler(op = lsp_op_signature_help(), uri = uri, l = l, c = c, new_name = "", docs = docs, checked_error_row = checked_error_row)
   } else if method == "workspace/symbol" {
     let q = Json::string(Json::field(params, key = "query"))
-    lsp_run_with_handler(op = lsp_op_workspace_symbol(), uri = "", l = 0, c = 0, new_name = q, docs = docs)
+    lsp_run_with_handler(op = lsp_op_workspace_symbol(), uri = "", l = 0, c = 0, new_name = q, docs = docs, checked_error_row = checked_error_row)
   } else if method == "shutdown" {
     JNull
   } else {
@@ -1766,8 +1762,8 @@ fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String])
 
 /// One request against a document store, exactly as the session loop dispatches
 /// it -- the seam a session test drives without a JSON-RPC transport.
-export fn lsp_request(method: String, params: Json, docs: Map[String, String]) -> Json with Env + Fs {
-  lsp_dispatch_request(method = method, params = params, docs = docs)
+export fn lsp_request(method: String, params: Json, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
+  lsp_dispatch_request(method = method, params = params, docs = docs, checked_error_row = checked_error_row)
 }
 
 /// The store after one `textDocument/didOpen` / `didChange` / `didClose`
@@ -1788,8 +1784,8 @@ export fn lsp_notify(method: String, params: Json, docs: Map[String, String]) ->
   }
 }
 
-fn lsp_diagnostics_for(uri: String, docs: Map[String, String]) -> Json with Env + Fs {
-  lsp_run_with_handler(op = lsp_op_diagnostics(), uri = uri, l = 0, c = 0, new_name = "", docs = docs)
+fn lsp_diagnostics_for(uri: String, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
+  lsp_run_with_handler(op = lsp_op_diagnostics(), uri = uri, l = 0, c = 0, new_name = "", docs = docs, checked_error_row = checked_error_row)
 }
 
 //# Document store (plain mutable state -- see the effect handler's own doc
@@ -1896,7 +1892,7 @@ fn lsp_send_diagnostics_notification(uri: String, diags: Json) -> Unit with Cons
 
 /// One iteration: read a message, act on it, write a response if needed.
 /// Returns (new_docs, should_exit).
-fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Stdin + Console + Env + Fs {
+fn lsp_step(_ docs: Map[String, String], checked_error_row: Bool) -> (Map[String, String], Bool) with Stdin + Console + Env + Fs {
   match lsp_read_message() {
     None => (docs, true),
     Some(body) => {
@@ -1905,7 +1901,7 @@ fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Std
         let method = lsp_env_method(msg)
         let params = lsp_env_params(msg)
         let id = lsp_env_id(msg)
-        let result = lsp_dispatch_request(method = method, params = params, docs = docs)
+        let result = lsp_dispatch_request(method = method, params = params, docs = docs, checked_error_row = checked_error_row)
         lsp_send_response(id = id, result = result)
         // Per the LSP spec's shutdown sequence: reply to `shutdown`, then
         // keep serving (a well-behaved client sends nothing further, but
@@ -1924,17 +1920,17 @@ fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Std
         } else if method == "textDocument/didOpen" {
           let new_docs = lsp_apply_did_open(docs = docs, params = params)
           let uri = jparam_uri(params)
-          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs))
+          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs, checked_error_row = checked_error_row))
           (new_docs, false)
         } else if method == "textDocument/didChange" {
           let new_docs = lsp_apply_did_change(docs = docs, params = params)
           let uri = jparam_uri(params)
-          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs))
+          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs, checked_error_row = checked_error_row))
           (new_docs, false)
         } else if method == "textDocument/didSave" {
           lsp_hover_fs_invalidate()
           let uri = jparam_uri(params)
-          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = docs))
+          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = docs, checked_error_row = checked_error_row))
           (docs, false)
         } else if method == "textDocument/didClose" {
           let new_docs = lsp_apply_did_close(docs = docs, params = params)
@@ -1962,12 +1958,12 @@ fn lsp_step(_ docs: Map[String, String]) -> (Map[String, String], Bool) with Std
 /// (ADR-0075/0084/0088). The `Env + Fs` on the row is the import-resolving
 /// hover's (#1960): it walks the document's imports on disk, reading the
 /// same build configuration `vibe check` reads.
-export fn lsp_main(_ allow_unstable: Bool) -> Int with Stdin + Console + Env + Fs {
+export fn lsp_main(_ allow_unstable: Bool, checked_error_row: Bool) -> Int with Stdin + Console + Env + Fs {
   Array::set(lsp_unstable_cell, at = 0, value = allow_unstable)
   let mut docs = Map::new()
   let mut running = true
   while running {
-    let (new_docs, should_exit) = lsp_step(docs)
+    let (new_docs, should_exit) = lsp_step(docs, checked_error_row = checked_error_row)
     docs = new_docs
     running = not(should_exit)
   }

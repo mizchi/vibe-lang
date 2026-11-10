@@ -4,7 +4,9 @@
 # the public verb. A plan that releases a reference it does not hold -- an
 # over-release, a borrowed parameter consumed without a dup, or a consume mark
 # on an occurrence that does not consume -- fails the gate: those are
-# use-after-free shapes. A leak line is the safe direction the planner accepts
+# use-after-free shapes. So does a heap value planned as scalar (#3718 slice
+# 4): it has no ledger at all, so it may be freed under a second owner
+# (#3332) as easily as leaked (#3240, #3169, #3135). A leak line is the safe direction the planner accepts
 # today (#705), so it is counted and printed, not failed; so is a
 # reference-cycle warning, which no plan can fix. A verb that errors fails
 # too: an unanswered file would read exactly like a clean one.
@@ -18,7 +20,8 @@
 #
 # `--mutate MUTATION` is passed to every verb call. It validates each plan
 # deliberately broken (`drop-dups`: its dup rows deleted;
-# `inflate-exit-drops`: each exit-drop count one higher), which only
+# `inflate-exit-drops`: each exit-drop count one higher; `scalar-classes`:
+# every heap binding read as planned scalar), which only
 # scripts/check_rc_validate_corpus_test.sh uses: it is how the self-test
 # shows a wrong plan in a real fixture fails this gate.
 set -euo pipefail
@@ -46,7 +49,7 @@ STAGE2="$(resolve_stage2 rc-validate-corpus "${RC_VALIDATE_CORPUS_STAGE2:-}")" |
 FIXTURE_GLOB="${RC_VALIDATE_CORPUS_FIXTURES:-fixtures/rc_*.vibe}"
 
 # The failing line forms, named once.
-fatal_pattern=': (owned value released [0-9]+ more than held|borrowed parameter consumed without a dup|consume mark at offset -?[0-9]+ is not a consuming occurrence)$'
+fatal_pattern=': (owned value released [0-9]+ more than held|borrowed parameter consumed without a dup|consume mark at offset -?[0-9]+ is not a consuming occurrence|heap value planned as scalar)$'
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_rc_validate_corpus.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -74,7 +77,7 @@ for src in $FIXTURE_GLOB; do
     exit 1
   fi
   if grep -qE "$fatal_pattern" "$WORK/out.txt"; then
-    echo "[rc-validate-corpus] FAIL: vibe rc-validate $src found a plan that releases more than it holds:" >&2
+    echo "[rc-validate-corpus] FAIL: vibe rc-validate $src found a plan that releases more than it holds, or a heap value it does not count:" >&2
     grep -E "$fatal_pattern" "$WORK/out.txt" >&2
     exit 1
   fi

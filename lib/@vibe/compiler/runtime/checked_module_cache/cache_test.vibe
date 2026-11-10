@@ -24,8 +24,8 @@ fn start_checked_test() -> Unit with Fs {
 }
 
 fn cache_compile(_ mode: String) -> Bytes with Env + Exception + Fs {
-  set_checked_module_cache_mode(mode)
-  compile_file_fs_mode_rc_body_cached_split(entry_path = checked_test_path("main.vibe"), entry_name = "run", cache_mode = "off", use_split = true, exports_stripped = false)
+  set_checked_module_cache_mode(mode, checked_error_row = false)
+  compile_file_fs_mode_rc_body_cached_split(entry_path = checked_test_path("main.vibe"), entry_name = "run", cache_mode = "off", use_split = true, exports_stripped = false, checked_error_row = false)
 }
 
 fn write_module_leaf(_ source: String) -> Unit with Fs {
@@ -63,7 +63,7 @@ test "checked modules reach codegen and reuse consumers across a dependency body
   inspect(public_edit.1, content = "2")
   inspect(cache_compile("off") == typed, content = "true")
   set_incremental_typecheck_telemetry_enabled(false)
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }
 
 fn failed_compile(_ mode: String) -> String with Env + Fs {
@@ -83,7 +83,7 @@ test "checked module reuse preserves failures after an interface change" {
   let cached = failed_compile("on")
   inspect(String::length(cached) > 0, content = "true")
   inspect(failed_compile("off") == cached, content = "true")
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }
 
 import @vibe/compiler/runtime/checked_module_cache {
@@ -107,26 +107,26 @@ test "checked input identity retains cached bindings and all input dimensions" {
   let different_index = env_cached(names = ["x"], bindings = [string], rest = rest)
   let base = checked_module_cache_input_identity(path = "owner.vibe", source = "source", semantics_seed = "strict", deps = [
     ("dep.vibe", first)
-  ])
+  ], checked_error_row = false)
   inspect(checked_module_cache_input_identity(path = "owner.vibe", source = "source", semantics_seed = "strict", deps = [
     ("dep.vibe", different_index)
-  ]) != base, content = "true")
+  ], checked_error_row = false) != base, content = "true")
   inspect(checked_module_cache_input_identity(path = "other.vibe", source = "source", semantics_seed = "strict", deps = [
     ("dep.vibe", first)
-  ]) != base, content = "true")
+  ], checked_error_row = false) != base, content = "true")
   inspect(checked_module_cache_input_identity(path = "owner.vibe", source = "source // comment", semantics_seed = "strict", deps = [
     ("dep.vibe", first)
-  ]) != base, content = "true")
+  ], checked_error_row = false) != base, content = "true")
   inspect(checked_module_cache_input_identity(path = "owner.vibe", source = "source", semantics_seed = "permissive", deps = [
     ("dep.vibe", first)
-  ]) != base, content = "true")
+  ], checked_error_row = false) != base, content = "true")
   inspect(checked_module_cache_input_identity(path = "owner.vibe", source = "source", semantics_seed = "strict", deps = [
     ("other.vibe", first)
-  ]) != base, content = "true")
+  ], checked_error_row = false) != base, content = "true")
   set_persistent_cache_cfg_flags("test-checked-module-mode")
   inspect(checked_module_cache_input_identity(path = "owner.vibe", source = "source", semantics_seed = "strict", deps = [
     ("dep.vibe", first)
-  ]) != base, content = "true")
+  ], checked_error_row = false) != base, content = "true")
   set_persistent_cache_cfg_flags("")
 }
 
@@ -149,9 +149,9 @@ test "verification refuses a valid transport that disagrees with the fresh check
   let path = checked_test_path("main.vibe")
   Fs::write_file(path, contents = source)
   let _ = cache_compile("on")
-  let identity = checked_module_cache_input_identity(path = path, source = source, semantics_seed = typing_semantics_seed(), deps = [
-  ])
-  match load_checked_module_artifact(path = path, input_identity = identity) {
+  let identity = checked_module_cache_input_identity(path = path, source = source, semantics_seed = typing_semantics_seed(checked_error_row = false), deps = [
+  ], checked_error_row = false)
+  match load_checked_module_artifact(path = path, input_identity = identity, checked_error_row = false) {
     Some(original) => {
       let different = CheckedModuleArtifact::{
         input_identity: identity,
@@ -161,10 +161,10 @@ test "verification refuses a valid transport that disagrees with the fresh check
         eq_offsets: original.eq_offsets,
         eq_keys: original.eq_keys
       }
-      store_persistent_artifact(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(identity), bytes = encode_checked_module_artifact(different))
+      store_persistent_artifact(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(identity), bytes = encode_checked_module_artifact(different), checked_error_row = false)
       inspect(failed_compile("verify") == String::concat("checked module cache verification mismatch: ", path), content = "true")
     },
     None => assert(false)
   }
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }

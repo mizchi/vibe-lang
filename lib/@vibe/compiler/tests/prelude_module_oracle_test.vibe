@@ -101,7 +101,7 @@ test "every pre-codegen pass agrees between whole-program and per-file runs on a
   let main_path = "/tmp/vibe_prelude_oracle_main.vibe"
   Fs::write_file(helper_path, contents = "export fn twice(x: Int) -> Int {\n  x + x\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_prelude_oracle_helper.vibe { twice }\n\nfn run() -> Int {\n  twice(x = 21)\n}\n\ntest \"twice\" {\n  inspect(run(), content = \"42\")\n}\n")
-  let report = prelude_module_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", pass_limit = 15)
+  let report = prelude_module_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", pass_limit = 15, checked_error_row = false)
   let lines = oracle_lines(report)
   inspect(Array::length(lines), content = "16")
   let statuses: Array[String] = []
@@ -162,7 +162,7 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   let main_path = "/tmp/vibe_prelude_oracle_hoist_main.vibe"
   Fs::write_file(helper_path, contents = "effect HLog {\n  Emit(String) -> Unit\n}\n\nexport fn helper_use() -> Int {\n  let f = (a: Int) -> Int with HLog {\n    perform HLog::Emit(\"helper\")\n    a\n  }\n  handle {\n    f(1)\n  } with {\n    HLog::Emit(_m) => resume(0)\n  }\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_prelude_oracle_hoist_helper.vibe {\n  helper_use\n}\n\neffect MLog {\n  Emit(String) -> Unit\n}\n\nfn main_use() -> Int {\n  let f = (a: Int) -> Int with MLog {\n    perform MLog::Emit(\"main\")\n    a + 1\n  }\n  handle {\n    f(2)\n  } with {\n    MLog::Emit(_m) => resume(0)\n  }\n}\n\ntest \"hoisted\" {\n  inspect(helper_use() + main_use(), content = \"4\")\n}\n")
-  let report = prelude_module_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", pass_limit = 15)
+  let report = prelude_module_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", pass_limit = 15, checked_error_row = false)
   // `missing=0 content=0` is the property under test: every declaration the
   // whole-program run produced is produced by the module that owns it, under
   // the same name and with the same body.
@@ -200,7 +200,7 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   let main_path = "/tmp/vibe_full_oracle_main.vibe"
   Fs::write_file(helper_path, contents = "effect HLog {\n  Emit(String) -> Unit\n}\n\nexport fn helper_use() -> Int {\n  let f = (a: Int) -> Int with HLog {\n    perform HLog::Emit(\"helper\")\n    a\n  }\n  handle {\n    f(1)\n  } with {\n    HLog::Emit(_m) => resume(0)\n  }\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_full_oracle_helper.vibe {\n  helper_use\n}\n\neffect MLog {\n  Emit(String) -> Unit\n}\n\nfn main_use() -> Int {\n  let f = (a: Int) -> Int with MLog {\n    perform MLog::Emit(\"main\")\n    a + 1\n  }\n  handle {\n    f(2)\n  } with {\n    MLog::Emit(_m) => resume(0)\n  }\n}\n\ntest \"hoisted\" {\n  inspect(helper_use() + main_use(), content = \"4\")\n}\n")
-  let report = prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__")
+  let report = prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", checked_error_row = false)
   let lines = String::split(report, sep = "\n")
   // `split` is the modules concatenated, `linked` is after the link folds the
   // program-level helpers each module synthesized for itself, and `folded` is
@@ -584,7 +584,7 @@ test "the import closure the oracle runs under is the module's own, and places e
   // handing them to the split prelude is context no module has. An oracle that
   // reports agreement because it was given unavailable context is the one
   // failure mode that makes its green meaningless (Codex round on #2623).
-  inspect(String::trim(prelude_module_import_closure_report_fs(main_path)), content = "CLOSURE files=3 edges=2 unresolved=0")
+  inspect(String::trim(prelude_module_import_closure_report_fs(main_path, checked_error_row = false)), content = "CLOSURE files=3 edges=2 unresolved=0")
   // The control, and the reason this test can fail: a program with no imports
   // at all has no edges. If the closure were quietly falling back to "every
   // other file" -- the rule this replaced -- a two-file program would report
@@ -594,7 +594,7 @@ test "the import closure the oracle runs under is the module's own, and places e
   Fs::write_file(lone_a, contents = "export fn a_only() -> Int {\n  1\n}\n")
   Fs::write_file(lone_b, contents = "test \"lone\" {\n  inspect(1, content = \"1\")\n}\n")
   let _ = lone_a
-  inspect(String::trim(prelude_module_import_closure_report_fs(lone_b)), content = "CLOSURE files=1 edges=0 unresolved=0")
+  inspect(String::trim(prelude_module_import_closure_report_fs(lone_b, checked_error_row = false)), content = "CLOSURE files=1 edges=0 unresolved=0")
   // #2633: the same chain, except `mid` RE-EXPORTS `leaf` instead of importing
   // it privately. Now a real compile of `main` DOES see `leaf`'s declarations,
   // so the closure carries the extra edge and this reads 3 where the private
@@ -612,7 +612,7 @@ test "the import closure the oracle runs under is the module's own, and places e
   Fs::write_file(rx_leaf, contents = "export fn leaf() -> Int {\n  1\n}\n")
   Fs::write_file(rx_mid, contents = "export ./vibe_closure_rx_leaf.vibe {\n  leaf\n}\n")
   Fs::write_file(rx_main, contents = "import ./vibe_closure_rx_mid.vibe {\n  leaf\n}\n\ntest \"rx\" {\n  inspect(leaf(), content = \"1\")\n}\n")
-  inspect(String::trim(prelude_module_import_closure_report_fs(rx_main)), content = "CLOSURE files=3 edges=3 unresolved=0")
+  inspect(String::trim(prelude_module_import_closure_report_fs(rx_main, checked_error_row = false)), content = "CLOSURE files=3 edges=3 unresolved=0")
 }
 
 // #2388: the prelude's VALIDATORS -- `zero_alloc_check` and
@@ -633,12 +633,12 @@ test "a validator that fires is reported by both lanes, and a clean program by n
   // module's own run does -- so agreement here is the claim, not the default.
   Fs::write_file(dep, contents = "enum Box {\n  MkBox(Int)\n}\n\n#zero_alloc\nexport fn hot(n: Int) -> Int {\n  let b = MkBox(n)\n  match b {\n    MkBox(v) => v + 1\n  }\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_diag_arm_dep.vibe {\n  hot\n}\n\ntest \"t\" {\n  inspect(hot(n = 1), content = \"2\")\n}\n")
-  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__"))), content = "DIAGS prelude=1")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", checked_error_row = false))), content = "DIAGS prelude=1")
   // The control: the same two-file shape with nothing to report. Without it,
   // a comparison that always answered `1` would pass the case above.
   Fs::write_file(dep, contents = "export fn calm(n: Int) -> Int {\n  n + 1\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_diag_arm_dep.vibe {\n  calm\n}\n\ntest \"t\" {\n  inspect(calm(n = 1), content = \"2\")\n}\n")
-  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__"))), content = "DIAGS prelude=0")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", checked_error_row = false))), content = "DIAGS prelude=0")
 }
 
 // #2575 item 2: the ORDINARY compile lane -- the one an `vibe build` takes, not
@@ -661,7 +661,7 @@ test "the ordinary compile lane carries one module id per merged statement" {
   let main_path = "/tmp/vibe_prov_lane_main.vibe"
   Fs::write_file(dep, contents = "export fn dep_one() -> Int {\n  1\n}\n\nexport fn dep_two() -> Int {\n  2\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_prov_lane_dep.vibe {\n  dep_one, dep_two\n}\n\nfn local_one() -> Int {\n  dep_one() + dep_two()\n}\n\ntest \"t\" {\n  inspect(local_one(), content = \"3\")\n}\n")
-  let report = String::trim(prelude_ordinary_lane_prov_report_fs(main_path))
+  let report = String::trim(prelude_ordinary_lane_prov_report_fs(main_path, checked_error_row = false))
   // The counts are the claim, and they are compared to each other rather than
   // to a literal: a map with one id per statement is the property, whatever the
   // statement count happens to be. `files=2` pins that both modules are seen --
@@ -708,7 +708,7 @@ test "the may_return and borrow analyses do not decompose per module, in both di
   let main_path = "/tmp/vibe_analysis_oracle_main.vibe"
   Fs::write_file(helper_path, contents = "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, at = 0)\n}\n\nexport fn pick(xs: Array[String]) -> String {\n  Array::get(xs, at = 0)\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_analysis_oracle_helper.vibe {\n  head_of,\n  pick\n}\n\nfn build() -> Array[Int] {\n  [1, 2, 3]\n}\n\nfn via(xs: Array[String]) -> String {\n  pick(xs = xs)\n}\n\ntest \"t\" {\n  let ss = [\"a\"]\n  inspect(String::concat(Int::to_string(head_of(xs = build())), via(xs = ss)), content = \"1a\")\n}\n")
-  let report = prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__")
+  let report = prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", checked_error_row = false)
   // `<whole>/<union>:-<missing count>:<first>+<extra count>:<first>`, and a
   // bare count when the two sets agree. The export-rename suffix on
   // `head_of` is the merge's, and it is in the expectation rather than
@@ -759,14 +759,14 @@ test "the analyses refuse to answer where production would have run late DCE fir
   let main_path = "/tmp/vibe_dce_gate_main.vibe"
   Fs::write_file(helper_path, contents = "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, at = 0)\n}\n")
   Fs::write_file(main_path, contents = "import ./vibe_dce_gate_helper.vibe {\n  head_of\n}\n\nfn main() -> Int {\n  head_of(xs = [1, 2, 3])\n}\n")
-  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "main"))), content = "ANALYSIS dce_entry=1 borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured link_bret_trial=unmeasured link_view_trial=unmeasured")
+  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "main", checked_error_row = false))), content = "ANALYSIS dce_entry=1 borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured link_bret_trial=unmeasured link_view_trial=unmeasured")
   // The control. `__no_entry__` is a name no program defines, so production
   // would not have run either transform and the sample point is its own. The
   // counts are live here rather than merely present -- this program shows the
   // unsound direction too (`+1:head_of_exp__...`, qualified by its own module
   // and disqualified by the whole program through the call site in `main`), so
   // a guard that suppressed the columns unconditionally could not pass this.
-  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__"))), content = "ANALYSIS dce_entry=0 borrow_ret=9/8:-1:main+0: borrow_fns=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe borrow_masks=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe#1 view_ret=2/1:-1:main+0: link_round0=0 link_round0_masks=0 link_round0_occ= link_round01=0 link_round01_masks=0 link_round01_occ= link_bret=9 link_bret_occ= link_bret_self=9 link_bret_asm=9 link_bret_seed=0/0 link_bret_cat=9 link_view=2 link_view_self=2 link_view_asm=2 link_bret_trial=9 link_view_trial=2")
+  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", checked_error_row = false))), content = "ANALYSIS dce_entry=0 borrow_ret=9/8:-1:main+0: borrow_fns=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe borrow_masks=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe#1 view_ret=2/1:-1:main+0: link_round0=0 link_round0_masks=0 link_round0_occ= link_round01=0 link_round01_masks=0 link_round01_occ= link_bret=9 link_bret_occ= link_bret_self=9 link_bret_asm=9 link_bret_seed=0/0 link_bret_cat=9 link_view=2 link_view_self=2 link_view_asm=2 link_bret_trial=9 link_view_trial=2")
 }
 
 // #2642 review (Codex P2): `dtd_eq_deferred_requests`, `dtd_eq_deferred_types`
@@ -811,14 +811,14 @@ test "a report's deferrals are its own, not the previous report's" {
   // The deferring program, and the line that says so: one request the whole
   // program makes and the split does not, one row the typed channel refused,
   // and the link minting the helper from the deferral.
-  inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(entry_path = a, entry_name = "__no_entry__"))), content = "SYNTH requests=1/0:-spec:A1_N3_BoxN3_Int+ typed_refused=0/1:-+A66_111_120_LN73_110_116_ZR deferred=1 minted=1 indirect=0")
+  inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(entry_path = a, entry_name = "__no_entry__", checked_error_row = false))), content = "SYNTH requests=1/0:-spec:A1_N3_BoxN3_Int+ typed_refused=0/1:-+A66_111_120_LN73_110_116_ZR deferred=1 minted=1 indirect=0")
   // A second program in the same process, which defers nothing. Every column
   // is zero, including the two the first report left behind.
   let dep2 = "/tmp/vibe_defer_reset_dep2.vibe"
   let main2 = "/tmp/vibe_defer_reset_main2.vibe"
   Fs::write_file(dep2, contents = "export fn twice(n: Int) -> Int {\n  n * 2\n}\n")
   Fs::write_file(main2, contents = "import ./vibe_defer_reset_dep2.vibe {\n  twice\n}\n\ntest \"t\" {\n  inspect(twice(n = 2), content = \"4\")\n}\n")
-  inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(entry_path = main2, entry_name = "__no_entry__"))), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
+  inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(entry_path = main2, entry_name = "__no_entry__", checked_error_row = false))), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
 }
 
 test "a type declaration counts as declaring its own name, and an enum its constructors" {
@@ -830,7 +830,7 @@ test "a type declaration counts as declaring its own name, and an enum its const
   // alias naming the enum.
   Fs::write_file(dep, contents = "export enum Hue {\n  Crimson;\n  Azure\n}\n\nexport type Shade = Hue\n\nexport struct Paint {\n  hue: Hue\n}\n\nenum Secret {\n  Hidden(Int)\n}\n\nfn make_secret(n: Int) -> Secret {\n  Hidden(n)\n}\n\nfn secret_of(n: Int) -> Int {\n  let s = make_secret(n = n)\n  match s {\n    Hidden(v) => v\n  }\n}\n\nexport fn default_paint() -> Paint {\n  Paint::{ hue: Crimson }\n}\n\nexport fn home_use() -> Int {\n  let s: Shade = Azure\n  match s {\n    Crimson => secret_of(n = 1)\n    Azure => secret_of(n = 2)\n  }\n}\n")
   Fs::write_file(main, contents = "import ./vibe_ctx_typedecl_dep.vibe {\n  Hue, Paint, Crimson, Azure, default_paint, home_use\n}\n\nfn away_use() -> Int {\n  let p: Paint = default_paint()\n  match p.hue {\n    Crimson => 10\n    Azure => 20\n  }\n}\n\ntest \"t\" {\n  inspect(away_use() + home_use(), content = \"12\")\n}\n")
-  let report = prelude_module_full_oracle_report_fs(entry_path = main, entry_name = "__no_entry__")
+  let report = prelude_module_full_oracle_report_fs(entry_path = main, entry_name = "__no_entry__", checked_error_row = false)
   // The control for the CTX line: `seen=4` says the scan had four
   // merge-stamped names to judge, and both `unresolved` counts are zero
   // because the contexts really do supply them.
