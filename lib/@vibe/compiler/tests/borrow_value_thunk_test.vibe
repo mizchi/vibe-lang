@@ -183,6 +183,35 @@ test "a binder that spells the name anywhere keeps the function out" {
   ]), content = "binder: (none)")
 }
 
+test "a callee that keeps the parameter two calls down keeps the function out" {
+  // `three -> mid -> keep`, and `keep` returns `ctx`. The trial reads the
+  // whole callee closure, so `three` stays owned and gets no thunk.
+  let three = fn_typed(name = "three", params = [("ctx", ty("Ctx"))], body = call(f = "mid", args = [
+    id("ctx")
+  ]))
+  let mid = fn_typed(name = "mid", params = [("ctx", ty("Ctx"))], body = call(f = "keep", args = [
+    id("ctx")
+  ]))
+  let keep = fn_typed(name = "keep", params = [("ctx", ty("Ctx"))], body = id("ctx"))
+  inspect(thunked(case = "deep consume", stmts = [
+    three,
+    mid,
+    keep,
+    user("three")
+  ]), content = "deep consume: (none)")
+}
+
+test "a callee that only reads the parameter two calls down lets the function in" {
+  let three = fn_typed(name = "three", params = [("ctx", ty("Ctx"))], body = call(f = "mid", args = [
+    id("ctx")
+  ]))
+  let mid = fn_typed(name = "mid", params = [("ctx", ty("Ctx"))], body = call(f = "leaf", args = [
+    id("ctx")
+  ]))
+  let leaf = fn_typed(name = "leaf", params = [("ctx", ty("Ctx"))], body = EDot(id("ctx"), "n", -1, -1))
+  inspect(thunked(case = "deep read", stmts = [three, mid, leaf, user("three")]), content = "deep read: three")
+}
+
 test "an excluded entry keeps the function out" {
   inspect(thunked(case = "excluded", stmts = [reader("main"), user("main")]), content = "excluded: (none)")
 }
