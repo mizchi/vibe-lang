@@ -374,33 +374,24 @@ export fn check_if_branches(cond: Expr, then_e: Expr, else_e: Expr, tt0: Type, e
   (if_ty, s3b)
 }
 
-/// A pending operand can size an integer literal after resolution.
+/// A pending operand can size literals in its peer after resolution.
 export fn deferred_numeric_inputs(left: Expr, right: Expr, left_ty: Type, right_ty: Type, s: Subst) -> Option[Array[Int]] {
-  match left_ty {
-    CtVar(left_id) => if !checker_call_header_is_probe() && deferred_result_pending(id = left_id, s = s) {
-      match right_ty {
-        CtVar(right_id) => if deferred_result_pending(id = right_id, s = s) {
-          Some([left_id, right_id])
-        } else {
-          None
-        },
-        CtInt => if int32_literal_can_adapt(right) {
-          Some([left_id])
-        } else {
-          None
-        },
-        _ => None
-      }
+  if !has_deferred_checks() || checker_call_header_is_probe() {
+    return None
+  }
+  let pending_left = pending_type_id(ty = left_ty, s = s)
+  let pending_right = pending_type_id(ty = right_ty, s = s)
+  match (pending_left, pending_right) {
+    (Some(a), Some(b)) => Some([a, b]),
+    (Some(id), None) => if int32_literal_can_adapt(e = right, actual = right_ty) {
+      Some([id])
     } else {
       None
     },
-    CtInt => match right_ty {
-      CtVar(right_id) => if int32_literal_can_adapt(left) && !checker_call_header_is_probe() && deferred_result_pending(id = right_id, s = s) {
-        Some([right_id])
-      } else {
-        None
-      },
-      _ => None
+    (None, Some(id)) => if int32_literal_can_adapt(e = left, actual = left_ty) {
+      Some([id])
+    } else {
+      None
     },
     _ => None
   }
@@ -414,11 +405,11 @@ export fn deferred_join_inputs(joined: Type, actual: Type, e: Expr, count: Int, 
   }
   let anchor = subst_apply(s = s, ty = joined)
   let current = subst_apply(s = s, ty = actual)
-  let pending_anchor = deferred_join_type_id(ty = anchor, s = s)
-  let pending_current = deferred_join_type_id(ty = current, s = s)
+  let pending_anchor = pending_type_id(ty = anchor, s = s)
+  let pending_current = pending_type_id(ty = current, s = s)
   match (pending_anchor, pending_current) {
     (Some(a), Some(b)) => Some([a, b]),
-    (Some(id), None) => if already_deferred || ((current is CtInt) && int32_literal_can_adapt(int32_tail(e))) {
+    (Some(id), None) => if already_deferred || int32_literal_can_adapt(e = int32_tail(e), actual = current) {
       Some([id])
     } else {
       None
@@ -432,7 +423,7 @@ export fn deferred_join_inputs(joined: Type, actual: Type, e: Expr, count: Int, 
   }
 }
 
-fn deferred_join_type_id(ty: Type, s: Subst) -> Option[Int] {
+fn pending_type_id(ty: Type, s: Subst) -> Option[Int] {
   match ty {
     CtVar(id) => if deferred_result_pending(id = id, s = s) {
       Some(id)

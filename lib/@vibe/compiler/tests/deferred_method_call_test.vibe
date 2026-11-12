@@ -178,6 +178,21 @@ test "#4037: a conditional literal takes the late operand's integer width" {
   assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.value() == (if true { 0 } else { -1 })", result = "Bool")), needle = "does not fit `UInt32`"))
 }
 
+/// A comparison against a compound literal uses the return shape of the
+/// function-valued field, including any sized integer inside it.
+fn compound_operand_source(return_ty: String, expr: String) -> String {
+  "struct Holder { get: () -> " + return_ty + " }\nfn probe(hs: Array[Holder]) -> Array[Bool] {\n  Array::map(hs, f = (h) -> " + expr + ")\n}\n"
+}
+
+test "#4037: container literals adapt to late operands" {
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Array[Int32]", expr = "h.get() == [0]")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "(Int32, Bool)", expr = "(0, false) == h.get()")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Option[UInt32]", expr = "h.get() == Some(4294967295)")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Option[(Array[Int32], Bool)]", expr = "Some(([0], true)) == h.get()")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Array[Int32]", expr = "h.get() == (if true { [0] } else { [1] })")), "")
+  assert_true(String::contains(first_check_error(compound_operand_source(return_ty = "Option[UInt32]", expr = "h.get() == Some(-1)")), needle = "does not fit `UInt32`"))
+}
+
 test "#4037: unary numeric operators wait for the late method's result type" {
   assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "-h.value()", result = "Int32")), "")
   assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "~h.value()", result = "UInt32")), "")
