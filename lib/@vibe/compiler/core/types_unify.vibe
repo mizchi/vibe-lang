@@ -1,3 +1,7 @@
+import ./alias_expansion_count.vibe {
+  alias_expansion_node_limit, type_expr_expansion_node_count
+}
+
 // lib/@vibe/compiler/core/types.vibe — unify.
 
 import ./ast.vibe {
@@ -1372,18 +1376,39 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
 /// `Value[Map[String, T]]` (Codex on #3956). A bare trait name is kept as
 /// written.
 ///
-/// The size of what this writes back is bounded where `defs` are built
-/// (`canonical_key_defs_with`): an alias that would expand past the checker's
-/// alias preflight is left out of them, so a key through it stays as written
-/// and the preflight refuses the source. No budget is applied here, because a
-/// key the checker accepts must be spelled the same way on the impl side and
-/// on the bound side (Codex on #3995).
+/// An oversized reference keeps its source spelling for callers without a
+/// diagnostic channel. The checker and desugar use the checked form.
 export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[TypeDef]) -> String {
   if !trait_ref_is_applied(key) {
     key
   } else {
-    match trait_ref_from_key(key) {
-      Some(TyApp(head, args)) => {
+    canonical_trait_key_checked(key = key, binders = binders, defs = defs).0
+  }
+}
+
+/// Check the entire argument list before resolving any argument. Earlier
+/// arguments stay live while later ones expand. A bare alias constructor
+/// contributes only its name to the key, so count it as a single node.
+export fn canonical_trait_key_checked(key: String, binders: Array[String], defs: Array[TypeDef]) -> (String, Option[String]) {
+  if !trait_ref_is_applied(key) {
+    return (key, None)
+  }
+  match trait_ref_from_key(key) {
+    Some(TyApp(head, args)) => {
+      let budget_args = for arg in args {
+        match arg {
+          TyName(_) => match resolve_trait_key_arg(te = arg, defs = defs, shadow = binders) {
+            CtConstructor(_, _) => TyUnit,
+            _ => arg
+          },
+          _ => arg
+        }
+      }
+      let limit = alias_expansion_node_limit()
+      if type_expr_expansion_node_count(te = TyTuple(budget_args), defs = defs, shadow = binders, capped_aliases = [
+      ], limit = limit) > limit {
+        (key, Some("trait argument expansion exceeds \{limit} nodes for `\{head}`; replace the shared alias DAG with a nominal struct or enum"))
+      } else {
         let mut changed = false
         let mapped = for arg in args {
           match canonical_trait_arg_type_expr(resolve_trait_key_arg(te = arg, defs = defs, shadow = binders)) {
@@ -1399,13 +1424,13 @@ export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[T
           }
         }
         if changed {
-          trait_ref_key(TyApp(head, mapped))
+          (trait_ref_key(TyApp(head, mapped)), None)
         } else {
-          key
+          (key, None)
         }
-      },
-      _ => key
-    }
+      }
+    },
+    _ => (key, None)
   }
 }
 

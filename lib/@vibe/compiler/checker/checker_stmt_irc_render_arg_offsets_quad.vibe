@@ -1080,7 +1080,13 @@ fn suppress_conflicting_hover_types(table: Array[(Int, Type)], final_s: Subst) -
 /// subst) types; callers resolve via subst_apply(finalSubst, ty).
 export fn check_program_type_table(_ stmts: Array[Stmt], checked_error_row: Bool) -> (Array[(Int, Type)], Subst) with Exception {
   // #3947: one spelling for every applied trait key before any is read.
-  canonicalize_trait_ref_aliases(stmts)
+  let key_errors = canonicalize_trait_ref_aliases(stmts)
+  if Array::length(key_errors) > 0 {
+    // Hover readers also take the local binder rows after this call.
+    local_let_types_begin()
+    local_let_types_end()
+    return ([], SubstEmpty)
+  }
   derive_trait_namespace_operations(stmts)
   // #3301 (Codex on #3337): hover types an or-pattern handler arm's body the
   // way the check does -- split it into one arm per operation first, or the
@@ -1359,7 +1365,10 @@ fn check_program_with_env_source_impl(stmts: Array[Stmt], initial_env: TypeEnv, 
       let frozen_errors = ArrayBuilder::freeze(errors)
       // #3947: one spelling for every applied trait key before any is read;
       // #3953: through the aliases this module imports as well.
-      canonicalize_trait_ref_aliases_with(stmts = stmts, imported = env_type_defs(initial_env))
+      let key_errors = canonicalize_trait_ref_aliases_with(stmts = stmts, imported = env_type_defs(initial_env))
+      if Array::length(key_errors) > 0 {
+        throw(Array::get(key_errors, at = 0))
+      }
       push_error_strings(msgs = collect_trait_namespace_conflict_errors(stmts = stmts, env = initial_env), errors = frozen_errors)
       derive_imported_trait_namespace_operations(stmts = stmts, env = initial_env)
       derive_trait_namespace_operations(stmts)

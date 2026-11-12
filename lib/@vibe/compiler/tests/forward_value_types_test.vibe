@@ -251,6 +251,24 @@ test "#3493: provisional inference does not record local binder observations" {
   inspect(Array::length(local_let_types()), content = "1")
 }
 
+test "#3995: an oversized trait key clears prior hover rows" {
+  let good = "fn main() -> Int { let n = 1\nn }\n"
+  let (tokens, starts, _) = lex_with_offsets(good)
+  let _ = check_program_type_table(parse_program_located(tokens = tokens, starts = starts, source = good), checked_error_row = false)
+  inspect(Array::length(local_let_types()), content = "1")
+  let mut argument = "Int"
+  let mut depth = 0
+  while depth < 24 {
+    argument = "Dup[" + argument + "]"
+    depth = depth + 1
+  }
+  let bad = "type Dup[T] = (T, T)\ntrait Mark[X] {}\nfn keep[T: Mark[" + argument + "]](_ value: T) -> T { value }\n"
+  let (tokens, starts, _) = lex_with_offsets(bad)
+  let (table, _) = check_program_type_table(parse_program_located(tokens = tokens, starts = starts, source = bad), checked_error_row = false)
+  inspect(Array::length(table), content = "0")
+  inspect(Array::length(local_let_types()), content = "0")
+}
+
 test "#3493: earlier-deferred-field-wrong" {
   let message = forward_value_error("struct Holder { payload: String }\nlet xs = []\nfn read() -> Int { Array::get(xs, 0).payload }\nlet rec touch = (v) -> Unit { Array::push(xs, Holder::{ payload: \"bad\" })\nif false { touch(v) } else { () } }\nfn main() -> Int { touch(0)\nread() }\n")
   inspect(String::contains(message, needle = "once its receiver is known"), content = "true")
