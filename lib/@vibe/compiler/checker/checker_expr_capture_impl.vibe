@@ -21,7 +21,7 @@ import ./checker_call_placement.vibe {
 }
 
 import ./checker_deferred_method_rows.vibe {
-  defer_operator_check, deferred_result_pending
+  defer_expr_check, deferred_result_pending, has_deferred_checks
 }
 
 import ./checker_call_arguments.vibe {
@@ -29,7 +29,15 @@ import ./checker_call_arguments.vibe {
 }
 
 import ./checker_expr_numeric_observation.vibe {
-  add_formal_for_type, check_binop_operands, check_unary_operand, record_add_formal
+  add_formal_for_type,
+  check_array_element_type,
+  check_binop_operands,
+  check_if_branches,
+  check_match_arm_result,
+  check_unary_operand,
+  deferred_join_inputs,
+  deferred_numeric_inputs,
+  record_add_formal
 }
 
 import ./checker_call_header_flow.vibe {
@@ -57,7 +65,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  branch_join_widens, check_assignable_set_type_defs, struct_param_is_row, type_is_ground, widen_struct_row_args
+  check_assignable_set_type_defs, struct_param_is_row, type_is_ground, widen_struct_row_args
 }
 
 import @vibe/compiler/checker/resume {
@@ -185,7 +193,6 @@ import ./checker_closure_capture_row.vibe {
   railway_kind_from_match,
   railway_not_option_msg,
   railway_origin_env,
-  refine_open_option_branch,
   region_write_escape_message,
   report_railway_after_arms,
   tail_expr_off,
@@ -223,11 +230,11 @@ import ./checker_map_literal.vibe {
 }
 
 import ./checker_int32.vibe {
-  int32_field_adapt, int32_join_branch, int32_literal_value
+  int32_field_adapt
 }
 
 import ./checker_int32_rows.vibe {
-  int32_assigned_type, int32_binop_operands, int32_compound_assign, int32_involved
+  int32_assigned_type, int32_compound_assign, int32_involved
 }
 
 import ./checker_infer_binop_type.vibe {
@@ -283,10 +290,8 @@ import ./checker_merge_capture_provenance.vibe {
   exception_kind_formals_in_env,
   expression_aliases_outer_binding,
   formal_shadow,
-  join_char_branch,
   marker_default_dispatch_error,
   merge_capture_provenance,
-  merge_value_effect_provenance,
   record_local_let_rec_type,
   record_local_let_type,
   reset_eq_formal_vars,
@@ -884,79 +889,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let (tt0, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       checker_call_header_rewind(header_fork)
       let (et0, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
-      // #3730: a literal branch beside an `Int32` / `UInt32` branch takes its
-      // type. A branch that only `return`s yields nothing to the `if`, so its
-      // operand's type must not size the other branch.
-      let (tt, et) = if arm_tail_all_return(then_e) || arm_tail_all_return(else_e) {
-        (tt0, et0)
-      } else {
-        int32_binop_operands(left = then_e, right = else_e, left_ty = subst_apply(s = s3, ty = tt0), right_ty = subst_apply(s = s3, ty = et0), s = s3, errors = errors, off = 0 - 1)
-      }
       checker_call_header_merge(header_fork)
-      // The two branches must agree when both yield a real value (previously
-      // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
-      // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
-      // discarded, and a statement-position `if` need not have matching arms.
-      let s3 = refine_open_option_branch(result = tt, other = et, s = refine_open_option_branch(result = et, other = tt, s = s3))
-      let rtt = subst_apply(s = s3, ty = tt)
-      let ret = subst_apply(s = s3, ty = et)
-      // When one branch yields Unit (an else-less `if`, whose missing else is
-      // `()`, or an explicit `()` branch), the branches need not agree and the
-      // expression yields Unit as a VALUE — so `let x: Int = if c { 1 }` is
-      // rejected (it returns Unit when c is false) while a statement-position
-      // `if` is harmless (its value is discarded). Only when BOTH branches yield
-      // a real (non-Unit) value must they agree, and the result is that type.
-      // #3012 / #2985 review (Codex P2): a branch whose every tail is a
-      // `return` leaves the function and yields nothing to the `if`, so the
-      // OTHER branch's type is the expression's -- `if flag { return 42 }
-      // else { "abcd" }` is a String, the way a diverging match arm already
-      // does not force the match's type (#635). Before, the return's operand
-      // type was taken as the branch type and `let s: String = ..` and the
-      // implicit-resume arm check both refused it as `got Int`.
-      let (s3b, if_ty) = if arm_tail_all_return(then_e) {
-        (s3, et)
-      } else if arm_tail_all_return(else_e) {
-        (s3, tt)
+      let pending = if !has_deferred_checks() || arm_tail_all_return(then_e) || arm_tail_all_return(else_e) {
+        None
       } else {
-        match rtt {
-          CtUnit => (s3, CtUnit),
-          _ => match ret {
-            CtUnit => (s3, CtUnit),
-            _ => match branch_join_widens(anchor = rtt, later = ret, s = s3) {
-              // #3598: a pure then-branch beside an effectful else-branch
-              // joins at the else-branch's (wider) type, as the swapped
-              // spelling always did.
-              Some(widened_s) => (widened_s, join_char_branch(joined = merge_value_effect_provenance(expected = et, actual = tt, s = widened_s), other = tt, s = widened_s)),
-              None => {
-                // #2198: a literal else-branch carries no offset, which left this
-                // diagnostic file-only. Keep the else anchor when it exists (pinned
-                // by diagnostic_anchor_test), else fall back to the then-branch
-                // tail, else to the condition -- coarser, but still on the `if`.
-                let else_off = railway_expr_off(else_e)
-                let branch_off = if else_off >= 0 {
-                  else_off
-                } else {
-                  let then_off = tail_expr_off(then_e)
-                  if then_off >= 0 {
-                    then_off
-                  } else {
-                    railway_expr_off(cond)
-                  }
-                }
-                let else_end = string_lit_end(else_e)
-                if else_end > 0 {
-                  check_assignable_set_end(else_end)
-                } else {
-                  check_assignable_set_end(string_lit_end(then_e))
-                }
-                let joined_s = check_assignable(expected = rtt, actual = ret, s = s3, errors = errors, what = "if branches have incompatible types", off = branch_off)
-                (joined_s, join_char_branch(joined = merge_value_effect_provenance(expected = tt, actual = et, s = joined_s), other = et, s = joined_s))
-              }
-            }
-          }
+        deferred_numeric_inputs(left = then_e, right = else_e, left_ty = subst_apply(s = s3, ty = tt0), right_ty = subst_apply(s = s3, ty = et0), s = s3)
+      }
+      match pending {
+        Some(operands) => {
+          let (result, next) = defer_expr_check(operands = operands, subject = "if expression", off = railway_expr_off(cond), c = c3, check = (settled, deferred_errors) -> check_if_branches(cond = cond, then_e = then_e, else_e = else_e, tt0 = tt0, et0 = et0, s3 = settled, errors = deferred_errors))
+          (result, s3, next)
+        },
+        None => {
+          let (result, joined) = check_if_branches(cond = cond, then_e = then_e, else_e = else_e, tt0 = tt0, et0 = et0, s3 = s3, errors = errors)
+          (result, joined, c3)
         }
       }
-      (if_ty, s3b, c3)
     },
     ECall(_, _, _, _) => check_call_expr(expr = local_alias_call_expr(expr = expr, env = env), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root, check_child = check_expr_capture, check_plain = check_expr_nested, check_args = check_unmatched_call_args),
     EBinOp(op, left, right, boff) => {
@@ -981,37 +929,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let left_resolved = subst_apply(s = s2, ty = left_ty)
       let right_resolved = subst_apply(s = s2, ty = right_ty)
-      let pending = match left_resolved {
-        CtVar(left_id) => if !checker_call_header_is_probe() && deferred_result_pending(id = left_id, s = s2) {
-          match right_resolved {
-            CtVar(right_id) => if deferred_result_pending(id = right_id, s = s2) {
-              Some([left_id, right_id])
-            } else {
-              None
-            },
-            CtInt => if int32_literal_value(right) is Some(_) {
-              Some([left_id])
-            } else {
-              None
-            },
-            _ => None
-          }
-        } else {
-          None
-        },
-        CtInt => match right_resolved {
-          CtVar(right_id) => if (int32_literal_value(left) is Some(_)) && !checker_call_header_is_probe() && deferred_result_pending(id = right_id, s = s2) {
-            Some([right_id])
-          } else {
-            None
-          },
-          _ => None
-        },
-        _ => None
-      }
+      let pending = deferred_numeric_inputs(left = left, right = right, left_ty = left_resolved, right_ty = right_resolved, s = s2)
       match pending {
         Some(operands) => {
-          let (result, next) = defer_operator_check(operands = operands, op = op, off = bin_off, c = c2, check = (settled, deferred_errors) -> check_binop_operands(op = op, left = left, right = right, left_ty = subst_apply(s = settled, ty = left_ty), right_ty = subst_apply(s = settled, ty = right_ty), env = env, defs = defs, s2 = settled, errors = deferred_errors, tytab = tytab, capture = capture, boff = boff, bin_off = bin_off))
+          let (result, next) = defer_expr_check(operands = operands, subject = "operator " + op, off = bin_off, c = c2, check = (settled, deferred_errors) -> check_binop_operands(op = op, left = left, right = right, left_ty = subst_apply(s = settled, ty = left_ty), right_ty = subst_apply(s = settled, ty = right_ty), env = env, defs = defs, s2 = settled, errors = deferred_errors, tytab = tytab, capture = capture, boff = boff, bin_off = bin_off))
           (result, s2, next)
         },
         None => {
@@ -1033,7 +954,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       match pending {
         Some(id) => {
-          let (result, next) = defer_operator_check(operands = [id], op = op, off = railway_expr_off(operand), c = c1, check = (settled, deferred_errors) -> check_unary_operand(op = op, operand = operand, operand_ty = subst_apply(s = settled, ty = operand_ty), defs = defs, s1 = settled, capture = capture, errors = deferred_errors))
+          let (result, next) = defer_expr_check(operands = [id], subject = "operator " + op, off = railway_expr_off(operand), c = c1, check = (settled, deferred_errors) -> check_unary_operand(op = op, operand = operand, operand_ty = subst_apply(s = settled, ty = operand_ty), defs = defs, s1 = settled, capture = capture, errors = deferred_errors))
           (result, s1, next)
         },
         None => {
@@ -1176,6 +1097,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         let mut result_ty = CtUnknown
         let mut result_anchored = false
+        let mut deferred_join = false
         // #3382: EVERY arm after the anchoring one is checked against it. The
         // check used to run only when the first arm was a scalar, so a struct
         // or tuple first arm let `_ => [5]` be returned as a `P`. The narrowing
@@ -1247,59 +1169,33 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if !result_anchored && !arm_tail_all_return(body) {
             result_anchored = true
             result_ty = arm_ty
-          } else if !result_anchored {
-            ()
-          } else {
-            // #3730: a literal arm beside an `Int32` / `UInt32` arm takes its
-            // type. An arm that only `return`s yields nothing to the match.
-            let arm_ty = if arm_tail_all_return(body) {
-              arm_ty
-            } else {
-              let (result_adj, adapted) = int32_join_branch(count = ai, earlier_at = (k) -> {
-                let (_, b) = Array::get(arms, at = k)
-                b
-              }, e = body, joined = result_ty, actual = subst_apply(s = si, ty = arm_ty), s = si, errors = errors)
-              result_ty = result_adj
-              adapted
+          } else if result_anchored && !arm_tail_all_return(body) {
+            let joined = result_ty
+            let arm_index = ai
+            let earlier_at: (Int) -> Expr = (k) -> {
+              let (_, b) = Array::get(arms, at = k)
+              b
             }
-            if arm_tail_all_return(body) {
-              ()
+            let pending = if rk == 0 {
+              deferred_join_inputs(joined = joined, actual = arm_ty, e = body, count = arm_index, earlier_at = earlier_at, s = si, already_deferred = deferred_join)
             } else {
-              si = refine_open_option_branch(result = result_ty, other = arm_ty, s = si)
-              result_ty = join_char_branch(joined = merge_value_effect_provenance(expected = result_ty, actual = arm_ty, s = si), other = arm_ty, s = si)
+              None
             }
-            // Tolerate a `CtUnit` arm (statement-position match); rely on
-            // check_assignable's ground/ground gate otherwise. Also tolerate a
-            // DIVERGING arm whose body is an early `return` (#635): `val?`
-            // lowers to `match val { Some(v) => v, None => return None }` — the
-            // `return` arm yields no value to the match, so it must not force
-            // the match's result type (it would clash `T` vs `Option[T]`).
-            let r2 = subst_apply(s = si, ty = arm_ty)
-            si = if arm_tail_all_return(body) {
-              si
-            } else {
-              match r2 {
-                CtUnit => si,
-                _ => if rk != 0 {
-                  si
-                } else {
-                  // A `Unit` first arm is a statement-position match, the
-                  // way a `Unit` branch makes an `if` a statement.
-                  match subst_apply(s = si, ty = result_ty) {
-                    CtUnit => si,
-                    // #3598: an arm wider in its function rows than the
-                    // arms before it becomes the match's type.
-                    _ => match branch_join_widens(anchor = result_ty, later = r2, s = si) {
-                      Some(widened_s) => {
-                        result_ty = join_char_branch(joined = merge_value_effect_provenance(expected = arm_ty, actual = result_ty, s = widened_s), other = result_ty, s = widened_s)
-                        widened_s
-                      },
-                      None => check_assignable(expected = result_ty, actual = r2, s = si, errors = errors, what = "match arms have incompatible types", off = tail_expr_off(body))
-                    }
-                  }
-                }
+            match pending {
+              Some(operands) => {
+                let (result, next) = defer_expr_check(operands = operands, subject = "match expression", off = tail_expr_off(body), c = ci, check = (settled, deferred_errors) -> check_match_arm_result(joined = joined, actual = arm_ty, body = body, count = arm_index, earlier_at = earlier_at, railway = rk, s = settled, errors = deferred_errors))
+                result_ty = result
+                ci = next
+                deferred_join = true
+              },
+              None => {
+                let (result, ns) = check_match_arm_result(joined = joined, actual = arm_ty, body = body, count = arm_index, earlier_at = earlier_at, railway = rk, s = si, errors = errors)
+                result_ty = result
+                si = ns
               }
             }
+          } else {
+            ()
           }
           ai = ai + 1
         }
@@ -2659,6 +2555,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let mut s1 = s
         let mut c1 = c
         let mut elem_ty = CtUnknown
+        let mut deferred_join = false
         // #3353: EVERY element is unified with the first one's type. The
         // check used to run only when the first element was a scalar, an
         // array of scalars or an unresolved variable, so `[P::{ v: 1 }, [5]]`
@@ -2676,19 +2573,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if ai == 0 {
             elem_ty = it
           } else {
-            // #3730: a literal element beside an `Int32` / `UInt32` takes its type.
-            let (elem_adj, it) = int32_join_branch(count = ai, earlier_at = (k) -> Array::get(items, at = k), e = Array::get(items, at = ai), joined = elem_ty, actual = subst_apply(s = s1, ty = it), s = s1, errors = errors)
-            elem_ty = elem_adj
-            // #3598: an element wider in its function rows than the ones
-            // before it becomes the element type, as for `if` branches.
-            match branch_join_widens(anchor = elem_ty, later = subst_apply(s = s1, ty = it), s = s1) {
-              Some(widened_s) => {
-                s1 = widened_s
-                elem_ty = merge_value_effect_provenance(expected = it, actual = elem_ty, s = s1)
+            let joined = elem_ty
+            let element_index = ai
+            let item = Array::get(items, at = element_index)
+            let earlier_at: (Int) -> Expr = (k) -> Array::get(items, at = k)
+            let pending = deferred_join_inputs(joined = joined, actual = it, e = item, count = element_index, earlier_at = earlier_at, s = s1, already_deferred = deferred_join)
+            match pending {
+              Some(operands) => {
+                let (result, next) = defer_expr_check(operands = operands, subject = "array element", off = railway_expr_off(item), c = c1, check = (settled, deferred_errors) -> check_array_element_type(joined = joined, actual = it, item = item, count = element_index, earlier_at = earlier_at, s = settled, errors = deferred_errors))
+                elem_ty = result
+                c1 = next
+                deferred_join = true
               },
               None => {
-                s1 = check_assignable(expected = elem_ty, actual = subst_apply(s = s1, ty = it), s = s1, errors = errors, what = "array elements have incompatible types", off = railway_expr_off(Array::get(items, at = ai)))
-                elem_ty = merge_value_effect_provenance(expected = elem_ty, actual = it, s = s1)
+                let (result, ns) = check_array_element_type(joined = joined, actual = it, item = item, count = element_index, earlier_at = earlier_at, s = s1, errors = errors)
+                elem_ty = result
+                s1 = ns
               }
             }
           }

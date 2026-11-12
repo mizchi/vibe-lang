@@ -4,8 +4,32 @@ import @vibe/compiler/core {
 import @vibe/compiler/checker/diagnostics {
   off_marker
 }
+import @vibe/compiler/checker/resume {
+  arm_tail_all_return
+}
+import @vibe/compiler/checker/type_relations {
+  branch_join_widens
+}
 import @vibe/compiler/checker/traits {
   bound_entails_trait
+}
+import ./checker_call_header_flow.vibe {
+  checker_call_header_is_probe
+}
+import ./checker_closure_capture_row.vibe {
+  refine_open_option_branch, tail_expr_off
+}
+import ./checker_deferred_method_rows.vibe {
+  deferred_result_pending, has_deferred_checks
+}
+import ./checker_eq_unbounded_formal_msg.vibe {
+  check_assignable, check_assignable_set_end, string_lit_end
+}
+import ./checker_throw_kind_of_type.vibe {
+  railway_expr_off
+}
+import ./checker_int32.vibe {
+  int32_join_branch, int32_literal_value, int32_tail
 }
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture, infer_binop_type, record_float_arith, record_string_binop_operands
@@ -17,7 +41,7 @@ import ./checker_int32_rows.vibe {
   int32_binop_operands, int32_unary, record_int32_binop
 }
 import ./checker_merge_capture_provenance.vibe {
-  unary_operand_is_definitely_wrong
+  join_char_branch, merge_value_effect_provenance, unary_operand_is_definitely_wrong
 }
 import ./checker_lambda_expr.vibe {
   open_formal_name_for_var
@@ -272,4 +296,192 @@ export fn check_unary_operand(op: String, operand: Expr, operand_ty: Type, defs:
       }
     }
   } else (CtUnknown, s1)
+}
+
+/// Join the value-producing branches of an if.
+export fn check_if_branches(cond: Expr, then_e: Expr, else_e: Expr, tt0: Type, et0: Type, s3: Subst, errors: Array[String]) -> (Type, Subst) {
+  // #3730: a literal branch beside an `Int32` / `UInt32` branch takes its
+  // type. A branch that only `return`s yields nothing to the `if`, so its
+  // operand's type must not size the other branch.
+  let (tt, et) = if arm_tail_all_return(then_e) || arm_tail_all_return(else_e) {
+    (tt0, et0)
+  } else {
+    int32_binop_operands(left = then_e, right = else_e, left_ty = subst_apply(s = s3, ty = tt0), right_ty = subst_apply(s = s3, ty = et0), s = s3, errors = errors, off = 0 - 1)
+  }
+  // The two branches must agree when both yield a real value (previously
+  // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
+  // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
+  // discarded, and a statement-position `if` need not have matching arms.
+  let s3 = refine_open_option_branch(result = tt, other = et, s = refine_open_option_branch(result = et, other = tt, s = s3))
+  let rtt = subst_apply(s = s3, ty = tt)
+  let ret = subst_apply(s = s3, ty = et)
+  // When one branch yields Unit (an else-less `if`, whose missing else is
+  // `()`, or an explicit `()` branch), the branches need not agree and the
+  // expression yields Unit as a VALUE — so `let x: Int = if c { 1 }` is
+  // rejected (it returns Unit when c is false) while a statement-position
+  // `if` is harmless (its value is discarded). Only when BOTH branches yield
+  // a real (non-Unit) value must they agree, and the result is that type.
+  // #3012 / #2985 review (Codex P2): a branch whose every tail is a
+  // `return` leaves the function and yields nothing to the `if`, so the
+  // OTHER branch's type is the expression's -- `if flag { return 42 }
+  // else { "abcd" }` is a String, the way a diverging match arm already
+  // does not force the match's type (#635). Before, the return's operand
+  // type was taken as the branch type and `let s: String = ..` and the
+  // implicit-resume arm check both refused it as `got Int`.
+  let (s3b, if_ty) = if arm_tail_all_return(then_e) {
+    (s3, et)
+  } else if arm_tail_all_return(else_e) {
+    (s3, tt)
+  } else {
+    match rtt {
+      CtUnit => (s3, CtUnit),
+      _ => match ret {
+        CtUnit => (s3, CtUnit),
+        _ => match branch_join_widens(anchor = rtt, later = ret, s = s3) {
+          // #3598: a pure then-branch beside an effectful else-branch
+          // joins at the else-branch's (wider) type, as the swapped
+          // spelling always did.
+          Some(widened_s) => (widened_s, join_char_branch(joined = merge_value_effect_provenance(expected = et, actual = tt, s = widened_s), other = tt, s = widened_s)),
+          None => {
+            // #2198: a literal else-branch carries no offset, which left this
+            // diagnostic file-only. Keep the else anchor when it exists (pinned
+            // by diagnostic_anchor_test), else fall back to the then-branch
+            // tail, else to the condition -- coarser, but still on the `if`.
+            let else_off = railway_expr_off(else_e)
+            let branch_off = if else_off >= 0 {
+              else_off
+            } else {
+              let then_off = tail_expr_off(then_e)
+              if then_off >= 0 {
+                then_off
+              } else {
+                railway_expr_off(cond)
+              }
+            }
+            let else_end = string_lit_end(else_e)
+            if else_end > 0 {
+              check_assignable_set_end(else_end)
+            } else {
+              check_assignable_set_end(string_lit_end(then_e))
+            }
+            let joined_s = check_assignable(expected = rtt, actual = ret, s = s3, errors = errors, what = "if branches have incompatible types", off = branch_off)
+            (joined_s, join_char_branch(joined = merge_value_effect_provenance(expected = tt, actual = et, s = joined_s), other = et, s = joined_s))
+          }
+        }
+      }
+    }
+  }
+  (if_ty, s3b)
+}
+
+/// A pending operand can size an integer literal after resolution.
+export fn deferred_numeric_inputs(left: Expr, right: Expr, left_ty: Type, right_ty: Type, s: Subst) -> Option[Array[Int]] {
+  match left_ty {
+    CtVar(left_id) => if !checker_call_header_is_probe() && deferred_result_pending(id = left_id, s = s) {
+      match right_ty {
+        CtVar(right_id) => if deferred_result_pending(id = right_id, s = s) {
+          Some([left_id, right_id])
+        } else {
+          None
+        },
+        CtInt => if int32_literal_value(right) is Some(_) {
+          Some([left_id])
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    CtInt => match right_ty {
+      CtVar(right_id) => if (int32_literal_value(left) is Some(_)) && !checker_call_header_is_probe() && deferred_result_pending(id = right_id, s = s) {
+        Some([right_id])
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// A literal in a join takes the sized type of another value. Once the
+/// join waits on a value, later joins must wait for that accumulated type.
+export fn deferred_join_inputs(joined: Type, actual: Type, e: Expr, count: Int, earlier_at: (Int) -> Expr, s: Subst, already_deferred: Bool) -> Option[Array[Int]] {
+  if !has_deferred_checks() || checker_call_header_is_probe() {
+    return None
+  }
+  let anchor = subst_apply(s = s, ty = joined)
+  let current = subst_apply(s = s, ty = actual)
+  let pending_anchor = deferred_join_type_id(ty = anchor, s = s)
+  let pending_current = deferred_join_type_id(ty = current, s = s)
+  match (pending_anchor, pending_current) {
+    (Some(a), Some(b)) => Some([a, b]),
+    (Some(id), None) => if already_deferred || ((current is CtInt) && (int32_literal_value(int32_tail(e)) is Some(_))) {
+      Some([id])
+    } else {
+      None
+    },
+    (None, Some(id)) => if already_deferred || ((anchor is CtInt) && earlier_values_are_literals(count = count, earlier_at = earlier_at)) {
+      Some([id])
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn deferred_join_type_id(ty: Type, s: Subst) -> Option[Int] {
+  match ty {
+    CtVar(id) => if deferred_result_pending(id = id, s = s) {
+      Some(id)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn earlier_values_are_literals(count: Int, earlier_at: (Int) -> Expr) -> Bool {
+  let mut i = 0
+  while i < count {
+    let earlier = earlier_at(i)
+    if !arm_tail_all_return(earlier) && (int32_literal_value(int32_tail(earlier)) is None) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Add one value-producing match arm to the result type.
+export fn check_match_arm_result(joined: Type, actual: Type, body: Expr, count: Int, earlier_at: (Int) -> Expr, railway: Int, s: Subst, errors: Array[String]) -> (Type, Subst) {
+  let (adjusted, arm_ty) = int32_join_branch(count = count, earlier_at = earlier_at, e = body, joined = joined, actual = subst_apply(s = s, ty = actual), s = s, errors = errors)
+  let ns = refine_open_option_branch(result = adjusted, other = arm_ty, s = s)
+  let result = join_char_branch(joined = merge_value_effect_provenance(expected = adjusted, actual = arm_ty, s = ns), other = arm_ty, s = ns)
+  let arm = subst_apply(s = ns, ty = arm_ty)
+  // A Unit arm makes the match statement-like. The railway owns its own
+  // type diagnostics for the synthetic arms of let* and ?.
+  if (arm is CtUnit) || railway != 0 || (subst_apply(s = ns, ty = result) is CtUnit) {
+    (result, ns)
+  } else {
+    match branch_join_widens(anchor = result, later = arm, s = ns) {
+      Some(widened) => (join_char_branch(joined = merge_value_effect_provenance(expected = arm_ty, actual = result, s = widened), other = result, s = widened), widened),
+      None => (result, check_assignable(expected = result, actual = arm, s = ns, errors = errors, what = "match arms have incompatible types", off = tail_expr_off(body)))
+    }
+  }
+}
+
+/// Add one array element to the common element type.
+export fn check_array_element_type(joined: Type, actual: Type, item: Expr, count: Int, earlier_at: (Int) -> Expr, s: Subst, errors: Array[String]) -> (Type, Subst) {
+  let (adjusted, elem) = int32_join_branch(count = count, earlier_at = earlier_at, e = item, joined = joined, actual = subst_apply(s = s, ty = actual), s = s, errors = errors)
+  let resolved = subst_apply(s = s, ty = elem)
+  match branch_join_widens(anchor = adjusted, later = resolved, s = s) {
+    Some(widened) => (merge_value_effect_provenance(expected = elem, actual = adjusted, s = widened), widened),
+    None => {
+      let ns = check_assignable(expected = adjusted, actual = resolved, s = s, errors = errors, what = "array elements have incompatible types", off = railway_expr_off(item))
+      (merge_value_effect_provenance(expected = adjusted, actual = elem, s = ns), ns)
+    }
+  }
 }

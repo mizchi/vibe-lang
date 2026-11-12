@@ -33,20 +33,20 @@ export struct DeferredMethodCall {
   result: Int
 }
 
-/// An operator waits for its pending operands before selecting its type and
-/// recording the lowering information.
-export struct DeferredOperatorCheck {
+/// An expression waits for its pending inputs before choosing a type and
+/// recording any lowering information.
+export struct DeferredExprCheck {
   operands: Array[Int];
   result: Int;
-  op: String;
+  subject: String;
   off: Int;
   check: (Subst, Array[String]) -> (Type, Subst)
 }
 
-/// Calls and the operators that use their results share evaluation order.
+/// Calls and expressions using their results share evaluation order.
 export enum DeferredCheck {
   DeferredMethod(DeferredMethodCall)
-  DeferredOperator(DeferredOperatorCheck)
+  DeferredExpr(DeferredExprCheck)
 }
 
 /// The pending rows, in recording order. Reset per run, since variable ids
@@ -58,27 +58,32 @@ export fn defer_method_call(_ row: DeferredMethodCall) -> Unit {
   Array::push(deferred_checks, value = DeferredMethod(row))
 }
 
-/// Record the operator after the checks for its operands.
-export fn defer_operator_check(operands: Array[Int], op: String, off: Int, c: Int, check: (Subst, Array[String]) -> (Type, Subst)) -> (Type, Int) {
+/// Record the expression after the checks for its inputs.
+export fn defer_expr_check(operands: Array[Int], subject: String, off: Int, c: Int, check: (Subst, Array[String]) -> (Type, Subst)) -> (Type, Int) {
   let (result, next) = fresh_var(c)
-  let row = DeferredOperatorCheck::{
+  let row = DeferredExprCheck::{
     operands: operands,
     result: next - 1,
-    op: op,
+    subject: subject,
     off: off,
     check: check
   }
-  Array::push(deferred_checks, value = DeferredOperator(row))
+  Array::push(deferred_checks, value = DeferredExpr(row))
   (result, next)
 }
 
-/// Whether this variable still depends on a pending call or operator.
+/// Whether the current checker run has any pending checks.
+export fn has_deferred_checks() -> Bool {
+  Array::length(deferred_checks) > 0
+}
+
+/// Whether this variable still depends on a pending check.
 export fn deferred_result_pending(id: Int, s: Subst) -> Bool {
   let mut i = Array::length(deferred_checks) - 1
   while i >= 0 {
     let result = match Array::get(deferred_checks, at = i) {
       DeferredMethod(row) => row.result,
-      DeferredOperator(row) => row.result
+      DeferredExpr(row) => row.result
     }
     match subst_apply(s = s, ty = CtVar(result)) {
       CtVar(resolved_id) => if resolved_id == id {
