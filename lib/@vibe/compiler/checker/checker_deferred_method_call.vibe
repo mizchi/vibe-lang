@@ -115,21 +115,19 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
   let mut cur_s = s
   let mut cur_c = c
   for row in rows {
-    let input = match row {
-      DeferredMethod(call) => call.recv,
-      DeferredOperator(operator) => operator.operand
-    }
-    match subst_apply(s = cur_s, ty = CtVar(input)) {
-      CtVar(_) => Array::push(kept, value = row),
-      resolved => match row {
-        DeferredMethod(call) => {
+    match row {
+      DeferredMethod(call) => match subst_apply(s = cur_s, ty = CtVar(call.recv)) {
+        CtVar(_) => Array::push(kept, value = row),
+        resolved => {
           let (ns, nc) = resolve_method_or_place_opaque(row = call, recv = resolved, env = env, defs = defs, s = cur_s, c = cur_c, errors = errors)
           cur_s = ns
           cur_c = nc
-        },
-        DeferredOperator(operator) => {
-          cur_s = judge_deferred_operator(row = operator, s = cur_s, errors = errors)
         }
+      },
+      DeferredOperator(operator) => if Array::any(operator.operands, f = (id) -> subst_apply(s = cur_s, ty = CtVar(id)) is CtVar(_)) {
+        Array::push(kept, value = row)
+      } else {
+        cur_s = judge_deferred_operator(row = operator, s = cur_s, errors = errors)
       }
     }
   }

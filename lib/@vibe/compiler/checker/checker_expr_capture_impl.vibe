@@ -982,14 +982,26 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let left_resolved = subst_apply(s = s2, ty = left_ty)
       let right_resolved = subst_apply(s = s2, ty = right_ty)
       let pending = match left_resolved {
-        CtVar(id) => if (right_resolved is CtInt) && (int32_literal_value(right) is Some(_)) && !checker_call_header_is_probe() && deferred_result_pending(id = id, s = s2) {
-          Some(id)
+        CtVar(left_id) => if !checker_call_header_is_probe() && deferred_result_pending(id = left_id, s = s2) {
+          match right_resolved {
+            CtVar(right_id) => if deferred_result_pending(id = right_id, s = s2) {
+              Some([left_id, right_id])
+            } else {
+              None
+            },
+            CtInt => if int32_literal_value(right) is Some(_) {
+              Some([left_id])
+            } else {
+              None
+            },
+            _ => None
+          }
         } else {
           None
         },
         CtInt => match right_resolved {
-          CtVar(id) => if (int32_literal_value(left) is Some(_)) && !checker_call_header_is_probe() && deferred_result_pending(id = id, s = s2) {
-            Some(id)
+          CtVar(right_id) => if (int32_literal_value(left) is Some(_)) && !checker_call_header_is_probe() && deferred_result_pending(id = right_id, s = s2) {
+            Some([right_id])
           } else {
             None
           },
@@ -998,8 +1010,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         _ => None
       }
       match pending {
-        Some(id) => {
-          let (result, next) = defer_operator_check(operand = id, op = op, off = bin_off, c = c2, check = (settled, deferred_errors) -> check_binop_operands(op = op, left = left, right = right, left_ty = subst_apply(s = settled, ty = left_ty), right_ty = subst_apply(s = settled, ty = right_ty), env = env, defs = defs, s2 = settled, errors = deferred_errors, tytab = tytab, capture = capture, boff = boff, bin_off = bin_off))
+        Some(operands) => {
+          let (result, next) = defer_operator_check(operands = operands, op = op, off = bin_off, c = c2, check = (settled, deferred_errors) -> check_binop_operands(op = op, left = left, right = right, left_ty = subst_apply(s = settled, ty = left_ty), right_ty = subst_apply(s = settled, ty = right_ty), env = env, defs = defs, s2 = settled, errors = deferred_errors, tytab = tytab, capture = capture, boff = boff, bin_off = bin_off))
           (result, s2, next)
         },
         None => {
@@ -1021,7 +1033,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       match pending {
         Some(id) => {
-          let (result, next) = defer_operator_check(operand = id, op = op, off = railway_expr_off(operand), c = c1, check = (settled, deferred_errors) -> check_unary_operand(op = op, operand = operand, operand_ty = subst_apply(s = settled, ty = operand_ty), defs = defs, s1 = settled, capture = capture, errors = deferred_errors))
+          let (result, next) = defer_operator_check(operands = [id], op = op, off = railway_expr_off(operand), c = c1, check = (settled, deferred_errors) -> check_unary_operand(op = op, operand = operand, operand_ty = subst_apply(s = settled, ty = operand_ty), defs = defs, s1 = settled, capture = capture, errors = deferred_errors))
           (result, s1, next)
         },
         None => {
