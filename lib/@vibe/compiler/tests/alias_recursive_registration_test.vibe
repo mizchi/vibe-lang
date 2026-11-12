@@ -1,0 +1,67 @@
+// #3995: recording a recursion diagnostic must also stop registration from
+// publishing an expanded body that later validation would expand again.
+import @vibe/compiler/checker {
+  check_program
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn diagnostic(_ source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)), checked_error_row = false)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+fn nested_source(_ recursive: Bool) -> String {
+  let mut target = if recursive {
+    "A[T]"
+  } else {
+    "T"
+  }
+  let mut i = 0
+  while i < 12 {
+    target = String::concat("Apply[Dup, ", String::concat(target, "]"))
+    i = i + 1
+  }
+  String::concat("type Apply[F[_], X] = F[X]\ntype Dup[T] = (T, T)\ntype A[T] = ", String::concat(target, "\ntrait Mark[X] {}\nstruct Note { n: Int }\nimpl Mark[Int] for Note {}\nfn main() -> Int { 0 }\n"))
+}
+
+test "a recursive constructor alias returns its actionable diagnostic" {
+  inspect(String::contains(diagnostic(nested_source(true)), needle = "type alias `A` refers to itself"), content = "true")
+}
+
+test "the same constructor nesting without recursion is accepted" {
+  inspect(diagnostic(nested_source(false)), content = "")
+}
+
+test "a rejected recursive alias does not contaminate another checker invocation" {
+  let bad = diagnostic(nested_source(true))
+  inspect(diagnostic(nested_source(false)), content = "")
+  inspect(diagnostic(nested_source(true)) == bad, content = "true")
+}
+
+fn exported_source(_ count: Int) -> String {
+  let mut target = "Int"
+  let mut i = 0
+  while i < count {
+    target = String::concat("Apply[Dup, ", String::concat(target, "]"))
+    i = i + 1
+  }
+  String::concat("type Apply[F[_], X] = F[X]\ntype Dup[T] = (T, T)\nexport type Explode = ", String::concat(target, "\ntrait Mark[X] {}\nstruct Note { n: Int }\nimpl Mark[Int] for Note {}\nfn main() -> Int { 0 }\n"))
+}
+
+test "publication diagnostics preserve the exported alias expansion refusal" {
+  inspect(String::contains(diagnostic(exported_source(24)), needle = "type alias expansion exceeds 262144 nodes for `Explode`"), content = "true")
+}
+
+test "an accepted exported constructor alias still checks cleanly" {
+  inspect(diagnostic(exported_source(12)), content = "")
+}
+
+test "an exported expansion refusal leaves later checker invocations independent" {
+  let bad = diagnostic(exported_source(24))
+  inspect(diagnostic(exported_source(12)), content = "")
+  inspect(diagnostic(exported_source(24)) == bad, content = "true")
+}

@@ -50,6 +50,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  alias_expansion_node_limit,
   effect_type_param_names,
   env_bind,
   env_bind_trait_definition_origin,
@@ -67,6 +68,7 @@ import @vibe/compiler/core {
   stmts_use_prelude_ordering,
   subst_apply,
   subst_lookup,
+  type_expr_expansion_node_count,
   type_to_string,
   unify
 }
@@ -182,8 +184,7 @@ import ./checker_stmt_decl_formal_application_errors.vibe {
   refresh_completed_suberror_env,
   refresh_completed_type_env,
   report_alias_expansion_limit,
-  struct_field_decl_label,
-  type_expr_expansion_node_count
+  struct_field_decl_label
 }
 
 import ./checker_stmt_imported_decl_kind.vibe {
@@ -207,7 +208,6 @@ import ./checker_stmt_imported_decl_kind.vibe {
 
 import ./checker_stmt_labeled_name_check_expr.vibe {
   alias_decl_is_recursive,
-  alias_expansion_node_limit,
   bind_annotation_return,
   bind_fn_return,
   bind_value_or_annotation_return,
@@ -2332,7 +2332,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // #3536: an alias is expanded in place, so one that reaches itself
         // (`type A = B` / `type B = A`) names no type at all. It resolved to
         // a wildcard and accepted every value.
-        if alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = te) {
+        let recursive_alias = alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = te)
+        if recursive_alias {
           Array::push(errors, value = "type alias `\{name}` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type")
         } else {
           ()
@@ -2343,7 +2344,12 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // declaration order. Preflight before resolving too: dependency-first
         // alias declarations can already carry a completed exponential DAG at
         // this initial registration point, before the completion refresh runs.
-        let t = if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = alias_expansion_node_limit()) > alias_expansion_node_limit() {
+        // Keep the recursive declaration nominal from its first registration.
+        // Otherwise secondary diagnostics can apply its already expanded body
+        // again before the recursion error is returned (#3995).
+        let t = if recursive_alias {
+          CtNamed(name, array_empty())
+        } else if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = alias_expansion_node_limit()) > alias_expansion_node_limit() {
           report_alias_expansion_limit(name = name, errors = errors)
           CtNamed(name, array_empty())
         } else {

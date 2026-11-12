@@ -1,0 +1,115 @@
+//# Imports
+
+// Codex on #3995: a kinded binder `F[_]` beside a global `type F[T] = (T, T)`.
+// The applied-trait-key pass resolves a bound against the program's aliases,
+// with the binders in scope shadowing them, and a binder's arity rides on its
+// encoded key. Passed as a bare `F`, the binder had arity zero and the global
+// alias captured it, so `Takes[Lift[F, Int]]` became `Takes[(Int, Int)]` and
+// `F::take(xs)` on an `F[Int]` was rejected with "expected (Int, Int)". The
+// pass keeps the keys now, so the bound reads `Takes[F[Int]]`, through a
+// function's binder, a lambda's and a trait method's.
+//
+// The pass is asked directly. Compiling such a program still fails in the
+// lowering, on main as well: its constructor-receiver lookup expands `F[Int]`
+// through the global alias too, which is a separate defect.
+
+import @vibe/compiler/core {
+  Expr, Stmt, canonicalize_trait_ref_aliases
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn render_bounds(_ bounds: Array[(String, Array[String])]) -> String {
+  let parts: Array[String] = []
+  for bound in bounds {
+    let (tp, traits) = bound
+    Array::push(parts, value = String::concat(String::concat(tp, ": "), String::join(traits, sep = " + ")))
+  }
+  String::join(parts, sep = ", ")
+}
+
+fn lambda_bounds(_ e: Expr) -> String {
+  match e {
+    EFn(_, bs, _, _, _, _) => render_bounds(bs),
+    _ => "(not a lambda)"
+  }
+}
+
+/// The bounds `name` declares after the pass: a function's, a `let`-bound
+/// lambda's, or each method's of a trait.
+fn bounds_after_pass(source: String, name: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  canonicalize_trait_ref_aliases(stmts)
+  let mut out = "(not found)"
+  for stmt in stmts {
+    match stmt {
+      SFnDecl(_, n, body, _, _) => if n == name {
+        out = lambda_bounds(body)
+      } else {
+        ()
+      },
+      SLet(_, _, n, _, body) => if n == name {
+        out = lambda_bounds(body)
+      } else {
+        ()
+      },
+      STrait(_, n, _, _, rows, _) => if n == name {
+        let parts: Array[String] = []
+        for row in rows {
+          let (_, _, bs) = row
+          Array::push(parts, value = render_bounds(bs))
+        }
+        out = String::join(parts, sep = "; ")
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+let shared_decls = "type F[T] = (T, T)\ntype Lift[G[_], X] = G[X]\ntrait Takes[A] {\n  take(A) -> Int\n}\n"
+
+/// The same trait with no alias in the program: a bound spelled
+/// `Takes[F[Int]]` here has nothing to resolve through, so the pass leaves it
+/// as written. That is the key the aliased bound must canonicalize to.
+let plain_decls = "trait Takes[A] {\n  take(A) -> Int\n}\n"
+
+/// Whether `decl`'s bounds, with `aliased` written through `Lift` beside the
+/// global `F`, come out of the pass as `plain` does in a program with neither.
+fn same_after_pass(name: String, aliased: String, plain: String) -> Bool with Exception {
+  bounds_after_pass(source = String::concat(shared_decls, aliased), name = name) == bounds_after_pass(source = String::concat(plain_decls, plain), name = name)
+}
+
+//# Shadowed
+
+test "a function's kinded binder shadows a global alias of its spelling" {
+  let aliased = "fn take_lift[F[_]: Takes[Lift[F, Int]]](_ xs: F[Int]) -> Int {\n  F::take(xs)\n}\n"
+  let plain = "fn take_lift[F[_]: Takes[F[Int]]](_ xs: F[Int]) -> Int {\n  F::take(xs)\n}\n"
+  inspect(same_after_pass(name = "take_lift", aliased = aliased, plain = plain), content = "true")
+}
+
+test "a lambda's kinded binder shadows a global alias of its spelling" {
+  let aliased = "let take = [F[_]: Takes[Lift[F, Int]]](xs: F[Int]) -> Int {\n  F::take(xs)\n}\n"
+  let plain = "let take = [F[_]: Takes[F[Int]]](xs: F[Int]) -> Int {\n  F::take(xs)\n}\n"
+  inspect(same_after_pass(name = "take", aliased = aliased, plain = plain), content = "true")
+}
+
+test "a trait method's kinded binder shadows a global alias of its spelling" {
+  let aliased = "trait Run {\n  run[F[_]: Takes[Lift[F, Int]]](Self, F[Int]) -> Int\n}\n"
+  let plain = "trait Run {\n  run[F[_]: Takes[F[Int]]](Self, F[Int]) -> Int\n}\n"
+  inspect(same_after_pass(name = "Run", aliased = aliased, plain = plain), content = "true")
+}
+
+test "the comparison sees a captured binder" {
+  // Control: the global alias applied in the bound itself does expand, so a
+  // key that went through it differs from the plain spelling.
+  let aliased = "fn take_pair[V: Takes[F[Int]]](_ v: V) -> Int {\n  V::take(v)\n}\n"
+  let plain = "fn take_pair[V: Takes[F[Int]]](_ v: V) -> Int {\n  V::take(v)\n}\n"
+  inspect(same_after_pass(name = "take_pair", aliased = aliased, plain = plain), content = "false")
+}

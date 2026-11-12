@@ -1338,6 +1338,30 @@ export fn resolve_type_constructor_args(params: Array[String], source_args: Arra
   out
 }
 
+/// Resolve an argument for a trait key without turning a bare alias
+/// constructor into a complete type. Key writing keeps its declared name;
+/// inference still reifies its body through `resolve_type_constructor_args`.
+/// Impl registration and bound lookup must use the same spelling.
+export fn resolve_trait_key_arg(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type {
+  let constructor = match te {
+    TyName(name) => if type_expr_name_is_shadowed(shadow = shadow, name = name) {
+      None
+    } else match find_typedef(defs = defs, name = name) {
+      Some(TDAlias(_, params, _)) => if Array::length(params) > 0 {
+        Some(CtConstructor(name, Array::length(params)))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+  match constructor {
+    Some(ty) => ty,
+    None => resolve_type_expr_core_shadowed(te = te, defs = defs, shadow = shadow)
+  }
+}
+
 /// Resolve a source type expression while preserving the enclosing type
 /// binders. This is the shared semantic authority used by the checker and by
 /// typed classification in later compiler passes.
