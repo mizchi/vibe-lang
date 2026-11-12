@@ -103,16 +103,24 @@ test "#4037: a function stored in a field, called with the wrong type" {
 
 /// A late call through a function-valued field returns a function into a
 /// slot with its own effect row.
-fn function_result_source(return_row: String, slot_row: String) -> String {
-  "effect Logger { Log(String) -> Unit }\nstruct Holder { make: () -> ((Int) -> Int" + return_row + ") }\nfn apply(h: Holder, g: (Holder) -> Int) -> Int { g(h) }\nfn use(h: Holder) -> Int {\n  apply(h = h, g = (v) -> {\n    let f: (Int) -> Int" + slot_row + " = v.make()\n    0\n  })\n}\n"
+fn function_result_source(return_ty: String, slot_ty: String) -> String {
+  "effect Logger { Log(String) -> Unit }\nstruct Holder { make: () -> (" + return_ty + ") }\nfn apply(h: Holder, g: (Holder) -> Int) -> Int { g(h) }\nfn use(h: Holder) -> Int {\n  apply(h = h, g = (v) -> {\n    let f: " + slot_ty + " = v.make()\n    0\n  })\n}\n"
 }
 
 test "#4037: a deferred pure function result can widen to an effectful slot" {
-  assert_eq(first_check_error(function_result_source(return_row = "", slot_row = " with Logger")), "")
+  assert_eq(first_check_error(function_result_source(return_ty = "(Int) -> Int", slot_ty = "(Int) -> Int with Logger")), "")
 }
 
 test "#4037: a deferred function result cannot lose its concrete effect" {
-  let msg = first_check_error(function_result_source(return_row = " with Logger", slot_row = ""))
+  let msg = first_check_error(function_result_source(return_ty = "(Int) -> Int with Logger", slot_ty = "(Int) -> Int"))
+  assert_true(String::contains(msg, needle = "the { Logger } effect would be dropped"))
+}
+
+test "#4037: a deferred result checks effect rows inside containers" {
+  let pure = "(Array[(Int) -> Int], Option[(Int) -> Int])"
+  let effectful = "(Array[(Int) -> Int with Logger], Option[(Int) -> Int with Logger])"
+  assert_eq(first_check_error(function_result_source(return_ty = pure, slot_ty = effectful)), "")
+  let msg = first_check_error(function_result_source(return_ty = effectful, slot_ty = pure))
   assert_true(String::contains(msg, needle = "the { Logger } effect would be dropped"))
 }
 
@@ -162,6 +170,12 @@ test "#4037: a literal operator waits for the late method's result width" {
   assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "(h.value() + 1) == 0", result = "Bool")), "")
   assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.value() == -1", result = "Bool")), needle = "does not fit `UInt32`"))
   assert_true(String::contains(first_check_error(sized_receiver_source(width = "Int32", body = "{ let n: Int = 0; h.value() == n }", result = "Bool")), needle = "already used as Int"))
+}
+
+test "#4037: a conditional literal takes the late operand's integer width" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.value() == (if true { 0 } else { 1 })", result = "Bool")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "(if true { 0 } else { 1 }) <= h.value()", result = "Bool")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.value() == (if true { 0 } else { -1 })", result = "Bool")), needle = "does not fit `UInt32`"))
 }
 
 test "#4037: unary numeric operators wait for the late method's result type" {
