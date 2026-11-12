@@ -64,6 +64,7 @@ import ./checker.vibe {
   report_formal_applications,
   report_formal_applications_across,
   report_map_key_types,
+  report_unknown_type_names_deferred_validation,
   type_exception_rows_resolved
 }
 
@@ -88,7 +89,7 @@ import @vibe/parser {
 }
 
 import ./checker_stmt_imported_decl_kind.vibe {
-  int_array_contains
+  decl_report_shadow, deferred_names_for_decl, int_array_contains
 }
 
 import ./checker_stmt_labeled_name_check_expr.vibe {
@@ -1233,6 +1234,54 @@ export fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef]
       _ => ()
     }
     push_unique_error_strings(found = found, errors = errors)
+    i = i + 1
+  }
+}
+
+/// #4018: an undeclared type name in an effect operation's signature, refused
+/// at the declaration -- ``unknown type `Zzz` in the signature of `E::Get` ``,
+/// the label the effect's other declaration diagnostics use.
+///
+/// Registration resolves each operation with the effect's type parameters as
+/// `shadow`, and any other unknown name falls through to the rigid
+/// `CtNamed(name, [])` a declared parameter relies on (#1340). Nothing then
+/// told a typo apart from a parameter: `effect E { Get(Zzz) -> String }`
+/// checked clean, and so did `perform E::Get(1)` against it. A struct field
+/// was already refused with the same walk (#2125); this is that walk over the
+/// operation types, with the effect's parameters (kinded ones included) and
+/// the declaration's deferred-name sentinels shadowed.
+///
+/// Run once the statement list's type declarations are all in `defs`, not at
+/// the `SEffectDef` arm: an alias is not preclaimed, so at the arm a
+/// later-declared `type Al = ...` would read as unknown, while the completed
+/// effect definition does resolve it (`refresh_completed_payload_defs`).
+///
+/// No value environment is consulted: an effect is a top-level declaration,
+/// so its own parameters (in `shadow`) are the only type formals in scope, and
+/// nothing an environment binds can stand for a type name there. (Handing it
+/// the statement list's in-progress environment also made in-process
+/// `check_program` runs trap later in `env_lookup` / `subst_apply`; the cause
+/// is not established.)
+export fn report_effect_op_unknown_types(stmts: Array[Stmt], from: Int, defs: Array[TypeDef], deferred_rows: Array[(Array[String], Array[String])], errors: Array[String]) -> Unit {
+  let mut i = from
+  while i < Array::length(stmts) {
+    match Array::get(stmts, at = i) {
+      SEffectDef(_, name, params, ops, _) => {
+        let shadow = decl_report_shadow(tparams = params, dict_erased = array_empty(), deferred = deferred_names_for_decl(rows = deferred_rows, decl_name = name))
+        for op in ops {
+          let (op_name, op_params, op_ret) = op
+          let where_label = fapp_decl_label(owner = name, member = op_name)
+          let found = array_empty()
+          for pt in op_params {
+            report_unknown_type_names_deferred_validation(te = pt, defs = defs, shadow = shadow, env = EnvEmpty, row_binders = array_empty(), where_label = where_label, errors = found)
+          }
+          report_unknown_type_names_deferred_validation(te = op_ret, defs = defs, shadow = shadow, env = EnvEmpty, row_binders = array_empty(), where_label = where_label, errors = found)
+          // One line per name and operation: `Get(Zzz, Zzz) -> Zzz` is one typo.
+          push_unique_error_strings(found = found, errors = errors)
+        }
+      },
+      _ => ()
+    }
     i = i + 1
   }
 }
