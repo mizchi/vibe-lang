@@ -14,7 +14,7 @@
 // `T::method`, or against the field's function type, or the `no method` edit.
 
 import ./checker_deferred_method_rows.vibe {
-  DeferredCheck, deferred_checks_restore, deferred_checks_snapshot, struct DeferredLiteralBinop, struct DeferredMethodCall
+  DeferredCheck, deferred_checks_restore, deferred_checks_snapshot, struct DeferredMethodCall, struct DeferredOperatorCheck
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -104,7 +104,7 @@ export fn dot_call_builtin_receiver_message(env: TypeEnv, type_prefix: String, m
   }
 }
 
-/// Judge pending calls and literal operators in recording order so their
+/// Judge pending calls and operators in recording order so their
 /// results can feed later rows. Keep open inputs for the enclosing function.
 /// On the final pass give still-open calls opaque placement and type their
 /// operators with the ordinary literal defaults.
@@ -117,7 +117,7 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
   for row in rows {
     let input = match row {
       DeferredMethod(call) => call.recv,
-      DeferredBinop(binop) => binop.operand
+      DeferredOperator(operator) => operator.operand
     }
     match subst_apply(s = cur_s, ty = CtVar(input)) {
       CtVar(_) => Array::push(kept, value = row),
@@ -127,8 +127,8 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
           cur_s = ns
           cur_c = nc
         },
-        DeferredBinop(binop) => {
-          cur_s = judge_deferred_binop(row = binop, s = cur_s, errors = errors)
+        DeferredOperator(operator) => {
+          cur_s = judge_deferred_operator(row = operator, s = cur_s, errors = errors)
         }
       }
     }
@@ -143,8 +143,8 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
           cur_s = ns
           cur_c = nc
         },
-        DeferredBinop(binop) => {
-          cur_s = judge_deferred_binop(row = binop, s = cur_s, errors = errors)
+        DeferredOperator(operator) => {
+          cur_s = judge_deferred_operator(row = operator, s = cur_s, errors = errors)
         }
       }
     }
@@ -163,7 +163,7 @@ fn resolve_method_or_place_opaque(row: DeferredMethodCall, recv: Type, env: Type
   }
 }
 
-fn judge_deferred_binop(row: DeferredLiteralBinop, s: Subst, errors: Array[String]) -> Subst {
+fn judge_deferred_operator(row: DeferredOperatorCheck, s: Subst, errors: Array[String]) -> Subst {
   let check = row.check
   let (result, ns) = check(s, errors)
   check_assignable_for(expected = CtVar(row.result), actual = result, s = ns, errors = errors, what_head = "result type mismatch for operator ", what_tail = row.op, off = row.off)

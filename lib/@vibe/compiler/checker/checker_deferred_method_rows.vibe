@@ -11,7 +11,7 @@
 // checker.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, subst_apply
+  Expr, Subst, Type, fresh_var, subst_apply
 }
 
 /// One pending dot call. `recv` is the receiver's variable; `callee` is the
@@ -33,9 +33,9 @@ export struct DeferredMethodCall {
   result: Int
 }
 
-/// A literal-sensitive operator waits for the pending operand's type before
-/// choosing a literal width and recording the lowering information.
-export struct DeferredLiteralBinop {
+/// An operator waits for the pending operand before selecting its type and
+/// recording the lowering information.
+export struct DeferredOperatorCheck {
   operand: Int;
   result: Int;
   op: String;
@@ -46,7 +46,7 @@ export struct DeferredLiteralBinop {
 /// Calls and the operators that use their results share evaluation order.
 export enum DeferredCheck {
   DeferredMethod(DeferredMethodCall)
-  DeferredBinop(DeferredLiteralBinop)
+  DeferredOperator(DeferredOperatorCheck)
 }
 
 /// The pending rows, in recording order. Reset per run, since variable ids
@@ -59,8 +59,17 @@ export fn defer_method_call(_ row: DeferredMethodCall) -> Unit {
 }
 
 /// Record the operator after its operand's pending check.
-export fn defer_literal_binop(_ row: DeferredLiteralBinop) -> Unit {
-  Array::push(deferred_checks, value = DeferredBinop(row))
+export fn defer_operator_check(operand: Int, op: String, off: Int, c: Int, check: (Subst, Array[String]) -> (Type, Subst)) -> (Type, Int) {
+  let (result, next) = fresh_var(c)
+  let row = DeferredOperatorCheck::{
+    operand: operand,
+    result: next - 1,
+    op: op,
+    off: off,
+    check: check
+  }
+  Array::push(deferred_checks, value = DeferredOperator(row))
+  (result, next)
 }
 
 /// Whether this variable still depends on a pending call or operator.
@@ -69,7 +78,7 @@ export fn deferred_result_pending(id: Int, s: Subst) -> Bool {
   while i >= 0 {
     let result = match Array::get(deferred_checks, at = i) {
       DeferredMethod(row) => row.result,
-      DeferredBinop(row) => row.result
+      DeferredOperator(row) => row.result
     }
     match subst_apply(s = s, ty = CtVar(result)) {
       CtVar(resolved_id) => if resolved_id == id {

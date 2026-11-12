@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Subst, Type, TypeDef, TypeEnv, bound_flat_self_add, subst_apply, subst_bounds_for
+  Expr, Subst, Type, TypeDef, TypeEnv, bound_flat_self_add, subst_apply, subst_bounds_for, typed_negation_operand_key, unify
 }
 import @vibe/compiler/checker/diagnostics {
   off_marker
@@ -14,7 +14,10 @@ import ./checker_eq_function_operand.vibe {
   eq_function_operand_refusal, eq_operand_is_nullary_ctor
 }
 import ./checker_int32_rows.vibe {
-  int32_binop_operands, record_int32_binop
+  int32_binop_operands, int32_unary, record_int32_binop
+}
+import ./checker_merge_capture_provenance.vibe {
+  unary_operand_is_definitely_wrong
 }
 import ./checker_lambda_expr.vibe {
   open_formal_name_for_var
@@ -180,4 +183,93 @@ export fn check_binop_operands(op: String, left: Expr, right: Expr, left_ty: Typ
     record_add_formal(capture = capture, off = boff, ty = bin_result, env = env, s = s3)
   }
   (bin_result, s3)
+}
+
+/// Type a unary operand and record the numeric lowering it requires.
+export fn check_unary_operand(op: String, operand: Expr, operand_ty: Type, defs: Array[TypeDef], s1: Subst, capture: Option[TypedOccurrenceRoleLaneCapture], errors: Array[String]) -> (Type, Subst) {
+  if op == "!" {
+    match operand_ty {
+      CtBool => (CtBool, s1),
+      CtVar(_) => match unify(a = operand_ty, b = CtBool, s = s1) {
+        Some(s2) => (CtBool, s2),
+        None => (CtUnknown, s1)
+      },
+      other => {
+        // `!x` on a concrete non-Bool operand (`!5`) was accepted silently.
+        // A type formal / Unknown operand is tolerated (may resolve to
+        // Bool); #2408 widened "concrete" to the declared, builtin-head and
+        // container routes that `type_is_ground` answers `false` for.
+        let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
+        if flag {
+          Array::push(errors, value = "operand of `!` must be Bool")
+        } else {
+          ()
+        }
+        (CtUnknown, s1)
+      }
+    }
+  } else if op == "-" {
+    match operand_ty {
+      // #3653: a float negation files a float-operand row, so the
+      // post-check rewrite marks its operand and neither lowering reads a
+      // float the syntax does not show (a destructured binder) as an Int.
+      CtDouble => {
+        record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 14)
+        (CtDouble, s1)
+      },
+      // #3543: negating an f32 value is exact, so `-x` stays a Float.
+      CtFloat => {
+        record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 14)
+        record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 15)
+        (CtFloat, s1)
+      },
+      CtInt => (CtInt, s1),
+      // #3730: `-x` of the minimum wraps; `-` on a `UInt32` is refused.
+      CtInt32 => (int32_unary(op = op, ty = CtInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtUInt32 => (int32_unary(op = op, ty = CtUInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
+        Some(s2) => (CtInt, s2),
+        None => (CtUnknown, s1)
+      },
+      other => {
+        // Unary `-` on a concrete non-numeric operand (`-"hi"`) was accepted
+        // silently. A type formal / Unknown operand is tolerated; #2408
+        // widened "concrete" -- `-x` on a `Cell[Int]` used to compile clean
+        // and return -237, the complemented struct pointer.
+        let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
+        if flag {
+          Array::push(errors, value = "operand of unary `-` must be Int or Float64 (or Float32)")
+        } else {
+          ()
+        }
+        (CtUnknown, s1)
+      }
+    }
+  } else if op == "~" {
+    // #2344 slice C. Int only -- unlike unary `-` there is no Double form,
+    // because the value being complemented is the 63-bit two's complement
+    // integer. Typed here rather than after the `x ^ -1` lowering so the
+    // diagnostic names the operator the author actually wrote.
+    match operand_ty {
+      CtInt => (CtInt, s1),
+      CtInt32 => (int32_unary(op = op, ty = CtInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtUInt32 => (int32_unary(op = op, ty = CtUInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
+        Some(s2) => (CtInt, s2),
+        None => (CtUnknown, s1)
+      },
+      other => {
+        // #2408: the four routes this used to spell out inline are now
+        // the shared predicate, because `!` and unary `-` had the
+        // identical hole and were fixed by pointing at the same one.
+        let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
+        if flag {
+          Array::push(errors, value = "operand of `~` must be Int")
+        } else {
+          ()
+        }
+        (CtUnknown, s1)
+      }
+    }
+  } else (CtUnknown, s1)
 }
