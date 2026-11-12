@@ -64,6 +64,10 @@ PY
     return
   fi
   echo "[checked-module-cost-test] red ok: $name"
+  # The measurement has exited and its refusal is verified. Each case owns
+  # this isolated output tree; retaining every completed cache until EXIT
+  # can exhaust disk space before the green controls run. Keep its log above.
+  rm -rf "$work/$name"
 }
 
 # 1. The defect itself: a cache directory per TEMPERATURE, so the run labelled
@@ -109,6 +113,7 @@ for kind in checked-module ast; do
     failures=$((failures + 1))
   else
     echo "[checked-module-cost-test] green ok: unmutated --cache $kind run"
+    rm -rf "$work/green-$kind"
   fi
 done
 

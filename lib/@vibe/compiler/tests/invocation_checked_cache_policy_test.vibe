@@ -36,10 +36,10 @@ fn checked_policy_fixture(path: String, source: String, namespace: String) -> Ch
   let (tokens, offsets, _) = lex_with_offsets(source)
   let parsed_stmts = parse_program_located(tokens = tokens, starts = offsets, source = source)
   CheckedModuleArtifact::{
-    input_identity: checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(), deps = [
-    ], namespace = namespace),
+    input_identity: checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(checked_error_row = false), deps = [
+    ], namespace = namespace, checked_error_row = false),
     parsed_stmts,
-    checked_program: check_program_result(parsed_stmts),
+    checked_program: check_program_result(parsed_stmts, checked_error_row = false),
     lowering_offsets: [7],
     eq_offsets: [],
     eq_keys: []
@@ -47,19 +47,19 @@ fn checked_policy_fixture(path: String, source: String, namespace: String) -> Ch
 }
 
 fn checked_policy_key(path: String, artifact: CheckedModuleArtifact, namespace: String) -> String with Env {
-  persistent_artifact_cache_path_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(artifact.input_identity), namespace = namespace)
+  persistent_artifact_cache_path_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(artifact.input_identity), namespace = namespace, checked_error_row = false)
 }
 
 fn checked_policy_store(path: String, artifact: CheckedModuleArtifact, namespace: String) -> Unit with Env + Exception + Fs {
-  store_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(artifact.input_identity), bytes = encode_checked_module_artifact(artifact), namespace = namespace)
+  store_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(artifact.input_identity), bytes = encode_checked_module_artifact(artifact), namespace = namespace, checked_error_row = false)
 }
 
 fn checked_policy_load_only(path: String, identity: Bytes, namespace: String) -> Bool with CheckedModuleCacheConfig + Env + Exception + Fs {
-  load_checked_module_artifact_configured(path = path, input_identity = identity, namespace = namespace) is Some(_)
+  load_checked_module_artifact_configured(path = path, input_identity = identity, namespace = namespace, checked_error_row = false) is Some(_)
 }
 
 fn checked_policy_handoff_only(path: String, source: String, namespace: String) -> Int with CheckedModuleCacheConfig + Exception {
-  match checked_module_artifact_stmts_configured(path = path, source = source, namespace = namespace) {
+  match checked_module_artifact_stmts_configured(path = path, source = source, namespace = namespace, checked_error_row = false) {
     Some(stmts) => Array::length(stmts),
     None => -1
   }
@@ -74,27 +74,27 @@ test "retained modes control disk use and statement handoff independently of the
   let off = checked_module_cache_policy("off")
   let on = checked_module_cache_policy("on")
   let verify = checked_module_cache_policy("verify")
-  set_checked_module_cache_mode("off")
-  checked_module_cache_reset_in_namespace(namespace = namespace)
-  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = off)
+  set_checked_module_cache_mode("off", checked_error_row = false)
+  checked_module_cache_reset_in_namespace(namespace = namespace, checked_error_row = false)
+  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = off, checked_error_row = false)
   assert(!Fs::exists(key))
   let empty = checked_module_cache_stats()
   assert_eq((empty.0, empty.1, empty.2), (0, 0, 0))
-  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = on)
+  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = on, checked_error_row = false)
   assert(Fs::exists(key))
   for policy in [off, verify] {
-    assert(load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = policy) is None)
+    assert(load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = policy, checked_error_row = false) is None)
   }
-  match load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = on) {
+  match load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = on, checked_error_row = false) {
     Some(loaded) => assert(encode_checked_module_artifact(loaded) == encode_checked_module_artifact(artifact)),
     None => assert(false)
   }
   assert(load_checked_module_artifact_with_policy(path = path, input_identity = Bytes::from_array([
     1
-  ]), namespace = namespace, policy = on) is None)
-  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = off) is None)
-  assert(checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = namespace) is None)
-  match checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = on) {
+  ]), namespace = namespace, policy = on, checked_error_row = false) is None)
+  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = off, checked_error_row = false) is None)
+  assert(checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = namespace, checked_error_row = false) is None)
+  match checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = on, checked_error_row = false) {
     Some(stmts) => {
       assert_eq(Array::length(stmts), 1); Array::truncate(stmts, length = 0)
     },
@@ -103,18 +103,18 @@ test "retained modes control disk use and statement handoff independently of the
   assert_eq(handle {
     checked_policy_handoff_only(path = path, source = source, namespace = namespace)
   } with { CheckedModuleCacheConfig::Mode() => resume("verify") }, 1)
-  assert(checked_module_artifact_stmts_with_policy(path = path, source = "changed", namespace = namespace, policy = on) is None)
+  assert(checked_module_artifact_stmts_with_policy(path = path, source = "changed", namespace = namespace, policy = on, checked_error_row = false) is None)
   let other = target_cfg_namespace(target_cfg_from_csv("checked-policy-other"))
-  assert(load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = other, policy = on) is None)
-  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = other, policy = on) is None)
-  checked_module_cache_reset_in_namespace(namespace = namespace)
-  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = false, namespace = namespace, policy = on)
+  assert(load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = other, policy = on, checked_error_row = false) is None)
+  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = other, policy = on, checked_error_row = false) is None)
+  checked_module_cache_reset_in_namespace(namespace = namespace, checked_error_row = false)
+  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = false, namespace = namespace, policy = on, checked_error_row = false)
   let reused = checked_module_cache_stats()
   assert_eq((reused.0, reused.1), (1, 0))
-  checked_module_cache_reset_in_namespace(namespace = other)
-  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = on) is None)
+  checked_module_cache_reset_in_namespace(namespace = other, checked_error_row = false)
+  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = on, checked_error_row = false) is None)
   Fs::remove(key)
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }
 
 test "verify refuses a valid mismatch but repairs malformed entries and leaves canonical bytes untouched" {
@@ -135,38 +135,38 @@ test "verify refuses a valid mismatch but repairs malformed entries and leaves c
   let on = checked_module_cache_policy("on")
   checked_policy_store(path = path, artifact = different, namespace = namespace)
   let previous = Fs::read_bytes(key)
-  set_checked_module_cache_mode("on")
-  checked_module_cache_reset_in_namespace(namespace = namespace)
+  set_checked_module_cache_mode("on", checked_error_row = false)
+  checked_module_cache_reset_in_namespace(namespace = namespace, checked_error_row = false)
   let unchecked = handle {
-    commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = false, namespace = namespace, policy = verify)
+    commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = false, namespace = namespace, policy = verify, checked_error_row = false)
     false
   } with { Exception::Throw(message) => message == "recheck the module before committing with verify policy" }
   assert(unchecked)
   let refused = handle {
-    commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify)
+    commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify, checked_error_row = false)
     false
   } with { Exception::Throw(message) => message == String::concat("checked module cache verification mismatch: ", path) }
   assert(refused)
   assert(Fs::read_bytes(key) == previous)
   let empty = checked_module_cache_stats()
   assert_eq((empty.0, empty.1, empty.2), (0, 0, 0))
-  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = on) is None)
+  assert(checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = on, checked_error_row = false) is None)
   store_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(artifact.input_identity), bytes = Bytes::from_array([
     255
-  ]), namespace = namespace)
-  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify)
-  match load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = on) {
+  ]), namespace = namespace, checked_error_row = false)
+  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify, checked_error_row = false)
+  match load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = on, checked_error_row = false) {
     Some(loaded) => assert(encode_checked_module_artifact(loaded) == encode_checked_module_artifact(artifact)),
     None => assert(false)
   }
   let token = Fs::stat_token(key)
-  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify)
+  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify, checked_error_row = false)
   assert_eq(Fs::stat_token(key), token)
   Fs::write_bytes(key, bytes = Bytes::from_array([255]))
-  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify)
-  assert(load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = on) is Some(_))
+  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, policy = verify, checked_error_row = false)
+  assert(load_checked_module_artifact_with_policy(path = path, input_identity = artifact.input_identity, namespace = namespace, policy = on, checked_error_row = false) is Some(_))
   Fs::remove(key)
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }
 
 test "configured requests capture once across nested requests and legacy setting changes" {
@@ -184,12 +184,12 @@ test "configured requests capture once across nested requests and legacy setting
     assert(!handle {
       checked_policy_load_only(path = path, identity = artifact.input_identity, namespace = namespace)
     } with { CheckedModuleCacheConfig::Mode() => resume("off") })
-    set_checked_module_cache_mode("off")
+    set_checked_module_cache_mode("off", checked_error_row = false)
     resume("on")
   } })
-  checked_module_cache_reset_in_namespace(namespace = namespace)
+  checked_module_cache_reset_in_namespace(namespace = namespace, checked_error_row = false)
   handle {
-    commit_checked_module_artifact_configured(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace)
+    commit_checked_module_artifact_configured(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, checked_error_row = false)
   } with { CheckedModuleCacheConfig::Mode() => {
     Array::set(counts, at = 1, value = Array::get(counts, at = 1) + 1)
     let refused = handle {
@@ -215,7 +215,7 @@ test "configured requests capture once across nested requests and legacy setting
   assert_eq(Array::get(counts, at = 1), 1)
   assert_eq(Array::get(counts, at = 2), 1)
   Fs::remove(key)
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }
 
 test "legacy low-level APIs preserve unconditional publication and lookup with mode off" {
@@ -224,14 +224,14 @@ test "legacy low-level APIs preserve unconditional publication and lookup with m
   let namespace = target_cfg_namespace(target_cfg_from_csv("checked-policy-legacy"))
   let artifact = checked_policy_fixture(path = path, source = source, namespace = namespace)
   let key = checked_policy_key(path = path, artifact = artifact, namespace = namespace)
-  set_checked_module_cache_mode("off")
-  checked_module_cache_reset_in_namespace(namespace = namespace)
-  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace)
+  set_checked_module_cache_mode("off", checked_error_row = false)
+  checked_module_cache_reset_in_namespace(namespace = namespace, checked_error_row = false)
+  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = true, namespace = namespace, checked_error_row = false)
   assert(Fs::exists(key))
-  assert(load_checked_module_artifact_in_namespace(path = path, input_identity = artifact.input_identity, namespace = namespace) is Some(_))
-  assert(checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = namespace) is None)
+  assert(load_checked_module_artifact_in_namespace(path = path, input_identity = artifact.input_identity, namespace = namespace, checked_error_row = false) is Some(_))
+  assert(checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = namespace, checked_error_row = false) is None)
   let stats = checked_module_cache_stats()
   assert_eq((stats.0, stats.1, stats.2), (0, 1, 0))
   Fs::remove(key)
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
 }

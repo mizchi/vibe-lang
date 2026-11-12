@@ -1,0 +1,96 @@
+//# Reachability from each statement's references (#4040)
+//
+// `dce_keep_flags_from_refs` builds the reachability graph from
+// `dce_statement_refs`, one statement at a time, instead of walking the
+// program. These programs pin that it answers what `dce_keep_flags` answers:
+// a forward reference, a shadowing binder, two definitions of one spelling,
+// a test block that roots a function, and an opaque interpolation that keeps
+// everything.
+
+import @vibe/ast {
+  Expr, Pat
+}
+import @vibe/compiler/core {
+  Stmt, TypeExpr, dce_keep_flags, dce_keep_flags_from_refs, dce_statement_refs
+}
+
+fn no_ty() -> Option[TypeExpr] {
+  None
+}
+
+fn call(_ name: String) -> Expr {
+  ECall(EIdent(name, -1), [], -1, [])
+}
+
+fn def(name: String, body: Expr) -> Stmt {
+  SLet(false, false, name, no_ty(), EFn([], [], [], None, None, body))
+}
+
+fn render(_ flags: Array[Bool]) -> String {
+  let parts: Array[String] = []
+  for f in flags {
+    Array::push(parts, value = if f {
+      "keep"
+    } else {
+      "drop"
+    })
+  }
+  String::join(parts, sep = ",")
+}
+
+/// Both answers, which must agree.
+fn both(_ stmts: Array[Stmt]) -> String {
+  let refs: Array[(Array[String], Bool, Array[String], Bool)] = []
+  for s in stmts {
+    Array::push(refs, value = dce_statement_refs(s))
+  }
+  let walked = render(dce_keep_flags(stmts = stmts, entry_names = ["main"]))
+  let from_refs = render(dce_keep_flags_from_refs(stmts = stmts, entry_names = [
+    "main"
+  ], refs = refs))
+  if walked == from_refs {
+    walked
+  } else {
+    String::concat(String::concat(walked, " vs "), from_refs)
+  }
+}
+
+test "reachability from statement references matches the walk" {
+  // `main` reaches `b` through a forward reference; `c` is unreached and
+  // `a` is shadowed by a local of the same spelling.
+  inspect(both([
+    def(name = "a", body = EInt(1)),
+    def(name = "main", body = ELet("a", EInt(2), ESeq(call("a"), call("b")), -1)),
+    def(name = "b", body = EInt(3)),
+    def(name = "c", body = EInt(4))
+  ]), content = "drop,keep,keep,drop")
+  // Two definitions of one spelling: both are followed, so the second
+  // one's callee stays.
+  inspect(both([
+    def(name = "main", body = call("twin")),
+    def(name = "twin", body = EInt(0)),
+    def(name = "twin", body = call("tail")),
+    def(name = "tail", body = EInt(0)),
+    def(name = "spare", body = EInt(0))
+  ]), content = "keep,keep,keep,keep,drop")
+  // A test block roots what it calls.
+  inspect(both([
+    def(name = "main", body = EInt(0)),
+    def(name = "checked", body = EInt(0)),
+    STest("t", call("checked")),
+    def(name = "spare", body = EInt(0))
+  ]), content = "keep,keep,keep,drop")
+  // A match arm binds its name only inside the arm.
+  inspect(both([
+    def(name = "helper", body = EInt(0)),
+    def(name = "main", body = EMatch(EInt(1), [
+      (PBind("helper"), EIdent("helper", -1)),
+      (PWild, EIdent("helper", -1))
+    ]))
+  ]), content = "keep,keep")
+  // A reachable interpolation keeps every statement.
+  inspect(both([
+    def(name = "main", body = EStringInterp([])),
+    def(name = "spare", body = EInt(0))
+  ]), content = "keep,keep")
+}

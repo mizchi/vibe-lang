@@ -54,6 +54,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  alias_expansion_node_limit,
   effect_type_param_names,
   env_bind,
   env_bind_trait_definition_origin,
@@ -71,6 +72,7 @@ import @vibe/compiler/core {
   stmts_use_prelude_ordering,
   subst_apply,
   subst_lookup,
+  type_expr_expansion_node_count,
   type_to_string,
   unify
 }
@@ -186,8 +188,8 @@ import ./checker_stmt_decl_formal_application_errors.vibe {
   refresh_completed_suberror_env,
   refresh_completed_type_env,
   report_alias_expansion_limit,
-  struct_field_decl_label,
-  type_expr_expansion_node_count
+  report_effect_op_unknown_types,
+  struct_field_decl_label
 }
 
 import ./checker_stmt_imported_decl_kind.vibe {
@@ -211,7 +213,6 @@ import ./checker_stmt_imported_decl_kind.vibe {
 
 import ./checker_stmt_labeled_name_check_expr.vibe {
   alias_decl_is_recursive,
-  alias_expansion_node_limit,
   bind_annotation_return,
   bind_fn_return,
   bind_value_or_annotation_return,
@@ -2340,7 +2341,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // #3536: an alias is expanded in place, so one that reaches itself
         // (`type A = B` / `type B = A`) names no type at all. It resolved to
         // a wildcard and accepted every value.
-        if alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = te) {
+        let recursive_alias = alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = te)
+        if recursive_alias {
           Array::push(errors, value = "type alias `\{name}` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type")
         } else {
           ()
@@ -2351,7 +2353,12 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // declaration order. Preflight before resolving too: dependency-first
         // alias declarations can already carry a completed exponential DAG at
         // this initial registration point, before the completion refresh runs.
-        let t = if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = alias_expansion_node_limit()) > alias_expansion_node_limit() {
+        // Keep the recursive declaration nominal from its first registration.
+        // Otherwise secondary diagnostics can apply its already expanded body
+        // again before the recursion error is returned (#3995).
+        let t = if recursive_alias {
+          CtNamed(name, array_empty())
+        } else if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = alias_expansion_node_limit()) > alias_expansion_node_limit() {
           report_alias_expansion_limit(name = name, errors = errors)
           CtNamed(name, array_empty())
         } else {
@@ -2595,7 +2602,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       },
       SEffectDef(exported, ename, ekeys, ops, eowner) => {
         float_width_decl_name_error(kind = "effect", name = ename, errors = errors)
-        extern_effect_decl_errors(name = ename, params = ekeys, owner = eowner, errors = errors)
+        extern_effect_decl_errors(name = ename, params = ekeys, ops = ops, owner = eowner, errors = errors)
         // ADR-0094 (#3143): a resource parameter (`R: Store::Bucket`) is kept
         // with its kind and is not a type parameter: the operations are
         // resolved with only the TYPE parameters in scope, so naming `R` in
@@ -2779,6 +2786,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       // #3028 / #3033: the exception kinds in declaration rows resolve now,
       // so the refreshes below publish them resolved.
       record_decl_exception_kinds(stmts = stmts, defs = defs, env = cur_env, errors = errors, complete = true)
+      // #4018: effect operation types, against the completed table.
+      report_effect_op_unknown_types(stmts = stmts, from = i, defs = defs, deferred_rows = deferred_type_names, errors = errors)
       refresh_completed_alias_defs(stmts = stmts, defs = defs, from = preclaim_from, to = local_defs_end, errors = errors)
       refresh_completed_payload_defs(stmts = stmts, defs = defs, type_def_binders = type_def_binders, from = preclaim_from, to = local_defs_end)
       cur_env = refresh_completed_suberror_env(stmts = stmts, env = cur_env, defs = defs, from = preclaim_from, to = local_defs_end)

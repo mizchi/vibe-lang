@@ -38,7 +38,13 @@
 #      (#3826): an in-range call answers exactly (narrow_import_test.vibe,
 #      whose `inspect` rows `vibe test` checks on viberun), and an
 #      argument outside the narrow range is refused at the call, naming the
-#      range, rather than truncated (trap_component_u8_range.vibex).
+#      range, rather than truncated (trap_component_u8_range.vibex);
+#  15. an `extern effect` (ADR-0124, #2656) runs against the provider
+#      component `vibe run --provide` binds, on both lanes; with none bound it
+#      is refused before `main`, naming the effect, its operations and the
+#      flag; the node runner refuses it; a provider whose export has another
+#      signature is refused at link time; and an extern effect imported from
+#      another module runs the same way (extern_greeter_*.vibex).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -237,4 +243,42 @@ out="$(vibe "$VIBERUN" run "$FX/trap_component_u8_range.vibex" 2>"$WORK/err")" |
 [ "$status" != 0 ] || fail "[viberun] a u8 argument outside 0 .. 255 was accepted (printed $(printf '%q' "$out"))"
 grep -q '300 does not fit the component.s `u8` parameter (0 .. 255)' "$WORK/err" || { cat "$WORK/err" >&2; fail "[viberun] the u8 refusal does not name the range"; }
 
-echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal)"
+# 15. An `extern effect` (ADR-0124, #2656): its operations call the core
+#     import `vibe:effect:./Greeter`, bridged to the provider component bound
+#     with `--provide`. greeter.component.wasm is the provider.
+for LANE_RC in 1 0; do
+  status=0
+  out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_main.vibex" 2>"$WORK/err")" || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun VIBE_RC=$LANE_RC] extern_greeter_main exited $status"; }
+  [ "$out" = "hi, vibe" ] || fail "[viberun VIBE_RC=$LANE_RC] extern_greeter_main printed $(printf '%q' "$out"), want hi, vibe"
+done
+LANE_RC=1
+# Declared in an imported module, the effect is admitted at the entry and
+# bound in the importing program.
+status=0
+out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_import_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] extern_greeter_import_main exited $status"; }
+[ "$out" = "hi, import" ] || fail "[viberun] extern_greeter_import_main printed $(printf '%q' "$out"), want hi, import"
+# With no provider bound, nothing of the program runs: the refusal comes
+# before `main` and names the effect, the operation and the flag.
+status=0
+out="$(vibe "$VIBERUN" run "$FX/extern_greeter_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" != 0 ] || fail "[viberun] an extern effect ran with no provider bound (printed $(printf '%q' "$out"))"
+[ -z "$out" ] || fail "[viberun] main started with no provider bound (printed $(printf '%q' "$out"))"
+grep -qF 'no host provider is bound for the extern effect(s) this program needs, so it was not started' "$WORK/err" \
+  && grep -qF '`Greeter` (Greeter::greet): bind one with `vibe run --provide Greeter=<component.wasm>`' "$WORK/err" \
+  || { cat "$WORK/err" >&2; fail "[viberun] the missing-provider refusal does not name the effect, its operation and the flag"; }
+# The node runner cannot instantiate the provider, and says so instead of
+# answering every operation with its fallback stub.
+status=0
+out="$(vibe "$NODE_RUNNER" run "$FX/extern_greeter_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" != 0 ] || fail "[node] an extern effect ran on the node runner (printed $(printf '%q' "$out"))"
+grep -qF "an extern effect's provider is a wasm component, which runs on viberun" "$WORK/err" || { cat "$WORK/err" >&2; fail "[node] the extern-effect refusal does not say why"; }
+# A provider whose export has another signature is refused at link time.
+status=0
+out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_drift_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" != 0 ] || fail "[viberun] a provider with another signature was linked (printed $(printf '%q' "$out"))"
+grep -qF "'greet' is now (string->string) but the program was compiled against (s64->s64)" "$WORK/err" \
+  || { cat "$WORK/err" >&2; fail "[viberun] the provider-signature refusal does not say why"; }
+
+echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal; extern effect: provider, missing-provider refusal, node refusal, signature refusal)"

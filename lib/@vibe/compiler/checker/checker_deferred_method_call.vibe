@@ -37,6 +37,10 @@ import ./checker_label_sites.vibe {
   checker_check_required_labels, checker_note_label_site
 }
 
+import ./checker_eq_unbounded_formal_msg.vibe {
+  check_assignable_for
+}
+
 // #3730: an integer literal argument takes an `Int32` / `UInt32` parameter's
 // type, range-checked, exactly as `check_written_call_arguments` adapts it.
 import ./checker_int32.vibe {
@@ -171,7 +175,7 @@ fn judge_deferred_method_call(row: DeferredMethodCall, recv: Type, env: TypeEnv,
               Array::push(errors, value = arity_message(qualified = qualified, expected = Array::length(fpts), got = explicit) + off_marker_len(off = row.call_off, len = String::length(qualified)))
             }
             let ns = unify_call_args(param_tys = fpts, arg_tys = row.arg_tys, arg_exprs = written_values(row.args), s = s, errors = errors, label = qualified, off = row.call_off)
-            (unify_deferred_method_result(row = row, ret = fret, s = ns, defs = defs, errors = errors), c)
+            (check_deferred_method_result(row = row, ret = fret, s = ns, defs = defs, errors = errors), c)
           }
         },
         Some(_) => {
@@ -272,7 +276,7 @@ fn judge_declared_method(row: DeferredMethodCall, recv: Type, scheme: Type, qual
             unify_call_args(param_tys = explicit, arg_tys = tys, arg_exprs = values, s = s1, errors = errors, label = qualified, off = row.call_off)
           }
         }
-        (unify_deferred_method_result(row = row, ret = ret, s = s2, defs = defs, errors = errors), nc)
+        (check_deferred_method_result(row = row, ret = ret, s = s2, defs = defs, errors = errors), nc)
       },
       _ => (s, nc)
     }
@@ -314,18 +318,24 @@ fn written_values(_ args: Array[Expr]) -> Array[Expr] {
 }
 
 /// Bind the call's result variable to the type the resolved method returns.
+/// An already-constrained function result follows ordinary assignability,
+/// which allows effect-row widening and diagnoses a dropped effect.
 /// A use that already fixed it to something else is the mismatch the
 /// variable exists to catch (`let r: String = .. + c.size()`). As for a
 /// deferred field read (`unify_deferred_field_result`), a mismatch against a
 /// nominal type that resolves to nothing -- a trait's erased type parameter
 /// -- is tolerated, since the call typed as `CtUnknown` before.
-fn unify_deferred_method_result(row: DeferredMethodCall, ret: Type, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+fn check_deferred_method_result(row: DeferredMethodCall, ret: Type, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let existing = subst_apply(s = s, ty = CtVar(row.result))
+  let actual = subst_apply(s = s, ty = ret)
+  if (existing is CtFn(_, _, _)) && (actual is CtFn(_, _, _)) {
+    return check_assignable_for(expected = existing, actual = actual, s = s, errors = errors, what_head = "result type mismatch for .", what_tail = row.method, off = row.method_off)
+  }
   match unify(a = CtVar(row.result), b = ret, s = s) {
     Some(ns) => ns,
     None => {
-      let existing = subst_apply(s = s, ty = CtVar(row.result))
       if !mentions_unresolved_name(ty = existing, defs = defs) && !mentions_unresolved_name(ty = ret, defs = defs) {
-        Array::push(errors, value = "the call `." + row.method + "(..)` returns " + type_to_string(subst_apply(s = s, ty = ret)) + " once its receiver is known, but its value was already used as " + type_to_string(existing) + off_marker_len(off = row.method_off, len = String::length(row.method)))
+        Array::push(errors, value = "the call `." + row.method + "(..)` returns " + type_to_string(actual) + " once its receiver is known, but its value was already used as " + type_to_string(existing) + off_marker_len(off = row.method_off, len = String::length(row.method)))
       }
       s
     }

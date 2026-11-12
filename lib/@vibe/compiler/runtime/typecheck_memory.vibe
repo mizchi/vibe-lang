@@ -70,7 +70,7 @@ fn memory_plan(state: ModuleWalkState, sources: MemorySources, root: String, cfg
   (edges, parse_count)
 }
 
-fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, sources: MemorySources, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg) -> (String, ModuleWalkState) with Env + Exception {
+fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, sources: MemorySources, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool) -> (String, ModuleWalkState) with Env + Exception {
   match ripple_get_source(db = state.rdb, path = path) {
     None => ("missing:" + path, state),
     Some(source) => {
@@ -91,13 +91,13 @@ fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String
           None => ()
         }
       }
-      let fingerprint = engine_typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = dep_fps, semantics_seed = typing_semantics_seed(), cfg = cfg)
+      let fingerprint = engine_typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = dep_fps, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg)
       let cached = match ripple_get_fingerprint(db = state.rdb, path = path) {
         Some(fp) => fp == fingerprint,
         None => false
       }
       let has_env = typecheck_fs_lookup_env_cache(cache = state.env_cache, path = path) is Some(_)
-      if cached && has_env && ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg) {
+      if cached && has_env && ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row) {
         let dep_sources = typecheck_fs_upsert_string_pair(pairs = state.dep_sources, key = path, value = source)
         (fingerprint, ModuleWalkState::{
           rdb: state.rdb,
@@ -112,7 +112,8 @@ fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String
           deps,
           dep_fps,
           dep_envs,
-          ships_owned_heads: memory_module_ships_owned_heads(sources = sources, path = path)
+          ships_owned_heads: memory_module_ships_owned_heads(sources = sources, path = path),
+          checked_error_row: checked_error_row
         }
         match CheckJob::check_with_raw_diagnostics_with_config(job, interfaces = interfaces, cfg = cfg) {
           Diagnosed(_, diagnostics) => throw(String::join(diagnostics, sep = "\n")),
@@ -135,9 +136,9 @@ fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String
   }
 }
 
-fn memory_step_answer(edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, sources: MemorySources, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg) -> (String, ModuleWalkState, Option[String]) with Env {
+fn memory_step_answer(edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, sources: MemorySources, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool) -> (String, ModuleWalkState, Option[String]) with Env {
   handle {
-    let (fp, next) = memory_step(edges = edges, fps = fps, state = state, sources = sources, path = path, interfaces = interfaces, cfg = cfg)
+    let (fp, next) = memory_step(edges = edges, fps = fps, state = state, sources = sources, path = path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
     (fp, next, None)
   } with { Exception::Throw(message) => ("diagnosed:" + path, state, Some(message)) }
 }
@@ -147,12 +148,12 @@ fn memory_step_answer(edges: Array[(String, Array[String])], fps: Array[(String,
 /// TypeDb validates the source-set revision before supplying dependency stamps.
 /// `set_collect_module_diagnostics(true)` is honoured here as on the
 /// filesystem lane: every independent module's diagnostic is reported.
-export fn ensure_fingerprint_memory(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_sources: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
-  ensure_fingerprint_memory_with_config(rdb = rdb, env_cache = env_cache, dep_sources = dep_sources, parse_count = parse_count, path = path, cfg = target_cfg_ambient())
+export fn ensure_fingerprint_memory(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_sources: Array[(String, String)], parse_count: Int, path: String, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
+  ensure_fingerprint_memory_with_config(rdb = rdb, env_cache = env_cache, dep_sources = dep_sources, parse_count = parse_count, path = path, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Carry the captured flags through header parsing, module checks and warm keys.
-export fn ensure_fingerprint_memory_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_sources: Array[(String, String)], parse_count: Int, path: String, cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
+export fn ensure_fingerprint_memory_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_sources: Array[(String, String)], parse_count: Int, path: String, cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
   let sources = memory_sources_new(rdb)
   let initial = ModuleWalkState::{ rdb, env_cache, dep_sources, parse_count }
   let (edges, planned_count) = memory_plan(state = initial, sources = sources, root = path, cfg = cfg)
@@ -169,7 +170,7 @@ export fn ensure_fingerprint_memory_with_config(rdb: RippleDb, env_cache: Array[
       Array::push(order, value = i); i = i + 1
     }
     resume(order)
-  }; ModuleWalk::Step(fps, state, p) => resume(memory_step_answer(edges = edges, fps = fps, state = state, sources = sources, path = p, interfaces = interfaces, cfg = cfg)); ModuleWalk::Published(p, _, state, _) => {
+  }; ModuleWalk::Step(fps, state, p) => resume(memory_step_answer(edges = edges, fps = fps, state = state, sources = sources, path = p, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)); ModuleWalk::Published(p, _, state, _) => {
     match typecheck_fs_lookup_env_cache(cache = state.env_cache, path = p) {
       Some(env) => engine_dependency_interface_set_publish(interfaces = interfaces, path = p, env = env),
       None => ()

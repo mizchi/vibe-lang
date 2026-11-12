@@ -40,7 +40,7 @@ import @vibe/compiler/syntax {
 /// type-checks.
 fn first_check_error(_ source: String) -> String {
   handle {
-    let _ = check_program(parse_program(lex(source)))
+    let _ = check_program(parse_program(lex(source)), checked_error_row = false)
     ""
   } with { Exception::Throw(msg) => Array::get(String::split(msg, sep = "\n"), at = 0) }
 }
@@ -99,6 +99,21 @@ test "#4037: a chained call on the resolved result" {
 test "#4037: a function stored in a field, called with the wrong type" {
   let src = "struct Holder {\n  f: (Int) -> Int\n}\nfn apply(h: Holder, g: (Holder) -> Int) -> Int {\n  g(h)\n}\nfn main() -> Int {\n  apply(h = Holder::{ f: (x) -> x + 1 }, g = (v) -> v.f(\"abc\"))\n}\n"
   inspect(first_check_error(src), content = "argument type mismatch for Holder::f: expected Int, got String")
+}
+
+/// A late call through a function-valued field returns a function into a
+/// slot with its own effect row.
+fn function_result_source(return_row: String, slot_row: String) -> String {
+  "effect Logger { Log(String) -> Unit }\nstruct Holder { make: () -> ((Int) -> Int" + return_row + ") }\nfn apply(h: Holder, g: (Holder) -> Int) -> Int { g(h) }\nfn use(h: Holder) -> Int {\n  apply(h = h, g = (v) -> {\n    let f: (Int) -> Int" + slot_row + " = v.make()\n    0\n  })\n}\n"
+}
+
+test "#4037: a deferred pure function result can widen to an effectful slot" {
+  assert_eq(first_check_error(function_result_source(return_row = "", slot_row = " with Logger")), "")
+}
+
+test "#4037: a deferred function result cannot lose its concrete effect" {
+  let msg = first_check_error(function_result_source(return_row = " with Logger", slot_row = ""))
+  assert_true(String::contains(msg, needle = "the { Logger } effect would be dropped"))
 }
 
 //# Int32 / UInt32 literals
@@ -169,7 +184,7 @@ fn render_path(_ path: Option[Array[Int]]) -> String {
 /// Every typed-occurrence row's expression path, then whether the direct
 /// expression-return observation could be built and its row paths.
 fn capture_paths(_ ann: Option[TypeExpr]) -> String with Exception {
-  let occurrence = match check_program_with_env_typed_occurrence_expression_path_observation(stmts = capture_stmts(ann), initial_env = capture_env()) {
+  let occurrence = match check_program_with_env_typed_occurrence_expression_path_observation(stmts = capture_stmts(ann), initial_env = capture_env(), checked_error_row = false) {
     Some(o) => {
       let rows: Array[String] = []
       let mut i = 0
@@ -181,7 +196,7 @@ fn capture_paths(_ ann: Option[TypeExpr]) -> String with Exception {
     },
     None => "no occurrence observation"
   }
-  let direct = match check_program_with_env_direct_expression_return_observation(stmts = capture_stmts(ann), initial_env = capture_env()) {
+  let direct = match check_program_with_env_direct_expression_return_observation(stmts = capture_stmts(ann), initial_env = capture_env(), checked_error_row = false) {
     Some(o) => {
       let rows: Array[String] = []
       let mut i = 0

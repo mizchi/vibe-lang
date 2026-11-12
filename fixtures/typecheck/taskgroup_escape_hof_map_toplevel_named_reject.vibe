@@ -1,0 +1,22 @@
+// #4049: a top-level function handed to `Array::map` by name stores each task
+// handle of the group in a module-level array. The callback re-check followed
+// only a closure literal, so this compiled and the handle outlived its group,
+// while `for h in hs { stash(h = h) }` is refused. A named callback is now
+// checked as the literal that calls it.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+let kept: Array[TaskHandle[Int]] = []
+
+fn stash(h: TaskHandle[Int]) -> Int {
+  Array::push(kept, value = h)
+  0
+}
+
+fn main() -> Unit allows Exception + Console {
+  let r = TaskGroup::run((n) -> {
+    let hs = [TaskGroup::spawn(n, f = () -> { 41 })]
+    let _ = Array::map(hs, f = stash)
+    1
+  })
+  println("r=\{r} kept=\{Array::length(kept) > 0}")
+}

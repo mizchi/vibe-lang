@@ -131,7 +131,7 @@ restore
 # gate exists to catch, and it is the half that had rotted: it was matching a
 # spelling no file in the tree had used for two ADRs.
 
-sed -E 's/^(fn compile_source\((_ )?source: String\) -> Bytes with )Exception$/\1Fs/' \
+sed -E 's/^(fn compile_source\((_ )?source: String, checked_error_row: Bool\) -> Bytes with )Exception$/\1Fs/' \
   "$contract" > "$contract.probe"
 mv "$contract.probe" "$contract"
 if cmp -s "$contract" "$scratch/pristine/$contract"; then

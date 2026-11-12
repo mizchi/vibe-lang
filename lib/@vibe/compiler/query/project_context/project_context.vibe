@@ -7,7 +7,7 @@ import @vibe/core {
   array_empty, struct MutSet
 }
 import @vibe/compiler/incremental {
-  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
+  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source, ripple_without_results
 }
 import @vibe/compiler/loader {
   collect_source_groups_fs_with_config, collect_source_groups_fs_with_entry_source
@@ -28,7 +28,8 @@ import @vibe/compiler/cache {
 export struct QueryProjectState {
   env_cache: Array[(String, TypeEnv)];
   rdb: RippleDb;
-  dep_sources: Array[(String, String)]
+  dep_sources: Array[(String, String)];
+  checked_error_row: Option[Bool]
 }
 
 /// Start a query sweep without retained module environments or source rows.
@@ -36,7 +37,8 @@ export fn query_project_state_new() -> QueryProjectState {
   QueryProjectState::{
     env_cache: array_empty(),
     rdb: ripple_new(),
-    dep_sources: array_empty()
+    dep_sources: array_empty(),
+    checked_error_row: None
   }
 }
 
@@ -48,7 +50,18 @@ export fn query_project_state_new() -> QueryProjectState {
 /// Failures propagate to the query's own error result, never to single-file
 /// typing. Callers retain their incoming state on failure: array-backed rows
 /// already published for a complete module remain reusable on the next file.
-export fn query_project_context_fs(path: String, source: String, replacement: Option[QueryProjectEdit], state: QueryProjectState) -> QueryProjectContext with Env + Exception + Fs {
+export fn query_project_context_fs(path: String, source: String, replacement: Option[QueryProjectEdit], state: QueryProjectState, checked_error_row: Bool) -> QueryProjectContext with Env + Exception + Fs {
+  // Retain source inputs, but never reuse typing derived under another mode.
+  let state = if state.checked_error_row == Some(checked_error_row) {
+    state
+  } else {
+    QueryProjectState::{
+      env_cache: array_empty(),
+      rdb: ripple_without_results(state.rdb),
+      dep_sources: array_empty(),
+      checked_error_row: Some(checked_error_row)
+    }
+  }
   if Fs::exists(path) {
     ensure_regular_source_fs(path)
   } else ()
@@ -83,9 +96,9 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
   // An edit always collects its own text, including a no-op replacement: the
   // FS closure cache can still hold an older same-token disk reading.
   let groups = if !is_edit && disk_source == Some(current) {
-    collect_source_groups_fs_with_config(path, cfg = cfg)
+    collect_source_groups_fs_with_config(path, cfg = cfg, checked_error_row = checked_error_row)
   } else {
-    collect_source_groups_fs_with_entry_source(entry_path = path, source = current, cfg = cfg)
+    collect_source_groups_fs_with_entry_source(entry_path = path, source = current, cfg = cfg, checked_error_row = checked_error_row)
   }
   let mut rdb = state.rdb
   let mut entry_source = current
@@ -109,12 +122,12 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
     }
     gi = gi + 1
   }
-  let (entry_fingerprint, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path, cfg = cfg)
+  let (entry_fingerprint, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = 0, path = path, cfg = cfg, checked_error_row = checked_error_row)
   let deps = match ripple_get_deps(db = walked, path = path) {
     Some(d) => d,
     None => array_empty()
   }
-  let import_env = projected_import_env_for_test(source = entry_source, path = path, deps = deps, full_cache = query_project_fill_dep_envs(rdb = walked, env_cache = env_cache, deps = deps))
+  let import_env = projected_import_env_for_test(source = entry_source, path = path, deps = deps, full_cache = query_project_fill_dep_envs(rdb = walked, env_cache = env_cache, deps = deps), checked_error_row = checked_error_row)
   QueryProjectContext::{
     entry_source: entry_source,
     entry_fingerprint: entry_fingerprint,
@@ -123,7 +136,8 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
     state: QueryProjectState::{
       env_cache: env_cache,
       rdb: walked,
-      dep_sources: dep_sources
+      dep_sources: dep_sources,
+      checked_error_row: Some(checked_error_row)
     }
   }
 }

@@ -167,8 +167,8 @@ fn artifact_input_trace_push_length_prefixed(out: StringBuilder, text: String) -
 /// This deliberately reruns module_plan_data_fs after the production compile:
 /// it preserves planned order/ranks and every declared dependency occurrence
 /// (including duplicates), but never feeds a cache or reuse decision.
-export fn artifact_input_trace_dependency_plan_evidence_fs(_ entry_path: String) -> (String, Int, Int) with Env + Exception + Fs {
-  let (order, ranks, ordered_deps, _) = module_plan_data_fs(entry_path)
+export fn artifact_input_trace_dependency_plan_evidence_fs(_ entry_path: String, checked_error_row: Bool) -> (String, Int, Int) with Env + Exception + Fs {
+  let (order, ranks, ordered_deps, _) = module_plan_data_fs(entry_path, checked_error_row = checked_error_row)
   let out = StringBuilder::new()
   StringBuilder::push(out, value = "vibe-artifact-input-dependency-plan:v1\n")
   artifact_input_trace_push_length_prefixed(out = out, text = __to_string(Array::length(order)))
@@ -193,13 +193,13 @@ export fn artifact_input_trace_dependency_plan_evidence_fs(_ entry_path: String)
   (compact_string_fingerprint(StringBuilder::freeze(out)), Array::length(order), edge_occurrence_count)
 }
 
-export fn module_plan_manifest_fs(_ entry_path: String) -> (String, Array[String]) with Env + Exception + Fs {
-  module_plan_manifest_fs_with_config(entry_path, cfg = target_cfg_ambient())
+export fn module_plan_manifest_fs(_ entry_path: String, checked_error_row: Bool) -> (String, Array[String]) with Env + Exception + Fs {
+  module_plan_manifest_fs_with_config(entry_path, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Keep planned sources and dependencies in one invocation configuration.
-export fn module_plan_manifest_fs_with_config(_ entry_path: String, cfg: TargetCfg) -> (String, Array[String]) with Env + Exception + Fs {
-  let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs_with_config(entry_path, cfg = cfg)
+export fn module_plan_manifest_fs_with_config(_ entry_path: String, cfg: TargetCfg, checked_error_row: Bool) -> (String, Array[String]) with Env + Exception + Fs {
+  let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs_with_config(entry_path, cfg = cfg, checked_error_row = checked_error_row)
   let buf = StringBuilder::new()
   StringBuilder::push(buf, value = "version\t1\n")
   let n = Array::length(order)
@@ -294,18 +294,18 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
 /// that matters: it is exactly the choice a parallel coordinator makes
 /// differently from run to run, and scripts/dep_order_oracle.sh asserts the
 /// compiled output is byte-identical across seeds regardless.
-export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, cfg = target_cfg_ambient())
+export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   let interfaces = dependency_interface_set_new()
   module_typed_lowering_memo_reset()
   typing_dependency_env_reuse_valid_witness_memo_reset()
-  checked_module_cache_reset_in_namespace(namespace = target_cfg_namespace(cfg))
+  checked_module_cache_reset_in_namespace(namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row)
   compact_source_fingerprint_memo_reset()
-  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = path, cfg = cfg)
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = path, cfg = cfg, checked_error_row = checked_error_row)
   let trace_path = scheduler_trace_path()
   let tracing = String::length(trace_path) > 0
   let trace = StringBuilder::new()
@@ -324,7 +324,7 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
       scheduler_trace_project(buf = trace, order = order, ranks = ranks, plan_edges = edges)
     } else ()
     resume(())
-  }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer_with_config(leaf_fps = plan_leaf_fps, edges = plan_edges, fps = fps, state = current, path = module_path, interfaces = interfaces, cfg = cfg)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
+  }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer_with_config(leaf_fps = plan_leaf_fps, edges = plan_edges, fps = fps, state = current, path = module_path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
     fs_walk_published(path = module_path, fp = fp, state = next, previous_parse_count = previous_parse_count, interfaces = interfaces, trace = trace, tracing = tracing)
     resume(())
   }; ModuleWalk::Failed(_) => {
@@ -346,14 +346,14 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
 
 // Exception is handled in the provider helper, not raised from an effect arm:
 // throwing arms force the handler onto the suspend-CPS driver (#3693).
-fn fs_walk_step_answer(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
-  fs_walk_step_answer_with_config(leaf_fps = leaf_fps, edges = edges, fps = fps, state = state, path = path, interfaces = interfaces, cfg = target_cfg_ambient())
+fn fs_walk_step_answer(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet, checked_error_row: Bool) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
+  fs_walk_step_answer_with_config(leaf_fps = leaf_fps, edges = edges, fps = fps, state = state, path = path, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn fs_walk_step_answer_with_config(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
+fn fs_walk_step_answer_with_config(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
   handle {
-    let (fp, rdb, env_cache, dep_sources, parse_count) = step_module_fs_using_interfaces_with_config(plan_leaf_fps = leaf_fps, plan_edges = edges, fps = fps, rdb = state.rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = state.parse_count, path = path, interfaces = interfaces, cfg = cfg)
+    let (fp, rdb, env_cache, dep_sources, parse_count) = step_module_fs_using_interfaces_with_config(plan_leaf_fps = leaf_fps, plan_edges = edges, fps = fps, rdb = state.rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = state.parse_count, path = path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
     (fp, ModuleWalkState::{ rdb, env_cache, dep_sources, parse_count }, None)
   } with { Exception::Throw(message) => (String::concat("diagnosed:", path), state, Some(message)) }
 }
@@ -595,8 +595,8 @@ fn header_prefix_throws(lines: Array[String], k: Int, pin_err: String) -> Bool {
 /// This arity keeps the path unknown, which costs the `.vpkg` contract grammar
 /// (see `collect_all_diagnostics_with_unstable_for_path` below). A caller that
 /// HAS a path should pass it.
-export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: Bool) -> Array[String] with Exception {
-  collect_all_diagnostics_with_unstable_for_path(input_path = "", source = source, allow_unstable = allow_unstable)
+export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: Bool, checked_error_row: Bool) -> Array[String] with Exception {
+  collect_all_diagnostics_with_unstable_for_path(input_path = "", source = source, allow_unstable = allow_unstable, checked_error_row = checked_error_row)
 }
 
 /// #2297, with `input_path` so the scan reads the buffer with the grammar it
@@ -618,8 +618,8 @@ export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: 
 ///
 /// `extract_require_pins` blanks to spaces and preserves byte length, so the
 /// positions this scan reports stay exact.
-export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, source: String, allow_unstable: Bool) -> Array[String] with Exception {
-  let msgs = collect_all_diagnostics_for_path(input_path = input_path, source = source)
+export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, source: String, allow_unstable: Bool, checked_error_row: Bool) -> Array[String] with Exception {
+  let msgs = collect_all_diagnostics_for_path_with_error_row(input_path = input_path, source = source, checked_error_row = checked_error_row)
   if allow_unstable {
     msgs
   } else {
@@ -654,7 +654,17 @@ export fn collect_all_diagnostics(_ source: String) -> Array[String] with Except
   collect_all_diagnostics_for_path(input_path = "", source = source)
 }
 
+/// The standalone entry keeps its fresh-process unchecked default.
 export fn collect_all_diagnostics_for_path(input_path: String, source: String) -> Array[String] with Exception {
+  collect_all_diagnostics_for_path_with_error_row(input_path = input_path, source = source, checked_error_row = false)
+}
+
+export fn collect_all_diagnostics_with_error_row(_ source: String, checked_error_row: Bool) -> Array[String] with Exception {
+  collect_all_diagnostics_for_path_with_error_row(input_path = "", source = source, checked_error_row = checked_error_row)
+}
+
+/// Explicit policy for a diagnostic request; no process configuration is read.
+export fn collect_all_diagnostics_for_path_with_error_row(input_path: String, source: String, checked_error_row: Bool) -> Array[String] with Exception {
   // #2227, round 3 of the book-review eval: a leading `require @scope/name
   // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
   // ingestion blanks before parsing -- but this single-file lane parsed the
@@ -737,7 +747,7 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
   // A check that throws must not leave this module named as the one being
   // checked: the cells are process-global.
   let found = handle {
-    collect_all_diagnostics_on(input_path = input_path, source = pin_blanked, pkg_version = pkg_version)
+    collect_all_diagnostics_on(input_path = input_path, source = pin_blanked, pkg_version = pkg_version, checked_error_row = checked_error_row)
   } with { Exception::Throw(message) => {
     declaring_module_path_clear()
     throw(message)
@@ -1157,7 +1167,7 @@ fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Arra
   locate_type_error_lines(source = source, msg = msg)
 }
 
-fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String) -> Array[String] with Exception {
+fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String, checked_error_row: Bool) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
     // A contract LEXES like a program, so it gets the recovering lexer and
     // every lex error, the same as the branch below (#2314 review). Only the
@@ -1263,7 +1273,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
         // rows, and the pass reads them: an untyped shadowing `let` is
         // rendered through its own type, as the build renders it, not
         // through the outer binding's.
-        match check_program_double_call_result_located_observation(stmts) {
+        match check_program_double_call_result_located_observation(stmts, checked_error_row = checked_error_row) {
           Some((_checked, _floats, eq_offs, eq_keys)) => expand_interp_stmts_with_rows(stmts = stmts, typed_eq_offsets = eq_offs, typed_eq_keys = eq_keys),
           None => expand_interp_stmts(stmts)
         }
@@ -1313,7 +1323,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
             // effects now register their operation signatures (instantiated
             // per perform/handle site), so the hole it flagged no longer
             // exists.
-            let (warn_tytab, warn_subst) = check_program_type_table(stmts)
+            let (warn_tytab, warn_subst) = check_program_type_table(stmts, checked_error_row = checked_error_row)
             let return_warns = detect_unbound_nonunit_returns(stmts = stmts, tytab = warn_tytab, final_s = warn_subst)
             let mut ri = 0
             while ri < Array::length(return_warns) {
@@ -1730,7 +1740,7 @@ import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
 }
 
 /// Capture the target flags once for an independently requested module plan.
-export fn module_plan_manifest_fs_configured(_ entry_path: String) -> (String, Array[String]) with Config + Env + Exception + Fs {
+export fn module_plan_manifest_fs_configured(_ entry_path: String, checked_error_row: Bool) -> (String, Array[String]) with Config + Env + Exception + Fs {
   let cfg = target_cfg_capture()
-  module_plan_manifest_fs_with_config(entry_path, cfg = cfg)
+  module_plan_manifest_fs_with_config(entry_path, cfg = cfg, checked_error_row = checked_error_row)
 }

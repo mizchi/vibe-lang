@@ -2030,7 +2030,7 @@ fn grep_stmt_spans(source: String, lo: Array[Int], hi: Array[Int]) -> Unit {
 /// returning a plausible empty result. A file that does not even parse yields
 /// the empty context (its structural matches, if any, came from a parse this
 /// one just failed to repeat, so there is nothing to type).
-export fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv) -> GrepTyped {
+export fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv, checked_error_row: Bool) -> GrepTyped {
   let delta = String::length(typed_source) - String::length(source)
   if delta < 0 {
     // The ingested source is SHORTER than the file, so it is not the file plus
@@ -2066,7 +2066,7 @@ export fn grep_typed_context(source: String, typed_source: String, import_env: T
         // the sweep, while `vibe check` typed it clean. The replay is
         // deliberate for the generic API (type_db_cross_module_test pins it),
         // so the fix belongs at this call site, not in the checker.
-        let checked = check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env)
+        let checked = check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env, checked_error_row = checked_error_row)
         GrepTyped::{
           tytab: checked.typed_occurrences,
           offset_delta: delta,
@@ -2927,14 +2927,14 @@ export fn grep_join_lines(lines: Array[String], json: Bool) -> String {
 /// against THIS FILE ALONE (no import resolution). This is the seam the unit
 /// tests drive; `vibe grep` itself always uses grep_scan_fs, which resolves
 /// imports the way `vibe check` does.
-export fn grep_scan_source(path: String, source: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception {
+export fn grep_scan_source(path: String, source: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, checked_error_row: Bool) -> String with Exception {
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat = pat, wheres = wheres, where_rows = where_rows)
   let hits = grep_file_hits(path = path, source = source, pat = pat)
   let out = grep_empty_strings()
   let typed = grep_needs_typing(wheres = wheres, where_rows = where_rows, only = only)
   let ctx = if typed && Array::length(hits) > 0 {
-    grep_typed_context(source = source, typed_source = source, import_env = EnvEmpty)
+    grep_typed_context(source = source, typed_source = source, import_env = EnvEmpty, checked_error_row = checked_error_row)
   } else {
     grep_untyped_context()
   }

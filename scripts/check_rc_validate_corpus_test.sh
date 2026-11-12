@@ -5,7 +5,8 @@
 # The mutated input is a REAL plan: `vibe rc-validate --mutate drop-dups`
 # validates each plan of a real fixture with its dup rows deleted, and
 # `--mutate inflate-exit-drops` with each early-exit release one higher;
-# both are plans that release more than they hold. Each mutation is checked for having
+# both are plans that release more than they hold. `--mutate scalar-classes`
+# reads every heap binding as planned scalar, which a gate must refuse too. Each mutation is checked for having
 # LANDED before its verdict is believed -- an edit that matches nothing passes
 # while proving nothing.
 set -euo pipefail
@@ -121,6 +122,27 @@ fi
 grep -qF 'found a plan that releases more than it holds' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 1c failed for the wrong reason"; }
 
+# RED 1d: a heap value planned as scalar (#3718 slice 4). The #3240 fixture's
+# `unwrap_callback` takes an `Option` of a closure -- the parameter #3241
+# fixed the classification of -- so reading every heap class as scalar must
+# surface it, and the gate must fail on it.
+SCALAR_FIXTURE="fixtures/rc_option_payload_return_test.vibe"
+[ -f "$SCALAR_FIXTURE" ] || fail "the scalar red fixture $SCALAR_FIXTURE is gone; pick another fixture with a parameter declared as an Option, tuple, Array, Map or Double"
+run_verb "$WORK/splain.txt" "$SCALAR_FIXTURE" || { cat "$WORK/splain.txt.err" >&2; fail "RED 1d: the unmutated verb call failed"; }
+if grep -qE 'planned as scalar$' "$WORK/splain.txt"; then
+  fail "RED 1d: the unmutated fixture already reports a heap value planned as scalar; it is not a control"
+fi
+run_verb "$WORK/smutated.txt" --mutate scalar-classes "$SCALAR_FIXTURE" \
+  || { cat "$WORK/smutated.txt.err" >&2; fail "RED 1d: the mutated verb call failed"; }
+grep -qE '^unwrap_callback opt -: heap value planned as scalar$' "$WORK/smutated.txt" \
+  || { cat "$WORK/smutated.txt" >&2; fail "RED 1d mutation did not land (no planned-as-scalar line for unwrap_callback opt under --mutate scalar-classes)"; }
+if run_gate "$GATE" "$SCALAR_FIXTURE" --mutate scalar-classes; then
+  cat "$WORK/out" >&2
+  fail "RED 1d: the gate passed a plan that reads a heap parameter as scalar"
+fi
+grep -qF 'or a heap value it does not count' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 1d failed for the wrong reason"; }
+
 # RED 2: the case above must depend on the gate's own failure check. A copy of
 # the gate with that check disconnected must PASS the mutated corpus -- if it
 # still failed, RED 1 would be proving something other than the check.
@@ -150,4 +172,4 @@ fi
 grep -qF 'no fixtures matched' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"; }
 
-echo "[rc-validate-corpus-test] ok (green control + 6 red cases, each mutation verified to land)"
+echo "[rc-validate-corpus-test] ok (green control + 7 red cases, each mutation verified to land)"

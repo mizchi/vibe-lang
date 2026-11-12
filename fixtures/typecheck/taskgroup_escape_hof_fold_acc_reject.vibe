@@ -1,0 +1,20 @@
+// #4049: `Array::fold`'s accumulator starts as `init`, here an array declared
+// outside the group, so pushing a task handle into it keeps the handle past
+// the group. The callback re-check bound the accumulator to a fresh variable
+// and judged the push a write of a local, so this compiled and the handle
+// outlived its group. The accumulator is now checked as an alias of a binding
+// declared outside the body.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+fn main() -> Unit allows Exception + Console {
+  let outer: Array[TaskHandle[Int]] = []
+  let r = TaskGroup::run((n) -> {
+    let hs = [TaskGroup::spawn(n, f = () -> { 41 })]
+    let _ = Array::fold(hs, init = outer, f = (acc, h) -> {
+      Array::push(acc, value = h)
+      acc
+    })
+    1
+  })
+  println("r=\{r} kept=\{Array::length(outer) > 0}")
+}
