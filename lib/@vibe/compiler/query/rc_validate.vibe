@@ -33,6 +33,34 @@ fn rcv_identity(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusActi
   plan
 }
 
+fn rcv_keep_class(_fname: String, _x: String) -> Bool {
+  false
+}
+
+fn rcv_any_class(_fname: String, _x: String) -> Bool {
+  true
+}
+
+/// The classification the validator is given: `class_bits` with each binding
+/// the planner called heap read as scalar where `scalar(fname, name)` says
+/// so. The planner keeps its own, so the plan is still the one it built for
+/// the real classes.
+fn rcv_reclass(fname: String, names: Array[String], bits: Array[Int], scalar: (String, String) -> Bool) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(bits) {
+    let b = Array::get(bits, at = i)
+    let heap = b >= 0 && (b&7) == 0
+    if heap && i < Array::length(names) && scalar(fname, Array::get(names, at = i)) {
+      Array::push(out, value = 1)
+    } else {
+      Array::push(out, value = b)
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// `--mutate drop-dups`: the plan without any of its PaDup rows.
 fn rcv_drop_dups(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
   let out: Array[PerceusAction] = []
@@ -109,12 +137,12 @@ fn rcv_edit_plan(fname: String, plan: Array[PerceusAction], start: Int, edit: (S
   }
 }
 
-fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], split_edit: Bool, borrow_fn: String, borrow_mask: Int) -> String with Exception {
+fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], split_edit: Bool, borrow_fn: String, borrow_mask: Int, scalar: (String, String) -> Bool, checked_error_row: Bool) -> String with Exception {
   let names: Array[String] = []
   let fns: Array[Expr] = []
   let tables: Array[Array[String]] = []
   let masks: Array[Int] = []
-  rcq_planned_fns(source = source, fn_filter = fn_filter, verb = "rc-validate", out_names = names, out_fns = fns, tables = tables, masks = masks)
+  rcq_planned_fns(source = source, fn_filter = fn_filter, verb = "rc-validate", out_names = names, out_fns = fns, tables = tables, masks = masks, checked_error_row = checked_error_row)
   let borrow_ret = Array::get(tables, at = 0)
   let borrow_param = Array::get(tables, at = 1)
   let view_ret = Array::get(tables, at = 2)
@@ -137,7 +165,8 @@ fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction
         }
         let (vfns, vmasks) = rcv_masks(fname = fname, borrow_param = borrow_param, masks = masks, borrow_fn = borrow_fn, borrow_mask = borrow_mask)
         let (vplan, vstart) = rcv_edit_plan(fname = fname, plan = plan, start = start, edit = edit, split_edit = split_edit)
-        let lines = perceus_validate_fn(fname = fname, params = params, body = body, plan = vplan, param_drop_start = vstart, class_names = class_names, class_bits = class_bits, borrow_param_fns = vfns, masks = vmasks)
+        let vbits = rcv_reclass(fname = fname, names = class_names, bits = class_bits, scalar = scalar)
+        let lines = perceus_validate_fn(fname = fname, params = params, body = body, plan = vplan, param_drop_start = vstart, class_names = class_names, class_bits = vbits, borrow_param_fns = vfns, masks = vmasks)
         let mut j = 0
         while j < Array::length(lines) {
           if first {
@@ -195,37 +224,49 @@ fn rcv_masks(fname: String, borrow_param: Array[String], masks: Array[Int], borr
 /// ownership discipline (see `perceus_validate_fn` for the line forms);
 /// empty when every checked binding balances. `fn_filter` empty validates
 /// every user function; a filter naming no function throws.
-export fn rc_validate_source(source: String, fn_filter: String) -> String with Exception {
-  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = "", borrow_mask = 0)
+export fn rc_validate_source(source: String, fn_filter: String, checked_error_row: Bool) -> String with Exception {
+  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = "", borrow_mask = 0, scalar = rcv_keep_class, checked_error_row = checked_error_row)
 }
 
 /// Test seam: validate the plan `edit` returns for each function instead of
 /// the planner's own, so a test can delete, duplicate or move a row and pin
 /// the line the validator gives for it.
-export fn rc_validate_source_edited(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception {
-  rcv_run(source = source, fn_filter = fn_filter, edit = edit, split_edit = false, borrow_fn = "", borrow_mask = 0)
+export fn rc_validate_source_edited(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], checked_error_row: Bool) -> String with Exception {
+  rcv_run(source = source, fn_filter = fn_filter, edit = edit, split_edit = false, borrow_fn = "", borrow_mask = 0, scalar = rcv_keep_class, checked_error_row = checked_error_row)
+}
+
+/// Test seam: validate the plan `edit` returns, as if the planner had
+/// classified the heap bindings `scalar(fname, name)` names as scalar -- the
+/// classification a fixed misclassification bug gave them (#3240, #3169,
+/// #3135). The planner keeps the real classes, so `edit` rebuilds the rest
+/// of that plan (typically: the drop a scalar binding never got).
+export fn rc_validate_source_reclassified(source: String, fn_filter: String, scalar: (String, String) -> Bool, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], checked_error_row: Bool) -> String with Exception {
+  rcv_run(source = source, fn_filter = fn_filter, edit = edit, split_edit = false, borrow_fn = "", borrow_mask = 0, scalar = scalar, checked_error_row = checked_error_row)
 }
 
 /// Test seam: validate as if `borrow_fn`'s parameters arrived under
 /// `borrow_mask` (bit i: parameter i is borrowed), while the plan stays the
 /// one built for the real masks.
-export fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow_fn: String, borrow_mask: Int) -> String with Exception {
-  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = borrow_fn, borrow_mask = borrow_mask)
+export fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow_fn: String, borrow_mask: Int, checked_error_row: Bool) -> String with Exception {
+  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = borrow_fn, borrow_mask = borrow_mask, scalar = rcv_keep_class, checked_error_row = checked_error_row)
 }
 
 /// Self-test seam behind `vibe rc-validate --mutate MUTATION`: validate a
 /// DELIBERATELY broken copy of each real plan, so a gate's self-test can show
 /// that a wrong plan in the corpus it sweeps makes the gate fail. The
-/// mutations are `drop-dups` (every PaDup row deleted) and
-/// `inflate-exit-drops` (every counted PaExitDrop row one higher); any other
-/// name throws. Not a mode for reading results: the lines describe a plan
+/// mutations are `drop-dups` (every PaDup row deleted),
+/// `inflate-exit-drops` (every counted PaExitDrop row one higher) and
+/// `scalar-classes` (every binding the planner called heap read as scalar);
+/// any other name throws. Not a mode for reading results: the lines describe a plan
 /// the compiler never builds.
-export fn rc_validate_source_mutated(source: String, fn_filter: String, mutation: String) -> String with Exception {
+export fn rc_validate_source_mutated(source: String, fn_filter: String, mutation: String, checked_error_row: Bool) -> String with Exception {
   if mutation == "drop-dups" {
-    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_drop_dups, split_edit = true, borrow_fn = "", borrow_mask = 0)
+    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_drop_dups, split_edit = true, borrow_fn = "", borrow_mask = 0, scalar = rcv_keep_class, checked_error_row = checked_error_row)
   } else if mutation == "inflate-exit-drops" {
-    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_inflate_exit_drops, split_edit = false, borrow_fn = "", borrow_mask = 0)
+    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_inflate_exit_drops, split_edit = false, borrow_fn = "", borrow_mask = 0, scalar = rcv_keep_class, checked_error_row = checked_error_row)
+  } else if mutation == "scalar-classes" {
+    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = "", borrow_mask = 0, scalar = rcv_any_class, checked_error_row = checked_error_row)
   } else {
-    throw("rc-validate: unknown --mutate value: " + mutation + " (expected drop-dups or inflate-exit-drops)")
+    throw("rc-validate: unknown --mutate value: " + mutation + " (expected drop-dups, inflate-exit-drops or scalar-classes)")
   }
 }

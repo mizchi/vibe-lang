@@ -48,7 +48,7 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 import ./suspend_census.vibe {
-  scps_census_drop, scps_census_note
+  scps_census_appended, scps_census_drop, scps_census_note, scps_census_replaced
 }
 
 import ./suspend_fn_aliases.vibe {
@@ -270,6 +270,9 @@ export fn suspend_cps_pass(_ stmts: Array[Stmt]) -> Array[String] {
   // hides sibling effects from its continuation and return-owner analysis.
   // Split only the ordinary handler sets left after those drivers exist.
   let errs = scps_lower_handle_sites(stmts)
+  // The census describes the list as this pass left it; nothing after the
+  // pass keeps it current, so it is not kept past the pass.
+  scps_census_drop()
   if Array::length(errs) == 0 {
     for e in evidence_split_handler_sets(stmts) {
       Array::push(errs, value = e)
@@ -360,7 +363,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
           SBench(bn, expr) => Array::set(stmts, at = i, value = SBench(bn, scps_rewrite_root(e = expr, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope))),
           _ => ()
         }
-        scps_census_drop()
+        scps_census_replaced(stmts = stmts, i = i)
       } else {
         ()
       }
@@ -380,7 +383,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
       Array::push(stmts, value = Array::get(inj, at = j))
       j = j + 1
     }
-    scps_census_drop()
+    scps_census_appended(stmts)
     let guarded_members: Array[String] = []
     for target in split_effs {
       for member in scps_group_members(groups = groups, target = target) {
@@ -459,7 +462,7 @@ fn scps_prepass_stmts(stmts: Array[Stmt], ecfgs: Array[(String, Array[String], A
       SBench(bn, expr) => Array::set(stmts, at = ip, value = SBench(bn, scps_prepass_expr(e = expr, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = array_empty_kind_scope()))),
       _ => ()
     }
-    scps_census_drop()
+    scps_census_replaced(stmts = stmts, i = ip)
     ip = ip + 1
   }
 }
@@ -506,6 +509,8 @@ export fn suspend_prepass_splits(stmts: Array[Stmt], eff: String) -> Bool {
     scps_prepass_stmts(stmts = copy, ecfgs = for target in matching {
       scps_ecfg_for(ctx = ctx, eff = target)
     }, ctx = ctx, st = st, split_effs = split_effs)
+    // The census describes `copy`, which is thrown away.
+    scps_census_drop()
     let mut split = false
     for target in split_effs {
       if edp_str_array_contains(arr = scps_group_members(groups = groups, target = target), v = eff) {

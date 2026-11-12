@@ -16,7 +16,7 @@ fn builtin_sources() -> Array[(String, String)] {
 
 test "inline Iterator map devirtualizes before codegen" {
   let iterator_source = "import @vibe/builtin { trait Iterator }\nfn _start() -> Int { Array::length(Iterator::map([1, 2, 3], (x: Int) -> Int { x + 1 })) }"
-  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources())
+  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources(), checked_error_row = false)
   desugar_trait_dicts(through_iterator)
   let rewritten = print_program(through_iterator)
   assert(String::contains(rewritten, needle = "Array::map"))
@@ -25,7 +25,7 @@ test "inline Iterator map devirtualizes before codegen" {
 
 test "inline Iterator flatmap devirtualizes before codegen" {
   let iterator_source = "import @vibe/builtin { trait Iterator }\nfn _start() -> Int { Array::length(Iterator::flatmap([1, 2], (x: Int) -> Array[Int] { [x, x] })) }"
-  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources())
+  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources(), checked_error_row = false)
   desugar_trait_dicts(through_iterator)
   let rewritten = print_program(through_iterator)
   assert(String::contains(rewritten, needle = "Array::flatmap"))
@@ -34,7 +34,7 @@ test "inline Iterator flatmap devirtualizes before codegen" {
 
 test "inline Iterator iter devirtualizes without using async Array::iter" {
   let iterator_source = "import @vibe/builtin { trait Iterator }\nfn _start() -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }"
-  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources())
+  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources(), checked_error_row = false)
   desugar_trait_dicts(through_iterator)
   let rewritten = print_program(through_iterator)
   assert(String::contains(rewritten, needle = "Array::iter_eager"))
@@ -48,7 +48,7 @@ test "inline Iterator iter devirtualizes without using async Array::iter" {
 // the program's function.
 test "a program's own eager Array iterator does not take the intrinsic rewrite" {
   let iterator_source = "import @vibe/builtin { trait Iterator }\nfn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 77 }\nfn _start() -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }"
-  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources())
+  let through_iterator = closure_merged_stmts(main_source = iterator_source, main_path = "main.vibe", sources = builtin_sources(), checked_error_row = false)
   desugar_trait_dicts(through_iterator)
   let rewritten = print_program(through_iterator)
   assert(String::contains(rewritten, needle = "let rec Array::iter_eager$user = "))
@@ -63,7 +63,7 @@ test "a later custom Iterator trait import blocks builtin intrinsics" {
   let merged = closure_merged_stmts(main_source = main_source, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", "export trait Iterator[T]"),
     ("custom.vibe", custom_source)
-  ])
+  ], checked_error_row = false)
   desugar_trait_dicts(merged)
   let rewritten = print_program(merged)
   assert(!String::contains(rewritten, needle = "Array::map([1]"))
@@ -74,7 +74,7 @@ test "inline source boundaries retain plain re-export builtin blockers" {
   let main_source = "export ./dep.vibe { assert_eq }\nfn answer() -> Int { assert_eq(1, 2) }"
   let merged = closure_merged_stmts(main_source = main_source, main_path = "main.vibe", sources = [
     ("dep.vibe", "export fn assert_eq(a: Int, b: Int) -> Int { a + b }")
-  ])
+  ], checked_error_row = false)
   desugar_trait_dicts(merged)
   let rewritten = print_program(merged)
   assert(String::contains(rewritten, needle = "answer = () -> Int { assert_eq(1, 2) }"))
@@ -87,7 +87,7 @@ test "inline merge publishes renamed provider-qualified trait helpers" {
   let merged = closure_merged_stmts(main_source = main_source, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", "export trait Iterator[T]"),
     ("dep.vibe", dep_source)
-  ])
+  ], checked_error_row = false)
   let rewritten = print_program(merged)
   assert(String::contains(rewritten, needle = "__local_trait_Iterator::map_exp_dep_vibe ="))
   assert(String::contains(rewritten, needle = "Array::get(__local_trait_Iterator::map_exp_dep_vibe("))
@@ -98,7 +98,7 @@ test "entry exports keep their qualified trait helper ABI" {
   let standard_source = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], f: (Int) -> Int) -> Array[Int] { Array::map(xs, f) }"
   let merged = closure_merged_stmts(main_source = main_source, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", standard_source)
-  ])
+  ], checked_error_row = false)
   let before_desugar = print_program(merged)
   assert(String::contains(before_desugar, needle = "export let rec Iterator::map ="))
   assert(!String::contains(before_desugar, needle = "__local_trait_Iterator::map"))
@@ -114,7 +114,7 @@ test "a custom imported Iterator helper blocks intrinsic rewriting" {
   let merged = closure_merged_stmts(main_source = main_source, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", "export trait Iterator[T]"),
     ("custom.vibe", custom_source)
-  ])
+  ], checked_error_row = false)
   desugar_trait_dicts(merged)
   let rewritten = print_program(merged)
   assert(!String::contains(rewritten, needle = "Array::map([1]"))
@@ -128,7 +128,7 @@ test "a custom re-exported Iterator helper blocks intrinsic rewriting" {
   let merged = closure_merged_stmts(main_source = main_source, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", "export trait Iterator[T]"),
     ("custom.vibe", custom_source)
-  ])
+  ], checked_error_row = false)
   desugar_trait_dicts(merged)
   let rewritten = print_program(merged)
   assert(!String::contains(rewritten, needle = "Array::map([1]"))

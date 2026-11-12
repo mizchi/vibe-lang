@@ -1,0 +1,165 @@
+//# Imports
+
+// #3718 slice 4: the closed RC leak issues as `vibe rc-validate` regression
+// rows. Each row pins two answers: what the validator says about TODAY's
+// plan for the issue's shape, and what it says about the plan the compiler
+// built BEFORE the fix, rebuilt here by editing one row (and, where the bug
+// was a misclassification, the class) of today's plan through the test seam.
+//
+// #3168 (a discarded `loop` value) has its rows in perceus_validate_test.vibe
+// since slice 2. #3240, #3169 and #3135's parameter were misclassifications:
+// the planner called a heap parameter scalar and planned no drop. The ledger
+// trusts the classification, so before this slice those plans answered
+// empty; the parameter cross-check (`rv_type_may_allocate`) now names them.
+
+import @vibe/compiler/query {
+  rc_validate_source, rc_validate_source_edited, rc_validate_source_reclassified
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction, pa_is_drop, pa_is_field_release
+}
+
+//# Functions
+
+/// `out` under `tag`, with an empty answer spelled `clean`: each snapshot
+/// gets an expected literal of its own, so `vibe test --update` can tell
+/// which call a failing answer belongs to.
+fn tagged(tag: String, out: String) -> String {
+  let body = if out == "" {
+    "clean"
+  } else {
+    out
+  }
+  tag + ": " + body
+}
+
+/// The plan without its first row `pick` accepts.
+fn drop_first(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool) -> Array[PerceusAction] {
+  let out: Array[PerceusAction] = []
+  let mut done = false
+  for a in plan {
+    if !done && pick(a) {
+      done = true
+    } else {
+      Array::push(out, value = a)
+    }
+  }
+  out
+}
+
+/// The plan a binding classified scalar gets: today's plan without `x`'s
+/// scope-end drop.
+fn without_drop(plan: Array[PerceusAction], x: String) -> Array[PerceusAction] {
+  drop_first(plan = plan, pick = (a: PerceusAction) -> Bool {
+    pa_is_drop(a) && a.name == x
+  })
+}
+
+/// Validate `fname` in `src` as the pre-fix planner saw it: binding `x`
+/// classified scalar, so it got no drop.
+fn as_scalar(src: String, fname: String, x: String) -> String with Exception {
+  rc_validate_source_reclassified(source = src, fn_filter = fname, scalar = (f: String, n: String) -> Bool {
+    f == fname && n == x
+  }, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    without_drop(plan = p, x = x)
+  }, checked_error_row = false)
+}
+
+/// Validate `fname` in `src` with `x`'s scope-end drop deleted.
+fn no_drop(src: String, fname: String, x: String) -> String with Exception {
+  rc_validate_source_edited(source = src, fn_filter = fname, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    without_drop(plan = p, x = x)
+  }, checked_error_row = false)
+}
+
+//# #3240: returning an Option closure payload
+
+// fixtures/rc_option_payload_return_test.vibe, reduced.
+let src_3240 = "fn fresh_callback() -> (Int) -> Int {\n  let offset = [1]\n  (n: Int) -> Int {\n    n + Array::get(offset, at = 0)\n  }\n}\nfn unwrap_callback(_ opt: Option[(Int) -> Int]) -> (Int) -> Int {\n  match opt {\n    Some(callback) => callback,\n    None => fresh_callback()\n  }\n}\nlet main: () -> Int = () -> {\n  let f = unwrap_callback(Some(fresh_callback()))\n  f(5)\n}"
+
+test "#3240 today: the Option parameter balances; its payload binder is not checked" {
+  inspect(tagged(tag = "3240", out = rc_validate_source(source = src_3240, fn_filter = "unwrap_callback", checked_error_row = false)), content = "3240: unwrap_callback * -: not checked: 1 pattern binders, 0 let mut")
+}
+
+test "#3240 before #3241: an Option of a closure planned as scalar is named" {
+  // `type_contains_fn` called `Option[(Int) -> Int]` scalar, so the callee
+  // never dropped the container it owned (136 B per call).
+  inspect(tagged(tag = "pre-3241", out = as_scalar(src = src_3240, fname = "unwrap_callback", x = "opt")), content = "pre-3241: unwrap_callback opt -: heap value planned as scalar\nunwrap_callback * -: not checked: 1 pattern binders, 0 let mut")
+}
+
+//# #3169: a user-effect `handle`
+
+// The evidence-passing lowering gives `tick` a `__ev_Tick: __EvDict_Tick`
+// parameter, and each handled call passes it a fresh record.
+let src_3169 = "effect Tick {\n  Tick(Int) -> Unit\n}\nfn tick(_ n: Int) -> Unit with Tick {\n  perform Tick::Tick(n)\n}\nlet main: () -> Int = () -> {\n  let mut total = 0\n  handle {\n    tick(1)\n  } with {\n    Tick::Tick(k) => {\n      total = total + k\n      resume(())\n    }\n  }\n  total\n}"
+
+test "#3169 today: the evidence dictionary parameter balances" {
+  inspect(tagged(tag = "3169", out = rc_validate_source(source = src_3169, fn_filter = "tick", checked_error_row = false)), content = "3169: clean")
+}
+
+test "#3169 before its fix: an evidence dictionary planned as scalar is named" {
+  // The leading `_` of `__EvDict_Tick` failed the capital-letter heap test,
+  // so the callee planned no drop and every handled call leaked 24 B.
+  inspect(tagged(tag = "pre-3169", out = as_scalar(src = src_3169, fname = "tick", x = "__ev_Tick")), content = "pre-3169: tick __ev_Tick -: heap value planned as scalar")
+}
+
+//# #3135: `Double` operands and parameters
+
+let src_3135 = "fn take_d(d: Float64) -> Int {\n  if d > 1.0 {\n    1\n  } else {\n    0\n  }\n}\nfn literal() -> Int {\n  let x = 1.5\n  if x > 1.0 {\n    1\n  } else {\n    0\n  }\n}\nlet main: () -> Int = () -> {\n  take_d(2.5) + literal()\n}"
+
+test "#3135 today: a Double literal and a Double parameter balance" {
+  inspect(tagged(tag = "3135 literal", out = rc_validate_source(source = src_3135, fn_filter = "literal", checked_error_row = false)), content = "3135 literal: clean")
+  inspect(tagged(tag = "3135 param", out = rc_validate_source(source = src_3135, fn_filter = "take_d", checked_error_row = false)), content = "3135 param: clean")
+}
+
+test "#3135 before #3130: a Double literal planned as scalar is named" {
+  // `let x = 1.5` was called scalar: no drop for the box codegen allocated.
+  inspect(tagged(tag = "pre-3130", out = as_scalar(src = src_3135, fname = "literal", x = "x")), content = "pre-3130: literal x -: heap value planned as scalar")
+}
+
+test "#3135 before its fix: an operator that took the last reference leaks" {
+  // The plan counted the operand of `x > 1.0` as the consuming last use, so
+  // `x` lost its scope-end drop; codegen's comparison releases nothing.
+  // The ledger counts an operand as a read on its own, so it flagged this
+  // plan before this slice too.
+  inspect(tagged(tag = "pre-3135 operand", out = no_drop(src = src_3135, fname = "literal", x = "x")), content = "pre-3135 operand: literal x -: owned value not consumed")
+}
+
+test "#3135 before its fix: a Double parameter planned as scalar is named" {
+  // `Double` was in the scalar type-name list, so the callee never dropped
+  // the box each caller handed it (32 B per call).
+  inspect(tagged(tag = "pre-3135 param", out = as_scalar(src = src_3135, fname = "take_d", x = "d")), content = "pre-3135 param: take_d d -: heap value planned as scalar")
+}
+
+//# #3140: `obj.f = v`
+
+// The field store is the receiver's last use. The plan approves the struct
+// for a releasing store (`PaFieldRelease(s)`).
+let src_3140 = "enum D {\n  A(Array[Int])\n}\nstruct Cell {\n  mut v: D\n}\nlet run: (Bool) -> Int = (c) -> {\n  let s = Cell::{ v: A([1]) }\n  s.v = A([2])\n  0\n}\nlet main: () -> Int = () -> {\n  run(true)\n}"
+
+test "#3140 today: the receiver of a releasing field store balances" {
+  // Before this slice the field-release row made `s` not checked.
+  inspect(tagged(tag = "3140", out = rc_validate_source(source = src_3140, fn_filter = "run", checked_error_row = false)), content = "3140: clean")
+}
+
+test "#3140 before #3159: a receiver the store took leaks the struct" {
+  // `__set_field` did not borrow its receiver, so the last use handed `s`'s
+  // reference to a store that keeps nothing. The validator reads the same
+  // borrow table the planner does (`md_borrow_mask_of`), and that table
+  // gained `__set_field` in the fix: against the pre-fix table this plan
+  // balanced. The row holds the pre-fix plan against today's table.
+  inspect(tagged(tag = "pre-3159 receiver", out = no_drop(src = src_3140, fname = "run", x = "s")), content = "pre-3159 receiver: run s -: owned value not consumed")
+}
+
+test "#3140's overwritten value is outside the ledger" {
+  // Without its field-release row the store does not release the value it
+  // overwrites, the second half of #3140. That value is the struct's, not a
+  // binding's, so a per-binding ledger cannot see the leak: not a finding.
+  let out = rc_validate_source_edited(source = src_3140, fn_filter = "run", edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_field_release(a)
+    })
+  }, checked_error_row = false)
+  inspect(tagged(tag = "pre-3159 overwritten", out = out), content = "pre-3159 overwritten: clean")
+}

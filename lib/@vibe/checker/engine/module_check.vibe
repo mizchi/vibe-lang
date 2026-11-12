@@ -1405,10 +1405,10 @@ export enum ModuleOutcome {
   // complete persistent TypeEnv v10 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
   // inputs, and are empty unless the invalidation trace is enabled. The final
-  // optional string is a canonical in-memory-only #1550 module artifact
-  // observation. This production path populates it only after its actual
-  // checker invocation succeeds; ordinary checks leave it absent.
-  Checked(String, String, TypeEnv, String, String, String, Option[String]);
+  // optional observation retains canonical in-memory-only #1550 bytes and
+  // the exact checking policy that accepted them. Ordinary checks leave it
+  // absent and allocate no observation or policy wrapper.
+  Checked(String, String, TypeEnv, String, String, String, Option[(String, Bool)]);
   Diagnosed(String, Array[String])
 }
 export enum CheckedModuleTypingArtifactFreshnessAttestation {
@@ -1470,19 +1470,22 @@ fn engine_checked_module_typing_artifact_bytes_with_config(checked: CheckedProgr
 /// planning, cache lookup, TypeEnv assembly or reuse.
 export fn engine_checked_module_typing_artifact_observation(_ outcome: ModuleOutcome) -> Option[String] {
   match outcome {
-    Checked(_, _, _, _, _, _, observation) => observation,
+    Checked(_, _, _, _, _, _, observation) => match observation {
+      Some((bytes, _)) => Some(bytes),
+      None => None
+    },
     Diagnosed(_, _) => None
   }
 }
 /// Validate one opaque successful outcome against one current, already-ingested
 /// ModuleJob and bind the authority to the exact retained bytes. Validation is
-/// strict v2 decoding plus exact owner, source, implementation, dependency, and
-/// singleton-closure matching. Missing, malformed, stale, or diagnosed inputs
+/// strict v2 decoding plus exact owner, source, implementation, dependency,
+/// singleton-closure, and checked Exception-row policy matching. Missing, malformed, stale, or diagnosed inputs
 /// return None. Nothing is published, persisted, planned, cached, or reused.
 export fn engine_checked_module_typing_artifact_freshness_attestation_for_job(job: CheckJob, outcome: ModuleOutcome) -> Option[CheckedModuleTypingArtifactFreshnessAttestation] with Exception {
   Array::set(checked_module_typing_artifact_validation_attempts, at = 0, value = Array::get(checked_module_typing_artifact_validation_attempts, at = 0) + 1)
   match outcome {
-    Checked(_, _, _, _, _, _, Some(bytes)) => if checked_module_typing_artifact_v2_matches_exact_inputs(text = bytes, module_locator = job.path, source_identity = compact_source_fingerprint_memo(path = job.path, source = job.source), implementation_identity = engine_incremental_implementation_identity(job.source), dependency_interface_assumptions = engine_checked_module_dependency_interface_assumptions(job.dep_envs)) {
+    Checked(_, _, _, _, _, _, Some((bytes, checked_error_row))) => if checked_error_row == job.checked_error_row && checked_module_typing_artifact_v2_matches_exact_inputs(text = bytes, module_locator = job.path, source_identity = compact_source_fingerprint_memo(path = job.path, source = job.source), implementation_identity = engine_incremental_implementation_identity(job.source), dependency_interface_assumptions = engine_checked_module_dependency_interface_assumptions(job.dep_envs)) {
       Some(AttestedCheckedModuleTypingArtifact(bytes))
     } else {
       None
@@ -1573,7 +1576,7 @@ fn engine_check_module_diagnostics_with_config(job: CheckJob, observe_typing_art
   // handed to it -- could publish a checked environment that the serial
   // driver would never look up, which would make a parallel pre-check pass
   // silently do nothing.
-  let fingerprint = engine_typecheck_fs_build_fingerprint_with_config(path = job.path, source = job.source, dep_fps = job.dep_fps, semantics_seed = typing_semantics_seed(), cfg = cfg)
+  let fingerprint = engine_typecheck_fs_build_fingerprint_with_config(path = job.path, source = job.source, dep_fps = job.dep_fps, semantics_seed = typing_semantics_seed(checked_error_row = job.checked_error_row), cfg = cfg)
   if Array::length(unresolved_imports) > 0 {
     // An alias that takes a builtin namespace's name is pointed at in the
     // import that wrote it; the other import diagnostics name the import
@@ -1601,7 +1604,7 @@ fn engine_check_module_diagnostics_with_config(job: CheckJob, observe_typing_art
       // A check that throws must not leave this module named as the one
       // being checked: the cells are process-global.
       let (checked_program, located_offsets, eq_offs, eq_keys, placements) = handle {
-        check_program_with_projected_import_env_lowering_placements(stmts = stmts, initial_env = import_env)
+        check_program_with_projected_import_env_lowering_placements(stmts = stmts, initial_env = import_env, checked_error_row = job.checked_error_row)
       } with { Exception::Throw(message) => {
         declaring_module_path_clear()
         retention_summaries_clear()
@@ -1615,7 +1618,7 @@ fn engine_check_module_diagnostics_with_config(job: CheckJob, observe_typing_art
         Some(offsets) => offsets,
         None => placements
       }, eq_offs = eq_offs, eq_keys = eq_keys)
-      engine_module_typed_lowering_bind_source_with_config(path = job.path, fingerprint = fingerprint, source = job.source, cfg = cfg)
+      engine_module_typed_lowering_bind_source_with_config(path = job.path, fingerprint = fingerprint, source = job.source, cfg = cfg, checked_error_row = job.checked_error_row)
       let full_checked_env = checked_program.final_env
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
@@ -1632,7 +1635,7 @@ fn engine_check_module_diagnostics_with_config(job: CheckJob, observe_typing_art
       // would disappear.
       let checked_env = engine_checked_module_public_env_for_path(path = job.path, stmts = stmts, full_checked_env = full_checked_env, reexport_declarations = reexport_declarations)
       let interface_identity = if engine_incremental_interface_trace_enabled() {
-        engine_incremental_interface_identity_with_config(source = job.source, env = checked_env, cfg = cfg)
+        engine_incremental_interface_identity_with_config(source = job.source, env = checked_env, cfg = cfg, checked_error_row = job.checked_error_row)
       } else {
         ""
       }
@@ -1647,7 +1650,10 @@ fn engine_check_module_diagnostics_with_config(job: CheckJob, observe_typing_art
         ""
       }
       let module_typing_artifact = if observe_typing_artifact {
-        engine_checked_module_typing_artifact_bytes_with_config(checked = checked_program, job = job, cfg = cfg)
+        match engine_checked_module_typing_artifact_bytes_with_config(checked = checked_program, job = job, cfg = cfg) {
+          Some(bytes) => Some((bytes, job.checked_error_row)),
+          None => None
+        }
       } else {
         None
       }
@@ -1809,7 +1815,7 @@ export fn engine_parse_job_rows(_ job_text: String) -> (String, Array[String], A
   }
 }
 /// Read one frozen job snapshot and write the outcome marker after complete checked products.
-export fn engine_run_module_job_dir(_ dir: String) -> Unit with Env + Exception + Fs {
+export fn engine_run_module_job_dir(_ dir: String, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   // The source-text fingerprint memo spans one compile (the serial walk
   // resets it at its start). A worker process runs one module job after
   // another with no walk around them, so it resets the memo per job: the
@@ -1852,7 +1858,8 @@ export fn engine_run_module_job_dir(_ dir: String) -> Unit with Env + Exception 
     deps: deps,
     dep_fps: job_dep_fps,
     dep_envs: dep_envs,
-    ships_owned_heads: is_owned_head_source_location_env_fs(path)
+    ships_owned_heads: is_owned_head_source_location_env_fs(path),
+    checked_error_row: checked_error_row
   }
   // Parse errors are still an `Error` out of check_module (see the Phase 1
   // note above). At the transport boundary they have to become a value

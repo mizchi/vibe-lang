@@ -105,13 +105,13 @@ test "collect_all_sources_fs: index.vibei and index.vpkg coexisting is a hard er
   Fs::write_bytes(contract_vpkg, bytes = string_to_bytes("import ./impl.vibe {}\n\nfn add(x: Int, y: Int) -> Int\n"))
   Fs::write_bytes(impl_path, bytes = string_to_bytes("export fn add(x: Int, y: Int) -> Int { x + y }\n"))
   let failed = handle {
-    let _ = collect_all_sources_fs(contract_vibei)
+    let _ = collect_all_sources_fs(contract_vibei, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "a boundary has exactly one index") && String::contains(msg, needle = "index.vibei") && String::contains(msg, needle = "index.vpkg") }
   assert(failed)
   // Symmetric: entering via the .vpkg path hits the same check.
   let failed_via_vpkg = handle {
-    let _ = collect_all_sources_fs(contract_vpkg)
+    let _ = collect_all_sources_fs(contract_vpkg, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "a boundary has exactly one index") && String::contains(msg, needle = "index.vibei") && String::contains(msg, needle = "index.vpkg") }
   assert(failed_via_vpkg)
@@ -132,7 +132,7 @@ test "collect_all_sources_fs: nested package cannot import parent internals" {
   Fs::write_bytes(nested_contract, bytes = string_to_bytes("fn nested_value() -> Int\n"))
   Fs::write_bytes(nested_impl, bytes = string_to_bytes("import ../parent_impl.vibe { parent_value }\n\nexport fn nested_value() -> Int { parent_value() + 1 }\n"))
   let failed = handle {
-    let _ = collect_all_sources_fs(nested_contract)
+    let _ = collect_all_sources_fs(nested_contract, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "package boundary") && String::contains(msg, needle = parent_dir) }
   assert(failed)
@@ -153,7 +153,7 @@ test "collect_all_sources_fs: parent package cannot import nested package intern
   Fs::write_bytes(nested_contract, bytes = string_to_bytes("fn nested_value() -> Int\n"))
   Fs::write_bytes(nested_impl, bytes = string_to_bytes("export fn nested_value() -> Int { 41 }\n"))
   let failed = handle {
-    let _ = collect_all_sources_fs(parent_contract)
+    let _ = collect_all_sources_fs(parent_contract, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "package boundary") && String::contains(msg, needle = nested_dir) }
   assert(failed)
@@ -171,7 +171,7 @@ test "collect_all_sources_fs: owned package may import ownerless compatibility s
   Fs::write_bytes(contract_path, bytes = string_to_bytes("fn package_value() -> Int\n"))
   Fs::write_bytes(impl_path, bytes = string_to_bytes("import ../shared.vibe { shared_value }\n\nexport fn package_value() -> Int { shared_value() }\n"))
   Fs::write_bytes(compatibility_path, bytes = string_to_bytes("export fn shared_value() -> Int { 42 }\n"))
-  let sources = collect_all_sources_fs(contract_path)
+  let sources = collect_all_sources_fs(contract_path, checked_error_row = false)
   assert(contains_source_path(sources = sources, target = compatibility_path))
 }
 
@@ -196,7 +196,7 @@ test "collect_all_sources_fs: index.vpkg and direct index.vibe entry is a hard e
   Fs::write_bytes(contract_path, bytes = string_to_bytes("fn contract_value() -> Int\n"))
   Fs::write_bytes(legacy_path, bytes = string_to_bytes("export fn legacy_value() -> Int { 1 }\n"))
   let failed = handle {
-    let _ = collect_all_sources_fs(legacy_path)
+    let _ = collect_all_sources_fs(legacy_path, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "index.vpkg") && String::contains(msg, needle = "index.vibe") }
   assert(failed)
@@ -212,10 +212,10 @@ test "collect_all_sources_fs: warm cache cannot hide a new index spelling confli
   remove_file_if_exists(legacy_path)
   Fs::write_bytes(contract_path, bytes = string_to_bytes("fn package_value() -> Int\n"))
   Fs::write_bytes(impl_path, bytes = string_to_bytes("export fn package_value() -> Int { 42 }\n"))
-  let _ = collect_all_sources_fs(contract_path)
+  let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
   Fs::write_bytes(legacy_path, bytes = string_to_bytes("export fn legacy_value() -> Int { 1 }\n"))
   let failed = handle {
-    let _ = collect_all_sources_fs(contract_path)
+    let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "index.vpkg") && String::contains(msg, needle = "index.vibe") }
   assert(failed)
@@ -234,10 +234,10 @@ test "collect_all_sources_fs: warm cache observes a newly-added nested boundary"
   Fs::write_bytes(contract_path, bytes = string_to_bytes("fn package_value() -> Int\n"))
   Fs::write_bytes(impl_path, bytes = string_to_bytes("import ./sub/helper.vibe { helper_value }\n\nexport fn package_value() -> Int { helper_value() }\n"))
   Fs::write_bytes(helper_path, bytes = string_to_bytes("export fn helper_value() -> Int { 42 }\n"))
-  let _ = collect_all_sources_fs(contract_path)
+  let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
   Fs::write_bytes(nested_contract, bytes = string_to_bytes("fn nested_value() -> Int\n"))
   let failed = handle {
-    let _ = collect_all_sources_fs(contract_path)
+    let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "package boundary") && String::contains(msg, needle = nested_dir) }
   assert(failed)
@@ -253,10 +253,10 @@ test "collect_all_sources_fs: warm cache observes a new direct production root" 
   remove_file_if_exists(added_path)
   Fs::write_bytes(contract_path, bytes = string_to_bytes("fn package_value() -> Int\n"))
   Fs::write_bytes(impl_path, bytes = string_to_bytes("export fn package_value() -> Int { 42 }\n"))
-  let first = collect_all_sources_fs(contract_path)
+  let first = collect_all_sources_fs(contract_path, checked_error_row = false)
   assert(!contains_source_path(sources = first, target = added_path))
   Fs::write_bytes(added_path, bytes = string_to_bytes("// newly discovered direct root\n"))
-  let second = collect_all_sources_fs(contract_path)
+  let second = collect_all_sources_fs(contract_path, checked_error_row = false)
   assert(contains_source_path(sources = second, target = added_path))
 }
 
@@ -271,7 +271,7 @@ test "collect_all_sources_fs: symlink implementation source is rejected" {
   Fs::write_bytes(target_path, bytes = string_to_bytes("export fn linked_value() -> Int { 42 }\n"))
   let _ = sh("ln -sf impl_source.txt /tmp/vibe_compiler_vpkg_symlink_source/pkg/impl.vibe")
   let failed = handle {
-    let _ = collect_all_sources_fs(contract_path)
+    let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "symlink") && String::contains(msg, needle = linked_path) }
   assert(failed)
@@ -286,7 +286,7 @@ test "collect_all_sources_fs: symlink contract entry is rejected" {
   Fs::write_bytes(target_path, bytes = string_to_bytes("fn linked_value() -> Int\n"))
   let _ = sh("ln -sf contract_source.txt /tmp/vibe_compiler_vpkg_symlink_contract/pkg/index.vpkg")
   let failed = handle {
-    let _ = collect_all_sources_fs(contract_path)
+    let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "symlink") && String::contains(msg, needle = contract_path) }
   assert(failed)
@@ -306,7 +306,7 @@ test "collect_all_sources_fs: explicit symlink import target is rejected" {
   Fs::write_bytes(target_path, bytes = string_to_bytes("export fn helper_value() -> Int { 42 }\n"))
   let _ = sh("ln -sf helper_source.txt /tmp/vibe_compiler_vpkg_symlink_import/pkg/sub/helper.vibe")
   let failed = handle {
-    let _ = collect_all_sources_fs(contract_path)
+    let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "symlink") && String::contains(msg, needle = linked_path) }
   assert(failed)
@@ -325,7 +325,7 @@ test "collect_all_sources_fs: production cannot import a test companion" {
   Fs::write_bytes(impl_path, bytes = string_to_bytes("import ./impl_test.vibe { test_value }\n\nexport fn public_value() -> Int { test_value() }\n"))
   Fs::write_bytes(test_path, bytes = string_to_bytes("export fn test_value() -> Int { 42 }\n"))
   let failed = handle {
-    let _ = collect_all_sources_fs(contract_path)
+    let _ = collect_all_sources_fs(contract_path, checked_error_row = false)
     false
   } with { Exception::Throw(msg) => String::contains(msg, needle = "companion") && String::contains(msg, needle = test_path) }
   assert(failed)
@@ -346,7 +346,7 @@ test "collect_all_sources_fs: explicit private and draft dependencies are same-o
   Fs::write_bytes(impl_path, bytes = string_to_bytes("import ./_helper.vibe { private_value }\nimport ./experiment.draft.vibe { draft_value }\n\nexport fn public_value() -> Int { private_value() + draft_value() }\n"))
   Fs::write_bytes(private_path, bytes = string_to_bytes("export fn private_value() -> Int { 20 }\n"))
   Fs::write_bytes(draft_path, bytes = string_to_bytes("export fn draft_value() -> Int { 22 }\n"))
-  let sources = collect_all_sources_fs(contract_path)
+  let sources = collect_all_sources_fs(contract_path, checked_error_row = false)
   assert(contains_source_path(sources = sources, target = private_path))
   assert(contains_source_path(sources = sources, target = draft_path))
 }
@@ -362,11 +362,11 @@ test "contract_package_hashes_fs: reachable explicit-only source content is cove
   Fs::write_bytes(impl_path, bytes = string_to_bytes("import ./_helper.vibe { private_value }\nimport ./experiment.draft.vibe { draft_value }\n\nexport fn public_value() -> Int { private_value() + draft_value() }\n"))
   Fs::write_bytes(private_path, bytes = string_to_bytes("export fn private_value() -> Int { 20 }\n"))
   Fs::write_bytes(draft_path, bytes = string_to_bytes("export fn draft_value() -> Int { 22 }\n"))
-  let (hash1, _) = contract_package_hashes_fs(contract_path)
+  let (hash1, _) = contract_package_hashes_fs(contract_path, checked_error_row = false)
   Fs::write_bytes(private_path, bytes = string_to_bytes("export fn private_value() -> Int { 21 }\n"))
-  let (hash2, _) = contract_package_hashes_fs(contract_path)
+  let (hash2, _) = contract_package_hashes_fs(contract_path, checked_error_row = false)
   Fs::write_bytes(draft_path, bytes = string_to_bytes("export fn draft_value() -> Int { 23 }\n"))
-  let (hash3, _) = contract_package_hashes_fs(contract_path)
+  let (hash3, _) = contract_package_hashes_fs(contract_path, checked_error_row = false)
   assert(hash1 != hash2)
   assert(hash2 != hash3)
 }

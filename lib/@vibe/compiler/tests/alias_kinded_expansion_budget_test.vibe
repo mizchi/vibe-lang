@@ -1,0 +1,202 @@
+// #3995 review: constructor application can multiply within one resolution
+// round. Ask the preflight directly so a later checker's recursion diagnostic
+// cannot hide an unbounded definition-building pass.
+import @vibe/ast {
+  type_param_key
+}
+import @vibe/compiler/core {
+  Type,
+  TypeDef,
+  TypeExpr,
+  canonical_key_defs,
+  make_alias_constructor,
+  resolve_type_alias_params,
+  resolve_type_expr_core_shadowed,
+  type_expr_expansion_node_count
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn constructor_defs() -> Array[TypeDef] {
+  [
+    TDAlias("Dup", ["T"], CtTuple([CtNamed("T", []), CtNamed("T", [])])),
+    TDAlias("Apply", [type_param_key(name = "F", arity = 1), "X"], CtApplied(CtNamed("F", [
+    ]), [CtNamed("X", [])]))
+  ]
+}
+
+fn repeated_apply(count: Int, inner: TypeExpr) -> TypeExpr {
+  let mut te = inner
+  let mut i = 0
+  while i < count {
+    te = TyApp("Apply", [TyName("Dup"), te])
+    i = i + 1
+  }
+  te
+}
+
+fn preflight(te: TypeExpr, defs: Array[TypeDef], limit: Int) -> Int {
+  type_expr_expansion_node_count(te = te, defs = defs, shadow = [], capped_aliases = [
+  ], limit = limit)
+}
+
+test "nested constructor applications are bounded within one round" {
+  let te = repeated_apply(count = 24, inner = TyName("Int"))
+  inspect(preflight(te = te, defs = constructor_defs(), limit = 262144) > 262144, content = "true")
+}
+
+test "an accepted constructor expansion is counted rather than refused" {
+  let te = repeated_apply(count = 12, inner = TyName("Int"))
+  let count = preflight(te = te, defs = constructor_defs(), limit = 262144)
+  inspect(count >= 8191 && count <= 262144, content = "true")
+}
+
+test "an applied constructor inside a discarded argument is still bounded" {
+  let defs = constructor_defs()
+  Array::push(defs, value = TDAlias("Ignore", ["T"], CtInt))
+  let te = TyApp("Ignore", [repeated_apply(count = 24, inner = TyName("Int"))])
+  inspect(preflight(te = te, defs = defs, limit = 262144) > 262144, content = "true")
+}
+
+test "definition preparation excludes recursive aliases before resolution" {
+  let source = "type Apply[F[_], X] = F[X]\ntype Dup[T] = (T, T)\ntype A[T] = Apply[Dup, Apply[Dup, Apply[Dup, Apply[Dup, A[T]]]]]\ntrait Mark[X] {}\nstruct Note { n: Int }\nimpl Mark[Int] for Note {}\n"
+  let defs = canonical_key_defs(parse_program(lex(source)))
+  let mut has_recursive = false
+  for def in defs {
+    match def {
+      TDAlias("A", _, _) => has_recursive = true,
+      _ => ()
+    }
+  }
+  inspect(has_recursive, content = "false")
+}
+
+test "mutual recursion is excluded while a kinded formal shadows a global alias" {
+  let source = "type A[T] = B[T]\ntype B[T] = A[T]\ntype F[T] = (T, T)\ntype Local[F[_], T] = F[T]\n"
+  let defs = canonical_key_defs(parse_program(lex(source)))
+  let names: Array[String] = []
+  for def in defs {
+    match def {
+      TDAlias(n, _, _) => Array::push(names, value = n),
+      _ => ()
+    }
+  }
+  inspect(names, content = "[F, Local]")
+}
+
+test "constant constructors keep small results and still check eager arguments" {
+  let defs = constructor_defs()
+  Array::push(defs, value = TDAlias("Const", ["T"], CtInt))
+  let te = TyApp("Apply", [
+    TyName("Const"),
+    repeated_apply(count = 12, inner = TyName("Int"))
+  ])
+  inspect(preflight(te = te, defs = defs, limit = 262144) <= 262144, content = "true")
+  let bad = TyApp("Apply", [
+    TyName("Const"),
+    repeated_apply(count = 24, inner = TyName("Int"))
+  ])
+  inspect(preflight(te = bad, defs = defs, limit = 262144) > 262144, content = "true")
+}
+
+test "the reported twelve-application recursive declaration is never expanded" {
+  let mut target = "A[T]"
+  let mut i = 0
+  while i < 12 {
+    target = String::concat("Apply[Dup, ", String::concat(target, "]"))
+    i = i + 1
+  }
+  let source = String::concat("type Apply[F[_], X] = F[X]\ntype Dup[T] = (T, T)\ntype A[T] = ", String::concat(target, "\ntrait Mark[X] {}\nstruct Note { n: Int }\nimpl Mark[Int] for Note {}\n"))
+  let defs = canonical_key_defs(parse_program(lex(source)))
+  let mut has_recursive = false
+  for def in defs {
+    match def {
+      TDAlias("A", _, _) => has_recursive = true,
+      _ => ()
+    }
+  }
+  inspect(has_recursive, content = "false")
+}
+
+fn actual_type_nodes(_ ty: Type) -> Int {
+  match ty {
+    CtNamed(_, args) => 1 + actual_type_children(args),
+    CtApplied(head, args) => 1 + actual_type_nodes(head) + actual_type_children(args),
+    CtTuple(args) => 1 + actual_type_children(args),
+    CtArray(elem) => 1 + actual_type_nodes(elem),
+    CtOption(elem) => 1 + actual_type_nodes(elem),
+    CtFn(ps, ret, _) => 1 + actual_type_children(ps) + actual_type_nodes(ret),
+    _ => 1
+  }
+}
+
+fn actual_type_children(_ types: Array[Type]) -> Int {
+  let mut total = 0
+  for ty in types {
+    total = total + actual_type_nodes(ty)
+  }
+  total
+}
+
+test "preflight covers the actual resolver for accepted constructor applications" {
+  let defs = constructor_defs()
+  Array::push(defs, value = TDAlias("Const", ["T"], CtInt))
+  Array::push(defs, value = TDAlias("Twice", [
+    type_param_key(name = "F", arity = 1),
+    "X"
+  ], CtApplied(CtNamed("F", []), [CtApplied(CtNamed("F", []), [CtNamed("X", [])])])))
+  let mut covered = true
+  let mut i = 0
+  while i < 7 {
+    let inner = repeated_apply(count = i, inner = TyName("Int"))
+    for ctor in ["Dup", "Const", "Array", "Option"] {
+      for alias in ["Apply", "Twice"] {
+        let te = TyApp(alias, [TyName(ctor), inner])
+        let count = preflight(te = te, defs = defs, limit = 262144)
+        let real = resolve_type_expr_core_shadowed(te = te, defs = defs, shadow = [
+        ])
+        if count < actual_type_nodes(real) || count > 262144 {
+          covered = false
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  inspect(covered, content = "true")
+}
+
+test "a shadowed kinded formal ignores a capped global alias of the same name" {
+  let count = type_expr_expansion_node_count(te = TyApp("F", [TyName("T")]), defs = [
+    TDAlias("F", ["X"], CtTuple([CtInt, CtInt]))
+  ], shadow = [type_param_key(name = "F", arity = 1), "T"], capped_aliases = [0], limit = 16)
+  inspect(count <= 16, content = "true")
+}
+
+test "constructor application counts surviving binders after outer substitution" {
+  let body: Array[Type] = []
+  let mut i = 0
+  while i < 16 {
+    Array::push(body, value = CtNamed("U", []))
+    i = i + 1
+  }
+  // Use the real resolver to produce the constructor value: its T binder is
+  // replaced, while U remains applicable. The preflight must follow that
+  // surviving binder rather than infer arity from the metadata array length.
+  let ctor = resolve_type_alias_params(ty = make_alias_constructor(params = [
+    "T",
+    "U"
+  ], body = CtTuple(body)), params = ["T"], args = [CtInt])
+  let defs = constructor_defs()
+  Array::push(defs, value = TDAlias("Captured", [], ctor))
+  let args: Array[TypeExpr] = []
+  i = 0
+  while i < 64 {
+    Array::push(args, value = TyName("Int"))
+    i = i + 1
+  }
+  let te = TyApp("Apply", [TyName("Captured"), TyTuple(args)])
+  inspect(preflight(te = te, defs = defs, limit = 512) > 512, content = "true")
+}

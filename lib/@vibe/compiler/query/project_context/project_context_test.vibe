@@ -31,8 +31,8 @@ test "project context shares caches without sharing the entry's import aliases" 
   let b = dir + "/b.vibe"
   Fs::write_file(a, contents = source_a)
   Fs::write_file(b, contents = source_b)
-  let first = query_project_context_fs(path = a, source = source_a, replacement = None, state = query_project_state_new())
-  let second = query_project_context_fs(path = b, source = source_b, replacement = None, state = first.state)
+  let first = query_project_context_fs(path = a, source = source_a, replacement = None, state = query_project_state_new(), checked_error_row = false)
+  let second = query_project_context_fs(path = b, source = source_b, replacement = None, state = first.state, checked_error_row = false)
   inspect(first.entry_source, content = source_a)
   inspect(second.entry_source, content = source_b)
   inspect(match env_lookup(env = first.import_env, name = "first") {
@@ -49,7 +49,7 @@ test "project context shares caches without sharing the entry's import aliases" 
   }, content = "false")
   // A fresh state exercises the persistent-hit path once the dependency has
   // been published. It must hydrate the same projected binding as the walk.
-  let warm = query_project_context_fs(path = b, source = source_b, replacement = None, state = query_project_state_new())
+  let warm = query_project_context_fs(path = b, source = source_b, replacement = None, state = query_project_state_new(), checked_error_row = false)
   inspect(match env_lookup(env = warm.import_env, name = "second") {
     Some(_) => true,
     None => false
@@ -67,7 +67,7 @@ test "project context refuses a replacement that does not match the ingested sou
       replacement: "fn main() -> Int { 99 }\n",
       mismatch_message: "the source changed before this edit"
     }
-    let _ = query_project_context_fs(path = path, source = "a different original", replacement = Some(edit), state = query_project_state_new())
+    let _ = query_project_context_fs(path = path, source = "a different original", replacement = Some(edit), state = query_project_state_new(), checked_error_row = false)
     ""
   } with { Exception::Throw(error) => error }
   inspect(message, content = "the source changed before this edit")
@@ -81,18 +81,18 @@ test "a warmed disk reading does not authorize a replacement after a disk edit" 
   let source = "fn main() -> Int { 7 }\n"
   let latest = "fn main() -> Int { 1234 }\n"
   Fs::write_file(path, contents = source)
-  let first = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new())
+  let first = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new(), checked_error_row = false)
   Fs::write_file(path, contents = latest)
   let error = handle {
     let edit = QueryProjectEdit::{
       replacement: "fn main() -> Int { 0 }\n",
       mismatch_message: "the source changed after the query"
     }
-    let _ = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = first.state)
+    let _ = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = first.state, checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   inspect(error, content = "the source changed after the query")
-  let next = query_project_context_fs(path = path, source = latest, replacement = None, state = first.state)
+  let next = query_project_context_fs(path = path, source = latest, replacement = None, state = first.state, checked_error_row = false)
   inspect(next.entry_source, content = latest)
   inspect(Fs::read_file(path), content = latest)
 }
@@ -104,7 +104,7 @@ test "replacement authorization reads current bytes even when the stat token is 
   let source = "fn main() -> Int { 7 }\n"
   let latest = "fn main() -> Int { 8 }\n"
   Fs::write_file(path, contents = source)
-  let first = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new())
+  let first = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new(), checked_error_row = false)
   let token = Fs::stat_token(path)
   let _ = sh("python3 -c 'import os; p = \"_build/query_current_entry_same_stat_1960/main.vibe\"; s = os.stat(p); f = open(p, \"w\"); f.write(\"fn main() -> Int { 8 }\\n\"); f.close(); os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns))'")
   assert(Fs::stat_token(path) == token)
@@ -114,7 +114,7 @@ test "replacement authorization reads current bytes even when the stat token is 
       replacement: "fn main() -> Int { 0 }\n",
       mismatch_message: "the original bytes changed"
     }
-    let _ = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = first.state)
+    let _ = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = first.state, checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   inspect(error, content = "the original bytes changed")
@@ -122,7 +122,7 @@ test "replacement authorization reads current bytes even when the stat token is 
     replacement: latest,
     mismatch_message: "the current bytes match"
   }
-  let next = query_project_context_fs(path = path, source = latest, replacement = Some(noop), state = first.state)
+  let next = query_project_context_fs(path = path, source = latest, replacement = Some(noop), state = first.state, checked_error_row = false)
   inspect(next.entry_source, content = latest)
   inspect(Fs::read_file(path), content = latest)
 }
@@ -135,16 +135,16 @@ test "project context propagates a broken import and the next entry still checks
   let valid_source = "import ./dep.vibe { sub }\nfn main() -> Int { sub(x = 10, y = 3) }\n"
   let valid = dir + "/valid.vibe"
   Fs::write_file(valid, contents = valid_source)
-  let first = query_project_context_fs(path = valid, source = valid_source, replacement = None, state = query_project_state_new())
+  let first = query_project_context_fs(path = valid, source = valid_source, replacement = None, state = query_project_state_new(), checked_error_row = false)
   let broken = dir + "/broken.vibe"
   let broken_source = "import ./missing.vibe { nope }\nfn main() -> Int { nope() }\n"
   Fs::write_file(broken, contents = broken_source)
   let message = handle {
-    let _ = query_project_context_fs(path = broken, source = broken_source, replacement = None, state = first.state)
+    let _ = query_project_context_fs(path = broken, source = broken_source, replacement = None, state = first.state, checked_error_row = false)
     ""
   } with { Exception::Throw(error) => error }
   inspect(String::length(message) > 0, content = "true")
-  let next = query_project_context_fs(path = valid, source = valid_source, replacement = None, state = first.state)
+  let next = query_project_context_fs(path = valid, source = valid_source, replacement = None, state = first.state, checked_error_row = false)
   inspect(match env_lookup(env = next.import_env, name = "sub") {
     Some(_) => true,
     None => false
@@ -159,7 +159,7 @@ test "project context collects the current buffer's imports before typing" {
   let current = "import ./dep.vibe { answer }\nfn main() -> String { answer() }\n"
   Fs::write_file(path, contents = disk)
   Fs::write_file(dir + "/dep.vibe", contents = "export fn answer() -> String { \"current\" }\n")
-  let context = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new())
+  let context = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new(), checked_error_row = false)
   inspect(context.entry_source, content = current)
   inspect(imported_type(context = context, name = "answer"), content = "() -> String")
   inspect(Fs::read_file(path), content = disk)
@@ -174,14 +174,14 @@ test "current imports replace the warm graph and a fresh query agrees" {
   Fs::write_file(path, contents = disk)
   Fs::write_file(dir + "/int.vibe", contents = "export fn answer() -> Int { 1 }\n")
   Fs::write_file(dir + "/string.vibe", contents = "export fn answer() -> String { \"new\" }\n")
-  let first = query_project_context_fs(path = path, source = disk, replacement = None, state = query_project_state_new())
+  let first = query_project_context_fs(path = path, source = disk, replacement = None, state = query_project_state_new(), checked_error_row = false)
   inspect(imported_type(context = first, name = "selected"), content = "() -> Int")
-  let changed = query_project_context_fs(path = path, source = current, replacement = None, state = first.state)
-  let fresh = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new())
+  let changed = query_project_context_fs(path = path, source = current, replacement = None, state = first.state, checked_error_row = false)
+  let fresh = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new(), checked_error_row = false)
   inspect(imported_type(context = changed, name = "selected"), content = "() -> String")
   inspect(imported_type(context = fresh, name = "selected"), content = "() -> String")
   inspect(changed.entry_source, content = current)
-  let closed = query_project_context_fs(path = path, source = disk, replacement = None, state = changed.state)
+  let closed = query_project_context_fs(path = path, source = disk, replacement = None, state = changed.state, checked_error_row = false)
   inspect(imported_type(context = closed, name = "selected"), content = "() -> Int")
   inspect(Fs::read_file(path), content = disk)
 }
@@ -195,7 +195,7 @@ test "an entry buffer can exist before its first save" {
   } else ()
   Fs::write_file(dir + "/dep.vibe", contents = "export fn answer() -> Int { 1 }\n")
   let current = "import ./dep.vibe { answer }\nfn main() -> Int { answer() }\n"
-  let context = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new())
+  let context = query_project_context_fs(path = path, source = current, replacement = None, state = query_project_state_new(), checked_error_row = false)
   inspect(context.entry_source, content = current)
   inspect(imported_type(context = context, name = "answer"), content = "() -> Int")
   inspect(Fs::exists(path), content = "false")
@@ -213,7 +213,7 @@ test "replacement ingestion recomputes shared imports and preserves physical tex
     replacement: current,
     mismatch_message: "the disk changed"
   }
-  let context = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = query_project_state_new())
+  let context = query_project_context_fs(path = path, source = source, replacement = Some(edit), state = query_project_state_new(), checked_error_row = false)
   inspect(imported_type(context = context, name = "seed"), content = "missing")
   inspect(loader_physical_text(context.entry_source), content = current)
   inspect(Fs::read_file(path), content = source)
@@ -228,7 +228,7 @@ test "current entry imports still enforce package boundaries" {
   let disk = "fn main() -> Int { 7 }\n"
   Fs::write_file(path, contents = disk)
   let error = handle {
-    let _ = query_project_context_fs(path = path, source = "import ./pkg/impl.vibe { secret }\nfn main() -> Int { secret() }\n", replacement = None, state = query_project_state_new())
+    let _ = query_project_context_fs(path = path, source = "import ./pkg/impl.vibe { secret }\nfn main() -> Int { secret() }\n", replacement = None, state = query_project_state_new(), checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   inspect(String::index_of(error, needle = "across a package boundary") >= 0, content = "true")
@@ -242,7 +242,7 @@ test "an executable buffer is validated before collecting its imports" {
   let disk = "fn main() -> Unit with Console { println(\"disk\") }\n"
   Fs::write_file(path, contents = disk)
   let error = handle {
-    let _ = query_project_context_fs(path = path, source = "let main = () -> ()\n", replacement = None, state = query_project_state_new())
+    let _ = query_project_context_fs(path = path, source = "let main = () -> ()\n", replacement = None, state = query_project_state_new(), checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   inspect(String::index_of(error, needle = "fn main") >= 0, content = "true")
@@ -256,7 +256,7 @@ test "an unsaved package contract is refused instead of typed as its disk versio
   let disk = "name = @test/current\nversion = 0.0.1\n"
   Fs::write_file(path, contents = disk)
   let error = handle {
-    let _ = query_project_context_fs(path = path, source = disk + "fn added() -> Int\n", replacement = None, state = query_project_state_new())
+    let _ = query_project_context_fs(path = path, source = disk + "fn added() -> Int\n", replacement = None, state = query_project_state_new(), checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   inspect(error, content = "current-buffer project queries require a .vibe or .vibex entry; save the package contract before querying it")
@@ -271,7 +271,7 @@ test "a dangling symlink cannot masquerade as an entry before its first save" {
   assert(!Fs::exists(path))
   assert(Fs::stat_token(path) == -1)
   let error = handle {
-    let _ = query_project_context_fs(path = path, source = "fn main() -> Int { 7 }\n", replacement = None, state = query_project_state_new())
+    let _ = query_project_context_fs(path = path, source = "fn main() -> Int { 7 }\n", replacement = None, state = query_project_state_new(), checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   Fs::remove(path)
@@ -282,12 +282,12 @@ test "the current-source collector refuses a directory as its entry" {
   let path = "_build/query_current_entry_directory_1960/main.vibe"
   Fs::mkdir_p(path)
   let error = handle {
-    let _ = collect_source_groups_fs_with_entry_source(entry_path = path, source = "fn main() -> Int { 7 }\n", cfg = target_cfg_ambient())
+    let _ = collect_source_groups_fs_with_entry_source(entry_path = path, source = "fn main() -> Int { 7 }\n", cfg = target_cfg_ambient(), checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   inspect(error, content = "module source is a directory: _build/query_current_entry_directory_1960/main.vibe")
   let query_error = handle {
-    let _ = query_project_context_fs(path = path, source = "fn main() -> Int { 7 }\n", replacement = None, state = query_project_state_new())
+    let _ = query_project_context_fs(path = path, source = "fn main() -> Int { 7 }\n", replacement = None, state = query_project_state_new(), checked_error_row = false)
     ""
   } with { Exception::Throw(message) => message }
   assert(query_error == error)

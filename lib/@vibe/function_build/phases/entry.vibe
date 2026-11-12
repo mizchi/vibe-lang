@@ -5,9 +5,6 @@ import @vibe/compiler/config {
 import @vibe/compiler/codegen/executable {
   executable_exports_stripped, strip_executable_wasm_env
 }
-import @vibe/compiler/checker {
-  set_error_row_checked
-}
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc_body_cached, prepare_file_fs_mode_rc_body
 }
@@ -72,7 +69,7 @@ export fn function_phase_allocate(_ encoded_length: Int) -> Bytes with Exception
   Bytes::with_capacity(length)
 }
 
-fn phase_begin() -> Unit with Env + Exception {
+fn phase_begin() -> Bool with Env + Exception {
   if Array::get(phase_used, at = 0) {
     throw("function phases: an instance may execute only one phase")
   } else ()
@@ -97,7 +94,7 @@ fn phase_begin() -> Unit with Env + Exception {
     } else ()
   }
   configure_compiler_cfg_flags()
-  set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+  Env::get("VIBE_CHECK_ERROR_ROW") != "0"
 }
 
 fn phase_jobs() -> Int with Env + Exception {
@@ -118,9 +115,9 @@ export fn function_phase_prepare() -> Bytes with Env + Exception + Fs {
 }
 
 fn phase_prepare_impl() -> Bytes with Env + Exception + Fs {
-  phase_begin()
+  let checked_error_row = phase_begin()
   let jobs = phase_jobs()
-  let prepared = prepare_file_fs_mode_rc_body(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
+  let prepared = prepare_file_fs_mode_rc_body(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")), checked_error_row = checked_error_row)
   let ctx = function_context_new(plan = prepared.functions, input = prepared.input, debug_break = false, debug_trace = false, enable_rc = true, rc_shadow = false)
   let shared = write_function_context(ctx)
   let context_digest = blake3_bytes_simd(shared)
@@ -161,7 +158,7 @@ export fn function_phase_finish(_ receipt: Bytes) -> Bytes with Env + Exception 
 }
 
 fn phase_finish_impl(_ receipt: Bytes) -> Bytes with Env + Exception + Fs {
-  phase_begin()
+  let checked_error_row = phase_begin()
   let authority = read_function_phase_receipt(receipt)
   if authority.jobs != phase_jobs() {
     throw("function phases: original worker selection differs")
@@ -214,6 +211,6 @@ export fn function_phase_serial() -> Bytes with Env + Exception + Fs {
 }
 
 fn phase_serial_impl() -> Bytes with Env + Exception + Fs {
-  phase_begin()
-  strip_executable_wasm_env(wasm = compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY"))), entry_name = Env::get("VIBE_LOWERING_ENTRY"))
+  let checked_error_row = phase_begin()
+  strip_executable_wasm_env(wasm = compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")), checked_error_row = checked_error_row), entry_name = Env::get("VIBE_LOWERING_ENTRY"))
 }

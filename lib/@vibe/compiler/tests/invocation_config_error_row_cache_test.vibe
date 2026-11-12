@@ -1,0 +1,128 @@
+//# Reuse cannot cross immutable checked Exception-row invocation policies.
+import @vibe/compiler/runtime {
+  db_check_env,
+  db_checked_lowering_inputs,
+  db_new,
+  db_set_source,
+  db_typecheck,
+  db_typecheck_count,
+  db_typecheck_with_config,
+  db_with_error_row_policy
+}
+import @vibe/compiler/config {
+  target_cfg_ambient, target_cfg_identity
+}
+import @vibe/checker/lowering {
+  CheckedLoweringInputs
+}
+import @vibe/compiler/query {
+  type_at_memo_checks, type_at_memo_new, type_at_source, type_at_source_memo
+}
+
+fn policy_source() -> String {
+  "fn throwing() -> Int with Exception { throw(\"zero\") }\nfn main() -> Int { throwing() }\n"
+}
+
+test "a retained DB invalidates checked products when policy changes" {
+  let source = policy_source()
+  let db = db_typecheck(db = db_set_source(db = db_new(checked_error_row = false), path = "policy.vibe", source = source), path = "policy.vibe")
+  assert_eq(db_typecheck_count(db), 1)
+  let warm = db_typecheck(db = db_with_error_row_policy(db = db, checked_error_row = false), path = "policy.vibe")
+  assert_eq(db_typecheck_count(warm), 1)
+  let strict = db_with_error_row_policy(db = warm, checked_error_row = true)
+  assert(match db_check_env(db = strict, path = "policy.vibe") {
+    None => true,
+    Some(_) => false
+  })
+  let message = handle {
+    let _ = db_typecheck(db = strict, path = "policy.vibe")
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, needle = "Exception"))
+  // The original unchecked owner is still independently warm after refusal.
+  assert_eq(db_typecheck_count(db_typecheck(db = warm, path = "policy.vibe")), 1)
+}
+
+test "owned lowering rejects another policy after an interleaved check" {
+  let cfg = target_cfg_ambient()
+  let source = "fn main() -> Int { 42 }\n"
+  let sources = [("policy-lowering.vibe", source)]
+  let checked = db_typecheck_with_config(db = db_set_source(db = db_new(checked_error_row = true), path = "policy-lowering.vibe", source = source), path = "policy-lowering.vibe", cfg = cfg)
+  let inputs = db_checked_lowering_inputs(db = checked, cfg = cfg)
+  let _ = db_typecheck_with_config(db = db_set_source(db = db_new(checked_error_row = false), path = "policy-lowering.vibe", source = source), path = "policy-lowering.vibe", cfg = cfg)
+  CheckedLoweringInputs::validate(inputs, sources = sources, cfg_identity = target_cfg_identity(cfg), checked_error_row = true)
+  let message = handle {
+    CheckedLoweringInputs::validate(inputs, sources = sources, cfg_identity = target_cfg_identity(cfg), checked_error_row = false)
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, needle = "Exception-row policy"))
+}
+
+test "hover memo refuses checked tables from another policy" {
+  let source = policy_source()
+  let memo = type_at_memo_new(source, checked_error_row = false)
+  let unchecked = type_at_source(source = source, line = 2, col = 20, checked_error_row = false)
+  assert(unchecked != "")
+  assert_eq(type_at_source_memo(source = source, line = 2, col = 20, memo = memo, checked_error_row = false), unchecked)
+  let checks = type_at_memo_checks(memo)
+  assert(checks > 0)
+  let strict = type_at_source(source = source, line = 2, col = 20, checked_error_row = true)
+  assert(strict != unchecked)
+  assert_eq(type_at_source_memo(source = source, line = 2, col = 20, memo = memo, checked_error_row = true), strict)
+  assert_eq(type_at_memo_checks(memo), checks)
+  assert_eq(type_at_source_memo(source = source, line = 2, col = 20, memo = memo, checked_error_row = false), unchecked)
+  assert_eq(type_at_memo_checks(memo), checks)
+}
+
+import @vibe/compiler/query {
+  type_at_fs_session_answer, type_at_fs_session_new, type_at_fs_session_walks
+}
+
+test "filesystem hover does not reuse unchanged-token typing from another policy" {
+  let path = "_build/error-row-mode-fs-test.vibe"
+  let source = policy_source()
+  Fs::write_file(path, contents = source)
+  let session = type_at_fs_session_new()
+  let first = type_at_fs_session_answer(session = session, path = path, source = source, line = 2, col = 20, checked_error_row = false)
+  assert(match first {
+    Some(ty) => ty != "",
+    None => false
+  })
+  let token = Fs::stat_token(path)
+  let walks = type_at_fs_session_walks(session)
+  let strict = type_at_fs_session_answer(session = session, path = path, source = source, line = 2, col = 20, checked_error_row = true)
+  assert_eq(strict, None)
+  assert_eq(Fs::stat_token(path), token)
+  assert_eq(type_at_fs_session_walks(session), walks + 1)
+  // A refused checked request leaves the old unchecked typing independently valid.
+  assert_eq(type_at_fs_session_answer(session = session, path = path, source = source, line = 2, col = 20, checked_error_row = false), first)
+  assert_eq(type_at_fs_session_walks(session), walks + 1)
+}
+
+import @vibe/checker/engine {
+  CheckJob, engine_check_module_with_typing_artifact_observation, engine_checked_module_typing_artifact_observation_is_fresh_for_job
+}
+
+test "a typing observation cannot attest an unchecked outcome for a checked job" {
+  let unchecked = CheckJob::{
+    path: "policy-observation.vibe",
+    source: "export fn value() -> Int { throw(\"zero\") }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: [],
+    ships_owned_heads: false,
+    checked_error_row: false
+  }
+  let outcome = engine_check_module_with_typing_artifact_observation(unchecked)
+  assert_eq(engine_checked_module_typing_artifact_observation_is_fresh_for_job(job = unchecked, outcome = outcome), true)
+  let strict = CheckJob::{
+    path: unchecked.path,
+    source: unchecked.source,
+    deps: unchecked.deps,
+    dep_fps: unchecked.dep_fps,
+    dep_envs: unchecked.dep_envs,
+    ships_owned_heads: unchecked.ships_owned_heads,
+    checked_error_row: true
+  }
+  assert_eq(engine_checked_module_typing_artifact_observation_is_fresh_for_job(job = strict, outcome = outcome), false)
+}

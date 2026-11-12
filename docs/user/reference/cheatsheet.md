@@ -2657,9 +2657,7 @@ operations are on the capability track: they are spelled in snake_case and
 called directly, the way `Fs::read_file(p)` is, and the effect is the row of
 every function that reaches one:
 
-```vibe skip
-// doctest-skip: `vibe check` accepts this; a build refuses it until a host
-// provider can be bound (below)
+```vibe
 extern effect Kv {
   get(String) -> String
   put(String, String) -> Unit
@@ -2675,11 +2673,24 @@ What is refused, each with the edit:
 - `perform Kv::get(k)`: call the operation without `perform`.
 - a `handle` arm for `Kv::get`: the program cannot handle a host effect.
 - an `extern effect` named like a standard effect (`Fs`, `Env`, ...), or one
-  with type or resource parameters.
+  with type or resource parameters;
+- an operation that takes or returns anything but `Int` or `String` (or
+  returns `Unit`): that is what crosses to the provider yet.
 
-Binding a provider at run time is not implemented yet, so an entry point
-(`main`, a `test`) that needs `Kv` is still refused: `cannot discharge { Kv }`,
-with a note that names `extern effect`.
+`main` may require an extern effect (`allows Kv`), and the provider is bound
+when the program starts. It is a WebAssembly component that exports one
+function per operation, under the operation's name and with its WIT type
+(`get: func(k: string) -> string`):
+
+```sh
+vibe run --provide Kv=./kv.component.wasm main.vibex
+```
+
+On viberun, with no provider bound the program is refused before `main`
+starts, naming the effect, its operations and the flag. A provider whose
+export has another signature is refused at link time. The node runner cannot
+instantiate a component and refuses such a program. A `test` cannot bind a
+provider yet.
 
 ## Module System
 

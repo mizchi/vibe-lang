@@ -168,34 +168,34 @@ fn normalize_release_mode(_ mode: String) -> String with Exception {
   }
 }
 
-export fn compile_release_file_mode(input_path: String, entry_name: String, mode: String) -> Bytes with Env + Exception + Fs {
+export fn compile_release_file_mode(input_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
   let compile_mode = normalize_release_mode(mode)
-  let (bytes, _) = compile_file_fs_mode_cached(db = db_new(), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
+  let (bytes, _) = compile_file_fs_mode_cached(db = db_new(checked_error_row = checked_error_row), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
   bytes
 }
 
-export fn compile_release_file_mode_uncached(input_path: String, entry_name: String, mode: String) -> Bytes with Env + Exception + Fs {
+export fn compile_release_file_mode_uncached(input_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
   let compile_mode = normalize_release_mode(mode)
-  compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = compile_mode, exports_stripped = false)
+  compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = compile_mode, exports_stripped = false, checked_error_row = checked_error_row)
 }
 
-export fn compile_release_file_mode_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
+export fn compile_release_file_mode_profiled(input_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
   let compile_mode = normalize_release_mode(mode)
-  let (bytes, _, load_us, type_us, bundle_us, parse_us, compile_us, total_us) = compile_file_fs_mode_cached_profiled(db = db_new(), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
+  let (bytes, _, load_us, type_us, bundle_us, parse_us, compile_us, total_us) = compile_file_fs_mode_cached_profiled(db = db_new(checked_error_row = checked_error_row), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
   (bytes, load_us, type_us, bundle_us, parse_us, compile_us, total_us)
 }
 
-export fn compile_release_file_mode_uncached_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
+export fn compile_release_file_mode_uncached_profiled(input_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
   let compile_mode = normalize_release_mode(mode)
-  compile_file_fs_mode_profiled(entry_path = input_path, entry_name = entry_name, mode = compile_mode)
+  compile_file_fs_mode_profiled(entry_path = input_path, entry_name = entry_name, mode = compile_mode, checked_error_row = checked_error_row)
 }
 
-export fn compile_release_file(input_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
-  compile_release_file_mode(input_path = input_path, entry_name = entry_name, mode = "no-dce")
+export fn compile_release_file(input_path: String, entry_name: String, checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
+  compile_release_file_mode(input_path = input_path, entry_name = entry_name, mode = "no-dce", checked_error_row = checked_error_row)
 }
 
-export fn compile_debug_library(_ dep_path: String) -> Bytes with Env + Exception + Fs {
-  compile_file_wasi_library(dep_path)
+export fn compile_debug_library(_ dep_path: String, checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
+  compile_file_wasi_library(dep_path, checked_error_row = checked_error_row)
 }
 
 fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
@@ -665,7 +665,7 @@ export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: 
   }
 }
 
-export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with Env + Exception + Fs {
+export fn build_linked_debug_entry(input_path: String, entry_name: String, checked_error_row: Bool) -> (Bytes, Array[(String, String)]) with Env + Exception + Fs {
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(input_path)
   let main_stmts = array_empty()
   append_stmt_array(dst = main_stmts, src = resolved_type_stmts)
@@ -679,7 +679,7 @@ export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (B
   // (no check ran, or it checked another text) both of those are refused
   // with the edit here, rather than answered wrongly by codegen's own
   // (idempotent) run.
-  refuse_linked_witness_imports(specs = linked_dep_specs, imports = linked_imports)
+  refuse_linked_witness_imports(specs = linked_dep_specs, imports = linked_imports, checked_error_row = checked_error_row)
   desugar_linked_entry(stmts = main_stmts, checked = checked_rows)
   let bytes = compile_linked_entry_module(stmts = main_stmts, entry_name = entry_name, srcs = empty_source_pairs(), linked_imports = linked_imports, checked = checked_rows)
   (bytes, linked_dep_specs)
@@ -804,8 +804,8 @@ fn cli_located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_m
   out
 }
 
-export fn check_linked_file(_ input_path: String) -> Int with Env + Exception + Fs {
-  let _groups = check_linked_file_source_groups(input_path)
+export fn check_linked_file(_ input_path: String, checked_error_row: Bool) -> Int with Env + Exception + Fs {
+  let _groups = check_linked_file_source_groups(input_path, checked_error_row = checked_error_row)
   0
 }
 
@@ -817,7 +817,7 @@ export fn check_linked_file(_ input_path: String) -> Int with Env + Exception + 
 /// hostile (rows are TAB-separated with a fixed field count, so an entry path
 /// containing a TAB parses as too many fields -- #1712). Collecting once keeps
 /// this lane off that latent bug entirely.
-export fn check_linked_file_source_groups(_ input_path: String) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
+export fn check_linked_file_source_groups(_ input_path: String, checked_error_row: Bool) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
   // #946(3): parse the entry file OURSELVES first (located + recovering —
   // see the import comment above) so a parse error is reported with an exact
   // `line:col` before any other check runs.
@@ -843,7 +843,7 @@ export fn check_linked_file_source_groups(_ input_path: String) -> Array[(String
   // the diagnostics this pre-parse exists to locate exactly.
   let raw_entry_source = cache_read_source_fs(input_path)
   let entry_source = if is_contract_ext(input_path) {
-    ingest_source_text_fs(path = input_path, raw = raw_entry_source)
+    ingest_source_text_fs(path = input_path, raw = raw_entry_source, checked_error_row = checked_error_row)
   } else {
     let (_, pin_blanked) = extract_require_pins(raw_entry_source)
     pin_blanked
@@ -889,7 +889,7 @@ export fn check_linked_file_source_groups(_ input_path: String) -> Array[(String
   // Capture one grouped-source snapshot and pass that exact value through the
   // failing check and culprit ownership proof. Recollecting after Throw would
   // reintroduce #1596's concurrent-edit TOCTOU.
-  let source_groups = collect_source_groups_fs(input_path)
+  let source_groups = collect_source_groups_fs(input_path, checked_error_row = checked_error_row)
   let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_loader")
   // #946 P1 (Codex, PR #1006): the type-check itself must go through
   // check_file_fs_mode (the fs-mode source-group + db_typecheck_fs pipeline
@@ -906,7 +906,7 @@ export fn check_linked_file_source_groups(_ input_path: String) -> Array[(String
   // an imported file too) are now built from `source_groups` as well — see
   // `resolved_dep_members`. That scan is independent of type information.
   handle {
-    let _ = check_file_fs_mode_from_source_groups(entry_path = input_path, source_groups = source_groups)
+    let _ = check_file_fs_mode_from_source_groups(entry_path = input_path, source_groups = source_groups, checked_error_row = checked_error_row)
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_fs_mode")
     // #1262 follow-up: parse the dependency sources the LOADER resolved
     // (`source_groups`, captured above) instead of re-resolving them. The old
@@ -1013,7 +1013,7 @@ export fn check_linked_file_source_groups(_ input_path: String) -> Array[(String
                 // checked_entry_source does -- re-ingest and require an
                 // exact match -- and drop the candidate (not an owner) when
                 // they cannot be verified.
-                match owner_locating_source(path = mpath, source = msource) {
+                match owner_locating_source(path = mpath, source = msource, checked_error_row = checked_error_row) {
                   Some(mlocating) => if missing_show_source_owns(source = mlocating, msg = msg) {
                     owners = owners + 1
                     owner_path = mpath
@@ -1065,18 +1065,18 @@ export fn check_linked_file_source_groups(_ input_path: String) -> Array[(String
 /// links); uses are reported for the entry file only, as non-fatal
 /// `warning:` lines. A file that fails to parse gets no warnings — the
 /// check itself already failed loudly.
-export fn check_deprecated_warnings(_ input_path: String) -> Array[String] with Env + Exception + Fs {
-  check_deprecated_warnings_from_source_groups(input_path = input_path, source_groups = collect_source_groups_fs(input_path))
+export fn check_deprecated_warnings(_ input_path: String, checked_error_row: Bool) -> Array[String] with Env + Exception + Fs {
+  check_deprecated_warnings_from_source_groups(input_path = input_path, source_groups = collect_source_groups_fs(input_path, checked_error_row = checked_error_row), checked_error_row = checked_error_row)
 }
 
 /// Redundant owner/member selections in the entry file. The linked checker has
 /// already accepted the file before this runs; this is a non-fatal `vibe check`
 /// hygiene report with an actionable removal.
-export fn check_redundant_import_warnings(_ input_path: String) -> Array[String] with Env + Exception + Fs {
+export fn check_redundant_import_warnings(_ input_path: String, checked_error_row: Bool) -> Array[String] with Env + Exception + Fs {
   let source = cache_read_source_fs(input_path)
   check_redundant_import_warnings_from_source_groups(input_path = input_path, source_groups = [
     ("entry", [(input_path, source)])
-  ])
+  ], checked_error_row = checked_error_row)
 }
 
 /// True when `source` is the file the missing-Show throw came from.
@@ -1282,13 +1282,13 @@ fn missing_show_source_owns(source: String, msg: String) -> Bool {
 /// there past the prepended block (`loader_physical_located`). Before, the
 /// PHYSICAL text was returned and read at the INGESTED offset, a block's
 /// length away from the byte the offset names.
-fn owner_locating_source(path: String, source: String) -> Option[String] with Env + Exception + Fs {
+fn owner_locating_source(path: String, source: String, checked_error_row: Bool) -> Option[String] with Env + Exception + Fs {
   if loader_prepended_prefix_bytes(source) > 0 {
     Some(source)
   } else if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
     if Fs::exists(path) {
       let physical = cache_read_source_fs(path)
-      if source == ingest_source_text_fs(path = path, raw = physical) {
+      if source == ingest_source_text_fs(path = path, raw = physical, checked_error_row = checked_error_row) {
         Some(physical)
       } else {
         None
@@ -1301,7 +1301,7 @@ fn owner_locating_source(path: String, source: String) -> Option[String] with En
   }
 }
 
-fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] with Env + Exception + Fs {
+fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Option[String] with Env + Exception + Fs {
   let mut found: Option[String] = None
   let mut count = 0
   let mut gi = 0
@@ -1330,7 +1330,7 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
         // a suffix comparison would accept a file whose leading bytes changed.
         if Fs::exists(input_path) {
           let physical = cache_read_source_fs(input_path)
-          if source == ingest_source_text_fs(path = input_path, raw = physical) {
+          if source == ingest_source_text_fs(path = input_path, raw = physical, checked_error_row = checked_error_row) {
             Some(physical)
           } else {
             None
@@ -1458,9 +1458,9 @@ export fn unstable_closure_reset() -> Unit {
   unstable_candidates_reset()
 }
 
-export fn check_unstable_surface_warnings_from_path(_ input_path: String) -> Array[String] with Env + Exception + Fs {
+export fn check_unstable_surface_warnings_from_path(_ input_path: String, checked_error_row: Bool) -> Array[String] with Env + Exception + Fs {
   handle {
-    unstable_surface_diagnostics_located(input_path = input_path, detected = ingest_source_text_fs(path = input_path, raw = Fs::read_file(input_path)), located = Fs::read_file(input_path))
+    unstable_surface_diagnostics_located(input_path = input_path, detected = ingest_source_text_fs(path = input_path, raw = Fs::read_file(input_path), checked_error_row = checked_error_row), located = Fs::read_file(input_path))
   } with {
     // An unreadable or uningestable entry is the compile's error to report, in
     // its own words.
@@ -1471,8 +1471,8 @@ export fn check_unstable_surface_warnings_from_path(_ input_path: String) -> Arr
 /// Redundant import warnings derived from the exact source snapshot consumed
 /// by the successful linked check. Missing or duplicate entry identity is
 /// fail-closed: no warning is safer than describing unchecked contents.
-export fn check_redundant_import_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+export fn check_redundant_import_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Array[String] with Env + Exception + Fs {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups, checked_error_row = checked_error_row) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
@@ -1495,8 +1495,8 @@ export fn check_redundant_import_warnings_from_source_groups(input_path: String,
 /// #3044: a `let*` in a function body's top-level block, where `?` is the
 /// one spelling. Same snapshot discipline as the redundant-import warnings:
 /// entry file only, fail-closed when the checked snapshot cannot be located.
-export fn check_let_star_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+export fn check_let_star_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Array[String] with Env + Exception + Fs {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups, checked_error_row = checked_error_row) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
@@ -1518,8 +1518,8 @@ export fn check_let_star_warnings_from_source_groups(input_path: String, source_
 
 /// #3549: a `match` arm an earlier arm already covers never runs. Entry
 /// file only, from the checked snapshot, like the `let*` warning above.
-export fn check_unreachable_arm_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+export fn check_unreachable_arm_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Array[String] with Env + Exception + Fs {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups, checked_error_row = checked_error_row) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
@@ -1672,8 +1672,8 @@ fn str_array_contains_path(arr: Array[String], value: String) -> Bool {
 
 /// The same warnings, from source groups the caller already has. `vibe check`
 /// uses this form so the whole lane collects exactly once.
-export fn check_deprecated_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let entry_source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+export fn check_deprecated_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Array[String] with Env + Exception + Fs {
+  let entry_source = match checked_entry_source(input_path = input_path, source_groups = source_groups, checked_error_row = checked_error_row) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
@@ -1784,7 +1784,7 @@ fn entry_imported_names(_ entry_stmts: Array[Stmt]) -> Array[String] {
 ///
 /// `allow_unstable` is the caller's, read at the edge; this function has no
 /// Env effect.
-export fn write_linked_debug_build_checked(input_path: String, output_path: String, entry_name: String, allow_unstable: Bool) -> Unit with Env + Exception + Fs {
+export fn write_linked_debug_build_checked(input_path: String, output_path: String, entry_name: String, allow_unstable: Bool, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   unstable_closure_reset()
   // #3577: `--debug` changes code generation only. `build_linked_debug_entry`
   // runs no checker of its own, so a type error compiled and
@@ -1793,8 +1793,8 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
   // The compile below reads the files again, so the build is refused unless
   // every checked file is unchanged once it has finished
   // (`refuse_changed_checked_sources`): the bytes written are the bytes checked.
-  let checked = checked_source_tokens(check_linked_file_source_groups(input_path))
-  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path = input_path, entry_name = entry_name)
+  let checked = checked_source_tokens(check_linked_file_source_groups(input_path, checked_error_row = checked_error_row))
+  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
   // STAGE every dependency before the verdict. `compile_debug_library` reads
   // the dependency again, so compiling them after the check would authorize
   // one snapshot and publish another -- a dependency that gains an
@@ -1807,7 +1807,7 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
   while si < Array::length(linked_dep_specs) {
     let (module_name, dep_path) = Array::get(linked_dep_specs, at = si)
     let lib_output_path = String::concat(output_dir, String::concat("/", String::concat(module_name, ".wasm")))
-    Array::push(staged, value = (lib_output_path, compile_debug_library(dep_path)))
+    Array::push(staged, value = (lib_output_path, compile_debug_library(dep_path, checked_error_row = checked_error_row)))
     si = si + 1
   }
   if allow_unstable {
@@ -1830,12 +1830,12 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
   }
 }
 
-export fn write_linked_debug_build(input_path: String, output_path: String, entry_name: String) -> Unit with Env + Exception + Fs {
+export fn write_linked_debug_build(input_path: String, output_path: String, entry_name: String, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   // #3577: the same check as the gated builder, on the same snapshot: it
   // stages every library before writing, so the comparison with the checked
   // files covers them too. `true` skips only the unstable-surface verdict,
   // which this builder never ran.
-  write_linked_debug_build_checked(input_path = input_path, output_path = output_path, entry_name = entry_name, allow_unstable = true)
+  write_linked_debug_build_checked(input_path = input_path, output_path = output_path, entry_name = entry_name, allow_unstable = true, checked_error_row = checked_error_row)
 }
 
 /// #3577: each file the check read, with the stat token the source memo took

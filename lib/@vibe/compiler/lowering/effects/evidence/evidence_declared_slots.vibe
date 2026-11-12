@@ -30,6 +30,7 @@ import ./evidence_returned_scan_expr.vibe {
 
 import ./evidence_slot_refusals.vibe {
   edp_args_pass_literal,
+  edp_expr_passes_value_to_slot,
   edp_field_site_prefix,
   edp_parameter_type,
   edp_refuse_aliased_field_literal,
@@ -39,7 +40,8 @@ import ./evidence_slot_refusals.vibe {
   edp_row_top_labels,
   edp_set_slot_callee,
   edp_slot_row_stampable,
-  edp_take_slot_callee
+  edp_take_slot_callee,
+  edp_unique_method_in
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -1294,4 +1296,47 @@ fn edp_callable_record_context(ty: TypeExpr, stmts: Array[Stmt]) -> Bool {
     },
     _ => edp_record_context_type(ty = ty, stmts = stmts)
   }
+}
+
+/// edp_stamp_slot_rows' three pre-checks on `e`, the body of a statement
+/// whose edp_slot_facts_stmt are `facts` (#4040). Each pre-check is asked
+/// only where the facts show a node it could hit on -- a literal-shaped
+/// argument, a bare argument naming a row-free function, a record type
+/// argument naming an alias, a lambda parameter needing a record's context,
+/// a call to a slot callee, a record built -- so a statement the facts rule
+/// out is not walked, and the answer is the pre-checks' own.
+export fn edp_stamp_prechecks_hit(e: Expr, facts: (Bool, Array[String], Array[String], Array[String], Array[String], Array[String], Array[TypeExpr]), pure_names: MutSet[String], slot_callees: MutSet[String], stmts: Array[Stmt]) -> Bool {
+  let (syntactic, idents, callees, methods, records, aliases, params) = facts
+  let mut literal = syntactic
+  for nm in idents {
+    if MutSet::has(pure_names, x = nm) {
+      literal = true
+    } else ()
+  }
+  for nm in aliases {
+    if edp_is_program_alias(nm) {
+      literal = true
+    } else ()
+  }
+  if !literal {
+    for ty in params {
+      if edp_callable_record_context(ty = ty, stmts = stmts) {
+        literal = true
+      } else ()
+    }
+  } else ()
+  let mut slot = false
+  if MutSet::size(slot_callees) > 0 {
+    for nm in callees {
+      if MutSet::has(slot_callees, x = nm) {
+        slot = true
+      } else ()
+    }
+    for m in methods {
+      if edp_unique_method_in(names = slot_callees, m = m) != "" {
+        slot = true
+      } else ()
+    }
+  } else ()
+  literal && edp_expr_passes_literal_arg(e = e, pure_names = pure_names, stmts = stmts) || slot && edp_expr_passes_value_to_slot(e = e, slot_callees = slot_callees) || Array::length(records) > 0 && edp_expr_builds_row_field(e)
 }

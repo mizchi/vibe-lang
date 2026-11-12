@@ -38,10 +38,10 @@ let checked_cache_version: Array[String] = []
 // The resolution seed captured at reset; see `checked_module_artifact_stmts`.
 let checked_cache_resolution: Array[String] = []
 
-export fn set_checked_module_cache_mode(_ mode: String) -> Unit with Env + Exception {
+export fn set_checked_module_cache_mode(_ mode: String, checked_error_row: Bool) -> Unit with Env + Exception {
   let policy = checked_module_cache_policy(mode)
   Array::set(checked_cache_mode, at = 0, value = checked_module_cache_policy_mode(policy))
-  checked_module_cache_reset()
+  checked_module_cache_reset(checked_error_row = checked_error_row)
 }
 
 export fn checked_module_cache_mode() -> String {
@@ -50,12 +50,12 @@ export fn checked_module_cache_mode() -> String {
 
 /// Rows belong to one completed module walk. No previous compilation or mode
 /// may supply the AST of a file that this walk did not validate.
-export fn checked_module_cache_reset() -> Unit with Env {
-  checked_module_cache_reset_in_namespace(namespace = persistent_cache_namespace_current())
+export fn checked_module_cache_reset(checked_error_row: Bool) -> Unit with Env {
+  checked_module_cache_reset_in_namespace(namespace = persistent_cache_namespace_current(), checked_error_row = checked_error_row)
 }
 
 /// Use the caller's captured cache namespace.
-export fn checked_module_cache_reset_in_namespace(namespace: String) -> Unit with Env {
+export fn checked_module_cache_reset_in_namespace(namespace: String, checked_error_row: Bool) -> Unit with Env {
   Array::truncate(checked_cache_paths, length = 0)
   Array::truncate(checked_cache_sources, length = 0)
   Array::truncate(checked_cache_stmts, length = 0)
@@ -63,7 +63,7 @@ export fn checked_module_cache_reset_in_namespace(namespace: String) -> Unit wit
   Array::truncate(checked_cache_resolution, length = 0)
   let resolution = resolution_env_seed()
   Array::push(checked_cache_resolution, value = resolution)
-  Array::push(checked_cache_version, value = persistent_artifact_input_context_in_namespace(resolution, namespace = namespace))
+  Array::push(checked_cache_version, value = persistent_artifact_input_context_in_namespace(resolution, namespace = namespace, checked_error_row = checked_error_row))
   let mut i = 0
   while i < 3 {
     Array::set(checked_cache_counts, at = i, value = 0)
@@ -76,15 +76,15 @@ export fn checked_module_cache_stats() -> (Int, Int, Int) {
   (Array::get(checked_cache_counts, at = 0), Array::get(checked_cache_counts, at = 1), Array::get(checked_cache_counts, at = 2))
 }
 
-export fn checked_module_cache_input_identity(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)]) -> Bytes with Env {
-  checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = semantics_seed, deps = deps, namespace = persistent_cache_namespace_current())
+export fn checked_module_cache_input_identity(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)], checked_error_row: Bool) -> Bytes with Env {
+  checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = semantics_seed, deps = deps, namespace = persistent_cache_namespace_current(), checked_error_row = checked_error_row)
 }
 
 /// Use the caller's captured cache namespace.
-export fn checked_module_cache_input_identity_in_namespace(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)], namespace: String) -> Bytes with Env {
+export fn checked_module_cache_input_identity_in_namespace(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)], namespace: String, checked_error_row: Bool) -> Bytes with Env {
   let out = Bytes::new()
   ast_binary_write_string(buf = out, s = "checked-module-input-v1")
-  ast_binary_write_string(buf = out, s = persistent_artifact_input_context_in_namespace(resolution_env_seed(), namespace = namespace))
+  ast_binary_write_string(buf = out, s = persistent_artifact_input_context_in_namespace(resolution_env_seed(), namespace = namespace, checked_error_row = checked_error_row))
   ast_binary_write_string(buf = out, s = normalize_path(path))
   ast_binary_write_string(buf = out, s = source)
   ast_binary_write_string(buf = out, s = semantics_seed)
@@ -96,35 +96,35 @@ export fn checked_module_cache_input_identity_in_namespace(path: String, source:
   out
 }
 
-export fn load_checked_module_artifact(path: String, input_identity: Bytes) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
-  load_checked_module_artifact_in_namespace(path = path, input_identity = input_identity, namespace = persistent_cache_namespace_current())
+export fn load_checked_module_artifact(path: String, input_identity: Bytes, checked_error_row: Bool) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
+  load_checked_module_artifact_in_namespace(path = path, input_identity = input_identity, namespace = persistent_cache_namespace_current(), checked_error_row = checked_error_row)
 }
 
 /// Use the caller's captured cache namespace.
-export fn load_checked_module_artifact_in_namespace(path: String, input_identity: Bytes, namespace: String) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
-  match load_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(input_identity), namespace = namespace) {
+export fn load_checked_module_artifact_in_namespace(path: String, input_identity: Bytes, namespace: String, checked_error_row: Bool) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
+  match load_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = checked_module_input_fingerprint(input_identity), namespace = namespace, checked_error_row = checked_error_row) {
     Some(bytes) => decode_checked_module_artifact(bytes = bytes, input_identity = input_identity),
     None => None
   }
 }
 
-export fn commit_checked_module_artifact(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool) -> Unit with Env + Exception + Fs {
-  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = fresh, namespace = persistent_cache_namespace_current())
+export fn commit_checked_module_artifact(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
+  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = fresh, namespace = persistent_cache_namespace_current(), checked_error_row = checked_error_row)
 }
 
 /// Use the caller's captured cache namespace.
-export fn commit_checked_module_artifact_in_namespace(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String) -> Unit with Env + Exception + Fs {
+export fn commit_checked_module_artifact_in_namespace(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   // Compatibility callers historically publish even with mode off.
-  commit_checked_module_artifact_selected(path = path, source = source, artifact = artifact, fresh = fresh, namespace = namespace, verify = checked_module_cache_mode() == "verify")
+  commit_checked_module_artifact_selected(path = path, source = source, artifact = artifact, fresh = fresh, namespace = namespace, verify = checked_module_cache_mode() == "verify", checked_error_row = checked_error_row)
 }
 
-fn commit_checked_module_artifact_selected(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String, verify: Bool) -> Unit with Env + Exception + Fs {
+fn commit_checked_module_artifact_selected(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String, verify: Bool, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   if fresh {
     let encoded = encode_checked_module_artifact(artifact)
     let fingerprint = checked_module_input_fingerprint(artifact.input_identity)
     let mut already_canonical = false
     if verify {
-      match load_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint, namespace = namespace) {
+      match load_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint, namespace = namespace, checked_error_row = checked_error_row) {
         Some(previous) => if previous == encoded {
           // Exact agreement with a fresh checker result validates every byte.
           // No second tree or replacement envelope needs to be allocated.
@@ -141,7 +141,7 @@ fn commit_checked_module_artifact_selected(path: String, source: String, artifac
     if already_canonical {
       ()
     } else {
-      store_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint, bytes = encoded, namespace = namespace)
+      store_persistent_artifact_in_namespace(kind = "checked-module-v1", entry_name = path, fingerprint = fingerprint, bytes = encoded, namespace = namespace, checked_error_row = checked_error_row)
     }
   }
   let slot = if fresh {
@@ -160,19 +160,19 @@ fn commit_checked_module_artifact_selected(path: String, source: String, artifac
 /// only make every parse -- including the in-memory component compile, which
 /// must stay free of host capabilities -- require `Env` (#1962). The rest
 /// (compiler version, cfg, typing mode) is recomputed, as before.
-export fn checked_module_artifact_stmts(path: String, source: String) -> Option[Array[Stmt]] {
-  checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = persistent_cache_namespace_current())
+export fn checked_module_artifact_stmts(path: String, source: String, checked_error_row: Bool) -> Option[Array[Stmt]] {
+  checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = persistent_cache_namespace_current(), checked_error_row = checked_error_row)
 }
 
 /// Use the caller's captured cache namespace.
-export fn checked_module_artifact_stmts_in_namespace(path: String, source: String, namespace: String) -> Option[Array[Stmt]] {
-  checked_module_artifact_stmts_selected(path = path, source = source, namespace = namespace, active = checked_module_cache_mode() != "off")
+export fn checked_module_artifact_stmts_in_namespace(path: String, source: String, namespace: String, checked_error_row: Bool) -> Option[Array[Stmt]] {
+  checked_module_artifact_stmts_selected(path = path, source = source, namespace = namespace, active = checked_module_cache_mode() != "off", checked_error_row = checked_error_row)
 }
 
-fn checked_module_artifact_stmts_selected(path: String, source: String, namespace: String, active: Bool) -> Option[Array[Stmt]] {
+fn checked_module_artifact_stmts_selected(path: String, source: String, namespace: String, active: Bool, checked_error_row: Bool) -> Option[Array[Stmt]] {
   if !active || Array::length(checked_cache_version) == 0 ||
   Array::length(checked_cache_resolution) == 0 ||
-  Array::get(checked_cache_version, at = 0) != persistent_artifact_input_context_in_namespace(Array::get(checked_cache_resolution, at = 0), namespace = namespace) {
+  Array::get(checked_cache_version, at = 0) != persistent_artifact_input_context_in_namespace(Array::get(checked_cache_resolution, at = 0), namespace = namespace, checked_error_row = checked_error_row) {
     return None
   }
   let mut i = 0
@@ -191,46 +191,46 @@ fn checked_module_artifact_stmts_selected(path: String, source: String, namespac
 }
 
 /// Reuse is allowed only by on. Verify must obtain a fresh checker result.
-export fn load_checked_module_artifact_with_policy(path: String, input_identity: Bytes, namespace: String, policy: CheckedModuleCachePolicy) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
+export fn load_checked_module_artifact_with_policy(path: String, input_identity: Bytes, namespace: String, policy: CheckedModuleCachePolicy, checked_error_row: Bool) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
   if checked_module_cache_policy_mode(policy) == "on" {
-    load_checked_module_artifact_in_namespace(path = path, input_identity = input_identity, namespace = namespace)
+    load_checked_module_artifact_in_namespace(path = path, input_identity = input_identity, namespace = namespace, checked_error_row = checked_error_row)
   } else {
     None
   }
 }
 
 /// Capture this request's checked-module mode once before persistent lookup.
-export fn load_checked_module_artifact_configured(path: String, input_identity: Bytes, namespace: String) -> Option[CheckedModuleArtifact] with CheckedModuleCacheConfig + Env + Exception + Fs {
+export fn load_checked_module_artifact_configured(path: String, input_identity: Bytes, namespace: String, checked_error_row: Bool) -> Option[CheckedModuleArtifact] with CheckedModuleCacheConfig + Env + Exception + Fs {
   let policy = checked_module_cache_policy_capture()
-  load_checked_module_artifact_with_policy(path = path, input_identity = input_identity, namespace = namespace, policy = policy)
+  load_checked_module_artifact_with_policy(path = path, input_identity = input_identity, namespace = namespace, policy = policy, checked_error_row = checked_error_row)
 }
 
 /// Apply a retained policy. Off publishes no artifact or completed-module row.
 /// Verify compares a fresh check with any valid stored artifact before commit.
-export fn commit_checked_module_artifact_with_policy(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String, policy: CheckedModuleCachePolicy) -> Unit with Env + Exception + Fs {
+export fn commit_checked_module_artifact_with_policy(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String, policy: CheckedModuleCachePolicy, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   let mode = checked_module_cache_policy_mode(policy)
   if mode == "verify" && !fresh {
     throw("recheck the module before committing with verify policy")
   }
   if mode != "off" {
-    commit_checked_module_artifact_selected(path = path, source = source, artifact = artifact, fresh = fresh, namespace = namespace, verify = mode == "verify")
+    commit_checked_module_artifact_selected(path = path, source = source, artifact = artifact, fresh = fresh, namespace = namespace, verify = mode == "verify", checked_error_row = checked_error_row)
   }
 }
 
 /// Capture the commit's mode once; the caller retains namespace and checked data.
-export fn commit_checked_module_artifact_configured(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String) -> Unit with CheckedModuleCacheConfig + Env + Exception + Fs {
+export fn commit_checked_module_artifact_configured(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool, namespace: String, checked_error_row: Bool) -> Unit with CheckedModuleCacheConfig + Env + Exception + Fs {
   let policy = checked_module_cache_policy_capture()
-  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = fresh, namespace = namespace, policy = policy)
+  commit_checked_module_artifact_with_policy(path = path, source = source, artifact = artifact, fresh = fresh, namespace = namespace, policy = policy, checked_error_row = checked_error_row)
 }
 
 /// Hand out only rows validated by the current walk, under the retained policy.
 /// This selection does not acquire filesystem or environment authority.
-export fn checked_module_artifact_stmts_with_policy(path: String, source: String, namespace: String, policy: CheckedModuleCachePolicy) -> Option[Array[Stmt]] {
-  checked_module_artifact_stmts_selected(path = path, source = source, namespace = namespace, active = checked_module_cache_policy_mode(policy) != "off")
+export fn checked_module_artifact_stmts_with_policy(path: String, source: String, namespace: String, policy: CheckedModuleCachePolicy, checked_error_row: Bool) -> Option[Array[Stmt]] {
+  checked_module_artifact_stmts_selected(path = path, source = source, namespace = namespace, active = checked_module_cache_policy_mode(policy) != "off", checked_error_row = checked_error_row)
 }
 
 /// Capture mode once without acquiring filesystem or environment authority.
-export fn checked_module_artifact_stmts_configured(path: String, source: String, namespace: String) -> Option[Array[Stmt]] with CheckedModuleCacheConfig + Exception {
+export fn checked_module_artifact_stmts_configured(path: String, source: String, namespace: String, checked_error_row: Bool) -> Option[Array[Stmt]] with CheckedModuleCacheConfig + Exception {
   let policy = checked_module_cache_policy_capture()
-  checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = policy)
+  checked_module_artifact_stmts_with_policy(path = path, source = source, namespace = namespace, policy = policy, checked_error_row = checked_error_row)
 }

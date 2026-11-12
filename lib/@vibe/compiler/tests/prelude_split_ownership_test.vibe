@@ -1,0 +1,262 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_split, compile_file_fs_mode_rc_shadow_split
+}
+import @vibe/compiler/codegen/wasi {
+  prelude_split_last_module_count
+}
+import @vibe/compiler/perceus {
+  perceus_cached_tables
+}
+
+// #2826 acceptance item 3: the per-module split lane keeps the WHOLE
+// program's ownership fixed points and masks.
+//
+// Borrow inference (`compute_borrow_param_user_fns`, ADR-0092) and the
+// view-result set (`compute_may_return_view_fns`) are interprocedural, and
+// both can be disqualified from a CALL SITE in another module: a position
+// passed a temporary (`ca_collect_nonident_args`), a function used as a
+// value, an escape through a callee. A union of per-module answers cannot see
+// that, so it qualifies what the program disqualified (#2575). The split lane
+// avoids it by construction: `effect_lowering_prelude_split_checked` installs
+// the LINKED program into `stmts` (codegen/wasi/linked_compile_prelude_run_per_module.vibe),
+// and the analyses and the Perceus pin run after that on the whole program
+// (codegen/wasi/linked_compile_wasi_module_linked_impl_with_split_grants.vibe).
+// These rows pin that ordering.
+//
+// Each row compiles one program through both lanes, on the production RC lane
+// and on the shadow lane (use-after-free and double-free traps), runs all four
+// modules under wasmtime, and reads back the tables the planner was pinned to
+// (`perceus_cached_tables`) after each compile. A row renders, per backend,
+// whether the split's bytes and tables equal the whole program's and what each
+// lane's module printed, then the whole program's masks, view set and
+// borrow-returning set for the functions the imported modules declare (the
+// entry module's own names carry no per-file qualifier and are not shown).
+// The masks are what make a row non-vacuous: the control row shows the
+// recursion group borrowed, so the rows that show it owned show a
+// disqualification that crossed a module boundary.
+//
+// Red-checked by mutations that recompute the tables per module on the split
+// lane, after the link, and install the union (the #2575 shape); each row says
+// which ones it catches. "Conservative" treats a callee in another module as
+// consuming, which is what a module that cannot see the body has to do;
+// "optimistic" assumes it borrows. The control row passes every mutation. No
+// mutation made a shadow module trap: one global table keeps every caller and
+// callee consistent, so what the union gets wrong on these shapes is the
+// temporary and indirect-call cases the disqualifiers exist for, which leak
+// rather than free twice. The rows catch it in the bytes and the tables.
+//
+// A mutual-recursion group cannot itself span two modules: the loader refuses
+// the import cycle that would need (`prelude_split_visibility_test.vibe`). The
+// group lives in one module here, and what crosses the boundary is the fact
+// that decides its ownership.
+
+/// The planner's pinned tables for the imported modules' functions:
+/// `name:mask` for each borrowing function, the view-result functions, and the
+/// borrow-returning functions. A name is shown without the merge's per-file
+/// qualifier.
+fn pinned_tables() -> String {
+  let bret: Array[String] = []
+  let names: Array[String] = []
+  let masks: Array[Int] = []
+  let views: Array[String] = []
+  perceus_cached_tables(out_borrow_ret = bret, out_borrow_fns = names, out_borrow_masks = masks, out_view_ret = views)
+  let borrowed: Array[String] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    let n = Array::get(names, at = i)
+    if String::contains(n, needle = "vibe_pow_") {
+      Array::push(borrowed, value = short_name(n) + ":" + Int::to_string(Array::get(masks, at = i)))
+    } else ()
+    i = i + 1
+  }
+  let viewing: Array[String] = []
+  for v in views {
+    if String::contains(v, needle = "vibe_pow_") {
+      Array::push(viewing, value = short_name(v))
+    } else ()
+  }
+  let returning: Array[String] = []
+  for r in bret {
+    if String::contains(r, needle = "vibe_pow_") {
+      Array::push(returning, value = short_name(r))
+    } else ()
+  }
+  "masks=" + String::join(borrowed, sep = ",") + " views=" + String::join(viewing, sep = ",") + " borrow_returns=" + String::join(returning, sep = ",")
+}
+
+/// `total_exp__tmp_vibe_pow_a_leaf_vibe` -> `total`.
+fn short_name(_ n: String) -> String {
+  Array::get(String::split(n, sep = "_exp__"), at = 0)
+}
+
+/// One lane's answer: the diagnostic it throws (or ""), its module, and the
+/// tables its planner was pinned to.
+fn one_lane(entry: String, split: Bool, shadow: Bool) -> (String, Bytes, String) with Env + Fs {
+  handle {
+    let bytes = if shadow {
+      compile_file_fs_mode_rc_shadow_split(entry_path = entry, entry_name = "main", use_split = split, exports_stripped = false, checked_error_row = false)
+    } else {
+      compile_file_fs_mode_rc_body_cached_split(entry_path = entry, entry_name = "main", cache_mode = "off", use_split = split, exports_stripped = false, checked_error_row = false)
+    }
+    ("", bytes, pinned_tables())
+  } with { Exception::Throw(msg) => (msg, Bytes::new(0), "") }
+}
+
+/// What a module printed under wasmtime, or the diagnostic that stopped it
+/// compiling. A trap shows up as the runner's error line.
+fn ran(path: String, answer: (String, Bytes, String)) -> String with Console + Exception + Fs + Process {
+  if answer.0 != "" {
+    "refused"
+  } else {
+    Fs::write_bytes(path, bytes = answer.1)
+    // The exported closure takes its hidden env parameter explicitly.
+    let lines = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0 2>&1 | grep -v '^warning:' | head -n 1")
+    String::join(lines, sep = ",")
+  }
+}
+
+/// Both lanes of one backend, rendered, plus the whole lane's tables.
+fn backend(tag: String, entry: String, shadow: Bool) -> (String, String) with Console + Env + Exception + Fs + Process {
+  let name = if shadow {
+    "shadow"
+  } else {
+    "rc"
+  }
+  let whole = one_lane(entry = entry, split = false, shadow = shadow)
+  let split = one_lane(entry = entry, split = true, shadow = shadow)
+  let bytes = if whole.1 == split.1 {
+    "same"
+  } else {
+    "differ"
+  }
+  let tables = if whole.2 == split.2 {
+    "same"
+  } else {
+    "differ(split " + split.2 + ")"
+  }
+  let stem = "/tmp/vibe_pow_" + tag + "_" + name
+  let line = name + "=[bytes=" + bytes + " tables=" + tables + " whole=" + ran(path = stem + "_whole.wasm", answer = whole) + " split=" + ran(path = stem + "_split.wasm", answer = split) + "]"
+  (line, whole.2)
+}
+
+/// Writes `files` as `/tmp/vibe_pow_<tag>_<name>.vibe`, compiles `main`
+/// through both lanes on both backends, and renders what they agree on.
+fn both_lanes(tag: String, files: Array[(String, String)]) -> String with Console + Env + Exception + Fs + Process {
+  for file in files {
+    Fs::write_file("/tmp/vibe_pow_" + tag + "_" + file.0 + ".vibe", contents = file.1)
+  }
+  let entry = "/tmp/vibe_pow_" + tag + "_main.vibe"
+  let rc = backend(tag = tag, entry = entry, shadow = false)
+  // Non-vacuity: the split really partitioned the program it was handed.
+  let modules = prelude_split_last_module_count()
+  let shadow = backend(tag = tag, entry = entry, shadow = true)
+  tag + ": modules=" + Int::to_string(modules) + " " + rc.0 + " " + shadow.0 + " " + rc.1
+}
+
+/// `import ./vibe_pow_<tag>_<dep>.vibe { names }`, then a blank line.
+fn import_of(tag: String, dep: String, names: String) -> String {
+  "import ./vibe_pow_" + tag + "_" + dep + ".vibe {\n  " + names + "\n}\n\n"
+}
+
+/// A fresh array `[0, 1, .., n - 1]`, declared in `main`.
+fn build_decl() -> String {
+  "fn build(n: Int) -> Array[Int] {\n  let xs: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(xs, value = i)\n    i = i + 1\n  }\n  xs\n}\n\n"
+}
+
+/// A recursion group that only reads its array parameter: borrowed, unless
+/// something outside it decides otherwise.
+fn ping_pong_leaf() -> String {
+  "export fn ping(xs: Array[Int], n: Int) -> Int {\n  if n <= 0 {\n    Array::length(xs)\n  } else {\n    pong(xs = xs, n = n - 1)\n  }\n}\n\nexport fn pong(xs: Array[Int], n: Int) -> Int {\n  if n <= 0 {\n    0\n  } else {\n    ping(xs = xs, n = n - 1) + 1\n  }\n}\n"
+}
+
+//# Borrowed: what a module's callees in other modules allow
+
+test "a parameter borrowed only because a callee two modules away borrows it" {
+  // `total_plus` reads `xs` solely by passing it to `total`, in the leaf. A
+  // module that could not see `total` would have to own `xs`; the masks are
+  // the whole program's, so `total_plus` borrows on both lanes.
+  // Caught by: the conservative union of borrow masks (`total_plus` drops out
+  // of the split's masks).
+  let leaf = "export fn total(_ xs: Array[Int]) -> Int {\n  let mut s = 0\n  let mut i = 0\n  while i < Array::length(xs) {\n    s = s + Array::get(xs, at = i)\n    i = i + 1\n  }\n  s\n}\n"
+  let mid = import_of(tag = "chain", dep = "leaf", names = "total") + "export fn total_plus(xs: Array[Int], k: Int) -> Int {\n  total(xs) + k\n}\n"
+  let main = import_of(tag = "chain", dep = "mid", names = "total_plus") + build_decl() + "fn main() -> Int {\n  let xs = build(n = 5)\n  let a = total_plus(xs = xs, k = 1)\n  let b = total_plus(xs = xs, k = 2)\n  a + b + Array::length(xs)\n}\n"
+  inspect(both_lanes(tag = "chain", files = [
+    ("main", main),
+    ("mid", mid),
+    ("leaf", leaf)
+  ]), content = "chain: modules=3 rc=[bytes=same tables=same whole=28 split=28] shadow=[bytes=same tables=same whole=28 split=28] masks=total:1,total_plus:1 views= borrow_returns=")
+}
+
+test "control: a recursion group no other module disqualifies stays borrowed" {
+  // Every call passes a named array, so nothing disqualifies `ping` or
+  // `pong`. The three rows below change one call in `main` or one callee, and
+  // the group's masks go to owned. No mutation fails this row.
+  let main = import_of(tag = "group", dep = "leaf", names = "ping, pong") + build_decl() + "fn main() -> Int {\n  let xs = build(n = 3)\n  let ys = build(n = 2)\n  let a = ping(xs = xs, n = 3)\n  let b = pong(xs = ys, n = 2)\n  a + b + Array::length(xs) + Array::length(ys)\n}\n"
+  inspect(both_lanes(tag = "group", files = [
+    ("main", main),
+    ("leaf", ping_pong_leaf())
+  ]), content = "group: modules=2 rc=[bytes=same tables=same whole=7 split=7] shadow=[bytes=same tables=same whole=7 split=7] masks=ping:1,pong:1 views= borrow_returns=")
+}
+
+//# Owned: disqualified from another module (a union of per-module masks keeps them borrowed)
+
+test "a temporary passed to the group from another module makes the whole group owned" {
+  // `pong(xs = build(n = 2), ..)` in `main` disqualifies `pong`'s position 0;
+  // `ping` passes its `xs` to that position, so the fixed point owns both.
+  // The leaf alone would borrow both.
+  // Caught by: the conservative and the optimistic union of borrow masks
+  // (the split keeps `ping:1,pong:1`).
+  let main = import_of(tag = "temp", dep = "leaf", names = "ping, pong") + build_decl() + "fn main() -> Int {\n  let xs = build(n = 3)\n  let a = ping(xs = xs, n = 3)\n  let b = pong(xs = build(n = 2), n = 2)\n  a + b + Array::length(xs)\n}\n"
+  inspect(both_lanes(tag = "temp", files = [
+    ("main", main),
+    ("leaf", ping_pong_leaf())
+  ]), content = "temp: modules=2 rc=[bytes=same tables=same whole=5 split=5] shadow=[bytes=same tables=same whole=5 split=5] masks= views= borrow_returns=")
+}
+
+test "a group member used as a value in another module makes the whole group owned" {
+  // An indirect call cannot follow a borrow mask, so `pong` taken as a value
+  // in `main` owns its parameters, and `ping` with it.
+  // Caught by: the conservative and the optimistic union of borrow masks.
+  let main = import_of(tag = "valued", dep = "leaf", names = "ping, pong") + build_decl() + "fn apply(f: (Array[Int], Int) -> Int, xs: Array[Int]) -> Int {\n  f(xs, 2)\n}\n\nfn main() -> Int {\n  let xs = build(n = 3)\n  let a = ping(xs = xs, n = 3)\n  let b = apply(f = pong, xs = xs)\n  a + b + Array::length(xs)\n}\n"
+  inspect(both_lanes(tag = "valued", files = [
+    ("main", main),
+    ("leaf", ping_pong_leaf())
+  ]), content = "valued: modules=2 rc=[bytes=same tables=same whole=5 split=5] shadow=[bytes=same tables=same whole=5 split=5] masks= views= borrow_returns=")
+}
+
+test "an escape through a callee in a third module makes the whole group owned" {
+  // `sink` stores its argument in a fresh array, so it owns it; `ping` hands
+  // `xs` to it, and `pong` hands `xs` to `ping`.
+  // Caught by: the optimistic union only. A conservative module already owns
+  // what it hands to a callee it cannot see, so it is right here by accident.
+  let sink = "export fn sink(_ xs: Array[Int]) -> Array[Array[Int]] {\n  [xs]\n}\n"
+  let leaf = import_of(tag = "escape", dep = "sink", names = "sink") + "export fn ping(xs: Array[Int], n: Int) -> Int {\n  if n <= 0 {\n    Array::length(sink(xs))\n  } else {\n    pong(xs = xs, n = n - 1)\n  }\n}\n\nexport fn pong(xs: Array[Int], n: Int) -> Int {\n  if n <= 0 {\n    0\n  } else {\n    ping(xs = xs, n = n - 1) + 1\n  }\n}\n"
+  let main = import_of(tag = "escape", dep = "leaf", names = "ping, pong") + build_decl() + "fn main() -> Int {\n  let xs = build(n = 3)\n  let a = ping(xs = xs, n = 2)\n  let b = pong(xs = xs, n = 3)\n  a + b + Array::length(xs)\n}\n"
+  inspect(both_lanes(tag = "escape", files = [
+    ("main", main),
+    ("leaf", leaf),
+    ("sink", sink)
+  ]), content = "escape: modules=3 rc=[bytes=same tables=same whole=8 split=8] shadow=[bytes=same tables=same whole=8 split=8] masks= views= borrow_returns=")
+}
+
+//# Views: a result that aliases its argument, declared in a dependency
+
+test "a view returned through a dependency is not released by the importer" {
+  // `first_row` returns an element of `rows` without a reference of its own,
+  // and `peek_row` in `mid` returns `first_row`'s result. `main` must not
+  // release `r` or `r2`: if it did, `rows` would free them a second time.
+  // `pick` may return either a view or a fresh array, so it owns its result
+  // instead (`cl_own_return_stmts`) and is not in the view set.
+  // Caught by: every union -- of borrow masks (`peek_row` / `peek_either` lose
+  // their masks), of the view set alone, and of the borrow-returning set
+  // alone. The last two leave the bytes equal, because on this program each
+  // of the two sets covers for the other; the tables differ.
+  let leaf = "export fn first_row(_ rows: Array[Array[Int]]) -> Array[Int] {\n  Array::get(rows, at = 0)\n}\n\nexport fn either_row(rows: Array[Array[Int]], i: Int) -> Array[Int] {\n  if i > 0 {\n    Array::get(rows, at = i)\n  } else {\n    Array::get(rows, at = 0)\n  }\n}\n\nexport fn pick(rows: Array[Array[Int]], i: Int) -> Array[Int] {\n  if i > 0 {\n    Array::get(rows, at = i)\n  } else {\n    [0]\n  }\n}\n"
+  let mid = import_of(tag = "view", dep = "leaf", names = "either_row, first_row") + "export fn peek_row(_ rows: Array[Array[Int]]) -> Array[Int] {\n  first_row(rows)\n}\n\nexport fn peek_either(rows: Array[Array[Int]], i: Int) -> Array[Int] {\n  either_row(rows = rows, i = i)\n}\n"
+  let main = import_of(tag = "view", dep = "mid", names = "peek_either, peek_row") + import_of(tag = "view", dep = "leaf", names = "first_row, pick") + "fn main() -> Int {\n  let rows: Array[Array[Int]] = [[1, 2, 3], [4, 5]]\n  let r = peek_row(rows)\n  let n = Array::length(r)\n  let r2 = first_row(rows)\n  let r3 = pick(rows = rows, i = 1)\n  let r4 = pick(rows = rows, i = 0)\n  let r5 = peek_either(rows = rows, i = 1)\n  n + Array::length(r2) * 10 + Array::length(r3) * 100 + Array::length(r4) * 1000 + Array::length(rows) * 10000 + Array::length(r5) * 100000\n}\n"
+  inspect(both_lanes(tag = "view", files = [
+    ("main", main),
+    ("mid", mid),
+    ("leaf", leaf)
+  ]), content = "view: modules=3 rc=[bytes=same tables=same whole=221233 split=221233] shadow=[bytes=same tables=same whole=221233 split=221233] masks=either_row:1,first_row:1,peek_either:1,peek_row:1,pick:1 views=either_row,first_row,peek_either,peek_row borrow_returns=either_row,first_row,peek_either,peek_row")
+}

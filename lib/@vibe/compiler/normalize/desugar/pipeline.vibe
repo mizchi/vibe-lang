@@ -96,16 +96,12 @@ import ./exceptions.vibe {
   collect_struct_field_sets, ensure_exn_kind_cell, exn_kind_cell_present, exn_rethrow_reset, lookup_str_pair
 }
 
-import ./trait_key_aliases.vibe {
-  expand_trait_key_aliases
-}
-
 import ./float_rounding.vibe {
   refuse_rowless_float_program, rewrite_float_arith_stmts
 }
 
 import ./extern_effect.vibe {
-  note_extern_effects
+  bind_extern_effects
 }
 
 import ./int32.vibe {
@@ -259,8 +255,8 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
   // #3730: an impl or a method owned by `Int32` / `UInt32` cannot survive
   // their erasure to `Int`.
   refuse_int32_owned_decls(stmts)
-  // ADR-0124 (#2656): code generation refuses an `extern effect` call.
-  note_extern_effects(stmts)
+  // ADR-0124 (#2656): bind each `extern effect` operation to its host import.
+  bind_extern_effects(stmts)
   Array::set(dtd_rowless_build, at = 0, value = rowless_build)
   // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
   // (interpolation, structural `==`, iteration), which must reach the
@@ -902,8 +898,12 @@ fn dtd_run(stmts: Array[Stmt], rows: DtdTypedRows, ctx_int32_free: Bool, report:
   dtd_builtin_iterator_reset(stmts)
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
-  // #3947: before any collector reads an impl's key or a bound.
-  expand_trait_key_aliases(stmts)
+  // #3947: one spelling for every applied trait key, as the checker gave its
+  // modules, before any collector reads an impl's key or a bound.
+  let key_errors = canonicalize_trait_ref_aliases(stmts)
+  if Array::length(key_errors) > 0 {
+    throw(Array::get(key_errors, at = 0))
+  }
   desugar_derives(stmts)
   // #2205's reset used to be HERE and is now at the LANE boundary
   // (`desugar_trait_dicts_with_typed_eq`, and the per-module driver after its
@@ -922,8 +922,6 @@ fn dtd_run(stmts: Array[Stmt], rows: DtdTypedRows, ctx_int32_free: Bool, report:
   // review: a process-global registry reset at per-run granularity, where the
   // split lane needs lane granularity.
   //
-  // #3947: the checker matched impls with the same canonical keys.
-  canonicalize_trait_ref_aliases(stmts)
   derive_trait_namespace_operations(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
