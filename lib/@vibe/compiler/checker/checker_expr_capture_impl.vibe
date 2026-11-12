@@ -20,12 +20,16 @@ import ./checker_call_placement.vibe {
   checker_check_defaulted_value
 }
 
+import ./checker_deferred_method_rows.vibe {
+  defer_literal_binop, deferred_result_pending, struct DeferredLiteralBinop
+}
+
 import ./checker_call_arguments.vibe {
   checker_labeled_argument_context
 }
 
 import ./checker_expr_numeric_observation.vibe {
-  add_formal_for_type, float_operand_binop, record_add_formal
+  add_formal_for_type, check_binop_operands, record_add_formal
 }
 
 import ./checker_call_header_flow.vibe {
@@ -33,6 +37,7 @@ import ./checker_call_header_flow.vibe {
   checker_bind_mut_call_header,
   checker_call_header_barrier,
   checker_call_header_flow_begin,
+  checker_call_header_is_probe,
   checker_call_header_merge,
   checker_call_header_probe_begin,
   checker_call_header_probe_end,
@@ -214,20 +219,16 @@ import ./checker_eq_generalized_site.vibe {
   refuse_generalized_eq_sites
 }
 
-import ./checker_eq_function_operand.vibe {
-  eq_function_operand_refusal, eq_operand_is_nullary_ctor
-}
-
 import ./checker_map_literal.vibe {
   map_literal_ground, resume_continuation_marker, resume_is_continuation
 }
 
 import ./checker_int32.vibe {
-  int32_field_adapt, int32_join_branch
+  int32_field_adapt, int32_join_branch, int32_literal_value
 }
 
 import ./checker_int32_rows.vibe {
-  int32_assigned_type, int32_binop_operands, int32_compound_assign, int32_involved, int32_unary, record_int32_binop
+  int32_assigned_type, int32_binop_operands, int32_compound_assign, int32_involved, int32_unary
 }
 
 import ./checker_infer_binop_type.vibe {
@@ -244,7 +245,6 @@ import ./checker_infer_binop_type.vibe {
   publish_row_formals,
   record_float_arith,
   record_receiver_kind,
-  record_string_binop_operands,
   resolve_bare_var,
   resolve_tparams_in,
   spawn_value_let_rhs_cell,
@@ -981,55 +981,41 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // operator's own offset (#2435) is where the reader looks.
         boff
       }
-      let (left_applied, right_applied) = int32_binop_operands(left = left, right = right, left_ty = subst_apply(s = s2, ty = left_ty), right_ty = subst_apply(s = s2, ty = right_ty), s = s2, errors = errors, off = bin_off)
-      // #2391 slice 2 / #2435: the typed String-lowering channel. The types
-      // recorded here may still be unresolved variables; the extraction
-      // resolves them against the FINAL substitution, so a binding unified
-      // after this binop still classifies. The recorder anchors on the
-      // binop's OWN operator offset (exact identity), with the operand walk
-      // only as the fallback for desugar-synthesized binops.
-      record_string_binop_operands(capture = capture, op = op, own_off = boff, left = left, right = right, left_ty = left_applied, right_ty = right_applied)
-      let (result_ty, s3) = infer_binop_type(op = op, left_ty = left_applied, right_ty = right_applied, env = env, s = s2, errors = errors, tytab = tytab, off = bin_off)
-      // #3549: a function has no content to compare, so `==` on a value
-      // whose comparator would reach one could only answer by identity.
-      let eq_typed = match result_ty {
-        CtBool => true,
-        _ => false
-      }
-      // A comparison with a payload-less constructor (`x == None`) decides by
-      // the variant alone and never reaches a function.
-      if eq_typed && (op == "==" || op == "!=") && !eq_operand_is_nullary_ctor(e = left, defs = defs) && !eq_operand_is_nullary_ctor(e = right, defs = defs) {
-        match eq_function_operand_refusal(op = op, operand = left_applied, s = s3, defs = defs) {
-          Some(msg) => Array::push(errors, value = String::concat(msg, off_marker(bin_off))),
-          None => ()
-        }
-      } else {
-        ()
-      }
-      let bin_result = subst_apply(s = s3, ty = result_ty)
-      record_int32_binop(capture = capture, op = op, result = bin_result, off = boff, errors = errors)
-      // #3543: an arithmetic result typed `Float` is rounded to f32 after
-      // the checker ran; the row tells the rewrite which operators to wrap.
-      match bin_result {
-        CtFloat => if op == "+" || op == "-" || op == "*" || op == "/" {
-          record_float_arith(capture = capture, off = boff, kind = 9)
+      let left_resolved = subst_apply(s = s2, ty = left_ty)
+      let right_resolved = subst_apply(s = s2, ty = right_ty)
+      let pending = match left_resolved {
+        CtVar(id) => if (right_resolved is CtInt) && (int32_literal_value(right) is Some(_)) && !checker_call_header_is_probe() && deferred_result_pending(id = id, s = s2) {
+          Some(id)
         } else {
-          ()
+          None
         },
-        _ => ()
+        CtInt => match right_resolved {
+          CtVar(id) => if (int32_literal_value(left) is Some(_)) && !checker_call_header_is_probe() && deferred_result_pending(id = id, s = s2) {
+            Some(id)
+          } else {
+            None
+          },
+          _ => None
+        },
+        _ => None
       }
-      // #3629: a `Double` / `Float` operation whose operands the lowering
-      // may not see as floats (a generic call's result, an index), filed so
-      // the post-check rewrite marks them; see `float_operand_binop`.
-      if float_operand_binop(op = op, result = bin_result, left = subst_apply(s = s3, ty = left_applied), right = subst_apply(s = s3, ty = right_applied)) {
-        record_float_arith(capture = capture, off = boff, kind = 11)
-      } else {
-        ()
+      match pending {
+        Some(id) => {
+          let (result, next) = fresh_var(c2)
+          defer_literal_binop(DeferredLiteralBinop::{
+            operand: id,
+            result: next - 1,
+            op: op,
+            off: bin_off,
+            check: (settled, deferred_errors) -> check_binop_operands(op = op, left = left, right = right, left_ty = subst_apply(s = settled, ty = left_ty), right_ty = subst_apply(s = settled, ty = right_ty), env = env, defs = defs, s2 = settled, errors = deferred_errors, tytab = tytab, capture = capture, boff = boff, bin_off = bin_off)
+          })
+          (result, s2, next)
+        },
+        None => {
+          let (result, s3) = check_binop_operands(op = op, left = left, right = right, left_ty = left_resolved, right_ty = right_resolved, env = env, defs = defs, s2 = s2, errors = errors, tytab = tytab, capture = capture, boff = boff, bin_off = bin_off)
+          (result, s3, c2)
+        }
       }
-      if op == "+" {
-        record_add_formal(capture = capture, off = boff, ty = bin_result, env = env, s = s3)
-      }
-      (bin_result, s3, c2)
     },
     EUnaryOp(op, operand) => {
       let (operand_ty, s1, c1) = check_expr_capture(expr = operand, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)

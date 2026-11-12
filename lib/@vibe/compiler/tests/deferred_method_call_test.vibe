@@ -143,6 +143,27 @@ test "#4037: a literal outside UInt32's range is refused" {
   inspect(first_check_error(int32_source("c.addu(k = -1)")), content = "integer literal -1 does not fit `UInt32` (0 .. 4294967295): use an `Int`, or write a value in range")
 }
 
+/// The callback can call a function-valued field or a declared method that
+/// returns the same sized integer as the field takes.
+fn sized_receiver_source(width: String, body: String, result: String) -> String {
+  "struct Holder { f: (" + width + ") -> Int; n: " + width + " }\nfn Holder::value(h: Holder) -> " + width + " { h.n }\nfn probe(hs: Array[Holder]) -> Array[" + result + "] {\n  Array::map(hs, f = (h) -> " + body + ")\n}\n"
+}
+
+test "#4037: a late function-valued field adapts literal arguments" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.f(1)", result = "Int")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "h.f(4294967295)", result = "Int")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.f(-1)", result = "Int")), needle = "does not fit `UInt32`"))
+}
+
+test "#4037: a literal operator waits for the late method's result width" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.value() == 0", result = "Bool")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "4294967295 >= h.value()", result = "Bool")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.value() + 1", result = "Int32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "(h.value() + 1) == 0", result = "Bool")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.value() == -1", result = "Bool")), needle = "does not fit `UInt32`"))
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "Int32", body = "{ let n: Int = 0; h.value() == n }", result = "Bool")), needle = "already used as Int"))
+}
+
 //# Typed-occurrence capture
 
 /// `apply(c = d, f = (c) -> c.add(k = n))`, built by hand so the capture
