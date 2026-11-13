@@ -1,0 +1,284 @@
+//# What a handle-bound value can be held by, for the handle-escape check
+// (#3540, checker_handle_closure_escape.vibe): whether a value of a type can
+// hold a function -- one without the row of the effect the handle answers --
+// and whether a write through it can store one, read through tuples,
+// arrays, `Option`, maps and the fields and payloads of declared types.
+
+import @vibe/compiler/core {
+  Type, TypeDef, find_typedef
+}
+
+import @vibe/compiler/checker/effects {
+  effect_name_of_op, label_is_effect_var, row_label_base
+}
+
+import @vibe/compiler/checker/resolution {
+  subst_type_params
+}
+
+import @vibe/core {
+  array_empty
+}
+
+/// Add `label` to `out` unless it is there.
+export fn hce_add(out: Array[String], label: String) -> Unit {
+  if !hce_has(items = out, label = label) {
+    Array::push(out, value = label)
+  } else {
+    ()
+  }
+}
+
+/// Is `label` one of `items`?
+export fn hce_has(items: Array[String], label: String) -> Bool {
+  let mut found = false
+  for item in items {
+    if item == label {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// The first of `labels` a function type's row names, or "".
+export fn hce_row_label(ty: Type, labels: Array[String]) -> String {
+  let found = hce_row_labels(ty = ty, labels = labels)
+  if Array::length(found) > 0 {
+    Array::get(found, at = 0)
+  } else {
+    ""
+  }
+}
+
+/// Every one of `labels` a function type's row names.
+export fn hce_row_labels(ty: Type, labels: Array[String]) -> Array[String] {
+  let found = array_empty()
+  match ty {
+    CtForAll(_, _, inner) => hce_row_labels(ty = inner, labels = labels),
+    CtFn(_, _, Some(row)) => {
+      for raw in String::split(row, sep = ",") {
+        let l = String::trim(raw)
+        if String::length(l) > 0 && !String::starts_with(l, prefix = "#") && !label_is_effect_var(l) {
+          let base = row_label_base(effect_name_of_op(l))
+          if hce_has(items = labels, label = base) {
+            hce_add(out = found, label = base)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => found
+  }
+}
+
+/// Can a value of `ty` hold a function? An unsolved variable can.
+export fn hce_holds_fn(ty: Type, defs: Array[TypeDef], seen: Array[String]) -> Bool {
+  hce_holds_fn_without(ty = ty, label = "", defs = defs, seen = seen)
+}
+
+/// `hce_holds_fn`, except that a function whose row names `label` does not
+/// count: it carries the effect in its type, so its caller answers it. With
+/// a label, only a function the type spells counts; an unsolved variable
+/// does not.
+export fn hce_holds_fn_without(ty: Type, label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
+  match ty {
+    CtFn(_, _, _) => label == "" || hce_row_label(ty = ty, labels = [label]) != label,
+    // A callee whose result is only a type variable (`f: () -> T with E`)
+    // is not taken to return a closure.
+    CtVar(_) => label == "",
+    CtApplied(_, _) => label == "",
+    CtForAll(_, _, inner) => hce_holds_fn_without(ty = inner, label = label, defs = defs, seen = seen),
+    CtArray(inner) => hce_holds_fn_without(ty = inner, label = label, defs = defs, seen = seen),
+    CtOption(inner) => hce_holds_fn_without(ty = inner, label = label, defs = defs, seen = seen),
+    CtTuple(items) => hce_any_holds_fn(items = items, label = label, defs = defs, seen = seen),
+    CtRecord(fields) => {
+      let mut found = false
+      for f in fields {
+        let (_, fty) = f
+        if !found && hce_holds_fn_without(ty = fty, label = label, defs = defs, seen = seen) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    CtNamed(name, args) => hce_named_holds(name = name, args = args, label = label, defs = defs, seen = seen, store = false),
+    CtStruct(name) => hce_named_holds(name = name, args = array_empty(), label = label, defs = defs, seen = seen, store = false),
+    CtEnum(name) => hce_named_holds(name = name, args = array_empty(), label = label, defs = defs, seen = seen, store = false),
+    _ => false
+  }
+}
+
+/// `hce_holds_fn_without` for an exception row: a function type the type
+/// spells, through tuples, arrays, `Option`, records, type arguments and
+/// aliases, but not through the fields or payloads of a declared struct or
+/// enum.
+export fn hce_spells_fn_without(ty: Type, label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
+  match ty {
+    CtFn(_, _, _) => hce_row_label(ty = ty, labels = [label]) != label,
+    CtForAll(_, _, inner) => hce_spells_fn_without(ty = inner, label = label, defs = defs, seen = seen),
+    CtArray(inner) => hce_spells_fn_without(ty = inner, label = label, defs = defs, seen = seen),
+    CtOption(inner) => hce_spells_fn_without(ty = inner, label = label, defs = defs, seen = seen),
+    CtTuple(items) => hce_any_spells_fn(items = items, label = label, defs = defs, seen = seen),
+    CtRecord(fields) => {
+      let mut found = false
+      for f in fields {
+        let (_, fty) = f
+        if !found && hce_spells_fn_without(ty = fty, label = label, defs = defs, seen = seen) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    CtNamed(name, args) => if hce_has(items = seen, label = name) {
+      false
+    } else {
+      match find_typedef(defs = defs, name = name) {
+        Some(TDAlias(_, tparams, target)) => {
+          let inner_seen = Array::slice(seen, start = 0, end = Array::length(seen))
+          Array::push(inner_seen, value = name)
+          hce_spells_fn_without(ty = subst_type_params(ty = target, params = tparams, args = args), label = label, defs = defs, seen = inner_seen)
+        },
+        _ => hce_any_spells_fn(items = args, label = label, defs = defs, seen = seen)
+      }
+    },
+    _ => false
+  }
+}
+
+/// Does any of `items` spell a function without `label` (`hce_spells_fn_without`)?
+fn hce_any_spells_fn(items: Array[Type], label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
+  let mut found = false
+  for t in items {
+    if !found && hce_spells_fn_without(ty = t, label = label, defs = defs, seen = seen) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Can any of `items` hold a function without `label` (`hce_holds_fn_without`)?
+fn hce_any_holds_fn(items: Array[Type], label: String, defs: Array[TypeDef], seen: Array[String]) -> Bool {
+  let mut found = false
+  for t in items {
+    if !found && hce_holds_fn_without(ty = t, label = label, defs = defs, seen = seen) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Can a write through a value of `ty` store a function: an array or a map
+/// whose elements can hold one, or a struct with a `mut` field that can?
+export fn hce_stores_fn(ty: Type, defs: Array[TypeDef], seen: Array[String]) -> Bool {
+  match ty {
+    CtFn(_, _, _) => false,
+    CtVar(_) => true,
+    CtApplied(_, _) => true,
+    CtForAll(_, _, inner) => hce_stores_fn(ty = inner, defs = defs, seen = seen),
+    CtArray(inner) => hce_holds_fn(ty = inner, defs = defs, seen = array_empty()) || hce_stores_fn(ty = inner, defs = defs, seen = seen),
+    CtOption(inner) => hce_stores_fn(ty = inner, defs = defs, seen = seen),
+    CtTuple(items) => {
+      let mut found = false
+      for t in items {
+        if !found && hce_stores_fn(ty = t, defs = defs, seen = seen) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut found = false
+      for f in fields {
+        let (_, fty) = f
+        if !found && hce_stores_fn(ty = fty, defs = defs, seen = seen) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    CtNamed(name, args) => hce_named_holds(name = name, args = args, label = "", defs = defs, seen = seen, store = true),
+    CtStruct(name) => hce_named_holds(name = name, args = array_empty(), label = "", defs = defs, seen = seen, store = true),
+    CtEnum(name) => hce_named_holds(name = name, args = array_empty(), label = "", defs = defs, seen = seen, store = true),
+    _ => false
+  }
+}
+
+/// A declared type answers through its fields and payloads, read at `args`;
+/// one this module does not declare (`Map`, `MutMap`, an opaque type)
+/// answers through its arguments. A type already being read answers no.
+fn hce_named_holds(name: String, args: Array[Type], label: String, defs: Array[TypeDef], seen: Array[String], store: Bool) -> Bool {
+  if hce_has(items = seen, label = name) {
+    false
+  } else {
+    let inner_seen = Array::slice(seen, start = 0, end = Array::length(seen))
+    Array::push(inner_seen, value = name)
+    match find_typedef(defs = defs, name = name) {
+      Some(TDStruct(_, fields, mut_fields, tparams)) => {
+        let mut found = false
+        for f in fields {
+          let (fname, fty) = f
+          let t = subst_type_params(ty = fty, params = tparams, args = args)
+          let hit = if store {
+            (hce_has(items = mut_fields, label = fname) && hce_holds_fn(ty = t, defs = defs, seen = array_empty())) || hce_stores_fn(ty = t, defs = defs, seen = inner_seen)
+          } else {
+            hce_holds_fn_without(ty = t, label = label, defs = defs, seen = inner_seen)
+          }
+          if !found && hit {
+            found = true
+          } else {
+            ()
+          }
+        }
+        found
+      },
+      Some(TDEnum(_, tparams, variants)) => {
+        let mut found = false
+        for v in variants {
+          let (_, payload) = v
+          for pty in payload {
+            let t = subst_type_params(ty = pty, params = tparams, args = args)
+            let hit = if store {
+              hce_stores_fn(ty = t, defs = defs, seen = inner_seen)
+            } else {
+              hce_holds_fn_without(ty = t, label = label, defs = defs, seen = inner_seen)
+            }
+            if !found && hit {
+              found = true
+            } else {
+              ()
+            }
+          }
+          ()
+        }
+        found
+      },
+      Some(TDAlias(_, tparams, target)) => {
+        let t = subst_type_params(ty = target, params = tparams, args = args)
+        if store {
+          hce_stores_fn(ty = t, defs = defs, seen = inner_seen)
+        } else {
+          hce_holds_fn_without(ty = t, label = label, defs = defs, seen = inner_seen)
+        }
+      },
+      _ => hce_any_holds_fn(items = args, label = label, defs = defs, seen = inner_seen)
+    }
+  }
+}
