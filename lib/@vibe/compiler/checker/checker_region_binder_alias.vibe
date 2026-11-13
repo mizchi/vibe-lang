@@ -15,7 +15,7 @@
 //# so it may hold an `r1` value but not an `r2` one.
 
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeDef, TypeEnv, TypeExpr, env_bind, env_lookup, expr_children, find_typedef, type_name_has_iterator_impl
+  Expr, Pat, Type, TypeDef, TypeEnv, TypeExpr, env_bind, env_lookup, find_typedef, type_name_has_iterator_impl
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -274,11 +274,12 @@ fn for_protocol_reach(callee: String, scope: TypeEnv) -> Int {
   }
 }
 
-/// The reach of the element `callee` (a `next`) hands out: 2 unless every
-/// result of its declaration is spelled `Some((e, rest))` or `None`.
+/// The reach of the element `callee` (a `next`) hands out: 2 unless its
+/// declaration's body is pure (`for_body_is_pure`) and every result is
+/// spelled `Some((e, rest))` or `None`.
 fn for_next_reach(callee: String) -> Int {
   match retention_decl_value(callee) {
-    Some(EFn(_, _, params, _, _, body)) => if Array::length(params) > 0 && !for_body_has_return(body) {
+    Some(EFn(_, _, params, _, _, body)) => if Array::length(params) > 0 && for_body_is_pure(body) {
       match for_next_component_body(body = body, at = 0) {
         Some(element) => {
           let names = for_param_names(params)
@@ -302,10 +303,10 @@ fn for_next_reach(callee: String) -> Int {
 }
 
 /// The reach of what `callee`'s declaration returns; 2 when it is not
-/// readable here or returns early.
+/// readable here or its body is not pure (`for_body_is_pure`).
 fn for_result_reach(callee: String) -> Int {
   match retention_decl_value(callee) {
-    Some(EFn(_, _, params, _, _, body)) => if !for_body_has_return(body) {
+    Some(EFn(_, _, params, _, _, body)) => if for_body_is_pure(body) {
       for_element_reach(e = body, params = for_param_names(params), locals = for_no_locals())
     } else {
       2
@@ -549,24 +550,66 @@ fn for_next_component_body(body: Expr, at: Int) -> Option[Expr] {
   }
 }
 
-fn for_body_has_return(_ body: Expr) -> Bool {
-  let stack: Array[Expr] = [body]
-  let mut found = false
-  while !found && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, at = n - 1)
-    Array::truncate(stack, length = n - 1)
-    match cur {
-      EReturn(_) => found = true,
-      _ => {
-        for child in expr_children(cur) {
-          Array::push(stack, value = child)
+/// Whether evaluating `body` only binds, branches, reads and constructs, so
+/// nothing it builds can be stored anywhere before it is returned (Codex on
+/// #4100: a `next` that pushes the array it then hands out into a
+/// module-level array has published it). Allowed: literals, names, field
+/// reads, tuples, arrays, records and maps, `Some` / `Ok` / `Err`, a
+/// written `let x: T = e` ascription, `let`, sequencing, `if`, `match`, and
+/// the builtin operators except `==` / `!=`, which may run a program's
+/// `equals`. Anything else -- a call, an assignment, a `let mut`, a loop, a
+/// handler, a lambda, an interpolation (which may run a program's
+/// `to_string`), a `return` -- makes the body not pure, and its result then
+/// reaches everything (`for_next_reach`, `for_result_reach`).
+fn for_body_is_pure(_ body: Expr) -> Bool {
+  match body {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_, _) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EIdent(_, _) => true,
+    EBinOp(op, a, b, _) => op != "==" && op != "!=" && for_body_is_pure(a) && for_body_is_pure(b),
+    EUnaryOp(_, a) => for_body_is_pure(a),
+    EDot(inner, _, _, _) => for_body_is_pure(inner),
+    ETuple(items) => for_bodies_are_pure(items),
+    EArray(items) => for_bodies_are_pure(items),
+    ERecord(_, fields, _) => for_bodies_are_pure(for f in fields {
+      f.1
+    }),
+    EMap(entries) => for_bodies_are_pure(for f in entries {
+      f.1
+    }),
+    ECall(callee, args, _, _) => {
+      let allowed = match callee {
+        EIdent(ctor, _) => for_is_wrapping_ctor(ctor),
+        _ => match ascription_lambda_ann(callee) {
+          Some(_) => Array::length(args) == 1,
+          None => false
         }
-        ()
       }
+      allowed && for_bodies_are_pure(args)
+    },
+    EIf(c, a, b) => for_body_is_pure(c) && for_body_is_pure(a) && for_body_is_pure(b),
+    EMatch(scrutinee, arms) => for_body_is_pure(scrutinee) && for_bodies_are_pure(for arm in arms {
+      arm.1
+    }),
+    ELet(_, v, rest, _) => for_body_is_pure(v) && for_body_is_pure(rest),
+    ESeq(a, rest) => for_body_is_pure(a) && for_body_is_pure(rest),
+    _ => false
+  }
+}
+
+fn for_bodies_are_pure(_ es: Array[Expr]) -> Bool {
+  let mut ok = true
+  for e in es {
+    if ok && !for_body_is_pure(e) {
+      ok = false
+    } else {
+      ()
     }
   }
-  found
+  ok
 }
 
 /// The protocol method(s) the `for` desugar may draw `head`'s elements
