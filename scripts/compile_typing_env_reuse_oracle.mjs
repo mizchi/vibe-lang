@@ -31,10 +31,10 @@
 //             next good edit recovers. Reuse off records no hit (control);
 //             every record overwritten with garbage misses; an interface edit
 //             misses.
-//   records   from a snapshot of the cold cache, alias, witness and target
-//             records are corrupted INDEPENDENTLY, once malformed and once
-//             spliced from another valid binding (a stale but well-formed
-//             record). Each must miss and compile to the fresh module. The
+//   records   from a snapshot of the cold cache, alias, witness, dependency
+//             text and target records are corrupted INDEPENDENTLY, once
+//             malformed and once spliced from another valid record (a stale
+//             but well-formed one). Each must miss and compile to the fresh module. The
 //             uncorrupted snapshot is the control: it must hit, or a miss
 //             below would prove nothing about the corruption.
 //   config    the same edit under a different build configuration: the
@@ -58,7 +58,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { aliasText, bindingFiles, parseAlias, parseBinding, witnessText } from "./experimental_typing_env_reuse_oracle.mjs";
+import { aliasText, bindingFiles, expandedBinding, parseAlias, textNamespace, witnessText } from "./experimental_typing_env_reuse_oracle.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fail = (message) => { throw new Error(`compile-typing-env-reuse-oracle: ${message}`); };
@@ -362,7 +362,7 @@ function corruptReuseRecords(cache) {
 
 function witnessRecords(cache) {
   return bindingFiles(cache, witnessNamespace)
-    .map((path) => ({ path, ...parseBinding(readFileSync(path, "utf8"), "TDRE10W") }));
+    .map((path) => ({ path, ...expandedBinding(cache, readFileSync(path, "utf8")) }));
 }
 
 // A target is the TypeEnv record a witness binds: found by its exact text, so
@@ -385,7 +385,7 @@ function rotate(values, index, value) {
   return null;
 }
 
-// Each corruption rewrites every record of ONE kind and leaves the other two
+// Each corruption rewrites every record of ONE kind and leaves the others
 // intact, and must change every record it names: an edit that matched nothing
 // passes while proving nothing.
 const corruptions = {
@@ -401,6 +401,15 @@ const corruptions = {
     const texts = witnesses.map((witness) => witness.targetText);
     return rewrite("witness", witnesses.map((witness) => witness.path), (_text, i) =>
       spliced("witness", rotate(texts, i, texts[i]), (text) => witnessText(witnesses[i].input, witnesses[i].target, text)));
+  },
+  // The dependency texts witnesses name by digest (#2825). A malformed text
+  // and a text spliced from another dependency must each miss: the lookup
+  // compares the stored bytes against the live text, not the digest.
+  "text-malformed": (cache) => rewrite("text", bindingFiles(cache, textNamespace), () => "garbage"),
+  "text-splice": (cache) => {
+    const paths = bindingFiles(cache, textNamespace);
+    const texts = paths.map((path) => readFileSync(path, "utf8"));
+    return rewrite("text", paths, (_text, i) => spliced("text", rotate(texts, i, texts[i]), (text) => text));
   },
   "target-malformed": (cache) => rewrite("target", targetRecords(cache), () => "version\t3\nenv\t"),
   "target-splice": (cache) => {
