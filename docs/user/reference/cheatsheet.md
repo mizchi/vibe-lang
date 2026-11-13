@@ -2684,6 +2684,10 @@ What is refused, each with the edit:
   with type or resource parameters;
 - an operation that takes or returns anything but `Int` or `String` (or
   returns `Unit`): that is what crosses to the provider yet.
+- two packages (or two modules outside any package) that each declare an
+  extern effect of one name, imported into one program: a program binds one
+  provider per effect name, so rename one (refused by `vibe build` / `run` /
+  `test`, not by `vibe check`).
 
 `main` may require an extern effect (`allows Kv`), and the provider is bound
 when the program starts. It is a WebAssembly component that exports one
