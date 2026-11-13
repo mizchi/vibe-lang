@@ -156,3 +156,27 @@ test "#2721: DCE cannot move an edited entry into an unchanged file prefix" {
   inspect(pruned_equal(a = edited, b = fresh), content = "true")
   // A changed layout may decline every offered body; equality is mandatory.
 }
+
+test "#2827: changing a callback in the caller invalidates the specialized imported body" {
+  let dep = "/tmp/vibe_callback_cache_dep.vibe"
+  let entry = "/tmp/vibe_callback_cache_entry.vibe"
+  let artifact = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "main", fingerprint = String::concat("self-describing-", compact_string_fingerprint(entry)), checked_error_row = false)
+  if Fs::exists(artifact) {
+    Fs::remove(artifact)
+  }
+  Fs::write_file(dep, contents = "export fn apply(cb: (Int) -> Int, x: Int) -> Int { cb(x) }\n")
+  let prefix = "import ./vibe_callback_cache_dep.vibe { apply }\nfn inc(x: Int) -> Int { x + 1 }\nfn dec(x: Int) -> Int { x - 1 }\nlet same: () -> Bool = () -> { [1] == [1] }\nfn main() -> Int { (if same() { inc(x = 1) } else { dec(x = 1) }) + apply(cb = "
+  Fs::write_file(entry, contents = prefix + "inc, x = 40) }")
+  let cold_counts: Array[Int] = []
+  let cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = cold_counts, exports_stripped = true, checked_error_row = false)
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = warm_counts, exports_stripped = true, checked_error_row = false)
+  assert(pruned_equal(a = cold, b = warm))
+  assert(Array::get(warm_counts, at = 0) > 0)
+  Fs::write_file(entry, contents = prefix + "dec, x = 40) }")
+  let edited_counts: Array[Int] = []
+  let edited = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = edited_counts, exports_stripped = true, checked_error_row = false)
+  let fresh = compile_file_fs_mode_rc(entry_path = entry, entry_name = "main", exports_stripped = true, checked_error_row = false)
+  assert(!pruned_equal(a = fresh, b = cold))
+  inspect(pruned_equal(a = edited, b = fresh), content = "true")
+}

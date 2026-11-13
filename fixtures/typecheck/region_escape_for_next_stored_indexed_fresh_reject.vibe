@@ -1,0 +1,44 @@
+// #4050 (Codex on #4061): the `for` desugar selects `next` ahead of the
+// indexed protocol, so a stored-element `next` is what the binder holds even
+// though `iter_get` would hand out a fresh array: the write keeps the region
+// value in `outer`.
+trait Iterator[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+struct Held {
+  items: Array[Array[MutList[Int]]];
+  at: Int
+}
+
+impl Iterator for Held {
+  next(self) -> Option[(T, Held)] {
+    if self.at < Array::length(self.items) {
+      Some((Array::get(self.items, at = self.at), Held::{ items: self.items, at: self.at + 1 }))
+    } else {
+      None
+    }
+  }
+}
+
+fn Held::iter_length(_ h: Held) -> Int {
+  1
+}
+
+fn Held::iter_get(_ h: Held, i: Int) -> Array[MutList[Int]] {
+  []
+}
+
+fn main() -> Unit allows Exception + Console {
+  let outer: Array[MutList[Int]] = []
+  let xs = Held::{ items: [outer], at: 0 }
+  let v = region r {
+    let cell = MutList::empty(r)
+    MutList::push(cell, 3)
+    for a in xs {
+      Array::push(a, value = cell)
+    }
+    1
+  }
+  println("v=\{v} kept=\{Array::length(outer) > 0}")
+}

@@ -30,6 +30,10 @@ import @vibe/compiler/checker/type_relations {
   type_fully_concrete, type_is_ground
 }
 
+import ./checker_lambda_seed.vibe {
+  take_lambda_param_seeds, take_lambda_return_seed
+}
+
 import @vibe/compiler/checker/resume {
   arm_first_bare_tail
 }
@@ -1691,108 +1695,6 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
 /// cannot tell that the value it stores belongs to the group.
 export let run_body_param_cell: Array[Type] = []
 
-/// #3547: the parameter types a call expects of the lambda literal it is
-/// about to check, one slot per parameter (`None` = no expectation), set
-/// immediately before that one argument is checked and taken by
-/// `check_lambda_expr` before anything else, so no nested lambda can see it.
-/// Without it an unannotated parameter is a fresh variable while the body is
-/// checked, and `+` on two such variables settles on `Int` before the call
-/// unifies the lambda with its parameter: `Array::fold(["a"], "", (acc, s) ->
-/// acc + s)` was refused as `(Int, Int) -> Int`.
-let lambda_param_seed_cell: Array[Array[Option[Type]]] = []
-
-fn take_lambda_param_seeds() -> Array[Option[Type]] {
-  if Array::length(lambda_param_seed_cell) == 0 {
-    []
-  } else {
-    let seeds = Array::get(lambda_param_seed_cell, at = 0)
-    Array::truncate(lambda_param_seed_cell, length = 0)
-    seeds
-  }
-}
-
-/// The expectations that are seeded: the scalars whose operators lower
-/// correctly when only the CHECKER knows the operand's type. `+` / `<` on a
-/// `String` ride the typed String-lowering channel (#2391), and `Int` /
-/// `Bool` / `Char` need no classification. `Double` is deliberately absent:
-/// its arithmetic is chosen by the lowering from the operand's SYNTAX (an
-/// annotation, a float literal), so an unannotated `(acc, s) -> acc + s`
-/// typed `Double` here compiled to an integer add over two boxed values and
-/// printed `0` for `1.5 + 2.0` (measured). Left unseeded, it stays refused,
-/// with the edit (`Array::fold`'s accumulator check) -- never silently wrong.
-fn lambda_seed_type_lowers(_ t: Type) -> Bool {
-  match t {
-    CtInt => true,
-    CtString => true,
-    CtBool => true,
-    CtChar => true,
-    _ => false
-  }
-}
-
-/// Record the expected types of the unannotated parameters of `arg`, when it
-/// is a non-generic lambda literal with exactly `expected.length` parameters.
-/// Only the expectations `lambda_seed_type_lowers` admits are kept.
-export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit {
-  let arg = call_arg_value(arg)
-  Array::truncate(lambda_param_seed_cell, length = 0)
-  match arg {
-    EFn(tparams, _, params, _, _, _) => if Array::length(tparams) == 0 && Array::length(params) == Array::length(expected) {
-      let seeds: Array[Option[Type]] = []
-      let mut any = false
-      let mut i = 0
-      while i < Array::length(params) {
-        let (_, ann) = Array::get(params, at = i)
-        let want = subst_apply(s = s, ty = Array::get(expected, at = i))
-        if (ann is None) && lambda_seed_type_lowers(want) {
-          Array::push(seeds, value = Some(want))
-          any = true
-        } else {
-          Array::push(seeds, value = None)
-        }
-        i = i + 1
-      }
-      if any {
-        Array::push(lambda_param_seed_cell, value = seeds)
-      } else {
-        ()
-      }
-    } else {
-      ()
-    },
-    _ => ()
-  }
-}
-
-/// `seed_lambda_params` for an argument of a call whose parameter `ai` has a
-/// function type: the expectation is read after unifying the arguments to its
-/// left with their parameters in a scratch substitution (the call's own
-/// unification does the same, later).
-export fn seed_lambda_arg_from_call(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Unit {
-  let arg = call_arg_value(arg)
-  Array::truncate(lambda_param_seed_cell, length = 0)
-  let ai = Array::length(arg_tys)
-  if ai < Array::length(param_tys) && (arg is EFn(_, _, _, _, _, _)) {
-    let mut scratch = s
-    let mut j = 0
-    while j < ai {
-      match unify(a = Array::get(param_tys, at = j), b = Array::get(arg_tys, at = j), s = scratch) {
-        Some(su) => {
-          scratch = su
-        },
-        None => ()
-      }
-      j = j + 1
-    }
-    match subst_apply(s = scratch, ty = Array::get(param_tys, at = ai)) {
-      CtFn(eps, _, _) => seed_lambda_params(arg = arg, expected = eps, s = scratch),
-      _ => ()
-    }
-  } else {
-    ()
-  }
-}
-
 fn take_run_body_param() -> Option[Type] {
   if Array::length(run_body_param_cell) == 0 {
     None
@@ -1809,6 +1711,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
       let run_body_param = take_run_body_param()
       let param_seeds = take_lambda_param_seeds()
+      let return_seed = take_lambda_return_seed()
       let efn_err_start = Array::length(errors)
       let (retention_rechecking, retention_override) = match take_retention_param_override() {
         Some(overrides) => (true, overrides),
@@ -2132,7 +2035,12 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           report_formal_applications(te = rte, formals = tparams, where_label = "the return type", errors = errors)
           env_bind(env = fn_env, name = "__return__", ty = resolve_tparams_in(ty = resolve_type_expr_shadowed(te = rte, defs = defs, shadow = formal_shadow(te = rte, env = env, own = tparams)), env = fn_env))
         },
-        None => env_bind(env = fn_env, name = "__return__", ty = CtUnknown)
+        // #4053: a call that expects an `Int32` / `UInt32` result of a lambda
+        // that writes none checks its `return`s as an annotation would.
+        None => match return_seed {
+          Some(want) => env_bind(env = fn_env, name = "__return__", ty = want),
+          None => env_bind(env = fn_env, name = "__return__", ty = CtUnknown)
+        }
       }
       let (return_provenance, return_c) = fresh_var(c1)
       let return_env = env_bind(env = annotated_body_env, name = "__return_provenance__", ty = return_provenance)
@@ -2224,7 +2132,16 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           let ns = effect_inst_annotation_check(env = body_env, value = body, value_ty = bt, want_ty = resolved_ret, s = ns_ret, subject = "the returned function", slot = "the return type's row", defs = defs, errors = errors)
           (merge_capture_provenance(expected = subst_apply(s = ns, ty = resolved_ret), actual = subst_apply(s = ns, ty = bt)), ns)
         },
-        None => (subst_apply(s = s2, ty = bt), s2)
+        // #4053: the tail of a lambda seeded with an expected result, checked
+        // as an annotated return is (`return_seed`).
+        None => match return_seed {
+          Some(want) => {
+            check_assignable_set_end(string_lit_end(body))
+            let ns = check_assignable(expected = want, actual = int32_literal_adapt(e = body, expected = want, actual = bt, s = s2, errors = errors, off = tail_expr_off(body)), s = s2, errors = errors, what = "return type mismatch", off = tail_expr_off(body))
+            (want, ns)
+          },
+          None => (subst_apply(s = s2, ty = bt), s2)
+        }
       }
       let mut final_ret = base_ret
       match return_provenance {
