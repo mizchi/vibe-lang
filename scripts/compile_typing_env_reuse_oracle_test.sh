@@ -86,7 +86,7 @@ fi
 # what it prints can be perturbed apart. The table
 # path travels without a VIBE_ prefix, because the oracle drops that namespace.
 cat > "$WORK/fake.mjs" <<'FAKE'
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 const args = process.argv.slice(2);
 const rows = new Map(JSON.parse(readFileSync(process.env.COMPILE_REUSE_ORACLE_FAKE_TABLE, "utf8")).map((row) => [row.build, row]));
@@ -99,8 +99,21 @@ const row = (name) => {
 // Two bindings per publishing build: an alias names a target, the witness
 // binds an input to the target and its text, and the target record IS that text.
 // Each also stores one dependency text, as a witness's by-reference rows do.
+// A publication retires the cache's previous one, as the compiler retires a
+// module's previous publication (#2825): `fake_latest` names its files, by
+// basename, so a snapshot copy of the cache retires its own copies. Its
+// dependency texts go too, so a cache can be emptied of reuse records.
 function publish(cache, name, count) {
+  const latest = join(cache, "fake_latest");
+  if (existsSync(latest)) {
+    for (const file of readFileSync(latest, "utf8").split("\n").filter(Boolean)) rmSync(join(cache, file), { force: true });
+  }
+  const written = [];
   for (let i = 0; i < count; i += 1) {
+    written.push(`vibe_selfhost_typing_dependency_env_reuse_v10_${name}_${i}.txt`,
+      `vibe_selfhost_typing_dependency_env_reuse_eligibility_v10_${name}_${i}.txt`,
+      `vibe_selfhost_type_env_v10_${name}_${i}.tsv`,
+      `vibe_selfhost_typing_dependency_env_reuse_text_v1_${name}_${i}.txt`);
     const target = `${name}-t${i}`;
     const text = `fake type env ${name} ${i}`;
     writeFileSync(join(cache, `vibe_selfhost_typing_dependency_env_reuse_v10_${name}_${i}.txt`), `TDRE11A${seg(target)}`);
@@ -108,6 +121,7 @@ function publish(cache, name, count) {
     writeFileSync(join(cache, `vibe_selfhost_type_env_v10_${name}_${i}.tsv`), text);
     writeFileSync(join(cache, `vibe_selfhost_typing_dependency_env_reuse_text_v1_${name}_${i}.txt`), `fake dep env ${name} ${i}`);
   }
+  writeFileSync(latest, written.join("\n"));
 }
 function answer(r) {
   process.stdout.write(r.diagnostics.stdout);
@@ -138,7 +152,8 @@ if (args[1] === "main") {
   writeFileSync(`${out}.result`, r.result);
   writeFileSync(process.env.VIBE_INCREMENTAL_TELEMETRY_OUT, JSON.stringify(r.telemetry));
   const records = r.records ?? (r.reuse ? 2 : 0);
-  if (records) publish(process.env.VIBE_BUILD_CACHE_DIR, r.build, records);
+  // An explicit 0 still retires the cache's previous publication.
+  if (records || r.records === 0) publish(process.env.VIBE_BUILD_CACHE_DIR, r.build, records);
 }
 FAKE
 printf '#!/usr/bin/env bash\nexec node "%s" "$@"\n' "$WORK/fake.mjs" > "$WORK/fake.sh"
@@ -187,6 +202,8 @@ scripted_fail "a private edit with no reuse hit is refused" \
   "the private edit with reuse on recorded no dependency-transport reuse" core 'tel("private-on", 3, 0)'
 scripted_fail "a capability edit with no reuse hit is refused" \
   "the capability edit with reuse on recorded no dependency-transport reuse" core 'tel("capability-on", 3, 0)'
+scripted_fail "an edit that leaves the previous publication behind is refused" \
+  "so a previous publication was not retired" core 'row("private-on").records = 3'
 scripted_fail "an edit that left the module unchanged is refused as proving nothing" \
   "the meaning edit did not change the program" core \
   'row("edit-on").artifact = row("base-on").artifact'
@@ -216,7 +233,7 @@ scripted_fail "reusing through records overwritten with garbage is refused" \
   "corrupted reuse records: expected" core 'tel("corrupt-on", 1, 2)'
 scripted_fail "a corruption that found no records is refused" \
   "the corruption found no reuse records in the cache" core \
-  'for (const r of rows) if (r.reuse) r.records = 0'
+  'for (const r of rows) if (r.reuse && !["base-on", "edit-on", "private-on", "capability-on"].includes(r.build)) r.records = 0'
 scripted_fail "a reuse hit across an interface edit is refused" \
   "interface edit with reuse on: expected" core 'tel("interface-on", 1, 2)'
 

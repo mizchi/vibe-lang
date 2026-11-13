@@ -149,10 +149,10 @@ fn region_outer_content_mark(env: TypeEnv, name: String, regions: Array[String])
 export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String]) {
   let facts = ContentFacts::{
     bind_names: [],
-    bind_values: [],
+    bind_own_storage: [],
     bind_alias: [],
     store_target_alias: [],
-    store_values: [],
+    store_own_storage: [],
     store_value_alias: [],
     locals: [name],
     scope_names: [name],
@@ -164,14 +164,14 @@ export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, 
   // What each binding value and store may be, read once.
   let bind_fixed: Array[Array[String]] = []
   let mut fb = 0
-  while fb < Array::length(facts.bind_values) {
-    Array::push(bind_fixed, value = content_fixed_regions(value = Array::get(facts.bind_values, at = fb), aliases = Array::get(facts.bind_alias, at = fb), env = env, name = name, s = s))
+  while fb < Array::length(facts.bind_own_storage) {
+    Array::push(bind_fixed, value = content_fixed_regions(own = Array::get(facts.bind_own_storage, at = fb), aliases = Array::get(facts.bind_alias, at = fb), env = env, name = name, s = s))
     fb = fb + 1
   }
   let value_fixed: Array[Array[String]] = []
   let mut fv = 0
-  while fv < Array::length(facts.store_values) {
-    Array::push(value_fixed, value = content_fixed_regions(value = Array::get(facts.store_values, at = fv), aliases = Array::get(facts.store_value_alias, at = fv), env = env, name = name, s = s))
+  while fv < Array::length(facts.store_own_storage) {
+    Array::push(value_fixed, value = content_fixed_regions(own = Array::get(facts.store_own_storage, at = fv), aliases = Array::get(facts.store_value_alias, at = fv), env = env, name = name, s = s))
     fv = fv + 1
   }
   // The binders bound from each local -- itself, an element read out of it,
@@ -213,7 +213,7 @@ export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, 
         b = b + 1
       }
       let mut t = 0
-      while t < Array::length(facts.store_values) {
+      while t < Array::length(facts.store_own_storage) {
         if content_any_listed(names = Array::get(facts.store_target_alias, at = t), set = Array::get(derived, at = k)) {
           content_union(out = out, items = Array::get(value_fixed, at = t))
           content_local_regions_into(names = Array::get(facts.store_value_alias, at = t), locals = locals, held = held, out = out)
@@ -245,10 +245,10 @@ export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, 
 /// `scope_names` / `scope_ids` are the binders in scope while the walk runs.
 struct ContentFacts {
   bind_names: Array[String];
-  bind_values: Array[Expr];
+  bind_own_storage: Array[Bool];
   bind_alias: Array[Array[String]];
   store_target_alias: Array[Array[String]];
-  store_values: Array[Expr];
+  store_own_storage: Array[Bool];
   store_value_alias: Array[Array[String]];
   locals: Array[String];
   scope_names: Array[String];
@@ -285,9 +285,9 @@ fn content_local_regions_into(names: Array[String], locals: Array[String], held:
 /// that the environment binds outside the region. A binder of the scope has
 /// an occurrence name the environment does not hold. `name`, the binding
 /// being judged, is never its own outer homonym.
-fn content_fixed_regions(value: Expr, aliases: Array[String], env: TypeEnv, name: String, s: Subst) -> Array[String] {
+fn content_fixed_regions(own: Bool, aliases: Array[String], env: TypeEnv, name: String, s: Subst) -> Array[String] {
   let out: Array[String] = []
-  if content_own_storage(value = value, env = env) {
+  if own {
     content_union(out = out, items = retention_active_region_names(env))
   }
   for n in aliases {
@@ -306,21 +306,25 @@ fn content_fixed_regions(value: Expr, aliases: Array[String], env: TypeEnv, name
 /// may be (`content_alias_names`), so a region value handed to a builtin
 /// (`TaskGroup::spawn(g, ..)` of an enclosing group) is not taken for outer
 /// storage.
-fn content_own_storage(value: Expr, env: TypeEnv) -> Bool {
+fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
   match value {
     EIdent(_, _) => false,
     EFn(_, _, _, _, _, _) => false,
-    EDot(obj, _, _, _) => content_own_storage(value = obj, env = env),
-    // A call whose declared result holds no location copies a scalar out
-    // of whatever it reads (`Array::length(get_sink())`): nothing below it
-    // is reached.
-    ECall(EIdent(cname, _), _, _, _) if !callee_is_ctor_name(cname) && !content_result_may_hold(name = cname, env = env) => false,
+    EDot(obj, _, _, _) => !content_env_scalar(value = value, env = env, facts = facts) && content_own_storage(value = obj, env = env, facts = facts),
     ECall(callee, args, _, _) => {
+      // A scalar result copies a value out of whatever the call reads.
+      let scalar_call = match callee {
+        EIdent(cname, _) => !callee_is_ctor_name(cname) && content_resolve(name = cname, facts = facts) == cname && !content_result_may_hold(name = cname, env = env),
+        _ => false
+      }
+      if scalar_call {
+        return false
+      }
       let mut own = match callee {
         EIdent(cname, _) => if callee_is_ctor_name(cname) {
           false
-        } else if !content_result_may_hold(name = cname, env = env) {
-          false
+        } else if content_resolve(name = cname, facts = facts) != cname {
+          true
         } else {
           match retention_decl_value(cname) {
             Some(EFn(_, _, params, _, _, body)) => held_has_module_storage(held_result_param_indices(body = body, params = params)),
@@ -341,19 +345,19 @@ fn content_own_storage(value: Expr, env: TypeEnv) -> Bool {
       }
       match callee {
         EDot(obj, _, _, _) => {
-          own = own || content_own_storage(value = obj, env = env)
+          own = own || content_own_storage(value = obj, env = env, facts = facts)
         },
         _ => ()
       }
       for a in args {
-        own = own || content_own_storage(value = a, env = env)
+        own = own || content_own_storage(value = a, env = env, facts = facts)
       }
       own
     },
     _ => {
       let mut own = false
       for item in retention_result_items(value) {
-        own = own || content_own_storage(value = item, env = env)
+        own = own || content_own_storage(value = item, env = env, facts = facts)
       }
       own
     }
@@ -402,17 +406,17 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
   match expr {
     ELet(x, v, body, _) => {
       content_facts_into(expr = v, facts = facts, env = env)
-      let aliases = content_alias_names(value = v, env = env, facts = facts)
+      let value = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push(name = x, facts = facts), value = v, aliases = aliases, facts = facts)
+      content_bind(id = content_push(name = x, facts = facts), value = value, facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
     ELetMut(x, v, body, _) => {
       content_facts_into(expr = v, facts = facts, env = env)
-      let aliases = content_alias_names(value = v, env = env, facts = facts)
+      let value = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push(name = x, facts = facts), value = v, aliases = aliases, facts = facts)
+      content_bind(id = content_push(name = x, facts = facts), value = value, facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
@@ -420,25 +424,25 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
       let mark = Array::length(facts.scope_ids)
       let id = content_push(name = x, facts = facts)
       content_facts_into(expr = v, facts = facts, env = env)
-      content_bind(id = id, value = v, aliases = content_alias_names(value = v, env = env, facts = facts), facts = facts)
+      content_bind(id = id, value = content_value_fact(value = v, env = env, facts = facts), facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
     EAssign(x, v, body, _) => {
       content_facts_into(expr = v, facts = facts, env = env)
-      content_bind(id = content_resolve(name = x, facts = facts), value = v, aliases = content_alias_names(value = v, env = env, facts = facts), facts = facts)
+      content_bind(id = content_resolve(name = x, facts = facts), value = content_value_fact(value = v, env = env, facts = facts), facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
     },
     EAssignOp(x, _, v, body, _) => {
       content_facts_into(expr = v, facts = facts, env = env)
-      content_bind(id = content_resolve(name = x, facts = facts), value = v, aliases = content_alias_names(value = v, env = env, facts = facts), facts = facts)
+      content_bind(id = content_resolve(name = x, facts = facts), value = content_value_fact(value = v, env = env, facts = facts), facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
     },
     EForIn(x, index, iter, body) => {
       content_facts_into(expr = iter, facts = facts, env = env)
-      let aliases = content_alias_names(value = iter, env = env, facts = facts)
+      let value = content_value_fact(value = iter, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push(name = x, facts = facts), value = iter, aliases = aliases, facts = facts)
+      content_bind(id = content_push(name = x, facts = facts), value = value, facts = facts)
       match index {
         Some(i) => {
           let _ = content_push(name = i, facts = facts)
@@ -474,14 +478,14 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
       for v in vars {
         content_facts_into(expr = v.1, facts = facts, env = env)
       }
-      let aliases = for v in vars {
-        content_alias_names(value = v.1, env = env, facts = facts)
+      let values = for v in vars {
+        content_value_fact(value = v.1, env = env, facts = facts)
       }
       let mark = Array::length(facts.scope_ids)
       let mut i = 0
       while i < Array::length(vars) {
-        let (vname, vinit) = Array::get(vars, at = i)
-        content_bind(id = content_push(name = vname, facts = facts), value = vinit, aliases = Array::get(aliases, at = i), facts = facts)
+        let (vname, _) = Array::get(vars, at = i)
+        content_bind(id = content_push(name = vname, facts = facts), value = Array::get(values, at = i), facts = facts)
         i = i + 1
       }
       content_facts_into(expr = body, facts = facts, env = env)
@@ -502,14 +506,14 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
 /// A closure's body with its parameters in scope, each bound to the values
 /// in `bound` at its position -- an immediately invoked closure's argument
 /// -- or, past the end of `bound`, to none.
-fn content_lambda_facts(ps: Array[(String, Option[TypeExpr])], body: Expr, bound: Array[Array[(Expr, Array[String])]], facts: ContentFacts, env: TypeEnv) -> Unit {
+fn content_lambda_facts(ps: Array[(String, Option[TypeExpr])], body: Expr, bound: Array[Array[(Bool, Array[String])]], facts: ContentFacts, env: TypeEnv) -> Unit {
   let mark = Array::length(facts.scope_ids)
   let mut i = 0
   while i < Array::length(ps) {
     let id = content_push(name = retention_param_base(Array::get(ps, at = i).0), facts = facts)
     if i < Array::length(bound) {
       for v in Array::get(bound, at = i) {
-        content_bind(id = id, value = v.0, aliases = v.1, facts = facts)
+        content_bind(id = id, value = v, facts = facts)
       }
     }
     i = i + 1
@@ -553,17 +557,22 @@ fn content_resolve(name: String, facts: ContentFacts) -> String {
   out
 }
 
-fn content_bind(id: String, value: Expr, aliases: Array[String], facts: ContentFacts) -> Unit {
+/// Read storage provenance before the scope walk leaves the value's binders.
+fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, Array[String]) {
+  (content_own_storage(value = value, env = env, facts = facts), content_alias_names(value = value, env = env, facts = facts))
+}
+
+fn content_bind(id: String, value: (Bool, Array[String]), facts: ContentFacts) -> Unit {
   if !String::starts_with(id, prefix = "_#") && id != "_" {
     Array::push(facts.bind_names, value = id)
-    Array::push(facts.bind_values, value = value)
-    Array::push(facts.bind_alias, value = aliases)
+    Array::push(facts.bind_own_storage, value = value.0)
+    Array::push(facts.bind_alias, value = value.1)
   }
 }
 
-fn content_store(target: (Expr, Array[String]), value: (Expr, Array[String]), facts: ContentFacts) -> Unit {
-  Array::push(facts.store_target_alias, value = target.1)
-  Array::push(facts.store_values, value = value.0)
+fn content_store(target: Array[String], value: (Bool, Array[String]), facts: ContentFacts) -> Unit {
+  Array::push(facts.store_target_alias, value = target)
+  Array::push(facts.store_own_storage, value = value.0)
   Array::push(facts.store_value_alias, value = value.1)
 }
 
@@ -575,15 +584,15 @@ fn content_store(target: (Expr, Array[String]), value: (Expr, Array[String]), fa
 /// any other. A closure argument's parameters are bound to the call's other
 /// arguments, whose elements it is handed.
 fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env: TypeEnv) -> Unit {
-  let parts: Array[(Expr, Array[String])] = []
+  let parts: Array[(Bool, Array[String])] = []
   match callee {
-    EDot(obj, _, _, _) => Array::push(parts, value = (obj, content_alias_names(value = obj, env = env, facts = facts))),
+    EDot(obj, _, _, _) => Array::push(parts, value = content_value_fact(value = obj, env = env, facts = facts)),
     _ => ()
   }
   for a in args {
     match a {
       EFn(_, _, _, _, _, _) => (),
-      _ => Array::push(parts, value = (a, content_alias_names(value = a, env = env, facts = facts)))
+      _ => Array::push(parts, value = content_value_fact(value = a, env = env, facts = facts))
     }
   }
   match callee {
@@ -593,12 +602,12 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
     } else if content_is_builtin(name = name, env = env) {
       let mask = content_builtin_store_mask(name)
       if Array::length(args) > 0 {
-        let target = (Array::get(args, at = 0), content_alias_names(value = Array::get(args, at = 0), env = env, facts = facts))
+        let target = content_alias_names(value = Array::get(args, at = 0), env = env, facts = facts)
         let mut i = 1
         while i <= 2 && i < Array::length(args) {
           if (i == 1 && (mask == 1 || mask == 3)) || (i == 2 && (mask == 2 || mask == 3)) {
             let v = Array::get(args, at = i)
-            content_store(target = target, value = (v, content_alias_names(value = v, env = env, facts = facts)), facts = facts)
+            content_store(target = target, value = content_value_fact(value = v, env = env, facts = facts), facts = facts)
           }
           i = i + 1
         }
@@ -612,7 +621,7 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
   // with its parameters bound.
   match callee {
     EFn(_, _, ps, _, _, body) => content_lambda_facts(ps = ps, body = body, bound = for a in args {
-      [(a, content_alias_names(value = a, env = env, facts = facts))]
+      [content_value_fact(value = a, env = env, facts = facts)]
     }, facts = facts, env = env),
     EIdent(_, _) => (),
     _ => content_facts_into(expr = callee, facts = facts, env = env)
@@ -628,13 +637,13 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
   ()
 }
 
-fn content_store_all(parts: Array[(Expr, Array[String])], facts: ContentFacts) -> Unit {
+fn content_store_all(parts: Array[(Bool, Array[String])], facts: ContentFacts) -> Unit {
   let mut i = 0
   while i < Array::length(parts) {
     let mut j = 0
     while j < Array::length(parts) {
       if i != j {
-        content_store(target = Array::get(parts, at = i), value = Array::get(parts, at = j), facts = facts)
+        content_store(target = Array::get(parts, at = i).1, value = Array::get(parts, at = j), facts = facts)
       }
       j = j + 1
     }
@@ -679,13 +688,13 @@ fn content_builtin_store_mask(_ name: String) -> Int {
 fn content_pattern_binds(pat: Pat, value: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
   let pairs: Array[(String, Expr)] = []
   content_pattern_pairs_into(pat = pat, value = value, out = pairs)
-  let aliases = for pair in pairs {
-    content_alias_names(value = pair.1, env = env, facts = facts)
+  let values = for pair in pairs {
+    content_value_fact(value = pair.1, env = env, facts = facts)
   }
   let mut i = 0
   while i < Array::length(pairs) {
-    let (n, v) = Array::get(pairs, at = i)
-    content_bind(id = content_push(name = n, facts = facts), value = v, aliases = Array::get(aliases, at = i), facts = facts)
+    let (n, _) = Array::get(pairs, at = i)
+    content_bind(id = content_push(name = n, facts = facts), value = Array::get(values, at = i), facts = facts)
     i = i + 1
   }
 }

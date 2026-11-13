@@ -32,7 +32,9 @@ import @vibe/compiler/core {
   is_row_provenance_label,
   let_rec_binding_anchor,
   occurs_in,
+  row_items,
   row_may_have_effect_inst,
+  split_top_level_commas,
   subst_apply,
   subst_bounds_for,
   trait_defined,
@@ -166,10 +168,10 @@ export fn type_mentions_named(ty: Type, name: String) -> Bool {
       let mut found = type_mentions_named(ty = ret, name = name)
       match eff {
         Some(row) => {
-          let labels = String::split(row, sep = ",")
+          let labels = row_items(row)
           let mut ei = 0
           while ei < Array::length(labels) {
-            if String::trim(Array::get(labels, at = ei)) == name {
+            if Array::get(labels, at = ei) == name {
               found = true
             }
             ei = ei + 1
@@ -199,14 +201,11 @@ export fn merge_provenance_row(expected: Option[String], actual: Option[String])
 
 fn merge_provenance_row_at(expected: Option[String], actual: Option[String], join_values: Bool) -> Option[String] {
   let labels = match expected {
-    Some(row) => for raw in String::split(row, sep = ",") {
-      String::trim(raw)
-    },
+    Some(row) => split_top_level_commas(row),
     None => array_empty()
   }
   match actual {
-    Some(row) => for raw in String::split(row, sep = ",") {
-      let label = String::trim(raw)
+    Some(row) => for label in row_items(row) {
       if (is_row_provenance_label(label) || (join_values && effect_payload_row_item(label))) && !checker_string_array_has(items = labels, wanted = label) {
         Array::push(labels, value = label)
       }
@@ -295,8 +294,8 @@ fn type_has_effect_payload(t: Type, s: Subst) -> Bool {
         Some(text) => if row_may_have_effect_inst(text) {
           hit = true
         } else if String::contains(text, needle = "[") {
-          for raw in String::split(text, sep = ",") {
-            if effect_payload_row_item(String::trim(raw)) {
+          for label in row_items(text) {
+            if effect_payload_row_item(label) {
               hit = true
             }
           }
@@ -490,8 +489,7 @@ fn collect_region_skolems(ty: Type, out: Array[String]) -> Unit {
       collect_region_skolems(ty = ret, out = out)
       match eff {
         Some(row) => {
-          for raw in String::split(row, sep = ",") {
-            let label = String::trim(raw)
+          for label in row_items(row) {
             if String::starts_with(label, prefix = "#region_") && !checker_string_array_has(items = out, wanted = label) {
               Array::push(out, value = label)
             }
@@ -757,9 +755,8 @@ fn alias_result_reaches_outer_binding(ty: Type, args: Array[Expr], env: TypeEnv)
     CtFn(_, _, effect) => match effect {
       Some(row) => if String::contains(row, needle = "#aliasparam[") || String::contains(row, needle = "#fieldparam[") {
         let mut found = false
-        for raw in String::split(row, sep = ",") {
+        for label in row_items(row) {
           if !found {
-            let label = String::trim(raw)
             if String::starts_with(label, prefix = "#aliasparam[") || String::starts_with(label, prefix = "#fieldparam[") {
               let close = String::index_of(label, needle = "]")
               let mut id = 0
@@ -1192,16 +1189,16 @@ fn held_value_is_scalar(value: Expr, params: Array[(String, Option[TypeExpr])]) 
       match held_param_annotation(name = name, params = params) {
         Some(Some(TyName(tname))) => tname == "Int" || tname == "Int32" || tname == "UInt32" || tname == "Double" || tname == "Float" || tname == "Bool" || tname == "Char" || tname == "String" || tname == "Bytes" || tname == "Unit",
         Some(_) => false,
-        None => held_module_value_is_scalar(value)
+        None => held_module_value_is_scalar(value = value, params = params)
       }
     },
-    EDot(_, _, _, _) => held_module_value_is_scalar(value),
-    ECall(_, _, _, _) => held_module_value_is_scalar(value),
+    EDot(_, _, _, _) => held_module_value_is_scalar(value = value, params = params),
+    ECall(_, _, _, _) => held_module_value_is_scalar(value = value, params = params),
     _ => false
   }
 }
 
-fn held_module_value_is_scalar(_ value: Expr) -> Bool {
+fn held_module_value_is_scalar(value: Expr, params: Array[(String, Option[TypeExpr])]) -> Bool {
   if Array::length(retention_module_env_cell) == 0 {
     false
   } else {
@@ -1209,7 +1206,7 @@ fn held_module_value_is_scalar(_ value: Expr) -> Bool {
     held_value_names_into(e = value, out = names)
     let mut module_only = true
     for n in names {
-      module_only = module_only && !checker_string_array_has(items = held_result_binders, wanted = n)
+      module_only = module_only && !checker_string_array_has(items = held_result_binders, wanted = n) && held_param_annotation(name = n, params = params) is None
     }
     module_only && literal_item_is_scalar(item = value, env = Array::get(retention_module_env_cell, at = 0))
   }
@@ -1850,9 +1847,8 @@ fn row_names_visible_label(_ row: String) -> Bool {
     true
   } else {
     let mut found = false
-    for raw in String::split(row, sep = ",") {
-      let l = String::trim(raw)
-      if String::length(l) > 0 && !String::starts_with(l, prefix = "#") {
+    for l in row_items(row) {
+      if !String::starts_with(l, prefix = "#") {
         found = true
       }
     }
