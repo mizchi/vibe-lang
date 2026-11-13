@@ -197,6 +197,7 @@ function expectCounts(name, actual, rechecked, reused, planned = 2, dependencyTr
 }
 
 function segment(text) { return `${text.length}:${text}`; }
+const logicalInputTag = "vibe-typing-dependency-transport-env:v10";
 function parseSegment(text, start) {
   const colon = text.indexOf(":", start);
   if (colon < start || !/^\d+$/.test(text.slice(start, colon))) fail("invalid TDRE sidecar segment");
@@ -237,7 +238,51 @@ export function bindingFiles(cache, namespace) {
 
 function witnesses(cache) {
   return bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v10")
-    .map((path) => ({ witnessPath: path, ...parseBinding(readFileSync(path, "utf8"), "TDRE10W") }));
+    .map((path) => ({ witnessPath: path, ...expandedBinding(cache, readFileSync(path, "utf8")) }));
+}
+
+// A witness names each dependency env text by digest (`#<len>:<digest>`)
+// and stores the text once, in the text store (#2825). The oracle reads and
+// forges LOGICAL inputs, so a witness's input is expanded back to inline
+// segments as it is read. A forged witness is written inline, which the
+// compiler accepts at any position: it compares either form against the live
+// bytes.
+export const textNamespace = "selfhost_typing_dependency_env_reuse_text_v1";
+
+// The text store by content digest: what each record holds, keyed the way the
+// compiler names it (the compact fingerprint of the text).
+export function textStore(cache) {
+  return new Map(bindingFiles(cache, textNamespace).map((path) => {
+    const text = readFileSync(path, "utf8");
+    return [compactFingerprint(text), { path, text }];
+  }));
+}
+
+// A reference whose record is missing or does not hash to its digest is left
+// as it is, so a corrupted store reads as a non-logical input instead of
+// being silently repaired by the oracle.
+export function expandInput(cache, input, store = textStore(cache)) {
+  if (!input.startsWith(logicalInputTag)) return input;
+  let cursor = logicalInputTag.length;
+  let out = logicalInputTag;
+  while (cursor < input.length) {
+    if (input[cursor] === "#") {
+      const [digest, next] = parseSegment(input, cursor + 1);
+      const record = store.get(digest);
+      out += record ? segment(record.text) : input.slice(cursor, next);
+      cursor = next;
+    } else {
+      const [piece, next] = parseSegment(input, cursor);
+      out += segment(piece);
+      cursor = next;
+    }
+  }
+  return out;
+}
+
+export function expandedBinding(cache, text) {
+  const binding = parseBinding(text, "TDRE10W");
+  return { ...binding, storedInput: binding.input, input: expandInput(cache, binding.input) };
 }
 
 function aliases(cache) {
@@ -259,6 +304,12 @@ function appSidecar(cache, appSource) {
   const found = bindings(cache).filter((binding) => parseLogicalInput(binding.input).source === appSource);
   if (found.length === 0) fail(`non-vacuous TDRE10 app sidecar missing in ${basename(cache)}`);
   if (found.length > 1) fail(`ambiguous TDRE10 app sidecar in ${basename(cache)}`);
+  // The compiler stores dependency texts by reference: a witness that still
+  // carries them inline means the text store went unused, and the store's
+  // corruption cases would be vacuous.
+  if (parseLogicalInput(found[0].input).rows.length > 0 && found[0].storedInput === found[0].input) {
+    fail(`the TDRE10 app witness in ${basename(cache)} carries its dependency texts inline`);
+  }
   return found[0];
 }
 
@@ -270,7 +321,7 @@ function otherSidecar(cache, target) {
 
 function targetWitness(cache, target) {
   for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v10")) {
-    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE10W");
+    const binding = expandedBinding(cache, readFileSync(path, "utf8"));
     if (binding.target === target) return { path, ...binding };
   }
   fail(`bound TDRE10 witness missing for ${target}`);
@@ -284,7 +335,6 @@ export function witnessText(input, target, targetText) {
   return `TDRE10W${segment(input)}${segment(target)}${segment(targetText)}`;
 }
 
-const logicalInputTag = "vibe-typing-dependency-transport-env:v10";
 function parseLogicalInput(input) {
   if (!input.startsWith(logicalInputTag)) fail("TDRE10 logical input tag changed");
   let cursor = logicalInputTag.length;
@@ -433,6 +483,17 @@ function expectV22Isolation(stage2, work) {
     }
     writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_v10", aliasDigest(binding.input), ".txt"), text);
     writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v22"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
+  }
+  // The witnesses below name their dependency texts by digest, so the old
+  // namespace gets the text store too: without it every old witness would miss
+  // for a missing text, and the isolation case would pass for that reason.
+  const store = textStore(currentCache);
+  if (store.size === 0) fail("v22 isolation fixture found no dependency texts to copy");
+  for (const [digest, { path, text }] of store) {
+    if (stableCachePath(currentCache, currentVersion, textNamespace, digest, ".txt") !== path) {
+      fail("the oracle's text-store path derivation does not name the record the compiler wrote");
+    }
+    writeFileSync(stableCachePath(oldCache, oldVersion, textNamespace, digest, ".txt"), text);
   }
   for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_eligibility_v10")) {
     const text = readFileSync(path, "utf8");

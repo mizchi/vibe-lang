@@ -50,7 +50,8 @@ import @vibe/compiler/cache {
   persistent_typing_dependency_env_reuse_eligibility_path,
   persistent_typing_dependency_env_reuse_eligibility_path_in_namespace,
   persistent_typing_dependency_env_reuse_sidecar_path,
-  persistent_typing_dependency_env_reuse_sidecar_path_in_namespace
+  persistent_typing_dependency_env_reuse_sidecar_path_in_namespace,
+  persistent_typing_dependency_env_reuse_text_path_in_namespace
 }
 
 import @vibe/core {
@@ -818,13 +819,23 @@ let typing_reuse_key_header: String = "vibe-typing-dependency-transport-env:v10"
 /// alias path is named by `digest` (each piece's fingerprint, in order), the
 /// witness is written piece by piece, and a stored key is compared against the
 /// pieces where it lies.
+/// A key held as its segments' payloads (`pieces`), each with its compact
+/// fingerprint (`piece_digests`). `by_ref` marks the pieces a stored witness
+/// names by digest instead of carrying inline: the dependency env texts, which
+/// every consumer of a dependency would otherwise copy into its own witness
+/// (#2825: 144 MB of a 173 MB cold cache on the CLI closure, for 5.6 MB of
+/// distinct text).
 export struct TypingReuseKey {
   pieces: Array[String];
+  piece_digests: Array[String];
+  by_ref: Array[Bool];
   digest: String
 }
 
-fn push_typing_reuse_key_piece(pieces: Array[String], digest: StringBuilder, piece: String, piece_digest: String) -> Unit {
-  Array::push(pieces, value = piece)
+fn push_typing_reuse_key_piece(key: TypingReuseKey, digest: StringBuilder, piece: String, piece_digest: String, by_ref: Bool) -> Unit {
+  Array::push(key.pieces, value = piece)
+  Array::push(key.piece_digests, value = piece_digest)
+  Array::push(key.by_ref, value = by_ref)
   StringBuilder::push(digest, value = piece_digest)
   StringBuilder::push(digest, value = "|")
 }
@@ -845,28 +856,38 @@ export fn typing_dependency_transport_input_key_memo_with_config(path: String, s
 // The compatibility entry supplies no target flags; the scoped entry supplies
 // an exact identity. Both retain the same framing and environment inputs.
 fn typing_dependency_transport_input_key_memo_for_cfg_identity(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], dep_fps: Array[(String, String)], cfg_identity: String) -> TypingReuseKey with Env {
-  let pieces: Array[String] = []
+  let key = TypingReuseKey::{
+    pieces: [],
+    piece_digests: [],
+    by_ref: [],
+    digest: ""
+  }
   let digest = StringBuilder::new()
   if cfg_identity != "" {
-    push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = cfg_identity, piece_digest = compact_string_fingerprint(cfg_identity))
+    push_typing_reuse_key_piece(key = key, digest = digest, piece = cfg_identity, piece_digest = compact_string_fingerprint(cfg_identity), by_ref = false)
   } else ()
   let owner = normalize_path(path)
-  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = owner, piece_digest = compact_string_fingerprint(owner))
-  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = source, piece_digest = compact_string_fingerprint(source))
-  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = semantics_seed, piece_digest = compact_string_fingerprint(semantics_seed))
+  push_typing_reuse_key_piece(key = key, digest = digest, piece = owner, piece_digest = compact_string_fingerprint(owner), by_ref = false)
+  push_typing_reuse_key_piece(key = key, digest = digest, piece = source, piece_digest = compact_string_fingerprint(source), by_ref = false)
+  push_typing_reuse_key_piece(key = key, digest = digest, piece = semantics_seed, piece_digest = compact_string_fingerprint(semantics_seed), by_ref = false)
   let resolution_seed = resolution_env_seed()
-  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = resolution_seed, piece_digest = compact_string_fingerprint(resolution_seed))
+  push_typing_reuse_key_piece(key = key, digest = digest, piece = resolution_seed, piece_digest = compact_string_fingerprint(resolution_seed), by_ref = false)
   let count = __to_string(Array::length(dep_envs))
-  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = count, piece_digest = count)
+  push_typing_reuse_key_piece(key = key, digest = digest, piece = count, piece_digest = count, by_ref = false)
   let mut i = 0
   while i < Array::length(dep_envs) {
     let (dep_path, dep_env) = Array::get(dep_envs, at = i)
-    push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = dep_path, piece_digest = compact_string_fingerprint(dep_path))
+    push_typing_reuse_key_piece(key = key, digest = digest, piece = dep_path, piece_digest = compact_string_fingerprint(dep_path), by_ref = false)
     let (env_text, env_digest) = typing_dependency_env_text(dep_path = dep_path, dep_env = dep_env, dep_fps = dep_fps)
-    push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = env_text, piece_digest = env_digest)
+    push_typing_reuse_key_piece(key = key, digest = digest, piece = env_text, piece_digest = env_digest, by_ref = true)
     i = i + 1
   }
-  TypingReuseKey::{ pieces: pieces, digest: StringBuilder::freeze(digest) }
+  TypingReuseKey::{
+    pieces: key.pieces,
+    piece_digests: key.piece_digests,
+    by_ref: key.by_ref,
+    digest: StringBuilder::freeze(digest)
+  }
 }
 
 /// The key's text, materialized. Byte-identical to
@@ -906,16 +927,114 @@ export fn typing_reuse_key_matches(text: String, key: TypingReuseKey) -> Bool {
   ok && pos == end
 }
 
-/// The key text's byte length, without building it.
+/// Whether `text` -- a key as a witness STORES it -- is exactly this key, read
+/// in place. A stored piece is either inline (`<len>:<text>`, as
+/// `typing_reuse_key_matches` reads it) or a reference (`#<len>:<digest>`)
+/// to a text-store record (#2825). A reference matches only when its digest is
+/// the live piece's AND the stored record's bytes equal the live piece: the
+/// digest locates the record and rejects early, it never decides a hit. Either
+/// form is accepted at any position, so the comparison is always against the
+/// live bytes.
+fn typing_reuse_key_matches_in_namespace(text: String, key: TypingReuseKey, namespace: String) -> Bool with Env + Fs {
+  let end = String::length(text)
+  let header = typing_reuse_key_header
+  let mut pos = String::length(header)
+  let mut ok = pos <= end && String::substring(text, start = 0, end = pos) == header
+  let mut i = 0
+  while ok && i < Array::length(key.pieces) {
+    let piece = Array::get(key.pieces, at = i)
+    if pos < end && String::byte_at(text, at = pos) == '#' {
+      match parse_typing_reuse_segment(text = text, pos = pos + 1) {
+        Some((stored_digest, next)) => if stored_digest != Array::get(key.piece_digests, at = i) {
+          ok = false
+        } else if typing_reuse_stored_text_is(digest = stored_digest, text = piece, namespace = namespace) {
+          pos = next
+        } else {
+          ok = false
+        },
+        None => ok = false
+      }
+    } else {
+      let prefix = String::concat(__to_string(String::length(piece)), ":")
+      let piece_start = pos + String::length(prefix)
+      let piece_end = piece_start + String::length(piece)
+      if piece_end > end || String::substring(text, start = pos, end = piece_start) != prefix || String::substring(text, start = piece_start, end = piece_end) != piece {
+        ok = false
+      } else {
+        pos = piece_end
+      }
+    }
+    i = i + 1
+  }
+  ok && pos == end
+}
+
+/// The stored key's byte length, without building it: a `by_ref` piece is
+/// stored as `#<len>:<digest>`, every other piece inline.
 fn typing_reuse_key_length(_ key: TypingReuseKey) -> Int {
   let mut n = String::length(typing_reuse_key_header)
   let mut i = 0
   while i < Array::length(key.pieces) {
-    let len = String::length(Array::get(key.pieces, at = i))
-    n = n + String::length(__to_string(len)) + 1 + len
+    let stored = if Array::get(key.by_ref, at = i) {
+      Array::get(key.piece_digests, at = i)
+    } else {
+      Array::get(key.pieces, at = i)
+    }
+    let len = String::length(stored)
+    let marker = if Array::get(key.by_ref, at = i) {
+      1
+    } else {
+      0
+    }
+    n = n + marker + String::length(__to_string(len)) + 1 + len
     i = i + 1
   }
   n
+}
+
+/// The text-store records this walk has written or read, by path: what the
+/// file held when this walk last touched it. Reset with the other per-walk
+/// memos. A reader still compares the remembered bytes against the live
+/// piece, so remembering a record can only spare a read, never admit a hit.
+let typing_reuse_text_memo_cell: Array[MutMap[String, String]] = [
+  MutMap::new_string()
+]
+
+fn typing_reuse_text_memo() -> MutMap[String, String] {
+  Array::get(typing_reuse_text_memo_cell, at = 0)
+}
+
+fn typing_reuse_stored_text(digest: String, namespace: String) -> Option[String] with Env + Fs {
+  let path = persistent_typing_dependency_env_reuse_text_path_in_namespace(digest, namespace = namespace)
+  match MutMap::get(typing_reuse_text_memo(), k = path) {
+    Some(text) => Some(text),
+    None => if Fs::exists(path) {
+      let text = Fs::read_file(path)
+      MutMap::set(typing_reuse_text_memo(), k = path, v = text)
+      Some(text)
+    } else {
+      None
+    }
+  }
+}
+
+/// Whether the record `digest` names holds exactly `text`. A missing record
+/// does not.
+fn typing_reuse_stored_text_is(digest: String, text: String, namespace: String) -> Bool with Env + Fs {
+  typing_reuse_stored_text(digest = digest, namespace = namespace) == Some(text)
+}
+
+/// Store one by-reference piece. The record is rewritten unless this walk
+/// already knows it holds exactly `text`, so a torn or foreign record is
+/// repaired by the next publication instead of failing every later lookup.
+fn typing_reuse_store_text(digest: String, text: String, namespace: String) -> Unit with Env + Fs {
+  let path = persistent_typing_dependency_env_reuse_text_path_in_namespace(digest, namespace = namespace)
+  if typing_reuse_stored_text_is(digest = digest, text = text, namespace = namespace) {
+    ()
+  } else {
+    Fs::write_file(path, contents = text)
+    MutMap::set(typing_reuse_text_memo(), k = path, v = text)
+  }
 }
 
 /// A dependency's env text and its fingerprint.
@@ -958,7 +1077,17 @@ fn typing_dependency_env_text(dep_path: String, dep_env: TypeEnv, dep_fps: Array
 /// flushed past it straight to the file. A write torn part-way leaves a
 /// segment whose stated length runs past the end of the file, which does not
 /// parse, so it misses like any other malformed witness.
-fn write_typing_reuse_binding(path: String, tag: String, input_key: TypingReuseKey, target_fingerprint: String, target_text: String) -> Unit with Fs {
+fn write_typing_reuse_binding(path: String, tag: String, input_key: TypingReuseKey, target_fingerprint: String, target_text: String, namespace: String) -> Unit with Env + Fs {
+  // The texts a witness names go first, so a witness is never on disk before
+  // a record it references: a publication torn here leaves no witness at
+  // all, or one whose lookup misses.
+  let mut r = 0
+  while r < Array::length(input_key.pieces) {
+    if Array::get(input_key.by_ref, at = r) {
+      typing_reuse_store_text(digest = Array::get(input_key.piece_digests, at = r), text = Array::get(input_key.pieces, at = r), namespace = namespace)
+    } else ()
+    r = r + 1
+  }
   let staged: Array[String] = []
   let started: Array[Bool] = [false]
   typing_reuse_put(path = path, staged = staged, started = started, text = tag)
@@ -966,8 +1095,18 @@ fn write_typing_reuse_binding(path: String, tag: String, input_key: TypingReuseK
   typing_reuse_put(path = path, staged = staged, started = started, text = typing_reuse_key_header)
   let mut i = 0
   while i < Array::length(input_key.pieces) {
-    let piece = Array::get(input_key.pieces, at = i)
-    typing_reuse_put(path = path, staged = staged, started = started, text = String::concat(__to_string(String::length(piece)), ":"))
+    let by_ref = Array::get(input_key.by_ref, at = i)
+    let piece = if by_ref {
+      Array::get(input_key.piece_digests, at = i)
+    } else {
+      Array::get(input_key.pieces, at = i)
+    }
+    let marker = if by_ref {
+      "#"
+    } else {
+      ""
+    }
+    typing_reuse_put(path = path, staged = staged, started = started, text = String::concat(marker, String::concat(__to_string(String::length(piece)), ":")))
     typing_reuse_put(path = path, staged = staged, started = started, text = piece)
     i = i + 1
   }
@@ -1100,6 +1239,7 @@ let typing_dependency_env_reuse_valid_witness_memo: Array[String] = []
 
 export fn typing_dependency_env_reuse_valid_witness_memo_reset() -> Unit {
   Array::truncate(typing_dependency_env_reuse_valid_witness_memo, length = 0)
+  Array::set(typing_reuse_text_memo_cell, at = 0, value = MutMap::new_string())
 }
 
 fn typing_dependency_env_reuse_eligibility_is_valid(_ fingerprint: String) -> Bool with Env + Fs {
@@ -1155,7 +1295,7 @@ export fn publish_typing_dependency_env_reuse_eligibility(input_key: TypingReuse
 
 /// Use the caller's captured cache namespace.
 export fn publish_typing_dependency_env_reuse_eligibility_in_namespace(input_key: TypingReuseKey, fingerprint: String, target_text: String, namespace: String) -> Unit with Env + Fs {
-  write_typing_reuse_binding(path = persistent_typing_dependency_env_reuse_eligibility_path_in_namespace(fingerprint, namespace = namespace), tag = typing_dependency_env_reuse_witness_v10_tag, input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
+  write_typing_reuse_binding(path = persistent_typing_dependency_env_reuse_eligibility_path_in_namespace(fingerprint, namespace = namespace), tag = typing_dependency_env_reuse_witness_v10_tag, input_key = input_key, target_fingerprint = fingerprint, target_text = target_text, namespace = namespace)
   if contains_str(arr = typing_dependency_env_reuse_valid_witness_memo, target = fingerprint) {
     ()
   } else {
@@ -1178,7 +1318,7 @@ export fn load_typing_dependency_env_reuse_target_in_namespace(path: String, inp
         // Only an exact binding reuses: the witness the alias names carries
         // this verbatim input key, and its target text is the raw record.
         match typing_dependency_env_reuse_witness_text_in_namespace(target_fingerprint, namespace = namespace) {
-          Some((witness_input_key, target_text)) => if !typing_reuse_key_matches(text = witness_input_key, key = input_key) {
+          Some((witness_input_key, target_text)) => if !typing_reuse_key_matches_in_namespace(text = witness_input_key, key = input_key, namespace = namespace) {
             None
           } else {
             match load_canonical_typing_dependency_env_reuse_target_in_namespace(target_fingerprint = target_fingerprint, expected_target_text = target_text, namespace = namespace) {
