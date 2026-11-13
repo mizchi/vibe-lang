@@ -287,6 +287,13 @@ out="$(vibe "$VIBERUN" test --provide Greeter "$FX/extern_greeter_test.vibe" 2>&
 [ "$status" != 0 ] || fail "[viberun] vibe test accepted --provide without <Effect>=<component.wasm>"
 printf '%s\n' "$out" | grep -qF 'test: --provide takes <Effect>=<component.wasm>, got `Greeter`' \
   || { printf '%s\n' "$out" >&2; fail "[viberun] a malformed vibe test --provide is not refused with the spelling that works"; }
+# A trailing `--provide` with no value is refused on the parallel path too
+# (`--jobs 2` with two files splits into shares, which must not drop it).
+status=0
+out="$(vibe "$VIBERUN" test --jobs 2 "$FX/extern_greeter_test.vibe" "$FX/extern_greeter_test.vibe" --provide 2>&1)" || status=$?
+[ "$status" != 0 ] || fail "[viberun] vibe test --jobs 2 accepted a trailing --provide with no value"
+printf '%s\n' "$out" | grep -qF 'test: missing value after --provide' \
+  || { printf '%s\n' "$out" >&2; fail "[viberun] a trailing --provide is not refused by name"; }
 # The node runner cannot instantiate the provider, and says so instead of
 # answering every operation with its fallback stub.
 status=0
