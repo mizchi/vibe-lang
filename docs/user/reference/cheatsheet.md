@@ -2711,6 +2711,27 @@ starts, naming the effect, its operations and the flag. A provider whose
 export has another signature is refused at link time. The node runner cannot
 instantiate a component and refuses such a program.
 
+`main` may instead make the provider optional (`allows Kv?`), the way
+`allows Fs?` makes a standard provider optional. A bound provider is the
+grant: `perform? Kv::get(k)` answers `Granted(v)` when `vibe run --provide
+Kv=..` bound one, and `NotGranted` when nothing did. Without one the
+operation is not imported at all, so the program runs instead of being
+refused. A plain `Kv::get(k)` still needs the required grade.
+
+```vibe
+extern effect Greeter {
+  greet(String) -> String
+}
+
+fn main() -> Unit allows Console + Greeter? {
+  match perform? Greeter::greet("vibe") {
+    Granted(s) => println(s),
+    NotGranted => println("no greeter bound"),
+    Errored(e) => println("greeter failed: \{e}")
+  }
+}
+```
+
 A `test` block mocks a host effect the same way: it may require the effect
 (`test "x" allows Kv { .. }`), and `vibe test` binds the provider for every
 test it runs:

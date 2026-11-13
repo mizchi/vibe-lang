@@ -1,7 +1,7 @@
 // Host-provided effects (ADR-0124, #2656).
 
 import @vibe/compiler/core {
-  EffectOwner, Expr, Stmt, TypeExpr, extern_effect_binding_source, set_program_extern_effects
+  EffectOwner, Expr, Stmt, TypeExpr, expr_any_node, extern_effect_binding_source, set_program_extern_effects
 }
 
 import @vibe/parser {
@@ -29,6 +29,16 @@ export fn bind_extern_effects(_ stmts: Array[Stmt]) -> Unit with Exception {
 /// every binding takes its declaration's module, so the two stay aligned.
 /// An empty `owners` tracks nothing.
 export fn bind_extern_effects_owned(stmts: Array[Stmt], owners: Array[Int]) -> Unit with Exception {
+  bind_extern_effects_live(stmts = stmts, owners = owners, live = extern_operations_referenced(stmts))
+}
+
+/// #4082: `bind_extern_effects_owned` binding only the operations in `live`
+/// (`Kv::get`). An operation nothing calls gets no binding, so the program
+/// does not import it: a test build keeps every function it is handed, and a
+/// call `perform?` answered `NotGranted` for left a provider import no runner
+/// could link. The caller passes what remains reachable once that lowering is
+/// accounted for; `extern_operations_referenced` is the plain answer.
+export fn bind_extern_effects_live(stmts: Array[Stmt], owners: Array[Int], live: Array[String]) -> Unit with Exception {
   let hosts: Array[String] = []
   xe_collect_hosts(stmts = stmts, out = hosts)
   set_program_extern_effects(hosts)
@@ -40,7 +50,7 @@ export fn bind_extern_effects_owned(stmts: Array[Stmt], owners: Array[Int]) -> U
     while i < Array::length(stmts) {
       let before = Array::length(kept)
       match Array::get(stmts, at = i) {
-        SEffectDef(_, name, _, ops, HostProvided) => xe_bind(effect = name, ops = ops, out = kept),
+        SEffectDef(_, name, _, ops, HostProvided) => xe_bind(effect = name, ops = xe_live_ops(effect = name, ops = ops, live = live), out = kept),
         other => Array::push(kept, value = other)
       }
       if tracked {
@@ -64,6 +74,105 @@ export fn bind_extern_effects_owned(stmts: Array[Stmt], owners: Array[Int]) -> U
     }
   }
   ()
+}
+
+/// ADR-0124 (#4082): the `extern effect` operations (`Kv::get`) any
+/// statement names, the declarations aside.
+export fn extern_operations_referenced(_ stmts: Array[Stmt]) -> Array[String] {
+  let hosts: Array[String] = []
+  xe_collect_hosts(stmts = stmts, out = hosts)
+  let out: Array[String] = []
+  if Array::length(hosts) > 0 {
+    xe_collect_references(stmts = stmts, hosts = hosts, out = out)
+  }
+  out
+}
+
+fn xe_collect_references(stmts: Array[Stmt], hosts: Array[String], out: Array[String]) -> Unit {
+  let note = (e: Expr) -> {
+    match e {
+      EIdent(name, _) => {
+        let at = String::index_of(name, needle = "::")
+        if at > 0 {
+          let effect = String::substring(name, start = 0, end = at)
+          let mut known = false
+          for host in hosts {
+            if host == effect {
+              known = true
+            }
+          }
+          let mut seen = false
+          for o in out {
+            if o == name {
+              seen = true
+            }
+          }
+          if known && !seen {
+            Array::push(out, value = name)
+          }
+        }
+      },
+      _ => ()
+    }
+    false
+  }
+  // Every statement that holds an expression (`Stmt` in @vibe/ast); the
+  // others are declarations.
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, value) => {
+        let _ = expr_any_node(expr = value, pred = note)
+      },
+      SLetMut(_, _, value) => {
+        let _ = expr_any_node(expr = value, pred = note)
+      },
+      STest(_, body) => {
+        let _ = expr_any_node(expr = body, pred = note)
+      },
+      SBench(_, body) => {
+        let _ = expr_any_node(expr = body, pred = note)
+      },
+      SExample(_, body) => {
+        let _ = expr_any_node(expr = body, pred = note)
+      },
+      SExpr(value) => {
+        let _ = expr_any_node(expr = value, pred = note)
+      },
+      SLetPat(_, value) => {
+        let _ = expr_any_node(expr = value, pred = note)
+      },
+      SFnDecl(_, _, body, requires, ensures) => {
+        let _ = expr_any_node(expr = body, pred = note)
+        for e in requires {
+          let _ = expr_any_node(expr = e, pred = note)
+        }
+        for e in ensures {
+          let _ = expr_any_node(expr = e, pred = note)
+        }
+      },
+      SModule(_, _, body) => xe_collect_references(stmts = body, hosts = hosts, out = out),
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn xe_live_ops(effect: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], live: Array[String]) -> Array[(String, Array[TypeExpr], TypeExpr)] {
+  let out: Array[(String, Array[TypeExpr], TypeExpr)] = []
+  for op in ops {
+    let (name, _, _) = op
+    let qualified = "\{effect}::\{name}"
+    let mut found = false
+    for l in live {
+      if l == qualified {
+        found = true
+      }
+    }
+    if found {
+      Array::push(out, value = op)
+    }
+  }
+  out
 }
 
 fn xe_collect_hosts(stmts: Array[Stmt], out: Array[String]) -> Unit {

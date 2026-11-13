@@ -24,7 +24,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import @vibe/compiler/core {
-  leb128_encode_u32_slot
+  leb128_encode_u32_slot, reloc_slot_width
 }
 
 import ./linked_body_cache_edit.vibe {
@@ -280,9 +280,142 @@ fn lc_unmovable(_ body: Bytes) -> LcMovedBody {
   LcMovedBody::{ ok: false, body: body, edits: [] }
 }
 
+/// Overwrite `b` into `out` at `off`, when it is exactly `width` bytes.
+fn lc_overwrite(out: Bytes, off: Int, width: Int, b: Bytes) -> Bool {
+  if Bytes::length(b) != width {
+    false
+  } else {
+    let mut j = 0
+    while j < width {
+      Bytes::set(out, at = off + j, value = Bytes::get(b, at = j))
+      j = j + 1
+    }
+    true
+  }
+}
+
+/// #3941 in-place patch: at a slot width every relocatable immediate was
+/// written at a fixed width, so a moved index normally fits the bytes the old
+/// one occupied. Then the body is copied once and each moved immediate is
+/// overwritten where it stands: no edit list, no span rebuild, and -- because
+/// nothing changed length -- no offset of a blind record or linemap row moves,
+/// so the result carries no edits for the caller to shift by. `None` when a
+/// value no longer fits its slot (or anything else this cannot place); the
+/// caller then takes the general rebuild, which answers exactly as before.
+fn lc_move_body_inplace(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache, rows: Array[Int]) -> Option[LcMovedBody] {
+  let scanned = handle {
+    Some(scan_body_relocs(body = body, start = 0, end_pos = Bytes::length(body)))
+  } with { Exception::Throw(_) => None }
+  match scanned {
+    None => None,
+    Some(r) => {
+      let len = Bytes::length(body)
+      let out = Bytes::new()
+      let mut copied = false
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(r.offsets) {
+        let rk = Array::get(r.kinds, at = i)
+        if rk == reloc_kind_func || rk == reloc_kind_tag || rk == reloc_kind_global {
+          let v = Array::get(r.values, at = i)
+          let n = if rk == reloc_kind_func {
+            lc_map_call(m = m, v = v)
+          } else if rk == reloc_kind_tag {
+            lc_map_tag(m = m, t = v)
+          } else {
+            lc_map_global(m = m, g = v)
+          }
+          if n < 0 {
+            ok = false
+          } else if n != v {
+            if !copied {
+              Bytes::blit(out, src = body, start = 0, end = len)
+              copied = true
+            } else {
+              ()
+            }
+            let b = Bytes::new()
+            leb128_encode_u32_slot(buf = b, value = n)
+            ok = lc_overwrite(out = out, off = Array::get(r.offsets, at = i), width = Array::get(r.widths, at = i), b = b)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      for k in rows {
+        let kind = Array::get(cache.blind_kinds, at = k)
+        if ok && Array::get(cache.blind_body, at = k) == owner && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32 || kind == blind_kind_ctor_tag) {
+          let off = Array::get(cache.blind_offsets, at = k)
+          let op = if kind == blind_kind_fn_value {
+            66
+          } else {
+            65
+          }
+          let s = Array::get(cache.blind_syms, at = k)
+          let n = if kind == blind_kind_ctor_tag {
+            lc_map_ctor_tag(m = m, t = s)
+          } else {
+            lc_map_slot(m = m, s = s)
+          }
+          if off < 0 || off >= len || Bytes::get(body, at = off) != op || n < 0 {
+            ok = false
+          } else if n != s {
+            if !copied {
+              Bytes::blit(out, src = body, start = 0, end = len)
+              copied = true
+            } else {
+              ()
+            }
+            let b = Bytes::new()
+            if kind == blind_kind_fn_value {
+              emit_i64_const_slot(buf = b, value = (n<<2)|2)
+            } else if kind == blind_kind_table_slot_i32 {
+              emit_i32_const_slot(buf = b, value = n)
+            } else {
+              emit_i32_const_ctor_tag(buf = b, value = n)
+            }
+            ok = lc_overwrite(out = out, off = off, width = lc_sleb_end(body = body, p = off + 1) - off, b = b)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      }
+      if !ok {
+        None
+      } else if copied {
+        Some(LcMovedBody::{ ok: true, body: out, edits: [] })
+      } else {
+        Some(LcMovedBody::{ ok: true, body: body, edits: [] })
+      }
+    }
+  }
+}
+
 /// Rewrite one body. `owner` is its record owner as the harvest stored it;
 /// the function-value records among `cache.blind_*[rows]` are this body's.
+/// At a slot width the in-place patch answers first; the rebuild below is
+/// the general path, and the only one at width 0.
 fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache, rows: Array[Int]) -> LcMovedBody {
+  let patched = if reloc_slot_width() > 0 {
+    lc_move_body_inplace(m = m, body = body, owner = owner, cache = cache, rows = rows)
+  } else {
+    None
+  }
+  match patched {
+    Some(moved) => moved,
+    None => lc_move_body_rebuild(m = m, body = body, owner = owner, cache = cache, rows = rows)
+  }
+}
+
+/// The general rebuild: every moved immediate re-encoded into a fresh body,
+/// with `edits` recording each change so the caller can shift record
+/// offsets past a re-encoded immediate whose width changed.
+fn lc_move_body_rebuild(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache, rows: Array[Int]) -> LcMovedBody {
   let edits: Array[LcEdit] = []
   let mut ok = true
   let scanned = handle {

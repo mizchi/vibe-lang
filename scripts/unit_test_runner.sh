@@ -67,6 +67,9 @@ EXCLUDE_PATTERNS=(
   # harness does not bind. scripts/test_wasm_import_gate.sh runs it with
   # `vibe test --provide Greeter=greeter.component.wasm`, and without one.
   '^fixtures/wasm_import/extern_greeter_test\.vibe$'
+  # #4082: its test expects the answer of a provider this harness does not
+  # bind. Its unbound twin, extern_greeter_optional_test.vibe, runs here.
+  '^fixtures/wasm_import/extern_greeter_optional_provided_test\.vibe$'
   # #3719: imports z3_wasi.wasm, which scripts/build_z3_wasi.sh builds (about
   # 25 minutes) and which is not committed, so it is absent here. The CI job
   # `prove-wasm` builds or restores it and runs this file with `vibe test`.
