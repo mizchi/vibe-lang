@@ -53,6 +53,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_global_set,
   emit_heap_memory_grow_check,
   emit_i32_add,
+  emit_i32_and,
   emit_i32_const,
   emit_i32_eq,
   emit_i32_load,
@@ -65,6 +66,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_eqz,
   emit_i64_ge_s,
   emit_i64_lt_s,
+  emit_i64_or,
   emit_if_void,
   emit_local_get,
   emit_local_set,
@@ -213,6 +215,40 @@ fn gc_map_trap_if_scalar(buf: Bytes, map_l: Int) -> Unit {
   emit_if_void(buf)
   bytebuf_push(buf = buf, byte = 0)
   emit_end(buf)
+}
+
+/// #2334: a MapBuilder handle ([count i32 @0][cap i32 @4][storage @8], the
+/// linear lane's layout) is marked scalar-keyed by this bit of its capacity
+/// word, which no capacity reaches.
+let gc_mapbuilder_scalar_cap_marker: Int = 1073741824
+
+/// #2334: trap when the builder at `mb_l` is scalar-keyed; every String-keyed
+/// builder operation runs this first.
+fn gc_mapbuilder_trap_if_scalar(buf: Bytes, mb_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = mb_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  emit_i32_const(buf = buf, value = gc_mapbuilder_scalar_cap_marker)
+  emit_i32_and(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf = buf, byte = 0)
+  emit_end(buf)
+}
+
+/// #2334: mark the builder at `mb_l` scalar-keyed and strip the mark from the
+/// capacity word loaded into `cap_l`.
+fn gc_mapbuilder_mark_scalar_cap(buf: Bytes, mb_l: Int, cap_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = mb_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = cap_l)
+  emit_i64_const(buf = buf, value = gc_mapbuilder_scalar_cap_marker)
+  emit_i64_or(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf = buf, align = 2, offset = 4)
+  emit_local_get(buf = buf, idx = cap_l)
+  emit_i64_const(buf = buf, value = gc_mapbuilder_scalar_cap_marker - 1)
+  emit_i64_and(buf)
+  emit_local_set(buf = buf, idx = cap_l)
 }
 
 /// #2334: write the key class of the fresh map block at `map_l`: the scalar
@@ -541,11 +577,13 @@ export fn gc_compile_map_iter_get_checked(buf: Bytes, map_expr: Expr, index_expr
 
 // Ordered named-call dispatch group.
 export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception, fname: String, source_is_bound: Bool, ctor_lookup_idx: Int, compile_call_gc_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception, gc_mut_alias_call_fn: (Bytes, String, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception, gc_compile_native_array_ref_fn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
-  if fname == "MapBuilder::set" {
+  if fname == "MapBuilder::set" || fname == "MapBuilder::__scalar_set" {
     // Update-or-append (gc lane semantics), over the handle-indirect
     // storage (see MapBuilder::new). Grows storage ×2 when an append
     // finds it full — the old fixed-block version wrote past the block
-    // with no check (#723-family heap corruption).
+    // with no check (#723-family heap corruption). #2334: the scalar set
+    // compares keys as exact i64 values and marks the builder.
+    let scalar_key = fname == "MapBuilder::__scalar_set"
     let (eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
@@ -582,6 +620,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_load(buf = buf, align = 2, offset = 4)
     emit_i64_extend_i32_u(buf)
     emit_local_set(buf = buf, idx = cap_l)
+    if scalar_key {
+      gc_mapbuilder_mark_scalar_cap(buf = buf, mb_l = mb_l, cap_l = cap_l)
+    } else {
+      gc_mapbuilder_trap_if_scalar(buf = buf, mb_l = mb_l)
+    }
     emit_local_get(buf = buf, idx = mb_l)
     emit_i32_wrap_i64(buf)
     emit_i64_load(buf = buf, align = 3, offset = 8)
@@ -607,7 +650,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf = buf, align = 3, offset = 0)
     emit_local_get(buf = buf, idx = mk_l)
-    emit_call_resolved(buf = buf, ctx = ctx, fidx = eq_fi)
+    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
     // Found: update value in place
@@ -669,6 +712,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_wrap_i64(buf)
     emit_i32_const(buf = buf, value = 2)
     emit_i32_mul(buf)
+    if scalar_key {
+      // The doubled capacity is below the mark's bit: adding sets it.
+      emit_i32_const(buf = buf, value = gc_mapbuilder_scalar_cap_marker)
+      emit_i32_add(buf)
+    } else ()
     emit_i32_store(buf = buf, align = 2, offset = 4)
     emit_local_get(buf = buf, idx = ns_l)
     emit_local_set(buf = buf, idx = st_l)
@@ -704,9 +752,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i64_const(buf = buf, value = 0)
     nl + 9
   }
-  else if fname == "MapBuilder::freeze" {
+  else if fname == "MapBuilder::freeze" || fname == "MapBuilder::__scalar_freeze" {
     // Copy the handle's entries into a fresh plain Map block (the
     // builder is handle-indirect, so freeze is no longer a passthrough).
+    // #2334: the scalar freeze marks the map scalar-keyed.
+    let scalar_key = fname == "MapBuilder::__scalar_freeze"
     let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     let fb_l = nl
     let fc_l = nl + 1
@@ -717,6 +767,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
     emit_local_set(buf = buf, idx = fb_l)
+    if scalar_key {
+      ()
+    } else {
+      gc_mapbuilder_trap_if_scalar(buf = buf, mb_l = fb_l)
+    }
     emit_local_get(buf = buf, idx = fb_l)
     emit_i32_wrap_i64(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
@@ -741,7 +796,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_wrap_i64(buf)
     emit_i32_store(buf = buf, align = 2, offset = 0)
     // #2334: a builder's keys are Strings.
-    gc_map_write_key_class(buf = buf, map_l = fm_l, scalar = false)
+    gc_map_write_key_class(buf = buf, map_l = fm_l, scalar = scalar_key)
     emit_local_get(buf = buf, idx = fm_l)
     emit_i32_wrap_i64(buf)
     emit_i32_const(buf = buf, value = 8)
@@ -758,10 +813,12 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf = buf, idx = fm_l)
     nl + 3
   }
-  else if fname == "MapBuilder::has_key" {
+  else if fname == "MapBuilder::has_key" || fname == "MapBuilder::__scalar_has_key" {
     // #1310: mirrors the linear lane's O(n) scan over the handle-
     // indirect storage (see MapBuilder::set above), and Map::has_key's
     // block-i64 shape just above.
+    // #2334: see `MapBuilder::__scalar_set` above.
+    let scalar_key = fname == "MapBuilder::__scalar_has_key"
     let (mhk_eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
@@ -777,6 +834,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     Array::push(local_names, value = "[gc-temp]__mhk_i")
     emit_local_set(buf = buf, idx = mk_l)
     emit_local_set(buf = buf, idx = mb_l)
+    if scalar_key {
+      ()
+    } else {
+      gc_mapbuilder_trap_if_scalar(buf = buf, mb_l = mb_l)
+    }
     emit_local_get(buf = buf, idx = mb_l)
     emit_i32_wrap_i64(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
@@ -804,7 +866,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf = buf, align = 3, offset = 0)
     emit_local_get(buf = buf, idx = mk_l)
-    emit_call_resolved(buf = buf, ctx = ctx, fidx = mhk_eq_fi)
+    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = mhk_eq_fi)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
     emit_i64_const(buf = buf, value = 1)
@@ -821,10 +883,12 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_end(buf)
     nl + 5
   }
-  else if fname == "MapBuilder::get" {
+  else if fname == "MapBuilder::get" || fname == "MapBuilder::__scalar_get" {
     // #1310: same scan as MapBuilder::has_key, wrapping a hit in a
     // synthesized `Some(..)` call (same technique the linear lane uses;
     // ordinary enum-constructor codegen handles it in both lanes).
+    // #2334: see `MapBuilder::__scalar_set` above.
+    let scalar_key = fname == "MapBuilder::__scalar_get"
     let (mbg_eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
@@ -845,6 +909,11 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let mut nl2 = nl + 7
     emit_local_set(buf = buf, idx = mk_l)
     emit_local_set(buf = buf, idx = mb_l)
+    if scalar_key {
+      ()
+    } else {
+      gc_mapbuilder_trap_if_scalar(buf = buf, mb_l = mb_l)
+    }
     emit_local_get(buf = buf, idx = mb_l)
     emit_i32_wrap_i64(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
@@ -873,7 +942,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf = buf, align = 3, offset = 0)
     emit_local_get(buf = buf, idx = mk_l)
-    emit_call_resolved(buf = buf, ctx = ctx, fidx = mbg_eq_fi)
+    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = mbg_eq_fi)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
     emit_local_get(buf = buf, idx = st_l)

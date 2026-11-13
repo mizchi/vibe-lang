@@ -1,0 +1,106 @@
+// #2334: `MapBuilder` takes the builtin map's `Int`, `Char` and `Bool` keys.
+// Each keyed builder call is typed by the checker, and a scalar key is
+// compared as an exact i64 value -- never through the String-aware `eq`.
+// `freeze` gives a scalar-keyed `Map`. The same file runs on the linear and
+// the wasm-gc lanes (tests/gates/mid/6b_40, step 40h8s).
+
+fn squares(_ n: Int) -> Map[Int, Int] {
+  let b = MapBuilder::new()
+  let mut i = 0
+  while i < n {
+    MapBuilder::set(b, key = i, value = i * i)
+    i = i + 1
+  }
+  MapBuilder::freeze(b)
+}
+
+test "Int keys: set, has_key, get, freeze" {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, key = 1, value = "one")
+  MapBuilder::set(b, key = 2, value = "two")
+  inspect(MapBuilder::has_key(b, key = 2), content = "true")
+  inspect(MapBuilder::has_key(b, key = 3), content = "false")
+  let hit: Option[String] = MapBuilder::get(b, key = 1)
+  let miss: Option[String] = MapBuilder::get(b, key = 3)
+  inspect(hit, content = "Some(one)")
+  inspect(miss, content = "None")
+  let m = MapBuilder::freeze(b)
+  inspect(Map::size(m), content = "2")
+  inspect(Map::get(m, key = 2), content = "two")
+  inspect(m[1], content = "one")
+}
+
+test "a frozen builder past the growth and index thresholds" {
+  // 20 entries: the builder's storage grows from 8, and a String-keyed
+  // freeze would build its hash index at 8.
+  let m = squares(20)
+  inspect(Map::size(m), content = "20")
+  inspect(Map::get(m, key = 0), content = "0")
+  inspect(Map::get(m, key = 19), content = "361")
+  inspect(Map::has_key(m, key = 20), content = "false")
+  inspect(Map::keys(m), content = "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]")
+}
+
+test "the frozen map takes the scalar Map operations" {
+  let m = Map::set(Map::delete(squares(10), key = 3), key = 4, value = -4)
+  inspect(Map::size(m), content = "9")
+  inspect(Map::has_key(m, key = 3), content = "false")
+  inspect(Map::get(m, key = 4), content = "-4")
+  inspect(m == Map::set(Map::delete(squares(10), key = 3), key = 4, value = -4), content = "true")
+  inspect(m == squares(10), content = "false")
+}
+
+test "overwriting a key keeps one entry" {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, key = 7, value = "a")
+  MapBuilder::set(b, key = 7, value = "b")
+  let m = MapBuilder::freeze(b)
+  inspect(Map::size(m), content = "1")
+  inspect(Map::get(m, key = 7), content = "b")
+}
+
+test "Int keys whose low 32 bits are zero are distinct" {
+  // Read as packed String refs, `1 << 32` and `2 << 32` are two empty
+  // Strings, which the String-aware `eq` calls equal.
+  let b = MapBuilder::new()
+  MapBuilder::set(b, key = 1 << 32, value = "first")
+  MapBuilder::set(b, key = 2 << 32, value = "second")
+  let m = MapBuilder::freeze(b)
+  inspect(Map::size(m), content = "2")
+  inspect(Map::get(m, key = 1 << 32), content = "first")
+  inspect(Map::get(m, key = 2 << 32), content = "second")
+}
+
+test "Char and Bool keys" {
+  let cb = MapBuilder::new()
+  MapBuilder::set(cb, key = 'a', value = 1)
+  MapBuilder::set(cb, key = 'b', value = 2)
+  let cm = MapBuilder::freeze(cb)
+  inspect(Map::get(cm, key = 'b'), content = "2")
+  let bb = MapBuilder::new()
+  MapBuilder::set(bb, key = true, value = "yes")
+  MapBuilder::set(bb, key = false, value = "no")
+  let bm = MapBuilder::freeze(bb)
+  inspect(Map::get(bm, key = false), content = "no")
+  inspect(Map::size(bm), content = "2")
+}
+
+test "a String-keyed builder is unchanged" {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, key = "x", value = 1)
+  MapBuilder::set(b, key = "y", value = 2)
+  MapBuilder::set(b, key = "x", value = 3)
+  let m = MapBuilder::freeze(b)
+  inspect(Map::size(m), content = "2")
+  inspect(Map::get(m, key = "x"), content = "3")
+}
+
+test "an annotated builder parameter" {
+  let b: MapBuilder[Int, String] = MapBuilder::new()
+  fill(b)
+  inspect(Map::get(MapBuilder::freeze(b), key = 40), content = "forty")
+}
+
+fn fill(_ b: MapBuilder[Int, String]) -> Unit {
+  MapBuilder::set(b, key = 40, value = "forty")
+}
