@@ -1,0 +1,79 @@
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_report
+}
+
+// #4088: the handle-escape check (#4081) read a zero retained-argument mask
+// as an unknown callee, which may store what any argument holds into every
+// other one, and linked the result of any call it did not know to its
+// arguments' outer storage. The resolved `Array` builtins below allocate
+// their result on every lane and write into none of their arguments, so a
+// container handed to them, or answered by them, keeps its own fact. An
+// element read out of their result is still the argument's element.
+//
+// These ask the checker alone: a handled body that calls `filter` or `map`
+// hands the effect lowering a callback it cannot see through, so the
+// accepted programs are runtime-checked in
+// fixtures/handle_bound_closure_container_test.vibe only for `concat` and
+// `reverse`.
+
+let prelude = "effect Ask {\n  Get() -> Int\n}\n\nlet saved: Array[() -> Int] = []\n\nfn keep_arr(xs: Array[() -> Int]) -> Int {\n  Array::push(saved, value = Array::get(xs, at = 0))\n  0\n}\n\n"
+
+/// `body` inside a `handle` whose `g` performs what the handle answers,
+/// beside a plain closure `plain`.
+fn handled(_ body: String) -> String {
+  String::concat(prelude, "fn main() -> Int {\n  let plain = () -> 7\n  handle {\n    let g = () -> perform Ask::Get() + 1\n\{body}    ()\n  } with { Ask::Get() => resume(5) }\n  let k = Array::get(saved, at = 0)\n  k()\n}\n")
+}
+
+/// Does checking `src` refuse it as keeping `g` through `keep_arr`?
+fn refused_keep_arr(_ src: String) -> Bool {
+  String::contains(check_source_report(src), needle = "so handing it to `keep_arr`, which may keep it past the handle")
+}
+
+test "concat stores nothing one argument holds into the other" {
+  assert(check_source_ok(handled("    let arr = [plain]\n    let other = [plain]\n    Array::push(arr, value = g)\n    let _ = Array::concat(arr, other)\n    let _ = keep_arr(xs = other)\n")))
+}
+
+test "a reader handed a container holding g stores nothing into its other argument" {
+  assert(check_source_ok(handled("    let arr = [plain]\n    let other = [plain]\n    Array::push(arr, value = g)\n    let _ = Array::get(other, at = Array::length(arr) - 2)\n    let _ = keep_arr(xs = other)\n")))
+}
+
+test "a push into the result of a fresh-storage builtin leaves its arguments alone" {
+  for call in [
+    "Array::reverse(arr)",
+    "Array::concat(arr, arr)",
+    "Array::slice(arr, start = 0, end = 1)",
+    "Array::filter(arr, f = (_) -> true)",
+    "Array::map(arr, f = (h) -> h)"
+  ] {
+    assert(check_source_ok(handled("    let arr = [plain]\n    let copy = \{call}\n    Array::push(copy, value = g)\n    let _ = keep_arr(xs = arr)\n")))
+  }
+}
+
+test "the result of a fresh-storage builtin holds what its arguments hold" {
+  for call in [
+    "Array::reverse(arr)",
+    "Array::concat(other, arr)",
+    "Array::filter(arr, f = (_) -> true)",
+    "Array::map(arr, f = (h) -> h)"
+  ] {
+    assert(refused_keep_arr(handled("    let arr: Array[() -> Int] = []\n    let other = [plain]\n    Array::push(arr, value = g)\n    let copy = \{call}\n    let _ = keep_arr(xs = copy)\n")))
+  }
+}
+
+test "a store into an element of a fresh-storage builtin's result is a store into the argument's element" {
+  for call in [
+    "Array::reverse(rows)",
+    "Array::concat(none, rows)",
+    "Array::slice(rows, start = 0, end = 1)",
+    "Array::filter(rows, f = (_) -> true)",
+    "Array::map(rows, f = (r) -> r)"
+  ] {
+    assert(refused_keep_arr(handled("    let inner: Array[() -> Int] = []\n    let none: Array[Array[() -> Int]] = []\n    let rows = [inner]\n    let copy = \{call}\n    Array::push(Array::get(copy, at = 0), value = g)\n    let _ = keep_arr(xs = inner)\n")))
+  }
+}
+
+test "a program function spelled like a fresh-storage builtin is judged as unknown" {
+  let def = "fn Array::reverse(xs: Array[() -> Int]) -> Array[() -> Int] {\n  xs\n}\n\n"
+  let src = handled("    let arr = [plain]\n    let copy = Array::reverse(xs = arr)\n    Array::push(copy, value = g)\n    let _ = keep_arr(xs = arr)\n")
+  assert(String::contains(check_source_report(String::concat(def, src)), needle = "which may keep it past the handle"))
+}

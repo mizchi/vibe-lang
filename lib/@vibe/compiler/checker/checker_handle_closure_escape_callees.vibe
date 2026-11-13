@@ -261,8 +261,32 @@ export fn hce_retained_argument_mask(env: TypeEnv, name: String, noff: Int) -> I
   }
 }
 
-/// Storage names flowing into a value. A slice has fresh storage, but a
-/// getter or for-binder can still take a shared element out of that slice.
+/// #4088: a resolved `Array` builtin that answers fresh outer storage
+/// holding elements of its arguments: `slice` (and the `xs[a:b]` sugar),
+/// `reverse` and `filter` the elements of their array, `concat` those of
+/// both, and `map` whatever its callback answers, which may be the element
+/// it is handed. Every lane allocates the result, so a push into it leaves
+/// the arguments alone; a store into an element of it is a store into an
+/// argument's element (#4064). A program's own function of the spelling is
+/// no builtin (`builtin_resolves_at`).
+export fn hce_fresh_array_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
+  (name == "Array::slice" || name == "__slice" || name == "Array::reverse" || name == "Array::concat" || name == "Array::filter" || name == "Array::map") && builtin_resolves_at(env = env, name = name, ident_off = noff)
+}
+
+/// #4088: a resolved `Array` builtin that writes into none of its
+/// arguments, so it stores nothing one argument holds into another: the
+/// readers (`length`, `get`), the allocators (`with_capacity`) and the
+/// builtins that answer fresh storage (`hce_fresh_array_builtin`). A zero
+/// retained-argument mask alone says nothing: a callee nobody classified
+/// answers 0 too, and is judged as one that may store anything anywhere.
+export fn hce_nonmutating_array_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
+  hce_fresh_array_builtin(env = env, name = name, noff = noff) || (name == "Array::length" || name == "Array::get" || name == "Array::with_capacity") && builtin_resolves_at(env = env, name = name, ident_off = noff)
+}
+
+/// Storage names flowing into a value. A fresh-storage builtin's result
+/// (`hce_fresh_array_builtin`) shares no outer storage with its arguments,
+/// but a getter or for-binder can still take a shared element out of it, so
+/// its elements come from every argument's elements, as an unknown call's do.
 export fn hce_storage_sources(e: Expr, env: TypeEnv, out: Array[String], element: Bool) -> Unit {
   match e {
     EIdent(name, _) => Array::push(out, value = name),
@@ -285,9 +309,11 @@ export fn hce_storage_sources(e: Expr, env: TypeEnv, out: Array[String], element
           hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = element)
         } else if hce_store_getter(env = env, name = name, noff = off) {
           hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = true)
-        } else if (name == "Array::slice" || name == "__slice") && builtin_resolves_at(env = env, name = name, ident_off = off) {
+        } else if hce_fresh_array_builtin(env = env, name = name, noff = off) {
           if element {
-            hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = true)
+            for arg in args {
+              hce_storage_sources(e = arg, env = env, out = out, element = true)
+            }
           }
         } else {
           for arg in args {

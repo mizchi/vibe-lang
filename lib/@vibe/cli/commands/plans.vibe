@@ -61,6 +61,7 @@ import @vibe/cli/support {
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
   command_component_compile_mode,
+  format_check_report,
   unstable_closure_reset
 }
 
@@ -2161,45 +2162,3 @@ export fn selfhost_cli_user_inspect_update_args(_ args: Array[String]) -> Int wi
 
 //# Dispatch
 
-export fn is_check_report_continuation(_ line: String) -> Bool {
-  if String::starts_with(line, prefix = "hint: ") {
-    true
-  } else if String::length(line) == 0 {
-    false
-  } else {
-    let c = String::byte_at(line, at = 0)
-    c == ' ' || c == '\t'
-  }
-}
-
-/// Frame a thrown diagnostic the way `vibe check` reports one: `error: ` marks
-/// a diagnostic start, and `hint:` / leading-whitespace lines stay attached as
-/// indented continuations so `grep -c '^error: '` is an exact count (#1567 /
-/// #1888). Shared by both doors -- lib/@vibe/cli/entry.vibe and
-/// cli_adapter.vibe's verb branch -- so they cannot frame differently.
-export fn format_check_report(_ payload: String) -> String {
-  let lines = String::split(payload, sep = "\n")
-  let n = Array::length(lines)
-  if n == 0 {
-    "error: "
-  } else {
-    let mut framed = Array::slice([""], start = 0, end = 0)
-    let mut i = 0
-    while i < n {
-      let line = Array::get(lines, at = i)
-      if i == n - 1 && line == "" {
-        ()
-      } else if is_check_report_continuation(line) {
-        Array::push(framed, value = String::concat("  ", line))
-      } else {
-        Array::push(framed, value = String::concat("error: ", line))
-      }
-      i = i + 1
-    }
-    if Array::length(framed) == 0 {
-      "error: "
-    } else {
-      String::join(framed, sep = "\n")
-    }
-  }
-}

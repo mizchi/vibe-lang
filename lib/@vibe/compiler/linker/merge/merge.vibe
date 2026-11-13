@@ -18,6 +18,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
+  EffectOwner,
   ExportRenamePlan,
   LinkedUnit,
   Stmt,
@@ -576,7 +577,104 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
     gi = gi + 1
   }
   refuse_linked_impl_overlaps(merged = merged, units = units)
+  refuse_shared_extern_effect_names(merged = merged, units = units, sources = flat_sources)
   merged
+}
+
+/// ADR-0124 (#4082): a program binds one host provider per `extern effect`
+/// name -- row labels and `--provide` name an effect by its bare name -- so
+/// two declarations of one name from different packages are refused here,
+/// as host-provided-effects.md §1 decides. Before, two packages that each
+/// declared `extern effect S3` built into one `vibe:effect:./S3` import:
+/// both packages' operations reached whichever provider was bound. The
+/// declarations of one package (its contract and its implementation) are
+/// one declaration. A declaration outside any package is its own file's.
+fn refuse_shared_extern_effect_names(merged: Array[Stmt], units: Array[LinkedUnit], sources: Array[(String, String)]) -> Unit with Exception {
+  // (effect name, declaring package, its file), first declaration per package
+  let seen: Array[(String, String, String)] = []
+  for unit in units {
+    let mut i = unit.start
+    while i < unit.end && i < Array::length(merged) {
+      match Array::get(merged, at = i) {
+        SEffectDef(_, name, _, _, HostProvided) => {
+          let package = extern_effect_declaring_package(path = unit.path, sources = sources)
+          for entry in seen {
+            let (other_name, other_package, other_path) = entry
+            let same_declaration = if package == "" {
+              other_package == "" && other_path == unit.path
+            } else {
+              other_package == package
+            }
+            if other_name == name && !same_declaration {
+              throw("rename one of the two `extern effect \{name}` declarations: \{extern_effect_package_display(package = other_package, path = other_path)} and \{extern_effect_package_display(package = package, path = unit.path)} both declare it, and a program binds one host provider per effect name, so the operations of both would reach the same provider")
+            }
+          }
+          Array::push(seen, value = (name, package, unit.path))
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+  ()
+}
+
+/// The package that declares what `path` holds: the directory of the nearest
+/// `index.vpkg` among the merged sources, in `path`'s directory or above, or
+/// "" when no package contract encloses it. The merge reads the contract as
+/// the loader hands it over, which keeps no `name =` header, so the directory
+/// is what names the package.
+fn extern_effect_declaring_package(path: String, sources: Array[(String, String)]) -> String {
+  let mut dir = merge_parent_dir(path)
+  let mut found = ""
+  let mut done = false
+  while !done {
+    let contract = if dir == "" {
+      "index.vpkg"
+    } else {
+      String::concat(dir, "/index.vpkg")
+    }
+    for entry in sources {
+      let (p, _) = entry
+      if found == "" && p == contract {
+        found = if dir == "" {
+          "."
+        } else {
+          dir
+        }
+      }
+    }
+    if found != "" || dir == "" {
+      done = true
+    } else {
+      dir = merge_parent_dir(dir)
+    }
+  }
+  found
+}
+
+fn merge_parent_dir(_ path: String) -> String {
+  let mut cut = 0 - 1
+  let mut i = 0
+  while i < String::length(path) {
+    if String::byte_at(path, at = i) == 47 {
+      cut = i
+    }
+    i = i + 1
+  }
+  if cut <= 0 {
+    ""
+  } else {
+    String::substring(path, start = 0, end = cut)
+  }
+}
+
+fn extern_effect_package_display(package: String, path: String) -> String {
+  if package == "" {
+    "`\{path}`"
+  } else {
+    "the package in `\{package}` (`\{path}`)"
+  }
 }
 
 export fn build_grouped_merged_stmts(_ source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Array[Stmt] with Env + Exception {
