@@ -3251,8 +3251,9 @@ written, and points at `MutMap[K, V]` from `@vibe/core`.
 `has_key: (Map[K, V], K) -> Bool`, `delete: (Map[K, V], K) -> Map[K, V]`,
 `keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`;
 `m[k]`, `for k in m` and `==` work for every key type.
-An `Int` / `Char` / `Bool` key is compared as an exact value, with a linear
-lookup (no hash index yet), on the default backend and on wasm-gc alike. Two
+An `Int` / `Char` / `Bool` key is compared as an exact value, on the default
+backend and on wasm-gc alike. On the default backend a map past 8 entries
+finds a scalar key through a hash index, as it does a String key. Two
 places do not take one yet, and each says so at build time: a linked build
 with no type check of its text; and a generic function whose type parameter is a map's key, called at
 that key (its one lowered body compares keys as Strings) -- write the function

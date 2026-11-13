@@ -1,0 +1,42 @@
+//# The hash a scalar-keyed map's side index uses (#2334).
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_i64_const, emit_i64_mul, emit_i64_shr_u, emit_i64_xor, emit_local_get, emit_local_tee
+}
+
+/// #2334: a scalar-keyed map's index slot (i32 at +4) holds its index
+/// pointer with this bit set, or the bit alone when it has no index yet. An
+/// index pointer is 8-aligned, so the bit never collides with one, and a
+/// String-keyed map's slot (0 or a pointer) never has it.
+export let map_scalar_slot_bit: Int = 1
+
+/// #2334: `__rt_map_build_index(base, count)` builds a scalar-keyed map's
+/// index when the count carries this flag. A map's count fits in 32 bits, so
+/// the flag never collides with one.
+export let map_scalar_index_count_flag: Int = 1099511627776
+
+/// #2334: push the hash of the i64 in local `key_l`, using `tmp_l` as
+/// scratch. The build helper, the probe helper and an in-place append all
+/// call this one emitter, so an index is always probed with the hash it was
+/// built with -- a mismatch would answer "absent" for a present key.
+///
+/// The key is folded (`k ^ (k >> 32)`) so that keys differing only above bit
+/// 32 differ in the low bits too, multiplied by an odd constant, then folded
+/// again (`h ^ (h >> 29)`) so the low bits the table mask keeps depend on
+/// every input bit. On the RC lane an `Int` key is tagged (`n << 1`), so its
+/// bit 0 is always clear; the final fold is what keeps that from halving the
+/// table.
+export fn emit_map_scalar_hash(buf: Bytes, key_l: Int, tmp_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = key_l)
+  emit_local_get(buf = buf, idx = key_l)
+  emit_i64_const(buf = buf, value = 32)
+  emit_i64_shr_u(buf)
+  emit_i64_xor(buf)
+  emit_i64_const(buf = buf, value = 2685821657736338717)
+  emit_i64_mul(buf)
+  emit_local_tee(buf = buf, idx = tmp_l)
+  emit_local_get(buf = buf, idx = tmp_l)
+  emit_i64_const(buf = buf, value = 29)
+  emit_i64_shr_u(buf)
+  emit_i64_xor(buf)
+}
