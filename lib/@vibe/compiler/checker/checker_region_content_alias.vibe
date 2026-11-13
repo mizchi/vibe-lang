@@ -44,7 +44,7 @@ import @vibe/compiler/core {
 }
 
 import ./checker_region_call_result.vibe {
-  held_has_module_storage, region_callee_returns_own_storage, region_outer_content_marker
+  held_has_module_storage, region_callee_returns_own_storage, region_outer_content_marker, region_summary_prefix, retention_name_scope
 }
 
 import @vibe/compiler/checker/effects {
@@ -82,7 +82,7 @@ import ./checker_region_retention.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_decl_value, retention_is_function_type, retention_result_items
+  retention_arg_values, retention_decl_value, retention_is_function_type, retention_module_env_cell, retention_result_items
 }
 
 import ./checker_retaining_write.vibe {
@@ -189,6 +189,21 @@ export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, 
           grew = true
         }
         b = b + 1
+      }
+      // A holder reaches the existing containers stored inside it too.
+      let mut t = 0
+      while t < Array::length(facts.store_target_alias) {
+        if content_any_listed(names = Array::get(facts.store_target_alias, at = t), set = set) {
+          let before = Array::length(set)
+          content_union(out = set, items = Array::get(facts.store_value_alias, at = t))
+          grew = grew || Array::length(set) > before
+        }
+        if content_any_listed(names = Array::get(facts.store_value_alias, at = t), set = set) {
+          let before = Array::length(set)
+          content_union(out = set, items = Array::get(facts.store_target_alias, at = t))
+          grew = grew || Array::length(set) > before
+        }
+        t = t + 1
       }
     }
     set
@@ -340,7 +355,7 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
             }
           }
         },
-        EFn(_, _, _, _, _, _) => false,
+        EFn(_, _, params, _, _, body) => held_has_module_storage(held_result_param_indices(body = body, params = params)),
         _ => expression_aliases_outer_binding(expr = value, env = env)
       }
       match callee {
@@ -559,6 +574,28 @@ fn content_resolve(name: String, facts: ContentFacts) -> String {
 
 /// Read storage provenance before the scope walk leaves the value's binders.
 fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, Array[String]) {
+  match value {
+    ELet(x, v, body, _) => {
+      let bound = content_value_fact(value = v, env = env, facts = facts)
+      let mark = Array::length(facts.scope_ids)
+      content_bind(id = content_push(name = x, facts = facts), value = bound, facts = facts)
+      content_facts_into(expr = body, facts = facts, env = env)
+      let result = content_value_fact(value = body, env = env, facts = facts)
+      content_pop(mark = mark, facts = facts)
+      return result
+    },
+    ELetMut(x, v, body, _) => {
+      let bound = content_value_fact(value = v, env = env, facts = facts)
+      let mark = Array::length(facts.scope_ids)
+      content_bind(id = content_push(name = x, facts = facts), value = bound, facts = facts)
+      content_facts_into(expr = body, facts = facts, env = env)
+      let result = content_value_fact(value = body, env = env, facts = facts)
+      content_pop(mark = mark, facts = facts)
+      return result
+    },
+    ESeq(_, body) => return content_value_fact(value = body, env = env, facts = facts),
+    _ => ()
+  }
   (content_own_storage(value = value, env = env, facts = facts), content_alias_names(value = value, env = env, facts = facts))
 }
 
@@ -583,7 +620,10 @@ fn content_store(target: Array[String], value: (Bool, Array[String]), facts: Con
 /// parameter to its argument; any other callee may store any argument in
 /// any other. A closure argument's parameters are bound to the call's other
 /// arguments, whose elements it is handed.
+let content_call_stack: Array[String] = []
+
 fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env: TypeEnv) -> Unit {
+  let args = retention_arg_values(args)
   let parts: Array[(Bool, Array[String])] = []
   match callee {
     EDot(obj, _, _, _) => Array::push(parts, value = content_value_fact(value = obj, env = env, facts = facts)),
@@ -614,6 +654,21 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
       }
     } else {
       content_store_all(parts = parts, facts = facts)
+      if content_resolve(name = name, facts = facts) == name && retention_name_scope(env = env, name = name) == 2 {
+        match env_lookup(env = env, name = String::concat(region_summary_prefix(), name)) {
+          Some(CtNamed(summary, _)) => {
+            let mut i = 0
+            while i < Array::length(args) {
+              if content_listed(items = String::split(summary, sep = ","), wanted = String::concat("g>", Int::to_string(i))) {
+                content_store(target = content_alias_names(value = Array::get(args, at = i), env = env, facts = facts), value = (true, [
+                ]), facts = facts)
+              }
+              i = i + 1
+            }
+          },
+          _ => ()
+        }
+      }
     },
     _ => content_store_all(parts = parts, facts = facts)
   }
@@ -623,7 +678,25 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
     EFn(_, _, ps, _, _, body) => content_lambda_facts(ps = ps, body = body, bound = for a in args {
       [content_value_fact(value = a, env = env, facts = facts)]
     }, facts = facts, env = env),
-    EIdent(_, _) => (),
+    EIdent(name, _) => if content_resolve(name = name, facts = facts) == name && !content_listed(items = content_call_stack, wanted = name) {
+      match retention_decl_value(name) {
+        Some(EFn(_, _, ps, _, _, body)) => {
+          Array::push(content_call_stack, value = name)
+          for i in content_outer_param_indices(params = ps, body = body, env = if Array::length(retention_module_env_cell) > 0 {
+            Array::get(retention_module_env_cell, at = 0)
+          } else {
+            env
+          }) {
+            if i < Array::length(args) {
+              content_store(target = content_alias_names(value = Array::get(args, at = i), env = env, facts = facts), value = (true, [
+              ]), facts = facts)
+            }
+          }
+          Array::truncate(content_call_stack, length = Array::length(content_call_stack) - 1)
+        },
+        _ => ()
+      }
+    },
     _ => content_facts_into(expr = callee, facts = facts, env = env)
   }
   for a in args {
@@ -796,6 +869,7 @@ fn content_value_names_into(e: Expr, out: Array[String]) -> Unit {
 
 fn content_alias_names_at(value: Expr, env: TypeEnv, facts: ContentFacts, out: Array[String]) -> Unit {
   match value {
+    ELet(_, _, _, _)|ELetMut(_, _, _, _) => content_union(out = out, items = content_value_fact(value = value, env = env, facts = facts).1),
     EIdent(n, _) => if n != "_" {
       let id = content_resolve(name = n, facts = facts)
       if !content_listed(items = out, wanted = id) {
@@ -868,4 +942,28 @@ fn content_any_listed(names: Array[String], set: Array[String]) -> Bool {
     }
   }
   found
+}
+
+/// Arguments a visible function can fill with storage from outside its call.
+/// Read in the module's lexical environment so caller-local names cannot
+/// shadow the globals its body reads. Fresh containers inside it stay local.
+export fn content_outer_param_indices(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv) -> Array[Int] {
+  let mut scope = env
+  scope = env_bind(env = scope, name = "#active_region", ty = CtNamed("#content_summary", [
+  ]))
+  let mut i = 0
+  while i < Array::length(params) {
+    scope = env_bind(env = scope, name = retention_param_base(Array::get(params, at = i).0), ty = CtVar(900000 + i))
+    i = i + 1
+  }
+  let out: Array[Int] = []
+  i = 0
+  while i < Array::length(params) {
+    let (_, held) = region_content_outer_regions(name = retention_param_base(Array::get(params, at = i).0), scope = body, env = scope, s = SubstEmpty)
+    if Array::length(held) > 0 {
+      Array::push(out, value = i)
+    }
+    i = i + 1
+  }
+  out
 }
