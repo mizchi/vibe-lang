@@ -7,7 +7,7 @@
 // an appended copy of a statement under another name -- the two shapes the
 // record has to carry.
 import @vibe/compiler/codegen/wasi {
-  prelude_reuse_record_of, prelude_reuse_record_parts, prelude_reuse_replay
+  prelude_reuse_key_digest, prelude_reuse_record_of, prelude_reuse_record_parts, prelude_reuse_replay
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -168,3 +168,18 @@ test "a record survives being stored" {
   }
   inspect(prelude_reuse_decode(short) is None, content = "true")
 }
+
+test "a statement's digest tells apart integers that agree modulo a hash prime" {
+  // 3147483647 - 1000000000 is 2147483647, the first hash's prime. Both are
+  // ten digits, so nothing else in the statement moves either.
+  let a = parsed("fn f() -> Int {\n  1000000000\n}\n")
+  let b = parsed("fn f() -> Int {\n  3147483647\n}\n")
+  let ka = Array::get(prelude_statement_keys(stmts = a, row_offsets = no_ints(), row_keys = no_keys()), at = 0)
+  let kb = Array::get(prelude_statement_keys(stmts = b, row_offsets = no_ints(), row_keys = no_keys()), at = 0)
+  inspect(prelude_reuse_key_digest(ka) == prelude_reuse_key_digest(kb), content = "false")
+  // A negative value is told apart from its magnitude.
+  let c = parsed("fn f() -> Int {\n  0 - 5\n}\n")
+  let d = parsed("fn f() -> Int {\n  0 - 6\n}\n")
+  inspect(prelude_reuse_key_digest(Array::get(prelude_statement_keys(stmts = c, row_offsets = no_ints(), row_keys = no_keys()), at = 0)) == prelude_reuse_key_digest(Array::get(prelude_statement_keys(stmts = d, row_offsets = no_ints(), row_keys = no_keys()), at = 0)), content = "false")
+}
+
