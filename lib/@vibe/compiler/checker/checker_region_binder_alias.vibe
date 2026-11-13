@@ -150,7 +150,8 @@ fn binder_alias_bind_pairs(env: TypeEnv, ps: Array[Pat], es: Array[Expr], scope:
 /// `for` desugar selects returns -- `C::next(iterable)`, `C::iter(iterable)`
 /// or `C::iter_get(iterable, i)` (`for_binder_protocols`) -- so the binder is
 /// judged as that call would be, and is marked with the regions it
-/// predates. A method whose body returns a fresh value marks nothing: an
+/// predates. For `C::iter` that call is the returned iterator's `next`
+/// (`for_binder_source_regions`, #4093). A method whose body returns a fresh value marks nothing: an
 /// iterator built before the region may hand out a new array to write into.
 /// A method returning a stored part of `iterable`, or one whose body is not
 /// readable here, answers what `iterable` does.
@@ -215,25 +216,75 @@ fn for_binder_sources(iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array
 /// is spelled `Some((e, rest))` or `None` the element is judged alone: it
 /// holds `xs` when some `e` holds `next`'s parameter, and nothing otherwise
 /// -- a continuation that keeps `self.items` does not make a fresh element
-/// an alias (Codex on #4061). A body that cannot be split that way (a
-/// `return`, a result held in a name or returned by a call) is judged as the
+/// an alias (Codex on #4061). A `C::iter(xs)` source is not the element
+/// either: the desugar drives `R::next` over the `R` that `C::iter` returns
+/// (`classify_sync_for_loop`), so the element is `R::next`'s, split the same
+/// way (#4093). One that holds `R::next`'s parameter holds the iterator, and
+/// is judged as the `C::iter(xs)` call; one that does not marks nothing. A
+/// body that cannot be split that way (a `return`, a result held in a name or
+/// returned by a call), or an `R` with no readable `next`, is judged as the
 /// whole call, as any other source is.
 fn for_binder_source_regions(source: Expr, iterable: Expr, scope: TypeEnv) -> Array[String] {
-  let split = match source {
+  let (split, via_iter) = match source {
     ECall(EIdent(callee, _), _, _, _) => if String::ends_with(callee, suffix = "::next") {
-      for_next_element_holds_self(callee = callee)
+      (for_next_element_holds_self(callee = callee), false)
+    } else if String::ends_with(callee, suffix = "::iter") {
+      match for_iter_next_callee(iter_callee = callee, scope = scope) {
+        Some(next_callee) => (for_next_element_holds_self(callee = next_callee), true),
+        None => (None, true)
+      }
     } else {
-      None
+      (None, false)
     },
-    _ => None
+    _ => (None, false)
   }
   match split {
-    Some(holds) => if holds {
-      region_outer_alias_regions(value = iterable, scope = scope, active = true)
-    } else {
+    Some(holds) => if !holds {
       []
+    } else if via_iter {
+      region_outer_alias_regions(value = source, scope = scope, active = true)
+    } else {
+      region_outer_alias_regions(value = iterable, scope = scope, active = true)
     },
     None => region_outer_alias_regions(value = source, scope = scope, active = true)
+  }
+}
+
+/// #4093: the `next` the `for` desugar drives over what `iter_callee`
+/// returns -- `R::next` for the nominal head `R` of `iter_callee`'s declared
+/// result, the type `classify_sync_for_loop` reads from `C::iter`. None when
+/// `iter_callee` is unbound or its result has no nominal head; a head whose
+/// `next` has no readable declaration is answered None by
+/// `for_next_element_holds_self`, so either way the binder is judged as the
+/// `C::iter` call.
+fn for_iter_next_callee(iter_callee: String, scope: TypeEnv) -> Option[String] {
+  match env_lookup(env = scope, name = iter_callee) {
+    Some(t) => match for_binder_result_head(t) {
+      Some(head) => Some(String::concat(head, "::next")),
+      None => None
+    },
+    None => None
+  }
+}
+
+/// The nominal head of a function type's result, through a `forall`.
+fn for_binder_result_head(_ t: Type) -> Option[String] {
+  match t {
+    CtFn(_, ret, _) => match ret {
+      CtNamed(n, _) => if n != "" {
+        Some(n)
+      } else {
+        None
+      },
+      CtStruct(n) => if n != "" {
+        Some(n)
+      } else {
+        None
+      },
+      _ => None
+    },
+    CtForAll(_, _, body) => for_binder_result_head(body),
+    _ => None
   }
 }
 
