@@ -70,7 +70,8 @@ export fn region_outer_alias_mark(env: TypeEnv, name: String, regions: Array[Str
 
 /// #4050: mark each name `pat` binds -- a `for` element (`PBind(name)`), a
 /// `match` arm's pattern, which a destructuring `let` and `if .. is` lower
-/// to -- with the regions `value` predates. `env` is the binders'
+/// to -- with the regions the part of `value` it reads predates
+/// (`binder_alias_bind_parts`). `env` is the binders'
 /// environment, `scope` the one `value` is read in. Before, the binder was
 /// judged as a binding of the region body, so `for a in boxes {
 /// Array::push(a, value = cell) }` kept a region value in an outer array.
@@ -80,21 +81,66 @@ export fn region_outer_alias_bind(env: TypeEnv, pat: Pat, value: Expr, scope: Ty
     _ => false
   }
   if active {
-    let names: Array[String] = []
-    retention_pat_names_into(p = pat, out = names)
-    if Array::length(names) > 0 {
-      let regions = region_outer_alias_regions(value = value, scope = scope, active = true)
-      let mut out = env
-      for name in names {
-        out = region_outer_alias_mark(env = out, name = name, regions = regions)
-      }
-      out
-    } else {
-      env
-    }
+    binder_alias_bind_parts(env = env, pat = pat, value = value, scope = scope)
   } else {
     env
   }
+}
+
+/// `region_outer_alias_bind` for one pattern against the expression it
+/// matches. A tuple pattern against a tuple literal, and a constructor
+/// pattern against a call of that constructor, pair component with
+/// component, so in `match (outer, inner) { (_, a) => .. }` the binder `a`
+/// is marked only with what `inner` predates (Codex on #4061). Anything
+/// that cannot be paired marks every name it binds with what the whole
+/// value predates.
+fn binder_alias_bind_parts(env: TypeEnv, pat: Pat, value: Expr, scope: TypeEnv) -> TypeEnv {
+  let paired: Option[(Array[Pat], Array[Expr])] = match pat {
+    PTuple(ps) => match value {
+      ETuple(es) => if Array::length(ps) == Array::length(es) {
+        Some((ps, es))
+      } else {
+        None
+      },
+      _ => None
+    },
+    PCtor(pname, ps) => match value {
+      ECall(EIdent(callee, _), args, _, _) => if pname == callee && Array::length(ps) == Array::length(args) {
+        Some((ps, args))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+  match paired {
+    Some((ps, es)) => binder_alias_bind_pairs(env = env, ps = ps, es = es, scope = scope),
+    None => {
+      let names: Array[String] = []
+      retention_pat_names_into(p = pat, out = names)
+      if Array::length(names) > 0 {
+        let regions = region_outer_alias_regions(value = value, scope = scope, active = true)
+        let mut out = env
+        for name in names {
+          out = region_outer_alias_mark(env = out, name = name, regions = regions)
+        }
+        out
+      } else {
+        env
+      }
+    }
+  }
+}
+
+fn binder_alias_bind_pairs(env: TypeEnv, ps: Array[Pat], es: Array[Expr], scope: TypeEnv) -> TypeEnv {
+  let mut out = env
+  let mut i = 0
+  while i < Array::length(ps) {
+    out = binder_alias_bind_parts(env = out, pat = Array::get(ps, at = i), value = Array::get(es, at = i), scope = scope)
+    i = i + 1
+  }
+  out
 }
 
 /// The regions `value`'s location predates; a constructor or builtin call
