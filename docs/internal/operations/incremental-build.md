@@ -1818,6 +1818,22 @@ it. The key is now kept as its segments' payloads (`TypingReuseKey`), the alias
 path is named by a digest of those payloads, the witness is written piece by
 piece, and a stored key is compared against the payloads where it lies.
 
+**What a witness stores (#2825).** A key carries every direct dependency's
+whole env text, so a witness that stored its key inline copied each
+dependency's text once per consumer. On the CLI closure (733 modules, 4,677
+direct-dependency edges) that was 144 MB of a 173 MB cold witness set, for
+727 distinct texts totalling 5.6 MB. Every leaf edit republished the 592
+dependent witnesses under new conservative fingerprints, with the texts again,
+so the cache grew about 177 MB per edit. A witness now names each dependency
+env text by digest (`#<len>:<digest>` in place of the inline `<len>:<text>`
+segment) and the text is written once, to a shared text store
+(`selfhost_typing_dependency_env_reuse_text_v1`). The identity is unchanged:
+a lookup reads the stored text and requires it to equal the live text byte for
+byte, so the digest only locates a record and a collision can only cost a
+reuse. A torn or foreign text record misses and is rewritten by the next
+publication. The reader accepts either segment form at any position, so a
+forged inline witness is still compared by content.
+
 Reuse on minus reuse off, measured after #3808:
 
 | corpus | case | heap | wall (advisory, one round) |
@@ -1865,9 +1881,9 @@ things:
 
 The rest of the oracle is about refusal (#3796). A body error behind an
 unchanged public env gives the fresh diagnostics, and the next good edit
-recovers. From a snapshot of the cold cache, the alias, witness and target
-records are corrupted **independently**, each once malformed and once spliced
-from another valid binding (a stale but well-formed record); each must miss
+recovers. From a snapshot of the cold cache, the alias, witness, dependency
+text and target records are corrupted **independently**, each once malformed
+and once spliced from another valid record (a stale but well-formed one); each must miss
 and compile to the fresh module, and the uncorrupted snapshot must hit first,
 or a miss would prove nothing about the corruption. The `#cfg` flag set, the
 checked-error-row mode and the resolution authority are reuse authority, so
@@ -3174,8 +3190,11 @@ when every direct dependency already has a validated witness for its conservativ
 fingerprint. Alias and witness both bind the logical input, target conservative
 fingerprint, and exact canonical target text. Reuse reads the raw target,
 strictly decodes it, requires an exact canonical re-encode, and verifies the
-three-way alias/witness/target binding. Publication order is target, witness,
-alias; diagnosed or failed modules publish none of those rows. The production
+three-way alias/witness/target binding. A witness names each dependency env
+text by digest and the text is stored once, in a shared text store (see "What
+a witness stores" above); a lookup compares the stored bytes against the live
+text. Publication order is target, dependency texts, witness, alias; diagnosed
+or failed modules publish none of those rows. The production
 oracle covers natural dependency transport changes (public signatures,
 traits, and impls), sidecar-integrity corruption of dependency rows/order,
 ambient non-direct cache irrelevance, valid-but-wrong targets, cross-splicing,

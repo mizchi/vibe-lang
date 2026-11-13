@@ -98,6 +98,7 @@ const row = (name) => {
 };
 // Two bindings per publishing build: an alias names a target, the witness
 // binds an input to the target and its text, and the target record IS that text.
+// Each also stores one dependency text, as a witness's by-reference rows do.
 function publish(cache, name, count) {
   for (let i = 0; i < count; i += 1) {
     const target = `${name}-t${i}`;
@@ -105,6 +106,7 @@ function publish(cache, name, count) {
     writeFileSync(join(cache, `vibe_selfhost_typing_dependency_env_reuse_v10_${name}_${i}.txt`), `TDRE11A${seg(target)}`);
     writeFileSync(join(cache, `vibe_selfhost_typing_dependency_env_reuse_eligibility_v10_${name}_${i}.txt`), `TDRE10W${seg(`input-${i}`)}${seg(target)}${seg(text)}`);
     writeFileSync(join(cache, `vibe_selfhost_type_env_v10_${name}_${i}.tsv`), text);
+    writeFileSync(join(cache, `vibe_selfhost_typing_dependency_env_reuse_text_v1_${name}_${i}.txt`), `fake dep env ${name} ${i}`);
   }
 }
 function answer(r) {
@@ -221,7 +223,7 @@ scripted_fail "a reuse hit across an interface edit is refused" \
 # records: each kind independently, against an uncorrupted control.
 scripted_fail "a snapshot control with no hit is refused (the misses would be vacuous)" \
   "the uncorrupted snapshot recorded no dependency-transport reuse" records 'tel("snapshot-on", 3, 0)'
-for kind in alias-malformed alias-splice witness-malformed witness-splice target-malformed target-splice; do
+for kind in alias-malformed alias-splice witness-malformed witness-splice text-malformed text-splice target-malformed target-splice; do
   scripted_fail "reusing through $kind records is refused" \
     "$kind records: expected" records "tel(\"$kind-on\", 1, 2)"
 done
@@ -396,7 +398,7 @@ if ! grep -qF "structural \`==\` cannot be decided" "$WORK/err"; then
   echo "FAIL stripping the typed rows failed, but not at the comparison"; sed -n '1,8p' "$WORK/err"; fails=$((fails + 1))
 fi
 
-for kind in alias-malformed alias-splice witness-malformed witness-splice target-malformed target-splice; do
+for kind in alias-malformed alias-splice witness-malformed witness-splice text-malformed text-splice target-malformed target-splice; do
   real_fail "undoing the $kind corruption makes the REAL compiler hit, and the oracle fail" \
     "$kind records: expected planned/rechecked/transport-reused 3/3/0, got 3/1/2" records "$kind-on" undo
 done
