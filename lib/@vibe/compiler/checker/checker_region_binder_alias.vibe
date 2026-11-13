@@ -15,11 +15,11 @@
 //# so it may hold an `r1` value but not an `r2` one.
 
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, type_name_has_iterator_impl
+  Expr, Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, expr_children, find_typedef, type_name_has_iterator_impl
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  arg_is_region_token, expression_aliases_outer_binding, literal_item_is_inert
+  arg_is_region_token, expression_aliases_outer_binding, held_result_param_indices, literal_item_is_inert
 }
 
 import ./checker_region_retention.vibe {
@@ -27,7 +27,7 @@ import ./checker_region_retention.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_pat_names_into
+  retention_decl_value, retention_pat_names_into
 }
 
 /// #4050: the active regions that the location `value` reads from was
@@ -160,10 +160,9 @@ export fn region_for_binder_bind(env: TypeEnv, name: String, iterable: Expr, ite
     _ => false
   }
   if active {
-    let sources = for_binder_sources(iterable = iterable, iter_ty = iter_ty, scope = scope, defs = defs)
     let regions: Array[String] = []
-    for src in sources {
-      for r in region_outer_alias_regions(value = src, scope = scope, active = true) {
+    for src in for_binder_sources(iterable = iterable, iter_ty = iter_ty, scope = scope, defs = defs) {
+      for r in for_binder_source_regions(source = src, iterable = iterable, scope = scope) {
         if !binder_region_listed(names = regions, rname = r) {
           Array::push(regions, value = r)
         } else {
@@ -208,6 +207,132 @@ fn for_binder_sources(iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array
   } else {
     [iterable]
   }
+}
+
+/// The regions one source of a `for` element predates. A `C::next(xs)` call
+/// returns `Some((element, rest))`, and the desugar binds only `element`
+/// (`Some((x, __iter_rest))`), so when every result of `next`'s declaration
+/// is spelled `Some((e, rest))` or `None` the element is judged alone: it
+/// holds `xs` when some `e` holds `next`'s parameter, and nothing otherwise
+/// -- a continuation that keeps `self.items` does not make a fresh element
+/// an alias (Codex on #4061). A body that cannot be split that way (a
+/// `return`, a result held in a name or returned by a call) is judged as the
+/// whole call, as any other source is.
+fn for_binder_source_regions(source: Expr, iterable: Expr, scope: TypeEnv) -> Array[String] {
+  let split = match source {
+    ECall(EIdent(callee, _), _, _, _) => if String::ends_with(callee, suffix = "::next") {
+      for_next_element_holds_self(callee = callee)
+    } else {
+      None
+    },
+    _ => None
+  }
+  match split {
+    Some(holds) => if holds {
+      region_outer_alias_regions(value = iterable, scope = scope, active = true)
+    } else {
+      []
+    },
+    None => region_outer_alias_regions(value = source, scope = scope, active = true)
+  }
+}
+
+/// Whether the element component of `callee`'s results holds one of its
+/// parameters; None when its declaration is not readable here or a result
+/// is not spelled `Some((e, rest))` / `None`.
+fn for_next_element_holds_self(callee: String) -> Option[Bool] {
+  match retention_decl_value(callee) {
+    Some(EFn(_, _, params, _, _, body)) => if Array::length(params) > 0 && !for_body_has_return(body) {
+      match for_next_element_body(body) {
+        Some(element) => Some(Array::length(held_result_param_indices(body = element, params = params)) > 0),
+        None => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// `body` with each result `Some((e, rest))` replaced by `e` and each `None`
+/// by `()`, through `if`, `match`, `let` and sequencing; None at any other
+/// result.
+fn for_next_element_body(_ body: Expr) -> Option[Expr] {
+  match body {
+    ECall(EIdent(ctor, _), args, _, _) => if (ctor == "Some" || ctor == "Option::Some") && Array::length(args) == 1 {
+      match Array::get(args, at = 0) {
+        ETuple(items) => if Array::length(items) == 2 {
+          Some(Array::get(items, at = 0))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    EIdent(n, _) => if n == "None" || n == "Option::None" {
+      Some(EUnit)
+    } else {
+      None
+    },
+    EIf(c, a, b) => match for_next_element_body(a) {
+      Some(ra) => match for_next_element_body(b) {
+        Some(rb) => Some(EIf(c, ra, rb)),
+        None => None
+      },
+      None => None
+    },
+    EMatch(scrutinee, arms) => {
+      let out: Array[(Pat, Expr)] = []
+      let mut ok = true
+      for arm in arms {
+        let (pat, arm_body) = arm
+        match for_next_element_body(arm_body) {
+          Some(r) => Array::push(out, value = (pat, r)),
+          None => ok = false
+        }
+      }
+      if ok {
+        Some(EMatch(scrutinee, out))
+      } else {
+        None
+      }
+    },
+    ELet(x, v, rest, off) => match for_next_element_body(rest) {
+      Some(r) => Some(ELet(x, v, r, off)),
+      None => None
+    },
+    ELetMut(x, v, rest, off) => match for_next_element_body(rest) {
+      Some(r) => Some(ELetMut(x, v, r, off)),
+      None => None
+    },
+    ESeq(a, rest) => match for_next_element_body(rest) {
+      Some(r) => Some(ESeq(a, r)),
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn for_body_has_return(_ body: Expr) -> Bool {
+  let stack: Array[Expr] = [body]
+  let mut found = false
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
+    match cur {
+      EReturn(_) => found = true,
+      _ => {
+        for child in expr_children(cur) {
+          Array::push(stack, value = child)
+        }
+        ()
+      }
+    }
+  }
+  found
 }
 
 /// The protocol method(s) the `for` desugar may draw `head`'s elements
