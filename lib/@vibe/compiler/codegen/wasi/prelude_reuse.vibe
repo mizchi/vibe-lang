@@ -109,13 +109,41 @@ let prelude_reuse_made: Array[PreludeReuseRecord] = []
 /// How the armed run went: "replayed", "recorded", or why it did neither.
 let prelude_reuse_note: Array[String] = []
 
+/// Whether the armed run verifies a replay (`prelude_reuse_arm`'s `verify`).
+let prelude_reuse_verifying: Array[Bool] = []
+
+/// A verifying run that replayed: the replayed statements and the passes' own,
+/// for the caller to compare (`prelude_reuse_take_verified`).
+let prelude_reuse_checked: Array[(Array[Stmt], Array[Stmt])] = []
+
 /// Arm the next run of the passes with the record of a previous build
-/// (`None` when there is none, so the run only records).
-export fn prelude_reuse_arm(previous: Option[PreludeReuseRecord]) -> Unit {
+/// (`None` when there is none, so the run only records). With `verify`, a run
+/// that replays runs the passes as well and produces their output, leaving
+/// both for `prelude_reuse_take_verified`.
+export fn prelude_reuse_arm(previous: Option[PreludeReuseRecord], verify: Bool) -> Unit {
   Array::truncate(prelude_reuse_armed, length = 0)
   Array::truncate(prelude_reuse_made, length = 0)
   Array::truncate(prelude_reuse_note, length = 0)
+  Array::truncate(prelude_reuse_verifying, length = 0)
+  Array::truncate(prelude_reuse_checked, length = 0)
   Array::push(prelude_reuse_armed, value = previous)
+  Array::push(prelude_reuse_verifying, value = verify)
+}
+
+/// A verifying run's replayed statements and the passes' statements, when it
+/// replayed; `None` otherwise.
+export fn prelude_reuse_take_verified() -> Option[(Array[Stmt], Array[Stmt])] {
+  if Array::length(prelude_reuse_checked) == 0 {
+    None
+  } else {
+    let pair = Array::get(prelude_reuse_checked, at = 0)
+    Array::truncate(prelude_reuse_checked, length = 0)
+    Some(pair)
+  }
+}
+
+fn prelude_reuse_is_verifying() -> Bool {
+  Array::length(prelude_reuse_verifying) > 0 && Array::get(prelude_reuse_verifying, at = 0)
 }
 
 /// The record the armed run made, if it made one, and disarm.
@@ -167,35 +195,57 @@ export fn prelude_reuse_passes(stmts: Array[Stmt], row_offsets: Array[Int], row_
         None
       }
     }
+    if prelude_reuse_outcome() == "" {
+      match replayed {
+        Some(_) => prelude_reuse_noted("replayed"),
+        None => ()
+      }
+    } else ()
     match replayed {
-      Some((outs, updated)) => {
+      Some((outs, updated)) => if prelude_reuse_is_verifying() {
+        // Verify: the passes' output is produced, and the replay is left
+        // beside it for the caller to compare.
+        let errs = prelude_reuse_run_and_record(header = header, inputs = inputs, keys = keys, stmts = stmts, run = run)
+        Array::push(prelude_reuse_checked, value = (outs, Array::slice(stmts, start = 0, end = Array::length(stmts))))
+        if Array::length(errs) == 0 {
+          errs
+        } else {
+          let refused = [
+            "VIBE_PRELUDE_REUSE=verify: the record replayed a program the effect passes refuse"
+          ]
+          for e in errs {
+            Array::push(refused, value = e)
+          }
+          refused
+        }
+      } else {
         Array::truncate(stmts, length = 0)
         for s in outs {
           Array::push(stmts, value = s)
         }
         Array::push(prelude_reuse_made, value = updated)
-        if prelude_reuse_outcome() == "" {
-          prelude_reuse_noted("replayed")
-        } else ()
         []
       },
-      None => {
-        let errs = run()
-        if Array::length(errs) == 0 {
-          match prelude_reuse_record_of(header = header, inputs = inputs, keys = keys, outputs = stmts) {
-            Some(record) => {
-              Array::push(prelude_reuse_made, value = record)
-              prelude_reuse_noted(prelude_reuse_outcome() + "; recorded")
-            },
-            None => prelude_reuse_noted(prelude_reuse_outcome() + "; not recorded: a produced statement has an offset outside its input")
-          }
-        } else {
-          prelude_reuse_noted(prelude_reuse_outcome() + "; not recorded: the passes refused the program")
-        }
-        errs
-      }
+      None => prelude_reuse_run_and_record(header = header, inputs = inputs, keys = keys, stmts = stmts, run = run)
     }
   }
+}
+
+/// Run the passes over `stmts` and record what they made of `inputs`.
+fn prelude_reuse_run_and_record(header: String, inputs: Array[Stmt], keys: Array[PreludeStmtKey], stmts: Array[Stmt], run: () -> Array[String] with Exception) -> Array[String] with Exception {
+  let errs = run()
+  if Array::length(errs) == 0 {
+    match prelude_reuse_record_of(header = header, inputs = inputs, keys = keys, outputs = stmts) {
+      Some(record) => {
+        Array::push(prelude_reuse_made, value = record)
+        prelude_reuse_noted(prelude_reuse_outcome() + "; recorded")
+      },
+      None => prelude_reuse_noted(prelude_reuse_outcome() + "; not recorded: a produced statement has an offset outside its input")
+    }
+  } else {
+    prelude_reuse_noted(prelude_reuse_outcome() + "; not recorded: the passes refused the program")
+  }
+  errs
 }
 
 /// A statement's key as a digest: its structure and its strings, each through
@@ -506,7 +556,8 @@ fn prelude_reuse_from(stmt: Stmt, anchor: Int) -> Stmt {
 
 /// What pairs a produced statement with the input it came from: its form and
 /// the name it binds. A rewrite keeps both.
-fn prelude_reuse_identity(_ stmt: Stmt) -> String {
+/// A short label for a statement: its kind and declared name.
+export fn prelude_reuse_identity(_ stmt: Stmt) -> String {
   match stmt {
     SLet(_, _, name, _, _) => "let " + name,
     SLetMut(name, _, _) => "mut " + name,

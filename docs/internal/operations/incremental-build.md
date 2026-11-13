@@ -2361,6 +2361,45 @@ reproduce entry-rooted DCE independently in each module, so it prints
 `unmeasured` when that condition holds. A `dce_entry=0` comparison describes the
 unpruned closure, not every `vibe build` of that closure.
 
+### Reusing the prelude's effect passes across builds (#4042, #4043)
+
+Suspend CPS and the evidence pass are whole-program, and rewrite about 100 of
+16,000 statements. `VIBE_PRELUDE_REUSE` (default `off`) keeps their output per
+entry and replays it on the next build when no edit can move what they read
+(`codegen/wasi/prelude_reuse.vibe` and `prelude_reuse_admit.vibe` hold the
+rule):
+
+- `on` replays when it can and records otherwise;
+- `verify` replays the same way, runs the passes as well, produces their
+  output, and fails the build when the replay differs from it in any
+  statement, offsets included;
+- `VIBE_PRELUDE_REUSE_TRACE=<file>` appends one line per build: whether it
+  replayed and, if not, why; in `verify` mode, `; verified` or the first
+  statement that differed.
+
+**The gate: `scripts/prelude_reuse_oracle.mjs`** (stage2-oracles, with
+`scripts/prelude_reuse_oracle_test.sh` as its red self-test).
+
+- **Edits:** a small program with a handler is edited step by step: a pure
+  body, a comment, an added helper, the performing body, then a pure body
+  again. Three caches follow the sequence: `on`, `verify` and `off`.
+  - A step that must replay and does not fails the oracle, since its
+    comparison would prove nothing.
+  - Every `on` module must equal the `off` one in bytes and in its executed
+    result, which must also equal the value the oracle derives from the
+    fixture.
+  - Every replaying `verify` build must say `verified`.
+- **Commits:** the CLI closure of the last three first-parent commits is
+  built oldest first in `verify` mode, through one cache. Every build must
+  succeed. An older tree that this compiler cannot build is skipped and
+  reported. HEAD's tree must build, and at least two trees must. Most real
+  commits miss, so HEAD's tree is then edited twice where a replay is
+  expected: a comment above everything in `core/hex.vibe`, then a function
+  appended to it. Each build must replay and verify, over the whole CLI
+  closure.
+
+Reuse stays opt-in until this gate has stayed green.
+
 ## The incremental KPI, at three sizes (#1959 line)
 
 `pkf run kpi-incremental` (`scripts/incremental_kpi.mjs`) measures what an
