@@ -4,10 +4,6 @@ import @vibe/compiler/entry/compiler/fs_compile {
   collect_inline_sources_ordered, compile_with_closure_sources_wasi_mode_cached, prepare_modules_cached
 }
 
-import @vibe/compiler/checker {
-  set_error_row_checked
-}
-
 import @vibe/compiler/runtime {
   TypeDb, db_new, db_set_source, locate_type_error_lines, locate_type_error_lines_except_paths
 }
@@ -60,7 +56,12 @@ fn find_colon(s: String, start: Int, end_: Int) -> Int {
   out
 }
 
-fn cache_key_for(source: String, entry_name: String, mode: String) -> String {
+fn cache_key_for(source: String, entry_name: String, mode: String, checked_error_row: Bool) -> String {
+  let mode = (if checked_error_row {
+    "checked:"
+  } else {
+    "unchecked:"
+  }) + mode
   String::concat(mode, String::concat("|", String::concat(entry_name, String::concat("|", source))))
 }
 
@@ -245,8 +246,8 @@ fn check_closure_by_module(db: TypeDb, main_path: String, main_source: String, s
   checked
 }
 
-fn ensure_compiled(source: String, entry_name: String, mode: String) -> Int with Env + Exception {
-  let cache_key = cache_key_for(source = source, entry_name = entry_name, mode = mode)
+fn ensure_compiled(source: String, entry_name: String, mode: String, checked_error_row: Bool) -> Int with Env + Exception {
+  let cache_key = cache_key_for(source = source, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
   if cache_key_matches(cache_key) {
     Array::get(cached_compile_len, at = 0)
   } else {
@@ -273,7 +274,7 @@ fn ensure_compiled(source: String, entry_name: String, mode: String) -> Int with
       // Every payload file is in the db, not only the ones the entry reaches:
       // a package's contract (`index.vpkg`) is never imported as a module, but
       // the resolver asks whether it exists, as it would of a real directory.
-      let mut db = db_new()
+      let mut db = db_new(checked_error_row = checked_error_row)
       let imported_paths = array_empty()
       let mut si = 0
       while si < Array::length(sources) {
@@ -292,11 +293,9 @@ fn ensure_compiled(source: String, entry_name: String, mode: String) -> Int with
 }
 
 export fn compile_cli_request(source: String, request: String) -> String with Env {
-  // Exception rows are checked on every CLI lane, which sets this cell per
-  // invocation; this entry is its own root and never ran that, so a `main`
-  // missing `Exception` compiled into a module that threw. The component's
-  // Env is stubbed, so the CLI's VIBE_CHECK_ERROR_ROW=0 opt-out cannot apply.
-  set_error_row_checked(true)
+  // Component requests always check Exception rows. The stubbed Env provider
+  // cannot supply the CLI opt-out. Keep this policy local to the request.
+  let checked_error_row = true
   handle {
     let request_len = String::length(request)
     if request == "probe-part-count" {
@@ -319,7 +318,7 @@ export fn compile_cli_request(source: String, request: String) -> String with En
       } else {
         let mode = request[9: sep]
         let entry_name = request[sep + 1: request_len]
-        __to_string(ensure_compiled(source = source, entry_name = entry_name, mode = mode))
+        __to_string(ensure_compiled(source = source, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row))
       }
     }
     else if request_len >= 11 && request[0: 11] == "error-mode:" {
@@ -329,7 +328,7 @@ export fn compile_cli_request(source: String, request: String) -> String with En
       } else {
         let mode = request[11: sep]
         let entry_name = request[sep + 1: request_len]
-        let _ = ensure_compiled(source = source, entry_name = entry_name, mode = mode)
+        let _ = ensure_compiled(source = source, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
         ""
       }
     }
@@ -345,7 +344,7 @@ export fn compile_cli_request(source: String, request: String) -> String with En
           let mode = request[15: mode_sep]
           let entry_name = request[mode_sep + 1: entry_sep]
           let chunk_index = parse_decimal_int(s = request, start = entry_sep + 1, end_ = request_len)
-          let byte_len = ensure_compiled(source = source, entry_name = entry_name, mode = mode)
+          let byte_len = ensure_compiled(source = source, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
           let start = chunk_index * hex_chunk_size
           if start < 0 || start >= byte_len {
             ""
@@ -383,13 +382,13 @@ export fn compile_cli_request(source: String, request: String) -> String with En
 /// This covers edits to the entry file itself; edits to files it imports are
 /// not tracked (would need the module resolver to report every path it
 /// touched, which this entry point does not do).
-fn ensure_compiled_file(input_path: String, entry_name: String, mode: String) -> Int with Env + Exception + Fs {
+fn ensure_compiled_file(input_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> Int with Env + Exception + Fs {
   let content_token = Fs::stat_token(input_path)
-  let cache_key = cache_key_for(source = String::concat("file:", String::concat(__to_string(content_token), String::concat(":", input_path))), entry_name = entry_name, mode = mode)
+  let cache_key = cache_key_for(source = String::concat("file:", String::concat(__to_string(content_token), String::concat(":", input_path))), entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
   if cache_key_matches(cache_key) {
     Array::get(cached_compile_len, at = 0)
   } else {
-    let bytes = compile_release_file_mode_uncached(input_path = input_path, entry_name = entry_name, mode = mode)
+    let bytes = compile_release_file_mode_uncached(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
     remember_compiled_bytes(cache_key = cache_key, bytes = bytes)
   }
 }
@@ -402,7 +401,7 @@ fn ensure_compiled_file(input_path: String, entry_name: String, mode: String) ->
 /// filesystem under wasmtime, an in-memory map in a browser). Errors are
 /// discharged to "" exactly like compile_cli_request.
 export fn compile_file_request(input_path: String, request: String) -> String with Env + Fs {
-  set_error_row_checked(true)
+  let checked_error_row = true
   handle {
     let request_len = String::length(request)
     if request_len >= 9 && request[0: 9] == "len-mode:" {
@@ -412,7 +411,7 @@ export fn compile_file_request(input_path: String, request: String) -> String wi
       } else {
         let mode = request[9: sep]
         let entry_name = request[sep + 1: request_len]
-        __to_string(ensure_compiled_file(input_path = input_path, entry_name = entry_name, mode = mode))
+        __to_string(ensure_compiled_file(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row))
       }
     }
     else if request_len >= 15 && request[0: 15] == "hex-chunk-mode:" {
@@ -427,7 +426,7 @@ export fn compile_file_request(input_path: String, request: String) -> String wi
           let mode = request[15: mode_sep]
           let entry_name = request[mode_sep + 1: entry_sep]
           let chunk_index = parse_decimal_int(s = request, start = entry_sep + 1, end_ = request_len)
-          let byte_len = ensure_compiled_file(input_path = input_path, entry_name = entry_name, mode = mode)
+          let byte_len = ensure_compiled_file(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
           let start = chunk_index * hex_chunk_size
           if start < 0 || start >= byte_len {
             ""

@@ -1,0 +1,58 @@
+//# Imports
+
+// #4018: an undeclared type name in an effect operation's signature is
+// refused at the declaration, worded as a struct field's is (#2125).
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn first_check_error(_ source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)), checked_error_row = false)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+/// `first_check_error` prefixed with the case's tag, so no two snapshots in
+/// this file share an expected literal and `vibe test --update` can tell
+/// which one failed.
+fn tagged(tag: String, source: String) -> String {
+  "\{tag}: \{first_check_error(source)}"
+}
+
+//# Tests
+
+test "#4018: a typo in an operation parameter is reported" {
+  inspect(tagged(tag = "param", source = "effect E {\n  Get(Zzz) -> String\n}\n"), content = "param: unknown type `Zzz` in the signature of `E::Get`")
+}
+
+test "#4018: a typo in an operation return type is reported" {
+  inspect(tagged(tag = "return", source = "effect E {\n  Get(Int) -> Zzz\n}\n"), content = "return: unknown type `Zzz` in the signature of `E::Get`")
+}
+
+test "#4018: a typo nested in a function type is reported" {
+  inspect(tagged(tag = "nested", source = "effect E {\n  Call((Int) -> Array[Www]) -> Int\n}\n"), content = "nested: unknown type `Www` in the signature of `E::Call`")
+}
+
+test "#4018: the effect's own parameters, kinded too, are in scope" {
+  inspect(tagged(tag = "kinded params", source = "effect G[T, F[_]] {\n  Get(T) -> F[T]\n}\n"), content = "kinded params: ")
+  inspect(tagged(tag = "undeclared beside a param", source = "effect G[T] {\n  Get(T) -> U\n}\n"), content = "undeclared beside a param: unknown type `U` in the signature of `G::Get`")
+}
+
+test "#4018: a type declared after the effect is in scope, an alias too" {
+  inspect(tagged(tag = "later alias and struct", source = "effect E {\n  Get(Al) -> Later\n}\n\ntype Al = Array[Int]\n\nstruct Later {\n  n: Int\n}\n"), content = "later alias and struct: ")
+}
+
+test "#4018: a resource parameter named as a type gets only its own message" {
+  // ADR-0094 (#3143): `R` is the effect's resource parameter, refused in a
+  // signature with its own edit. The unknown-type walk's shadow holds the
+  // raw parameter keys and reads each through `type_param_name`, which names
+  // a resource key's parameter, so it does not add ``unknown type `R` `` for
+  // the same mistake: the whole check error is that one message.
+  inspect(tagged(tag = "resource param", source = "effect Kv[R: Store::Bucket] {\n  Get(R) -> String\n}\n"), content = "resource param: operation Kv::Get names `R`, the resource parameter of effect Kv; a resource parameter names a resource, not a type, so remove it from the signature")
+}

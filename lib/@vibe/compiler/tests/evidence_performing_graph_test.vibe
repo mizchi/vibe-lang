@@ -8,10 +8,17 @@ import @vibe/compiler/core {
 import @vibe/core {
   struct MutMap, struct MutSet
 }
+import @vibe/compiler/lowering/effects/queries {
+  edp_mf_set_stmt
+}
 import @vibe/compiler/lowering/effects/evidence {
   edp_collect_fn_defs,
   edp_collect_performing_fns_from_facts,
   edp_collect_performing_fns_in,
+  edp_mf_new,
+  edp_mf_perform_facts,
+  edp_mf_refresh,
+  edp_mf_refresh_perform_facts,
   edp_name_set,
   edp_performing_graph_new,
   edp_performing_graph_refresh,
@@ -129,4 +136,47 @@ test "a rewrite that removes an opaque call reaches the kept graph" {
   // opaque call any more.
   rewrite(graph = graph, stmts = stmts, facts = facts, at = 6, stmt = top_fn(name = "g", body = call("String::length")))
   inspect(answers(graph = graph, stmts = stmts, facts = facts), content = "Ask=a,b,f Other=e,f Missing=")
+}
+
+fn render_facts(_ facts: Array[Option[(Bool, Array[String], Array[String])]]) -> String {
+  let parts: Array[String] = []
+  for f in facts {
+    match f {
+      Some(fact) => {
+        let (opaque, performs, calls) = fact
+        let head = if opaque {
+          "opaque "
+        } else {
+          ""
+        }
+        Array::push(parts, value = head + String::join(performs, sep = ",") + "|" + String::join(calls, sep = ","))
+      },
+      None => Array::push(parts, value = "-")
+    }
+  }
+  String::join(parts, sep = " ; ")
+}
+
+test "the statement facts give the walked perform facts, through a marked rewrite" {
+  // The statement facts keep each statement's callees before the name sets
+  // are applied, so the sets can be applied when the vacuity loop asks
+  // (#4040). A computed callee is opaque whatever the sets say.
+  let stmts = program()
+  Array::push(stmts, value = top_fn(name = "m", body = ECall(EIf(EBool(true), EIdent("a", -1), EIdent("b", -1)), [
+  ], -1, [])))
+  Array::push(stmts, value = SEnum(false, "Choice", [], [("Yes", [])], []))
+  let facts = edp_mf_new()
+  edp_mf_refresh(facts = facts, stmts = stmts)
+  let walked = edp_statement_perform_facts(stmts = stmts, inert = inert(), fn_names = fn_names(stmts))
+  let kept = edp_mf_perform_facts(facts = facts, inert = inert(), fn_names = fn_names(stmts))
+  inspect(render_facts(kept) == render_facts(walked), content = "true")
+  inspect(render_facts(kept), content = "|b ; Ask| ; |d ; | ; Other| ; |e,a ; opaque | ; |g ; opaque | ; -")
+  edp_mf_set_stmt(stmts = stmts, i = 6, stmt = top_fn(name = "g", body = call("String::length")))
+  edp_mf_refresh(facts = facts, stmts = stmts)
+  edp_mf_refresh_perform_facts(facts = facts, out = kept, indices = [6], inert = inert(), fn_names = fn_names(stmts))
+  edp_refresh_statement_perform_facts(stmts = stmts, facts = walked, indices = [
+    6
+  ], inert = inert(), fn_names = fn_names(stmts))
+  inspect(render_facts(kept) == render_facts(walked), content = "true")
+  inspect(render_facts(kept), content = "|b ; Ask| ; |d ; | ; Other| ; |e,a ; | ; |g ; opaque | ; -")
 }

@@ -122,9 +122,9 @@ fn write_probe_package(dir: String, extra_export: Bool) -> (String, String, Stri
 }
 
 fn seed_package_without_types_stub(vpkg_path: String, impl_path: String, main_path: String) -> (String, String) with Env + Exception + Fs {
-  let vpkg_ingested = ingest_source_text_fs(path = vpkg_path, raw = Fs::read_file(vpkg_path))
-  let impl_ingested = ingest_source_text_fs(path = impl_path, raw = Fs::read_file(impl_path))
-  let main_ingested = ingest_source_text_fs(path = main_path, raw = Fs::read_file(main_path))
+  let vpkg_ingested = ingest_source_text_fs(path = vpkg_path, raw = Fs::read_file(vpkg_path), checked_error_row = false)
+  let impl_ingested = ingest_source_text_fs(path = impl_path, raw = Fs::read_file(impl_path), checked_error_row = false)
+  let main_ingested = ingest_source_text_fs(path = main_path, raw = Fs::read_file(main_path), checked_error_row = false)
   let stub_path = vpkg_types_stub_path_from_text(vpkg_ingested)
   assert(stub_path != "")
   assert(Fs::exists(stub_path))
@@ -137,9 +137,9 @@ fn seed_package_without_types_stub(vpkg_path: String, impl_path: String, main_pa
 
 fn typecheck_seeded_without_stub(vpkg_path: String, vpkg_ingested: String, impl_path: String, main_path: String) -> String with Env + Fs {
   handle {
-    let impl_ingested = ingest_source_text_fs(path = impl_path, raw = Fs::read_file(impl_path))
-    let main_ingested = ingest_source_text_fs(path = main_path, raw = Fs::read_file(main_path))
-    let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = vpkg_path, source = vpkg_ingested), path = impl_path, source = impl_ingested), path = main_path, source = main_ingested)
+    let impl_ingested = ingest_source_text_fs(path = impl_path, raw = Fs::read_file(impl_path), checked_error_row = false)
+    let main_ingested = ingest_source_text_fs(path = main_path, raw = Fs::read_file(main_path), checked_error_row = false)
+    let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = vpkg_path, source = vpkg_ingested), path = impl_path, source = impl_ingested), path = main_path, source = main_ingested)
     let checked = db_typecheck_fs(db = db, path = main_path)
     match db_check_env(db = checked, path = main_path) {
       Some(env) =>
@@ -191,15 +191,15 @@ test "collect_source_groups_fs: manifest collection injects the types stub (#192
   let (vpkg_path, impl_path, main_path, _, _) = write_probe_package(dir = dir, extra_export = true)
   let manifest_path = String::concat(dir, "/compiler_sources_manifest.tsv")
   Fs::write_bytes(manifest_path, bytes = string_to_bytes("# group\tpath\npkg\tpkg/index.vpkg\npkg\tpkg/impl.vibe\nentry\tmain.vibe\n"))
-  let _ = ingest_source_text_fs(path = vpkg_path, raw = Fs::read_file(vpkg_path))
-  let groups = collect_source_groups_fs(main_path)
+  let _ = ingest_source_text_fs(path = vpkg_path, raw = Fs::read_file(vpkg_path), checked_error_row = false)
+  let groups = collect_source_groups_fs(main_path, checked_error_row = false)
   let paths = grouped_source_paths_joined(groups)
   assert(String::contains(paths, needle = vpkg_path))
   assert(String::contains(paths, needle = impl_path))
   assert(String::contains(paths, needle = main_path))
   assert(String::contains(paths, needle = ".vibe/build/vpkg_types/"))
   handle {
-    let mut db = db_new()
+    let mut db = db_new(checked_error_row = false)
     let mut gi = 0
     while gi < Array::length(groups) {
       let (_, sources) = Array::get(groups, at = gi)

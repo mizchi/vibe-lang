@@ -402,12 +402,12 @@ export fn check_module_with_program_transport(_ job: ModuleJob) -> (ModuleOutcom
 /// `None` for either means the caller did not compute it, and this function
 /// falls back to computing it itself -- so the fallback keeps the old
 /// behaviour if a second call site ever appears.
-fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome, reuse_eligible: Option[Bool], reuse_input_key: Option[TypingReuseKey]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  commit_module_outcome_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, job = job, outcome = outcome, reuse_eligible = reuse_eligible, reuse_input_key = reuse_input_key, cfg = target_cfg_ambient())
+fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome, reuse_eligible: Option[Bool], reuse_input_key: Option[TypingReuseKey], checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  commit_module_outcome_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, job = job, outcome = outcome, reuse_eligible = reuse_eligible, reuse_input_key = reuse_input_key, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn commit_module_outcome_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome, reuse_eligible: Option[Bool], reuse_input_key: Option[TypingReuseKey], cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+fn commit_module_outcome_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome, reuse_eligible: Option[Bool], reuse_input_key: Option[TypingReuseKey], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   match outcome {
     // Diagnostics are values as far as the worker is concerned, but the
     // driver still fails fast on the first one so the observable behaviour
@@ -441,7 +441,7 @@ fn commit_module_outcome_with_config(rdb: RippleDb, env_cache: Array[(String, Ty
       if eligible_here {
         let input_key = match reuse_input_key {
           Some(known_key) => known_key,
-          None => typing_dependency_transport_input_key_memo_with_config(path = path, source = job.source, semantics_seed = typing_semantics_seed(), dep_envs = job.dep_envs, dep_fps = job.dep_fps, cfg = cfg)
+          None => typing_dependency_transport_input_key_memo_with_config(path = path, source = job.source, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), dep_envs = job.dep_envs, dep_fps = job.dep_fps, cfg = cfg)
         }
         publish_typing_dependency_env_reuse_eligibility_in_namespace(input_key = input_key, fingerprint = fingerprint, target_text = target_text, namespace = target_cfg_namespace(cfg))
         write_typing_dependency_env_reuse_sidecar_in_namespace(input_key = input_key, target_fingerprint = fingerprint, namespace = target_cfg_namespace(cfg))
@@ -458,7 +458,7 @@ fn commit_module_outcome_with_config(rdb: RippleDb, env_cache: Array[(String, Ty
         ()
       }
       if Array::length(job.deps) == 0 {
-        Fs::write_file(persistent_leaf_fingerprint_cache_path_in_namespace(path = path, source_fingerprint = compact_source_fingerprint_memo(path = job.path, source = job.source), namespace = target_cfg_namespace(cfg)), contents = persistent_leaf_fingerprint_text(fingerprint = fingerprint, typing_semantics_seed = typing_semantics_seed()))
+        Fs::write_file(persistent_leaf_fingerprint_cache_path_in_namespace(path = path, source_fingerprint = compact_source_fingerprint_memo(path = job.path, source = job.source), namespace = target_cfg_namespace(cfg)), contents = persistent_leaf_fingerprint_text(fingerprint = fingerprint, typing_semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row)))
       } else {
         ()
       }
@@ -503,8 +503,8 @@ fn job_dir_path(dir: String, name: String) -> String {
 fn parse_job_rows(_ job_text: String) -> (String, Array[String], Array[String]) with Exception {
   engine_parse_job_rows(job_text)
 }
-export fn run_module_job_dir(_ dir: String) -> Unit with Env + Exception + Fs {
-  engine_run_module_job_dir(dir)
+export fn run_module_job_dir(_ dir: String, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
+  engine_run_module_job_dir(dir, checked_error_row = checked_error_row)
 }
 /// Batch worker publication. Each manifest row supplies a fingerprint and a
 /// relative env.out filename, optionally followed by a checked cache product.
@@ -595,12 +595,12 @@ fn parse_publish_manifest_rows(_ text: String) -> Array[(String, String, String)
 /// Recover publication from the same complete checked result. Re-export
 /// projection reads the current dependency environments already bound by the
 /// exact input identity; it performs no type inference.
-fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifact, interfaces: Option[DependencyInterfaceSet]) -> ModuleOutcome with Env + Exception {
-  checked_module_artifact_outcome_with_config(job = job, artifact = artifact, interfaces = interfaces, cfg = target_cfg_ambient())
+fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifact, interfaces: Option[DependencyInterfaceSet], checked_error_row: Bool) -> ModuleOutcome with Env + Exception {
+  checked_module_artifact_outcome_with_config(job = job, artifact = artifact, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn checked_module_artifact_outcome_with_config(job: ModuleJob, artifact: CheckedModuleArtifact, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg) -> ModuleOutcome with Env + Exception {
+fn checked_module_artifact_outcome_with_config(job: ModuleJob, artifact: CheckedModuleArtifact, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> ModuleOutcome with Env + Exception {
   let unresolved: Array[String] = []
   let published = match interfaces {
     Some(shared) => shared,
@@ -613,13 +613,13 @@ fn checked_module_artifact_outcome_with_config(job: ModuleJob, artifact: Checked
   if Array::length(unresolved) > 0 {
     throw("checked module: validated imports no longer resolve")
   }
-  let fingerprint = typecheck_fs_build_fingerprint_with_config(path = job.path, source = job.source, dep_fps = job.dep_fps, semantics_seed = typing_semantics_seed(), cfg = cfg)
+  let fingerprint = typecheck_fs_build_fingerprint_with_config(path = job.path, source = job.source, dep_fps = job.dep_fps, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg)
   let env = checked_module_public_env_for_path(path = job.path, stmts = checked_module_publication_stmts(artifact.parsed_stmts), full_checked_env = artifact.checked_program.final_env, reexport_declarations = reexports)
   module_typed_lowering_memo_put(path = job.path, fingerprint = fingerprint, offsets = artifact.lowering_offsets, eq_offs = artifact.eq_offsets, eq_keys = artifact.eq_keys)
-  module_typed_lowering_bind_source_with_config(path = job.path, fingerprint = fingerprint, source = job.source, cfg = cfg)
+  module_typed_lowering_bind_source_with_config(path = job.path, fingerprint = fingerprint, source = job.source, cfg = cfg, checked_error_row = checked_error_row)
   let tracing = incremental_interface_trace_enabled()
   Checked(job.path, fingerprint, env, if tracing {
-    incremental_interface_identity_with_config(source = job.source, env = env, cfg = cfg)
+    incremental_interface_identity_with_config(source = job.source, env = env, cfg = cfg, checked_error_row = checked_error_row)
   } else {
     ""
   }, if tracing {
@@ -651,12 +651,12 @@ fn checked_module_publication_stmts(_ parsed: Array[Stmt]) -> Array[Stmt] {
 /// One accepting edge for complete artifacts. An unchanged public dependency
 /// environment preserves this module's input even when its dependency's body
 /// changed. The conservative fingerprint remains available to older consumers.
-fn finish_checked_module_artifact_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], interfaces: Option[DependencyInterfaceSet]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  finish_checked_module_artifact_fs_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, interfaces = interfaces, cfg = target_cfg_ambient())
+fn finish_checked_module_artifact_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], interfaces: Option[DependencyInterfaceSet], checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  finish_checked_module_artifact_fs_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn finish_checked_module_artifact_fs_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+fn finish_checked_module_artifact_fs_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   let coordinated = ensure_env_cache_for_paths_with_config(rdb = rdb, env_cache = env_cache, paths = deps, cfg = cfg)
   let projected = project_exact_dependency_envs(deps = deps, full_cache = coordinated)
   let job = ModuleJob::{
@@ -665,15 +665,16 @@ fn finish_checked_module_artifact_fs_with_config(rdb: RippleDb, env_cache: Array
     deps,
     dep_fps,
     dep_envs: projected,
-    ships_owned_heads: is_owned_head_source_location_env_fs(path)
+    ships_owned_heads: is_owned_head_source_location_env_fs(path),
+    checked_error_row: checked_error_row
   }
-  let input_identity = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(), deps = projected, namespace = target_cfg_namespace(cfg))
+  let input_identity = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), deps = projected, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row)
   if checked_module_cache_mode() == "on" {
-    match load_checked_module_artifact_in_namespace(path = path, input_identity = input_identity, namespace = target_cfg_namespace(cfg)) {
+    match load_checked_module_artifact_in_namespace(path = path, input_identity = input_identity, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row) {
       Some(artifact) => {
-        let outcome = checked_module_artifact_outcome_with_config(job = job, artifact = artifact, interfaces = interfaces, cfg = cfg)
-        let committed = commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated, dep_source_cache = dep_source_cache, parse_count = parse_count, job = job, outcome = outcome, reuse_eligible = Some(false), reuse_input_key = None, cfg = cfg)
-        commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = false, namespace = target_cfg_namespace(cfg))
+        let outcome = checked_module_artifact_outcome_with_config(job = job, artifact = artifact, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
+        let committed = commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated, dep_source_cache = dep_source_cache, parse_count = parse_count, job = job, outcome = outcome, reuse_eligible = Some(false), reuse_input_key = None, cfg = cfg, checked_error_row = checked_error_row)
+        commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = false, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row)
         incremental_typecheck_telemetry_add(index = 9, amount = 1)
         return committed
       },
@@ -684,11 +685,11 @@ fn finish_checked_module_artifact_fs_with_config(rdb: RippleDb, env_cache: Array
   let outcome = check_module_impl_with_config(job = job, observe_typing_artifact = false, program_transport = None, artifact_output = Some((input_identity, output)), interfaces = interfaces, cfg = cfg)
   if Array::length(output) == 0 {
     // Preserve the existing diagnosed/parse failure behavior and publish nothing.
-    return commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated, dep_source_cache = dep_source_cache, parse_count = parse_count + 1, job = job, outcome = outcome, reuse_eligible = Some(false), reuse_input_key = None, cfg = cfg)
+    return commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated, dep_source_cache = dep_source_cache, parse_count = parse_count + 1, job = job, outcome = outcome, reuse_eligible = Some(false), reuse_input_key = None, cfg = cfg, checked_error_row = checked_error_row)
   }
   let artifact = Array::get(output, at = 0)
-  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = true, namespace = target_cfg_namespace(cfg))
-  commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated, dep_source_cache = dep_source_cache, parse_count = parse_count + 1, job = job, outcome = outcome, reuse_eligible = Some(false), reuse_input_key = None, cfg = cfg)
+  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = true, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row)
+  commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated, dep_source_cache = dep_source_cache, parse_count = parse_count + 1, job = job, outcome = outcome, reuse_eligible = Some(false), reuse_input_key = None, cfg = cfg, checked_error_row = checked_error_row)
 }
 
 /// `fingerprint` is the already-folded build_fingerprint(source, dep_fps)
@@ -699,16 +700,16 @@ fn finish_checked_module_artifact_fs_with_config(rdb: RippleDb, env_cache: Array
 /// below carries the real inputs check_module needs to compute (and thereby
 /// cross-check) that identical fingerprint itself, the same way a worker
 /// would -- one canonical computation, not a value trusted from the caller.
-fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String, interfaces: Option[DependencyInterfaceSet]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = target_cfg_ambient())
+fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String, interfaces: Option[DependencyInterfaceSet], checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   // #2391/#2546: reuse requires both outputs in the unified module entry.
   // A missing output forces a real check, which republishes both.
   let reusable_cached_env = match valid_persistent_type_env_in_namespace(path = path, fingerprint = fingerprint, namespace = target_cfg_namespace(cfg)) {
-    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row) {
       Some(cached_env)
     } else {
       None
@@ -718,7 +719,7 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
   match reusable_cached_env {
     Some(cached_env) => {
       if incremental_interface_trace_enabled() {
-        incremental_trace_observe_checked_env_with_config(path = path, source = source, env = cached_env, cfg = cfg)
+        incremental_trace_observe_checked_env_with_config(path = path, source = source, env = cached_env, cfg = cfg, checked_error_row = checked_error_row)
       } else {
         ()
       }
@@ -761,7 +762,7 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
         false
       }
       let reuse_input_key = if reuse_eligible {
-        Some(typing_dependency_transport_input_key_memo_with_config(path = path, source = source, semantics_seed = typing_semantics_seed(), dep_envs = projected_dep_envs, dep_fps = dep_fps, cfg = cfg))
+        Some(typing_dependency_transport_input_key_memo_with_config(path = path, source = source, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), dep_envs = projected_dep_envs, dep_fps = dep_fps, cfg = cfg))
       } else {
         None
       }
@@ -770,7 +771,7 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
           match load_typing_dependency_env_reuse_target_in_namespace(path = path, input_key = input_key, namespace = target_cfg_namespace(cfg)) {
             // The bound record hydrates this path's lowering memo from the
             // target fingerprint. Absent tables already declined the reuse.
-            Some((target_fingerprint, target_text, target_env)) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = target_fingerprint, source = source, cfg = cfg) {
+            Some((target_fingerprint, target_text, target_env)) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = target_fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row) {
               Some((input_key, target_fingerprint, target_text, target_env))
             } else {
               None
@@ -791,7 +792,7 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
           match module_typed_lowering_memo_get_by_fp(target_fingerprint) {
             Some((reused_offsets, reused_eq_offs, reused_eq_keys)) => {
               module_typed_lowering_memo_put(path = path, fingerprint = fingerprint, offsets = reused_offsets, eq_offs = reused_eq_offs, eq_keys = reused_eq_keys)
-              module_typed_lowering_bind_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg)
+              module_typed_lowering_bind_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row)
             },
             None => ()
           }
@@ -812,10 +813,11 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
             deps: deps,
             dep_fps: dep_fps,
             dep_envs: projected_dep_envs,
-            ships_owned_heads: is_owned_head_source_location_env_fs(path)
+            ships_owned_heads: is_owned_head_source_location_env_fs(path),
+            checked_error_row: checked_error_row
           }
           let outcome = check_module_impl_with_config(job = job, observe_typing_artifact = false, program_transport = None, artifact_output = None, interfaces = interfaces, cfg = cfg)
-          commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated_env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count + 1, job = job, outcome = outcome, reuse_eligible = Some(reuse_eligible), reuse_input_key = reuse_input_key, cfg = cfg)
+          commit_module_outcome_with_config(rdb = rdb, env_cache = coordinated_env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count + 1, job = job, outcome = outcome, reuse_eligible = Some(reuse_eligible), reuse_input_key = reuse_input_key, cfg = cfg, checked_error_row = checked_error_row)
         }
       }
     }
@@ -846,28 +848,28 @@ fn finish_typecheck_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String,
     i = i + 1
   }
   out
-} fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
-  load_or_parse_deps_for_source_fs_with_config(dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient())
+} fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int, checked_error_row: Bool) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
+  load_or_parse_deps_for_source_fs_with_config(dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn load_or_parse_deps_for_source_fs_with_config(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int, cfg: TargetCfg) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
+fn load_or_parse_deps_for_source_fs_with_config(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int, cfg: TargetCfg, checked_error_row: Bool) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
   match load_persistent_dep_list_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg)) {
     Some(deps) => (deps, typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count),
     None => {
-      let (deps, _, next_parse_count) = load_or_parse_module_header_fs_with_config(path = path, source = source, parse_count = parse_count, cfg = cfg)
+      let (deps, _, next_parse_count) = load_or_parse_module_header_fs_with_config(path = path, source = source, parse_count = parse_count, cfg = cfg, checked_error_row = checked_error_row)
       (deps, typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), next_parse_count)
     }
   }
-} fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
-  resolve_deps_for_source_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient())
+} fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int, checked_error_row: Bool) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
+  resolve_deps_for_source_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn resolve_deps_for_source_fs_with_config(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int, cfg: TargetCfg) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
+fn resolve_deps_for_source_fs_with_config(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int, cfg: TargetCfg, checked_error_row: Bool) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
   match cached_module_dependencies(rdb = rdb, source_cache = dep_source_cache, path = path, source = source) {
     Some(deps) => (deps, dep_source_cache, parse_count),
-    None => load_or_parse_deps_for_source_fs_with_config(dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count, cfg = cfg)
+    None => load_or_parse_deps_for_source_fs_with_config(dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count, cfg = cfg, checked_error_row = checked_error_row)
   }
 }
 /// #1239 step 4(A), on the real fs path: the coordinator-side upfront pass.
@@ -882,12 +884,12 @@ fn resolve_deps_for_source_fs_with_config(rdb: RippleDb, dep_source_cache: Array
 /// says nothing about whether one of those dependencies changed. Only a missing
 /// source or a validated dependency-free leaf can terminate planning early.
 /// Source/header caches avoid reparsing unchanged dependency lists.
-export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
-  plan_import_graph_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = root, cfg = target_cfg_ambient())
+export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String, checked_error_row: Bool) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
+  plan_import_graph_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = root, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-export fn plan_import_graph_fs_with_config(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String, cfg: TargetCfg) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
+export fn plan_import_graph_fs_with_config(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String, cfg: TargetCfg, checked_error_row: Bool) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
   let leaf_fps = typecheck_fs_empty_dep_fps()
   let plan_diags: Array[(String, String)] = []
   let edges: Array[(String, Array[String])] = []
@@ -944,8 +946,8 @@ export fn plan_import_graph_fs_with_config(rdb: RippleDb, dep_source_cache: Arra
         // runs before this one -- and a policy or a count written at one call
         // site is simply absent at the other. Both were, until Codex found
         // them on #2771.
-        let _ = ast_cache_prefetch_fs_with_config(path = path, source = source, cfg = cfg)
-        match valid_persistent_leaf_fingerprint_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg)) {
+        let _ = ast_cache_prefetch_fs_with_config(path = path, source = source, cfg = cfg, checked_error_row = checked_error_row)
+        match valid_persistent_leaf_fingerprint_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row) {
           Some(leaf_fingerprint) => Array::push(leaf_fps, value = (path, leaf_fingerprint)),
           None => {
             // Codex review P2: resolving a module's imports PARSES it, so a
@@ -962,7 +964,7 @@ export fn plan_import_graph_fs_with_config(rdb: RippleDb, dep_source_cache: Arra
             // rather than cascading.
             let plan_raised = empty_stack()
             let (deps_raw, _, next_pc) = handle {
-              resolve_deps_for_source_fs_with_config(rdb = rdb, dep_source_cache = scratch_cache, path = path, source = source, parse_count = pc, cfg = cfg)
+              resolve_deps_for_source_fs_with_config(rdb = rdb, dep_source_cache = scratch_cache, path = path, source = source, parse_count = pc, cfg = cfg, checked_error_row = checked_error_row)
             } with { Exception::Throw(msg) => {
               Array::push(plan_raised, value = msg)
               (empty_stack(), scratch_cache, pc)
@@ -1023,19 +1025,19 @@ export fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String)
 }
 /// The leaf-fingerprint arm: a module whose persistent leaf cache is valid is
 /// recorded with no deps at all and needs no checking.
-fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String, interfaces: Option[DependencyInterfaceSet]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  commit_leaf_fingerprint_fs_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, leaf_fingerprint = leaf_fingerprint, interfaces = interfaces, cfg = target_cfg_ambient())
+fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String, interfaces: Option[DependencyInterfaceSet], checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  commit_leaf_fingerprint_fs_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, leaf_fingerprint = leaf_fingerprint, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn commit_leaf_fingerprint_fs_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+fn commit_leaf_fingerprint_fs_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   // The plan read this cache earlier, but recheck at the accepting edge: a
   // stale/malformed leaf pointer must cold-check rather than become authority.
   // #2391: the checked lowering table is part of that acceptance too.
   match valid_persistent_type_env_in_namespace(path = path, fingerprint = leaf_fingerprint, namespace = target_cfg_namespace(cfg)) {
-    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = leaf_fingerprint, source = source, cfg = cfg) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = leaf_fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row) {
       if incremental_interface_trace_enabled() {
-        incremental_trace_observe_checked_env_with_config(path = path, source = source, env = cached_env, cfg = cfg)
+        incremental_trace_observe_checked_env_with_config(path = path, source = source, env = cached_env, cfg = cfg, checked_error_row = checked_error_row)
       } else {
         ()
       }
@@ -1046,21 +1048,21 @@ fn commit_leaf_fingerprint_fs_with_config(rdb: RippleDb, env_cache: Array[(Strin
       let next_env_cache = typecheck_fs_upsert_env_cache(cache = env_cache, path = path, env = cached_env)
       (leaf_fingerprint, next_db, next_env_cache, next_dep_source_cache, parse_count)
     } else {
-      finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = empty_stack(), dep_fps = typecheck_fs_empty_dep_fps(), fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = typecheck_fs_empty_dep_fps(), semantics_seed = typing_semantics_seed(), cfg = cfg), interfaces = interfaces, cfg = cfg)
+      finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = empty_stack(), dep_fps = typecheck_fs_empty_dep_fps(), fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = typecheck_fs_empty_dep_fps(), semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg), interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
     },
-    None => finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = empty_stack(), dep_fps = typecheck_fs_empty_dep_fps(), fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = typecheck_fs_empty_dep_fps(), semantics_seed = typing_semantics_seed(), cfg = cfg), interfaces = interfaces, cfg = cfg)
+    None => finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = empty_stack(), dep_fps = typecheck_fs_empty_dep_fps(), fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = typecheck_fs_empty_dep_fps(), semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg), interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
   }
 }
 /// One module's step, once its dependency list is known and every dependency
 /// already has a fingerprint. Folds the dependency fingerprints in
 /// DECLARATION order (build_fingerprint folds them as a sequence, not a set),
 /// then either reuses the cached fingerprint or checks and commits.
-fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], interfaces: Option[DependencyInterfaceSet]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  commit_with_deps_fs_with_config(fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, interfaces = interfaces, cfg = target_cfg_ambient())
+fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], interfaces: Option[DependencyInterfaceSet], checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  commit_with_deps_fs_with_config(fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   write_persistent_dep_list_if_missing_in_namespace(path = path, source = source, deps = deps, namespace = target_cfg_namespace(cfg))
   let dlen = Array::length(deps)
   let dep_fps = typecheck_fs_empty_dep_fps()
@@ -1076,40 +1078,40 @@ fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, 
     }
     i = i + 1
   }
-  let fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = dep_fps, semantics_seed = typing_semantics_seed(), cfg = cfg)
+  let fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = dep_fps, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg)
   if checked_module_cache_mode() != "off" {
-    return finish_checked_module_artifact_fs_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, interfaces = interfaces, cfg = cfg)
+    return finish_checked_module_artifact_fs_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
   }
   match ripple_get_fingerprint(db = rdb, path = path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {
       match valid_persistent_type_env_in_namespace(path = path, fingerprint = fingerprint, namespace = target_cfg_namespace(cfg)) {
         // #2391: both cache halves, or re-check (which republishes both).
-        Some(_) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg) {
+        Some(_) => if ensure_module_typed_lowering_offsets_for_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row) {
           incremental_typecheck_telemetry_add(index = 7, amount = 1)
           (fingerprint, rdb, env_cache, dep_source_cache, parse_count)
         } else {
-          finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg)
+          finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
         },
-        None => finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg)
+        None => finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
       }
     } else {
-      finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg)
+      finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
     },
     None =>
-    finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg)
+    finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, fingerprint = fingerprint, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
   }
 }
 /// Step one scheduled module after accepting all dependency fingerprints.
 /// A validated leaf needs no dependency fold; every other module folds the
 /// current dependency inputs before accepting a resident or disk product.
-fn step_module_fs_impl(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: Option[DependencyInterfaceSet]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  step_module_fs_impl_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = interfaces, cfg = target_cfg_ambient())
+fn step_module_fs_impl(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: Option[DependencyInterfaceSet], checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  step_module_fs_impl_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  let (rdb_loaded, loaded_source) = load_planned_module_source_with_config(rdb = rdb, path = path, cfg = cfg)
+fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  let (rdb_loaded, loaded_source) = load_planned_module_source_with_config(rdb = rdb, path = path, cfg = cfg, checked_error_row = checked_error_row)
   match loaded_source {
     None => (String::concat("missing:", path), rdb_loaded, env_cache, dep_source_cache, parse_count),
     Some(source) => {
@@ -1122,21 +1124,21 @@ fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_
             throw(String::concat("type_db: module missing from the import plan: ", path))
           }
         }
-        return commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, interfaces = interfaces, cfg = cfg)
+        return commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
       }
       match typecheck_fs_lookup_string_pair(pairs = plan_leaf_fps, key = path) {
         Some(leaf_fingerprint) =>
-        commit_leaf_fingerprint_fs_with_config(rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, leaf_fingerprint = leaf_fingerprint, interfaces = interfaces, cfg = cfg),
+        commit_leaf_fingerprint_fs_with_config(rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, leaf_fingerprint = leaf_fingerprint, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row),
         None =>
         match plan_deps_of(plan_edges = plan_edges, path = path) {
           Some(planned_deps) =>
-          commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = planned_deps, interfaces = interfaces, cfg = cfg),
+          commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = planned_deps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row),
           // Types stubs interned only as someone else's dep have no plan
           // edge: plan_import_graph_fs skipped them because they were not
           // in the ripple db. They are leaves (type-family defs only).
           None =>
           if is_vpkg_types_stub_path(path) {
-            commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = empty_stack(), interfaces = interfaces, cfg = cfg)
+            commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = empty_stack(), interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
           } else {
             throw(String::concat("type_db: module missing from the import plan: ", path))
           }
@@ -1146,17 +1148,17 @@ fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_
   }
 }
 
-export fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  step_module_fs_impl(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = None)
+export fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  step_module_fs_impl(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = None, checked_error_row = checked_error_row)
 }
 
-export fn step_module_fs_using_interfaces(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  step_module_fs_using_interfaces_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = interfaces, cfg = target_cfg_ambient())
+export fn step_module_fs_using_interfaces(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  step_module_fs_using_interfaces_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = interfaces, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-export fn step_module_fs_using_interfaces_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  step_module_fs_impl_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = Some(interfaces), cfg = cfg)
+export fn step_module_fs_using_interfaces_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  step_module_fs_impl_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = Some(interfaces), cfg = cfg, checked_error_row = checked_error_row)
 }
 
 /// Preserve the runtime's public input type at the engine boundary. Dependency
@@ -1168,6 +1170,7 @@ fn checker_engine_job(_ job: ModuleJob) -> CheckJob {
     deps: job.deps,
     dep_fps: job.dep_fps,
     dep_envs: job.dep_envs,
-    ships_owned_heads: job.ships_owned_heads
+    ships_owned_heads: job.ships_owned_heads,
+    checked_error_row: job.checked_error_row
   }
 }

@@ -33,7 +33,7 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import ./checker_effects_decl_authorizes_effect.vibe {
-  set_entry_user_effect_operations, user_provider_collision_errors
+  note_env_host_provided_effects, set_entry_user_effect_operations, user_provider_collision_errors
 }
 
 import ./checker_effects_dh_call_to_binding.vibe {
@@ -151,13 +151,13 @@ import ./checker_effects_throw_payload_kind.vibe {
 
 /// Public 3-arg entry: the direct-only check (no call-graph map), preserving the
 /// pre-transitive behavior for unit tests and any non-stmts caller.
-export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], root_in_handle: Bool) -> Array[EffectError] {
+export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], root_in_handle: Bool, checked_error_row: Bool) -> Array[EffectError] {
   // Same clearing rule as check_perform_effects_stmt (#1344): no env here, so
   // no payload kinds are resolvable and none must be carried over.
   set_throw_kind_table(EnvEmpty)
   clear_checker_published_tables()
   set_callee_sigs(stmts = array_empty(), env = EnvEmpty)
-  check_perform_effects_expr_tx(root = root, root_declared = root_declared, root_in_handle = root_in_handle, fn_names = no_str_labels(), fn_effs = no_ov_effs(), root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs())
+  check_perform_effects_expr_tx(root = root, root_declared = root_declared, root_in_handle = root_in_handle, fn_names = no_str_labels(), fn_effs = no_ov_effs(), root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), checked_error_row = checked_error_row)
 }
 
 /// #3450: a declared result spelled through an alias (`fn mid() -> Thunk`,
@@ -196,7 +196,7 @@ fn entry_walk_row(fn_name: String, labels: Array[String]) -> Array[String] {
   }
 }
 
-fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
+fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], checked_error_row: Bool) -> Array[EffectError] {
   // #3347: a function-type alias annotation declares its row like a written one.
   let ty = dh_expand_sig(written_ty)
   let sig_labels = sig_type_effect_labels(ty)
@@ -242,7 +242,7 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
       } else {
         labels_union(a = own, b = [erased_root_marker(fn_name)])
       }
-      let errs = check_perform_effects_expr_tx_in(fn_name = fn_name, root = fbody, root_declared = declared, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = ov_names, root_ov_effs = ov_effs, root_kinds = throw_kind_bind_params(binds = no_kind_binds(), params = merged_params))
+      let errs = check_perform_effects_expr_tx_in(fn_name = fn_name, root = fbody, root_declared = declared, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = ov_names, root_ov_effs = ov_effs, root_kinds = throw_kind_bind_params(binds = no_kind_binds(), params = merged_params), checked_error_row = checked_error_row)
       Array::truncate(row_formal_scope, length = 0)
       errs
     },
@@ -250,7 +250,7 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so
       // the PREVIOUS binding's return-type rows cannot leak into this walk.
       set_ret_fn_rows(ret_fn_rows_from_sig(expand_sig_ret_alias(ty)))
-      check_perform_effects_expr_tx_in(fn_name = fn_name, root = body, root_declared = entry_walk_row(fn_name = fn_name, labels = sig_labels), root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds())
+      check_perform_effects_expr_tx_in(fn_name = fn_name, root = body, root_declared = entry_walk_row(fn_name = fn_name, labels = sig_labels), root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds(), checked_error_row = checked_error_row)
     }
   }
   if Array::length(grade_errors) == 0 {
@@ -270,7 +270,7 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
 /// the body is walked under the ambient row (the policy default widened by
 /// that row). The grade check runs on that row exactly as it does for a
 /// binding's declared row.
-fn check_perform_effects_block_tx(block_name: String, source_name: String, body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
+fn check_perform_effects_block_tx(block_name: String, source_name: String, body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], checked_error_row: Bool) -> Array[EffectError] {
   // ADR-0124 decision 3: a label naming an effect the program declares is
   // admitted by a `handle` in the block, and the block is walked without it.
   let declared = labels_without_algebraic(test_ambient_effects(source_name))
@@ -279,37 +279,37 @@ fn check_perform_effects_block_tx(block_name: String, source_name: String, body:
   let errors = entry_grant_errors(entry_name = block_name, labels = labels_without_algebraic(written), off = off)
   append_eff_errs(dst = errors, src = entry_vacuous_algebraic_errors(entry_name = block_name, labels = written, body = body, off = off))
   append_eff_errs(dst = errors, src = optional_grade_errors(fn_name = block_name, labels = declared))
-  append_eff_errs(dst = errors, src = check_perform_effects_expr_tx_in(fn_name = block_name, root = body, root_declared = declared, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds()))
+  append_eff_errs(dst = errors, src = check_perform_effects_expr_tx_in(fn_name = block_name, root = body, root_declared = declared, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds(), checked_error_row = checked_error_row))
   errors
 }
 
-fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
+fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], checked_error_row: Bool) -> Array[EffectError] {
   match stmt {
-    SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(fn_name = name, written_ty = ty, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
-    SLetMut(name, ty, body) => check_perform_effects_binding_tx(fn_name = name, written_ty = ty, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
+    SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(fn_name = name, written_ty = ty, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, checked_error_row = checked_error_row),
+    SLetMut(name, ty, body) => check_perform_effects_binding_tx(fn_name = name, written_ty = ty, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, checked_error_row = checked_error_row),
     // The block's row is checked under the synthesized name the gc lane also
     // uses (`__test_x`), so a diagnostic can name the block the reader wrote
     // (`entry_block_display_name`) and its hint can say `allows`.
-    STest(tname, body) => check_perform_effects_block_tx(block_name = String::concat("__test_", tname), source_name = tname, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
-    SBench(bname, body) => check_perform_effects_block_tx(block_name = String::concat("__bench_", bname), source_name = bname, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
-    SExpr(e) => check_perform_effects_expr_tx_in(fn_name = "", root = e, root_declared = effect_row_labels(effect_row_parse(None)), root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds())
+    STest(tname, body) => check_perform_effects_block_tx(block_name = String::concat("__test_", tname), source_name = tname, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, checked_error_row = checked_error_row),
+    SBench(bname, body) => check_perform_effects_block_tx(block_name = String::concat("__bench_", bname), source_name = bname, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, checked_error_row = checked_error_row),
+    SExpr(e) => check_perform_effects_expr_tx_in(fn_name = "", root = e, root_declared = effect_row_labels(effect_row_parse(None)), root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds(), checked_error_row = checked_error_row)
     _ => array_empty()
   }
 }
 
 /// Public 1-arg entry: direct-only (empty map). Kept for unit tests.
-export fn check_perform_effects_stmt(_ stmt: Stmt) -> Array[EffectError] {
+export fn check_perform_effects_stmt(_ stmt: Stmt, checked_error_row: Bool) -> Array[EffectError] {
   // No env to resolve payload kinds from: clear the table rather than let a
   // previous module's bindings decide this one's throw kinds (#1344).
   set_throw_kind_table(EnvEmpty)
   clear_checker_published_tables()
   set_callee_sigs(stmts = Array::slice([stmt], start = 0, end = 1), env = EnvEmpty)
   set_entry_user_effect_operations(Array::slice([stmt], start = 0, end = 1))
-  check_perform_effects_stmt_tx(stmt = stmt, fn_names = no_str_labels(), fn_effs = no_ov_effs(), fn_index = program_fn_index(no_str_labels()), fn_param_effs = no_param_effs())
+  check_perform_effects_stmt_tx(stmt = stmt, fn_names = no_str_labels(), fn_effs = no_ov_effs(), fn_index = program_fn_index(no_str_labels()), fn_param_effs = no_param_effs(), checked_error_row = checked_error_row)
 }
 
-export fn check_perform_effects_stmts(_ stmts: Array[Stmt]) -> Array[EffectError] {
-  check_perform_effects_stmts_env(stmts = stmts, env = EnvEmpty)
+export fn check_perform_effects_stmts(_ stmts: Array[Stmt], checked_error_row: Bool) -> Array[EffectError] {
+  check_perform_effects_stmts_env(stmts = stmts, env = EnvEmpty, checked_error_row = checked_error_row)
 }
 
 /// The standalone entry: no checker pass published call bindings or shadow
@@ -317,18 +317,18 @@ export fn check_perform_effects_stmts(_ stmts: Array[Stmt]) -> Array[EffectError
 /// (Codex on #3055). The checker calls
 /// `check_perform_effects_stmts_env_published` instead, right after
 /// publishing them.
-export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv, checked_error_row: Bool) -> Array[EffectError] {
   clear_checker_published_tables()
-  check_perform_effects_stmts_env_published(stmts = stmts, env = env)
+  check_perform_effects_stmts_env_published(stmts = stmts, env = env, checked_error_row = checked_error_row)
 }
 
-export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
-  check_perform_effects_stmts_env_published_sigs(stmts = stmts, env = env, written_env_sigs = env_fn_sigs(env))
+export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: TypeEnv, checked_error_row: Bool) -> Array[EffectError] {
+  check_perform_effects_stmts_env_published_sigs(stmts = stmts, env = env, written_env_sigs = env_fn_sigs(env), checked_error_row = checked_error_row)
 }
 
 /// `check_perform_effects_stmts_env_published` with `env_sigs` =
 /// `env_fn_sigs(env)` already built by the caller.
-export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env: TypeEnv, written_env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]])) -> Array[EffectError] {
+export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env: TypeEnv, written_env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]]), checked_error_row: Bool) -> Array[EffectError] {
   // #3601: an imported function whose erased row lets out another kind than
   // the message carries it, as its module published it
   // (`erased_kinds_marker`); a call charges it like a label of that row.
@@ -380,6 +380,7 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // what each throw site actually throws.
   set_throw_kind_table(env)
   set_entry_user_effect_operations(stmts)
+  note_env_host_provided_effects(env)
   // #3541: an erased `with Exception` row carries the kinds its body throws.
   // A walk records each kind other than the message that a function's erased
   // row lets out (`erased_row_leaks`); it is added to that function's row as
@@ -398,11 +399,11 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   Array::truncate(erased_local_leaks, length = 0)
   Array::set(erased_local_leaks_grew, at = 0, value = false)
   let aliases = toplevel_alias_pairs(stmts)
-  let mut errors = check_perform_effects_module_walk(stmts = stmts, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs)
+  let mut errors = check_perform_effects_module_walk(stmts = stmts, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, checked_error_row = checked_error_row)
   while charge_erased_row_leaks(fn_effs = fn_effs, fn_index = fn_index, local_count = local_count, aliases = aliases, imported = imported_kinds) || Array::get(erased_local_leaks_grew, at = 0) {
     Array::truncate(erased_row_leaks, length = 0)
     Array::set(erased_local_leaks_grew, at = 0, value = false)
-    errors = check_perform_effects_module_walk(stmts = stmts, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs)
+    errors = check_perform_effects_module_walk(stmts = stmts, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, checked_error_row = checked_error_row)
   }
   Array::truncate(erased_row_leaks, length = 0)
   if Array::length(errors) == 0 {
@@ -1177,7 +1178,7 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
 }
 
 /// One walk of the module's statements under the program table.
-fn check_perform_effects_module_walk(stmts: Array[Stmt], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
+fn check_perform_effects_module_walk(stmts: Array[Stmt], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], checked_error_row: Bool) -> Array[EffectError] {
   let errors = user_provider_collision_errors(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
@@ -1198,7 +1199,7 @@ fn check_perform_effects_module_walk(stmts: Array[Stmt], fn_names: Array[String]
       }
     }
     select_shadowed_builtin_type_names(stmt)
-    append_eff_errs(dst = errors, src = check_perform_effects_stmt_tx(stmt = stmt, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs))
+    append_eff_errs(dst = errors, src = check_perform_effects_stmt_tx(stmt = stmt, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, checked_error_row = checked_error_row))
     i = i + 1
   }
   Array::set(shadowed_builtin_type_names_cell, at = 0, value = Array::get(shadowed_builtin_type_names_cell, at = 1))
@@ -2674,7 +2675,7 @@ fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs
 /// same as `sh` reached through a user function declaring `with Process`.
 /// Conservative otherwise: an effect the type system does not surface here stays
 /// invisible, but it never marks a genuinely-impure test cacheable.
-export fn file_tests_cacheable(_ stmts: Array[Stmt]) -> Bool {
+export fn file_tests_cacheable(_ stmts: Array[Stmt], checked_error_row: Bool) -> Bool {
   let fn_names = array_empty()
   let fn_effs = array_empty()
   let mut m = 0
@@ -2702,7 +2703,7 @@ export fn file_tests_cacheable(_ stmts: Array[Stmt]) -> Bool {
     match Array::get(stmts, at = i) {
       STest(_, body) => {
         any_test = true
-        let errs = check_perform_effects_expr_tx_indexed(root = body, root_declared = empty_decl, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs())
+        let errs = check_perform_effects_expr_tx_indexed(root = body, root_declared = empty_decl, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), checked_error_row = checked_error_row)
         if Array::length(errs) != 0 {
           all_ok = false
         } else {
@@ -2731,7 +2732,7 @@ export fn file_tests_cacheable(_ stmts: Array[Stmt]) -> Bool {
 /// entry's stdout can vary between runs of byte-identical compiled wasm, so
 /// it must NOT be treated as cacheable -- returns false if `entry_name` is
 /// not found among the file's top-level bindings.
-export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
+export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String, checked_error_row: Bool) -> Bool {
   let fn_names = array_empty()
   let fn_effs = array_empty()
   let mut entry_body = None
@@ -2821,7 +2822,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
         }
       } else {
         set_callee_sigs(stmts = stmts, env = EnvEmpty)
-        let errs = check_perform_effects_expr_tx_indexed(root = exec_body, root_declared = cache_safe_row, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = program_fn_index(fn_names), root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs())
+        let errs = check_perform_effects_expr_tx_indexed(root = exec_body, root_declared = cache_safe_row, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = program_fn_index(fn_names), root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), checked_error_row = checked_error_row)
         Array::length(errs) == 0
       }
     }

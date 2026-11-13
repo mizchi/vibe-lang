@@ -8,33 +8,41 @@ import ./queries.vibe {
   edp_pat_qname, edp_split_qualified
 }
 
+/// Note that `statement` has a handler arm whose pattern is spelled `qname`.
+/// The index's rows are in the order their effect is first noted, and each
+/// row's statements ascend, so noting every arm in walk order, statement by
+/// statement, gives the same index however the arms were found.
+export fn edp_handle_statement_index_note(index: Array[(String, Array[Int])], qname: String, statement: Int) -> Unit {
+  let (effect, _) = edp_split_qualified(qname)
+  match effect {
+    Some(name) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(index) && !found {
+        let (key, statements) = Array::get(index, at = i)
+        if key == name {
+          let n = Array::length(statements)
+          if n == 0 || Array::get(statements, at = n - 1) != statement {
+            Array::push(statements, value = statement)
+          } else ()
+          found = true
+        } else ()
+        i = i + 1
+      }
+      if !found {
+        Array::push(index, value = (name, [statement]))
+      } else ()
+    },
+    None => ()
+  }
+}
+
 fn edp_index_handle_expr(expr: Expr, statement: Int, index: Array[(String, Array[Int])]) -> Unit {
   match expr {
     EHandle(_, arms) => {
       for arm in arms {
         let (pat, _) = arm
-        let (effect, _) = edp_split_qualified(edp_pat_qname(pat))
-        match effect {
-          Some(name) => {
-            let mut found = false
-            let mut i = 0
-            while i < Array::length(index) && !found {
-              let (key, statements) = Array::get(index, at = i)
-              if key == name {
-                let n = Array::length(statements)
-                if n == 0 || Array::get(statements, at = n - 1) != statement {
-                  Array::push(statements, value = statement)
-                } else ()
-                found = true
-              } else ()
-              i = i + 1
-            }
-            if !found {
-              Array::push(index, value = (name, [statement]))
-            } else ()
-          },
-          None => ()
-        }
+        edp_handle_statement_index_note(index = index, qname = edp_pat_qname(pat), statement = statement)
       }
       ()
     },

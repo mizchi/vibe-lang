@@ -59,20 +59,20 @@ fn label_sites_failed(path: String, source: String, message: String) -> LabelSit
 /// Query-specific checking and failure presentation. The same project state
 /// flows through the sweep, including the complete per-module rows retained
 /// when a dependency walk throws. The replacement is never written to disk.
-fn label_sites_file(path: String, source: String, replacement: Option[String], state: QueryProjectState) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
+fn label_sites_file(path: String, source: String, replacement: Option[String], state: QueryProjectState, checked_error_row: Bool) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
   // ADR-0120 Phase 4: the labels the codemod writes are not errors while it
   // types the program, its import walk included. What that walk publishes
   // was checked without them, so it goes to a cache namespace of its own: an
   // ordinary check never reads it back as clean (Codex on #3881).
   set_persistent_cache_scope("labels-suspended")
   checker_required_labels_suspend(true)
-  let answer = label_sites_file_typed(path = path, source = source, replacement = replacement, state = state)
+  let answer = label_sites_file_typed(path = path, source = source, replacement = replacement, state = state, checked_error_row = checked_error_row)
   checker_required_labels_suspend(false)
   set_persistent_cache_scope("")
   answer
 }
 
-fn label_sites_file_typed(path: String, source: String, replacement: Option[String], state: QueryProjectState) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
+fn label_sites_file_typed(path: String, source: String, replacement: Option[String], state: QueryProjectState, checked_error_row: Bool) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
   handle {
     let edit = match replacement {
       None => None,
@@ -81,18 +81,18 @@ fn label_sites_file_typed(path: String, source: String, replacement: Option[Stri
         mismatch_message: "add-labels: the edited file cannot stand in for the ingested one; leaving it alone"
       })
     }
-    let context = query_project_context_fs(path = path, source = source, replacement = edit, state = state)
+    let context = query_project_context_fs(path = path, source = source, replacement = edit, state = state, checked_error_row = checked_error_row)
     let written = match replacement {
       Some(r) => r,
       None => source
     }
-    (label_sites_typed(path = path, source = written, entry_source = context.entry_source, import_env = context.import_env), context.state)
+    (label_sites_typed(path = path, source = written, entry_source = context.entry_source, import_env = context.import_env, checked_error_row = checked_error_row), context.state)
   } with { Exception::Throw(message) => (label_sites_failed(path = path, source = source, message = message), state) }
 }
 
 /// Check the ingested `entry_source` against `import_env` with the site
 /// capture on.
-fn label_sites_typed(path: String, source: String, entry_source: String, import_env: TypeEnv) -> LabelSiteFile {
+fn label_sites_typed(path: String, source: String, entry_source: String, import_env: TypeEnv, checked_error_row: Bool) -> LabelSiteFile {
   let delta = String::length(entry_source) - String::length(source)
   if delta < 0 {
     label_sites_failed(path = path, source = source, message = "add-labels: refusing to edit this file -- its ingested source is not the file plus a prefix")
@@ -102,7 +102,7 @@ fn label_sites_typed(path: String, source: String, entry_source: String, import_
       // A fresh parse: the checker mutates the statements it is handed.
       let (tokens, starts, _) = lex_with_offsets(entry_source)
       let stmts = parse_program_located(tokens = tokens, starts = starts, source = entry_source)
-      let _ = check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env)
+      let _ = check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env, checked_error_row = checked_error_row)
       ""
     } with { Exception::Throw(message) => message }
     let sites = label_sites_end()
@@ -122,13 +122,13 @@ fn label_sites_typed(path: String, source: String, entry_source: String, import_
 
 /// Type every file in `files` (paths to `.vibe` sources) and record its
 /// resolved call sites.
-export fn query_label_sites_fs(_ files: Array[String]) -> Array[LabelSiteFile] with Env + Exception + Fs {
+export fn query_label_sites_fs(_ files: Array[String], checked_error_row: Bool) -> Array[LabelSiteFile] with Env + Exception + Fs {
   let out: Array[LabelSiteFile] = []
   let mut state = query_project_state_new()
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, at = i)
-    let (answer, next_state) = label_sites_file(path = path, source = Fs::read_file(path), replacement = None, state = state)
+    let (answer, next_state) = label_sites_file(path = path, source = Fs::read_file(path), replacement = None, state = state, checked_error_row = checked_error_row)
     state = next_state
     Array::push(out, value = answer)
     i = i + 1
@@ -139,7 +139,7 @@ export fn query_label_sites_fs(_ files: Array[String]) -> Array[LabelSiteFile] w
 /// Does `edited`, standing in for the file at `path` (which reads `source`),
 /// still check? "" when it does, else the checker's message. The codemod asks
 /// this of every edit before it reports or writes it.
-export fn query_label_sites_recheck_fs(path: String, source: String, edited: String) -> String with Env + Fs {
-  let (answer, _) = label_sites_file(path = path, source = source, replacement = Some(edited), state = query_project_state_new())
+export fn query_label_sites_recheck_fs(path: String, source: String, edited: String, checked_error_row: Bool) -> String with Env + Fs {
+  let (answer, _) = label_sites_file(path = path, source = source, replacement = Some(edited), state = query_project_state_new(), checked_error_row = checked_error_row)
   answer.error
 }

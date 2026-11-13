@@ -1,0 +1,97 @@
+//# Checked Exception rows belong to a compiler invocation (#1953).
+
+import ../cli_direct_component_entry.vibe {
+  compile_cli_request
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+fn row_payload(_ src: String) -> String {
+  let text = String::concat("main.vibe", String::concat(String::from_char_code(0), src))
+  let digits = "0123456789abcdef"
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(text) {
+    let b = String::char_code_at(text, at = i)
+    StringBuilder::push(out, value = digits[b / 16: b / 16 + 1])
+    StringBuilder::push(out, value = digits[b % 16: b % 16 + 1])
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+fn missing_exception_row() -> String {
+  "fn throwing() -> Int with Exception { throw(\"zero\") }\nfn main() -> Int { throwing() }\n"
+}
+
+test "the standalone diagnostics entry has its fixed unchecked default" {
+  assert_eq(Array::length(collect_all_diagnostics(missing_exception_row())), 0)
+}
+
+test "a successful checked component compile does not change another invocation's policy" {
+  let source = missing_exception_row()
+  let before = collect_all_diagnostics(source)
+  assert_eq(Array::length(before), 0)
+  let length = compile_cli_request(source = row_payload("fn main() -> Int { 42 }\n"), request = "len-mode:mvp:main")
+  assert(String::length(length) > 0 && length != "0")
+  assert_eq(collect_all_diagnostics(source), before)
+}
+
+test "a refused checked component compile does not change another invocation's policy" {
+  let source = missing_exception_row()
+  let before = collect_all_diagnostics(source)
+  assert_eq(Array::length(before), 0)
+  let message = compile_cli_request(source = row_payload(source), request = "error-mode:mvp:main")
+  assert(String::contains(message, needle = "Exception"))
+  assert_eq(collect_all_diagnostics(source), before)
+}
+
+// The configured API must keep both verdicts, including after a refusal.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics_with_error_row
+}
+
+test "explicit Exception-row policies remain independent across alternating calls" {
+  let source = missing_exception_row()
+  let strict = collect_all_diagnostics_with_error_row(source, checked_error_row = true)
+  assert(Array::length(strict) > 0)
+  assert(String::contains(String::join(strict, sep = "\n"), needle = "Exception"))
+  let i = [0]
+  while Array::get(i, at = 0) < 3 {
+    assert_eq(Array::length(collect_all_diagnostics_with_error_row(source, checked_error_row = false)), 0)
+    assert_eq(collect_all_diagnostics_with_error_row(source, checked_error_row = true), strict)
+    Array::set(i, at = 0, value = Array::get(i, at = 0) + 1)
+  }
+}
+
+import @vibe/compiler/config {
+  Config
+}
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only_rc_configured
+}
+
+test "an unchecked outer compile resumes after nested checked component requests" {
+  let source = missing_exception_row()
+  let expected = handle {
+    compile_source_wasi_only_rc_configured(source = source, entry_name = "main", trusted_generated = false, exports_stripped = false, checked_error_row = false)
+  } with { Config::CfgFlags() => resume("") }
+  let actual = handle {
+    compile_source_wasi_only_rc_configured(source = source, entry_name = "main", trusted_generated = false, exports_stripped = false, checked_error_row = false)
+  } with { Config::CfgFlags() => {
+    let length = compile_cli_request(source = row_payload("fn main() -> Int { 42 }\n"), request = "len-mode:mvp:main")
+    assert(length != "" && length != "0")
+    let refused = compile_cli_request(source = row_payload(source), request = "error-mode:mvp:main")
+    assert(String::contains(refused, needle = "Exception"))
+    resume("")
+  } }
+  assert_eq(Bytes::length(actual), Bytes::length(expected))
+  let mut i = 0
+  while i < Bytes::length(expected) {
+    assert_eq(Bytes::get(actual, at = i), Bytes::get(expected, at = i))
+    i = i + 1
+  }
+  assert_eq(Array::length(collect_all_diagnostics(source)), 0)
+}

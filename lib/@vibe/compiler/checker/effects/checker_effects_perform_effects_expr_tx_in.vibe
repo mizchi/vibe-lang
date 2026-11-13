@@ -57,7 +57,6 @@ import ./checker_effects_dh_call_to_binding.vibe {
   closure_arg_declared,
   closure_row_extra_labels,
   dh_expand_type_alias,
-  error_row_checked,
   labels_without_exception_family_marker,
   make_contextual_row_error,
   nested_type_rows,
@@ -1370,7 +1369,7 @@ export fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String
 /// described above, scoped to the function body currently in view (empty at the
 /// program's top level and at any call site with no enclosing function-typed
 /// parameters in scope).
-export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
+export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], checked_error_row: Bool) -> Array[EffectError] {
   // #1485: the public entry keeps its 7-arg contract and supplies an EMPTY
   // per-parameter table, which switches call-site row unification off and
   // restores the pre-#1485 exemption. Callers of this entry are unit-test and
@@ -1378,16 +1377,16 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
   // Nor has a checker pass published call bindings for this AST (Codex on
   // #3055).
   clear_checker_published_tables()
-  check_perform_effects_expr_tx_indexed(root = root, root_declared = root_declared, root_in_handle = root_in_handle, fn_names = fn_names, fn_effs = fn_effs, fn_index = program_fn_index(fn_names), root_ov_names = root_ov_names, root_ov_effs = root_ov_effs)
+  check_perform_effects_expr_tx_indexed(root = root, root_declared = root_declared, root_in_handle = root_in_handle, fn_names = fn_names, fn_effs = fn_effs, fn_index = program_fn_index(fn_names), root_ov_names = root_ov_names, root_ov_effs = root_ov_effs, checked_error_row = checked_error_row)
 }
 
 /// The same entry with the program table's index supplied by the caller
 /// (#2386 review): the cacheability walks below run it once per test block
 /// of a file, and an index rebuilt per block is `blocks x table` of memory
 /// the bump lane never frees.
-export fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
+export fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], checked_error_row: Bool) -> Array[EffectError] {
   set_entry_user_effect_operations(array_empty())
-  check_perform_effects_expr_tx_in(fn_name = "", root = root, root_declared = root_declared, root_in_handle = root_in_handle, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = no_param_effs(), root_ov_names = root_ov_names, root_ov_effs = root_ov_effs, root_kinds = no_kind_binds())
+  check_perform_effects_expr_tx_in(fn_name = "", root = root, root_declared = root_declared, root_in_handle = root_in_handle, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = no_param_effs(), root_ov_names = root_ov_names, root_ov_effs = root_ov_effs, root_kinds = no_kind_binds(), checked_error_row = checked_error_row)
 }
 
 /// #639: the same walk with the enclosing top-level binding's NAME threaded in
@@ -1417,12 +1416,12 @@ fn typed_label_is_row_var(_ l: String) -> Bool {
 /// imposes nothing, and a label the context authorizes -- or one already
 /// missing -- is not added again. `skip` holds labels already judged at this
 /// call (the callee's row as written), so only what the type adds is charged.
-fn charge_typed_callee_row(labels: Array[String], skip: Array[String], declared: Array[String], in_handle: Bool, missing: Array[String]) -> Unit {
+fn charge_typed_callee_row(labels: Array[String], skip: Array[String], declared: Array[String], in_handle: Bool, missing: Array[String], checked_error_row: Bool) -> Unit {
   if !in_handle {
     let mut i = 0
     while i < Array::length(labels) {
       let l = Array::get(labels, at = i)
-      if String::length(l) > 0 && !typed_label_is_row_var(l) && !is_effect_inst_label(l) && (!is_exception_effect_name(l) || error_row_checked() || under_kinded_handle(declared)) && !str_labels_contain(xs = skip, x = l) && !str_labels_contain(xs = missing, x = l) && !decl_authorizes_op(labels = declared, op_name = l) {
+      if String::length(l) > 0 && !typed_label_is_row_var(l) && !is_effect_inst_label(l) && (!is_exception_effect_name(l) || checked_error_row || under_kinded_handle(declared)) && !str_labels_contain(xs = skip, x = l) && !str_labels_contain(xs = missing, x = l) && !decl_authorizes_op(labels = declared, op_name = l) {
         Array::push(missing, value = l)
       }
       i = i + 1
@@ -1563,7 +1562,7 @@ fn charge_typed_own_row_vars(call_off: Int, spelling: String, ov_names: Array[St
   charge_own_row_vars(vars = own, declared = declared, in_handle = in_handle, missing = missing)
 }
 
-export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv) -> Array[EffectError] {
+export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv, checked_error_row: Bool) -> Array[EffectError] {
   let errors = array_empty()
   let scope_depth = Array::length(row_formal_scope)
   let owner_depth = Array::length(lambda_owner_stack)
@@ -1678,7 +1677,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                     // undischarged, whatever the root row spells.
                     if is_program_entry_name(fn_name) && !in_handle && !effect_row_has_label(row = Some(declared), wanted = op_name) && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(labels = root_declared, op_name = op_name) {
                       Array::push(errors, value = EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off, entry_declared_capability_note(op_name)))
-                    } else if (!is_exception_effect_name(eff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(labels = declared, op_name = required_op) {
+                    } else if (!is_exception_effect_name(eff) || checked_error_row || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(labels = declared, op_name = required_op) {
                       // #2985 review (Codex P0): under a KINDED handler the
                       // erased exemption is off -- this throw would be caught
                       // by that arm and read at its kind.
@@ -1699,7 +1698,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                   let eff = effect_name_of_op(op_name)
                   if is_program_entry_name(fn_name) && !in_handle && !effect_row_has_label(row = Some(declared), wanted = op_name) && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(labels = root_declared, op_name = op_name) {
                     Array::push(errors, value = EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off, entry_declared_capability_note(op_name)))
-                  } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(labels = declared, op_name = op_name) {
+                  } else if (!is_exception_effect_name(eff) || checked_error_row) && !in_handle && !decl_authorizes_op(labels = declared, op_name = op_name) {
                     Array::push(errors, value = make_contextual_row_error(fn_name = fn_name, declared = declared, missing = [
                       op_name
                     ], off = call_off))
@@ -1818,7 +1817,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                           // unresolved (one the enclosing signature owns was
                           // charged above). #2967: `Async` is charged like
                           // any other label.
-                          if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(labels = declared, op_name = ieff) {
+                          if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || checked_error_row || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(labels = declared, op_name = ieff) {
                             Array::push(missing, value = ieff)
                           } else {
                             ()
@@ -1828,7 +1827,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                       },
                       None => unresolved_row_var = true
                     }
-                  } else if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(labels = declared, op_name = teff) {
+                  } else if String::length(teff) > 0 && (!is_exception_effect_name(teff) || checked_error_row || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(labels = declared, op_name = teff) {
                     Array::push(missing, value = teff)
                   } else {
                     ()
@@ -1842,7 +1841,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                 // callee at this call has the variable bound; what it adds to
                 // the row as written is charged.
                 if unresolved_row_var {
-                  charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = name), skip = callee_effs, declared = declared, in_handle = in_handle, missing = missing)
+                  charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = name), skip = callee_effs, declared = declared, in_handle = in_handle, missing = missing, checked_error_row = checked_error_row)
                   charge_typed_own_row_vars(call_off = call_off, spelling = name, ov_names = ov_names, ov_effs = ov_effs, declared = declared, in_handle = in_handle, missing = missing)
                 }
                 if Array::length(missing) > 0 {
@@ -1907,7 +1906,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                           while ii < Array::length(inst) {
                             let ieff = Array::get(inst, at = ii)
                             Array::set(requirement_marked_cell, at = 0, value = (ieff, ieff))
-                            if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(labels = declared, op_name = ieff) {
+                            if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || checked_error_row || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(labels = declared, op_name = ieff) {
                               Array::push(missing, value = ieff)
                             } else {
                               ()
@@ -1925,7 +1924,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                     // #1343: same operation-awareness as the named-callee case
                     // above -- a callback parameter whose row names an
                     // operation is covered by a caller holding the whole effect.
-                    None => if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(labels = declared, op_name = peff) {
+                    None => if String::length(peff) > 0 && (!is_exception_effect_name(peff) || checked_error_row || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(labels = declared, op_name = peff) {
                       Array::push(missing, value = peff)
                     } else {
                       ()
@@ -1951,7 +1950,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                 // checker's instantiation at this call adds to the row as
                 // written.
                 if alias_unresolved_row_var {
-                  charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = name), skip = param_effs, declared = declared, in_handle = in_handle, missing = missing)
+                  charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = name), skip = param_effs, declared = declared, in_handle = in_handle, missing = missing, checked_error_row = checked_error_row)
                   charge_typed_own_row_vars(call_off = call_off, spelling = name, ov_names = ov_names, ov_effs = ov_effs, declared = declared, in_handle = in_handle, missing = missing)
                 }
                 if Array::length(missing) > 0 {
@@ -1980,7 +1979,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
             }
             if !named_row {
               let typed_missing = no_str_labels()
-              charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = name), skip = no_str_labels(), declared = declared, in_handle = in_handle, missing = typed_missing)
+              charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = name), skip = no_str_labels(), declared = declared, in_handle = in_handle, missing = typed_missing, checked_error_row = checked_error_row)
               charge_typed_own_row_vars(call_off = call_off, spelling = name, ov_names = ov_names, ov_effs = ov_effs, declared = declared, in_handle = in_handle, missing = typed_missing)
               if Array::length(typed_missing) > 0 {
                 Array::push(errors, value = make_contextual_row_error(fn_name = fn_name, declared = declared, missing = typed_missing, off = call_off))
@@ -1992,7 +1991,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
           // function type, which the walk cannot see from the syntax.
           _ => {
             let typed_missing = no_str_labels()
-            charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = call_callee_spelling(callee)), skip = no_str_labels(), declared = declared, in_handle = in_handle, missing = typed_missing)
+            charge_typed_callee_row(labels = call_callee_row_labels(off = call_off, spelling = call_callee_spelling(callee)), skip = no_str_labels(), declared = declared, in_handle = in_handle, missing = typed_missing, checked_error_row = checked_error_row)
             charge_typed_own_row_vars(call_off = call_off, spelling = call_callee_spelling(callee), ov_names = ov_names, ov_effs = ov_effs, declared = declared, in_handle = in_handle, missing = typed_missing)
             if Array::length(typed_missing) > 0 {
               Array::push(errors, value = make_contextual_row_error(fn_name = fn_name, declared = declared, missing = typed_missing, off = call_off))

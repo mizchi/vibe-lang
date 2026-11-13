@@ -1,0 +1,36 @@
+// #3255: a program's own function of a retaining builtin's spelling, called
+// inside a closure handed to an element-callback builtin, is judged by its
+// body there as it is in a loop. This `Array::push` keeps nothing, so handing
+// it a region value is fine; before, the callback re-check took the builtin's
+// answer for the spelling and refused the call as a container write.
+
+fn Array::push(_ xs: Array[MutList[Int]], value: MutList[Int]) -> Int {
+  let _ = xs
+  MutList::length(value) * 10
+}
+
+fn mapped() -> Int {
+  let sink: Array[MutList[Int]] = []
+  region r {
+    let cell = MutList::empty(r)
+    MutList::push(cell, 3)
+    MutList::push(cell, 4)
+    let got = Array::map([cell], f = (c) -> Array::push(sink, value = c))
+    Array::get(got, at = 0) + Array::length(sink)
+  }
+}
+
+fn folded() -> Int {
+  let sink: Array[MutList[Int]] = []
+  region r {
+    let a = MutList::empty(r)
+    MutList::push(a, 1)
+    let b = MutList::empty(r)
+    Array::fold([a, b], init = 1, f = (acc, c) -> acc + Array::push(sink, value = c))
+  }
+}
+
+test "a program's own Array::push answers inside a callback in a region" {
+  inspect(mapped(), content = "20")
+  inspect(folded(), content = "11")
+}

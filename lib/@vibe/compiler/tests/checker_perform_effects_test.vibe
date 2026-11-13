@@ -47,7 +47,7 @@ fn no_labels() -> Array[String] {
 //# Misc
 
 test "perform of undeclared effect reports error" {
-  let errors = check_perform_effects_expr(root = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)), root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)), root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
   assert(is_perform_err(Array::get(errors, at = 0)))
 }
@@ -55,27 +55,27 @@ test "perform of undeclared effect reports error" {
 test "perform of declared effect is OK" {
   let errors = check_perform_effects_expr(root = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)), root_declared = [
     "Stdout"
-  ], root_in_handle = false)
+  ], root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "perform of a different declared effect still reports error" {
   let errors = check_perform_effects_expr(root = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)), root_declared = [
     "Stdin"
-  ], root_in_handle = false)
+  ], root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
 test "perform inside a handle is allowed regardless of declaration" {
   let inner = perform_op(op = "Console::Print", arg = EString("hi", -1))
   let handle_expr = EHandle(inner, [(PBind("k"), EInt(0))])
-  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "an empty handler is rejected even when the AST bypasses the parser (#1678)" {
   let handle_expr = EHandle(perform_op(op = "Fs::ReadFile", arg = EString("p", -1)), array_empty())
-  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
   assert(is_empty_handle_err(Array::get(errors, at = 0)))
   assert(String::contains(effect_error_to_string(Array::get(errors, at = 0)), needle = "must contain at least one arm"))
@@ -83,13 +83,13 @@ test "an empty handler is rejected even when the AST bypasses the parser (#1678)
 
 test "perform via EFn with declared effect is OK" {
   let fn_expr = fn_with(effect = Some("Stdout"), body = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)))
-  let errors = check_perform_effects_expr(root = fn_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = fn_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "perform via EFn without the effect reports error" {
   let fn_expr = fn_with(effect = None, body = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)))
-  let errors = check_perform_effects_expr(root = fn_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = fn_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -100,13 +100,13 @@ test "explicitly pure callback lambda does not inherit outer effects" {
   let outer = fn_with(effect = Some("Fs"), body = ECall(EIdent("apply_pure", -1), [
     callback
   ], -1, []))
-  let errors = check_perform_effects_expr(root = outer, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = outer, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
 test "perform rows trim and dedupe exact labels" {
   let fn_expr = fn_with(effect = Some(" Fs, Fs "), body = perform_op(op = "Fs::ReadFile", arg = EString("p", -1)))
-  let errors = check_perform_effects_expr(root = fn_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = fn_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -117,7 +117,7 @@ test "effect-variable declaration authorizes only itself" {
   // `e`'s instantiation, so a pure caller ran it.
   let errors = check_perform_effects_expr(root = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)), root_declared = [
     "e"
-  ], root_in_handle = false)
+  ], root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -125,7 +125,7 @@ test "effect-variable declaration beside the label authorizes the perform" {
   let errors = check_perform_effects_expr(root = perform_op(op = "Stdout::WriteStream", arg = EString("hi", -1)), root_declared = [
     "e",
     "Stdout"
-  ], root_in_handle = false)
+  ], root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -133,7 +133,7 @@ test "SLet signature effect authorizes perform in its body" {
   let body = fn_with(effect = None, body = perform_op(op = "Fs::ReadFile", arg = EString("p", -1)))
   let sig = TyFn([TyName("String")], TyName("String"), Some("Error, Fs"))
   let stmt = SLet(false, false, "read", Some(sig), body)
-  let errors = check_perform_effects_stmt(stmt)
+  let errors = check_perform_effects_stmt(stmt, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -141,25 +141,25 @@ test "SLet without the effect flags perform in its body" {
   let body = fn_with(effect = None, body = perform_op(op = "Fs::ReadFile", arg = EString("p", -1)))
   let sig = TyFn([TyName("String")], TyName("String"), Some("Error"))
   let stmt = SLet(false, false, "read", Some(sig), body)
-  let errors = check_perform_effects_stmt(stmt)
+  let errors = check_perform_effects_stmt(stmt, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
 test "calling an effectful builtin without the effect reports error" {
   let call = ECall(EIdent("Fs::read_file", -1), [EString("p", -1)], -1, [])
-  let errors = check_perform_effects_expr(root = call, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = call, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
 test "calling an effectful builtin with the effect declared is OK" {
   let call = ECall(EIdent("Fs::read_file", -1), [EString("p", -1)], -1, [])
-  let errors = check_perform_effects_expr(root = call, root_declared = ["Fs"], root_in_handle = false)
+  let errors = check_perform_effects_expr(root = call, root_declared = ["Fs"], root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "calling a pure builtin is never flagged" {
   let call = ECall(EIdent("Array::length", -1), [EIdent("xs", -1)], -1, [])
-  let errors = check_perform_effects_expr(root = call, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = call, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -170,11 +170,11 @@ test "effect checking visits non-call expression children" {
   let spread_expr = ESpread(fs_call)
   let break_expr = EBreak(Some(fs_call))
   let continue_expr = EContinue([fs_call])
-  assert(Array::length(check_perform_effects_expr(root = map_expr, root_declared = no_labels(), root_in_handle = false)) > 0)
-  assert(Array::length(check_perform_effects_expr(root = labeled_expr, root_declared = no_labels(), root_in_handle = false)) > 0)
-  assert(Array::length(check_perform_effects_expr(root = spread_expr, root_declared = no_labels(), root_in_handle = false)) > 0)
-  assert(Array::length(check_perform_effects_expr(root = break_expr, root_declared = no_labels(), root_in_handle = false)) > 0)
-  assert(Array::length(check_perform_effects_expr(root = continue_expr, root_declared = no_labels(), root_in_handle = false)) > 0)
+  assert(Array::length(check_perform_effects_expr(root = map_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)) > 0)
+  assert(Array::length(check_perform_effects_expr(root = labeled_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)) > 0)
+  assert(Array::length(check_perform_effects_expr(root = spread_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)) > 0)
+  assert(Array::length(check_perform_effects_expr(root = break_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)) > 0)
+  assert(Array::length(check_perform_effects_expr(root = continue_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)) > 0)
 }
 
 // #626 criterion 2: a `handle ... with E` discharges E (its arms are qualified
@@ -186,7 +186,7 @@ test "handle discharges its own effect for an undeclared perform" {
   let handle_expr = EHandle(body, [
     (PCtor("Console::Print", [PBind("s")]), EInt(0))
   ])
-  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -195,7 +195,7 @@ test "handle does not discharge a different effect" {
   let handle_expr = EHandle(body, [
     (PCtor("Console::Print", [PBind("s")]), EInt(0))
   ])
-  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   // #1961 must not set in_handle for a known discharge: that flag also
   // skips the undeclared-effect check and lets Logger leak (#626 c2).
   assert(Array::length(errors) > 0)
@@ -204,7 +204,7 @@ test "handle does not discharge a different effect" {
 test "handle with an unqualified arm stays conservative" {
   let body = perform_op(op = "Logger::Log", arg = EString("hi", -1))
   let handle_expr = EHandle(body, [(PBind("k"), EInt(0))])
-  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = handle_expr, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -214,7 +214,7 @@ test "row mismatch names the missing effect and suggests the augmented row" {
   let body = fn_with(effect = None, body = perform_op(op = "Fs::ReadFile", arg = EString("p", -1)))
   let sig = TyFn([TyName("String")], TyName("String"), Some("Error"))
   let stmt = SLet(false, false, "read", Some(sig), body)
-  let errors = check_perform_effects_stmt(stmt)
+  let errors = check_perform_effects_stmt(stmt, checked_error_row = false)
   assert(Array::length(errors) > 0)
   let msg = effect_error_to_string(Array::get(errors, at = 0))
   // #1161 (Codex review): the DIRECT check reports the qualified operation
@@ -230,7 +230,7 @@ test "row mismatch names the missing effect and suggests the augmented row" {
 test "row mismatch with no declared row suggests a full declaration" {
   let body = fn_with(effect = None, body = perform_op(op = "Fs::ReadFile", arg = EString("p", -1)))
   let stmt = SLet(false, false, "load", None, body)
-  let errors = check_perform_effects_stmt(stmt)
+  let errors = check_perform_effects_stmt(stmt, checked_error_row = false)
   assert(Array::length(errors) > 0)
   let msg = effect_error_to_string(Array::get(errors, at = 0))
   // #1161 (Codex review): same operation-level precision as above.
@@ -249,7 +249,7 @@ test "call-site mismatch aggregates, sorts, and blames the caller" {
     EInt(0)
   ], -1, []))
   let caller = SLet(false, false, "wrap", None, caller_body)
-  let errors = check_perform_effects_stmts([helper, caller])
+  let errors = check_perform_effects_stmts([helper, caller], checked_error_row = false)
   assert(Array::length(errors) > 0)
   let msg = effect_error_to_string(Array::get(errors, at = 0))
   assert(String::contains(msg, needle = "effect row mismatch for 'wrap': missing { Env, Fs }"))
@@ -269,7 +269,7 @@ test "calling a local closure leaks its declared row" {
   let body = ELet("f", closure, ECall(EIdent("f", -1), array_empty(), -1, []), -1)
   let errors = check_perform_effects_expr(root = body, root_declared = [
     "Stdout"
-  ], root_in_handle = false)
+  ], root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
   let msg = effect_error_to_string(Array::get(errors, at = 0))
   assert(String::contains(msg, needle = "missing { Env }"))
@@ -281,14 +281,14 @@ test "a caller declaring the local closure's row is OK" {
   let errors = check_perform_effects_expr(root = body, root_declared = [
     "Stdout",
     "Env"
-  ], root_in_handle = false)
+  ], root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "a pure local closure leaks nothing" {
   let closure = fn_with(effect = None, body = EInt(1))
   let body = ELet("f", closure, ECall(EIdent("f", -1), array_empty(), -1, []), -1)
-  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -296,7 +296,7 @@ test "defining an effectful local closure without calling it leaks nothing" {
   // Defining a closure performs nothing; only invoking it does.
   let closure = fn_with(effect = Some("Env"), body = EInt(1))
   let body = ELet("f", closure, EInt(0), -1)
-  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -305,7 +305,7 @@ test "a later pure binding shadows an effectful local closure" {
   let pure = fn_with(effect = None, body = EInt(2))
   let inner = ELet("f", pure, ECall(EIdent("f", -1), array_empty(), -1, []), -1)
   let body = ELet("f", effectful, inner, -1)
-  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -314,7 +314,7 @@ test "a pure local binding shadows a same-named effectful top-level fn (#1723)" 
   let pure = fn_with(effect = None, body = EInt(8))
   let probe = SLet(false, false, "probe", None, fn_with(effect = None, body = ELet("take", pure, ECall(EIdent("take", -1), array_empty(), -1, [
   ]), -1)))
-  let errors = check_perform_effects_stmts([top, probe])
+  let errors = check_perform_effects_stmts([top, probe], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -322,7 +322,7 @@ test "an unshadowed effectful top-level call is charged outside a handler (#1723
   let top = SLet(false, false, "take", None, fn_with(effect = Some("Ask"), body = EInt(0)))
   let probe = SLet(false, false, "probe", None, fn_with(effect = None, body = ECall(EIdent("take", -1), array_empty(), -1, [
   ])))
-  let errors = check_perform_effects_stmts([top, probe])
+  let errors = check_perform_effects_stmts([top, probe], checked_error_row = false)
   assert(eq(Array::length(errors), 1))
   assert(String::contains(effect_error_to_string(Array::get(errors, at = 0)), needle = "effect row mismatch for 'probe': missing { Ask }"))
 }
@@ -336,7 +336,7 @@ test "a pure callback parameter shadows a same-named effectful top-level fn (#17
   let errors = check_perform_effects_stmts([
     top,
     SLet(false, false, "probe", None, probe_body)
-  ])
+  ], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -345,7 +345,7 @@ test "an effectful local binding shadows a same-named pure top-level fn (#1723)"
   let effectful = fn_with(effect = Some("Ask"), body = EInt(8))
   let probe = SLet(false, false, "probe", None, fn_with(effect = None, body = ELet("take", effectful, ECall(EIdent("take", -1), array_empty(), -1, [
   ]), -1)))
-  let errors = check_perform_effects_stmts([top, probe])
+  let errors = check_perform_effects_stmts([top, probe], checked_error_row = false)
   assert(eq(Array::length(errors), 1))
   assert(String::contains(effect_error_to_string(Array::get(errors, at = 0)), needle = "missing { Ask }"))
 }
@@ -357,7 +357,7 @@ test "top-level effect lookup resumes after a local shadow scope ends (#1723)" {
   ]), -1)
   let after_scope = ECall(EIdent("take", -1), array_empty(), -1, [])
   let probe = SLet(false, false, "probe", None, fn_with(effect = None, body = ESeq(scoped_local, after_scope)))
-  let errors = check_perform_effects_stmts([top, probe])
+  let errors = check_perform_effects_stmts([top, probe], checked_error_row = false)
   assert(eq(Array::length(errors), 1))
   assert(String::contains(effect_error_to_string(Array::get(errors, at = 0)), needle = "missing { Ask }"))
 }
@@ -377,7 +377,7 @@ test "pattern and loop binders mask same-named top-level rows (#1723)" {
     match_probe,
     for_probe,
     loop_probe
-  ])
+  ], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -385,7 +385,7 @@ test "a handle around the call discharges the local closure's row" {
   let closure = fn_with(effect = Some("Env"), body = EInt(1))
   let call = ECall(EIdent("f", -1), array_empty(), -1, [])
   let body = ELet("f", closure, EHandle(call, [(PBind("k"), EInt(0))]), -1)
-  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -393,14 +393,14 @@ test "calling a recursive local closure leaks its declared row" {
   let closure = fn_with(effect = Some("Fs"), body = EInt(1))
   let body = ELetRec("go", closure, ECall(EIdent("go", -1), array_empty(), -1, [
   ]))
-  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
 test "calling a local closure bound with let mut leaks its declared row" {
   let closure = fn_with(effect = Some("Fs"), body = EInt(1))
   let body = ELetMut("f", closure, ECall(EIdent("f", -1), array_empty(), -1, []), -1)
-  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false)
+  let errors = check_perform_effects_expr(root = body, root_declared = no_labels(), root_in_handle = false, checked_error_row = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -444,7 +444,7 @@ test "a handle over an opaque call cannot fire and is rejected" {
     yield_effect_def(),
     yield_producer(),
     yield_handle_over(opaque_call())
-  ])
+  ], checked_error_row = false)
   assert(Array::length(errors) > 0)
   assert(is_dead_handle_err(Array::get(errors, at = 0)))
   let msg = effect_error_to_string(Array::get(errors, at = 0))
@@ -458,7 +458,7 @@ test "an effect nobody performs is a label pun, not a dead handler" {
   let errors = check_perform_effects_stmts([
     yield_effect_def(),
     yield_handle_over(opaque_call())
-  ])
+  ], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -467,7 +467,7 @@ test "a handle whose body performs the effect directly is untouched" {
     yield_effect_def(),
     yield_producer(),
     yield_handle_over(perform_op(op = "Yield::Yield", arg = EInt(2)))
-  ])
+  ], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -476,7 +476,7 @@ test "a handle over a named callee that declares the effect is untouched" {
     yield_effect_def(),
     yield_producer(),
     yield_handle_over(ECall(EIdent("gen", -1), array_empty(), -1, []))
-  ])
+  ], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -487,7 +487,7 @@ test "a handle with no opaque call is untouched even when it cannot fire" {
     yield_effect_def(),
     yield_producer(),
     yield_handle_over(EInt(7))
-  ])
+  ], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -498,7 +498,7 @@ test "a row-carrying closure literal in the body counts as reachable" {
     yield_effect_def(),
     yield_producer(),
     yield_handle_over(body)
-  ])
+  ], checked_error_row = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -530,7 +530,7 @@ fn dead_handle_errors(_ body: Expr) -> Array[EffectError] {
     yield_effect_def(),
     yield_producer(),
     yield_drive_with_row(body)
-  ])
+  ], checked_error_row = false)
 }
 
 fn is_rowless_closure_err(_ e: EffectError) -> Bool {

@@ -66,7 +66,7 @@ test "compile_file_wasi_linked_artifacts: returns direct linked deps for library
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(helper_path, bytes = string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(a = 1, b = 2) }\n"))
-  let (entry_bytes, linked_imports, linked_dep_specs) = compile_file_wasi_linked_artifacts(entry_path = main_path, entry_name = "_start")
+  let (entry_bytes, linked_imports, linked_dep_specs) = compile_file_wasi_linked_artifacts(entry_path = main_path, entry_name = "_start", checked_error_row = false)
   assert_wasm_magic(entry_bytes)
   assert(Array::length(linked_imports) == 1)
   let (module_name, func_name, param_count, return_count) = Array::get(linked_imports, at = 0)
@@ -78,7 +78,7 @@ test "compile_file_wasi_linked_artifacts: returns direct linked deps for library
   let (dep_module_name, dep_path) = Array::get(linked_dep_specs, at = 0)
   assert(dep_module_name == "lib")
   assert(dep_path == helper_path)
-  let lib_bytes = compile_file_wasi_library(dep_path)
+  let lib_bytes = compile_file_wasi_library(dep_path, checked_error_row = false)
   assert_wasm_magic(lib_bytes)
 }
 
@@ -155,7 +155,7 @@ test "re-export aliases in a dependency do not suppress entry builtins" {
   Fs::write_bytes(inner_path, bytes = string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\nexport fn view(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(facade_path, bytes = string_to_bytes("export ./inner.vibe { cmp as assert_eq, view as inspect }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert, inspect as forwarded_inspect }\nexport let answer: () -> Int with Console = () -> {\n  let _ = forwarded_assert(a = 1, b = 2)\n  let _ = forwarded_inspect(a = 1, b = 2)\n  inspect(1, \"1\")\n  assert_eq(1, 2)\n  0\n}\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
   assert(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"))
 }
@@ -167,10 +167,10 @@ test "same-source imported assert_eq is not lowered as the builtin through FS me
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn assert_eq(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(a = 1, b = 2) }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "false")
-  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer", exports_stripped = false)
+  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path, checked_error_row = false), entry_name = "answer", exports_stripped = false, checked_error_row = false)
   assert_wasm_magic(merged_bytes)
   inspect(bytes_contains_ascii(bytes = merged_bytes, needle = "assert_eq failed"), content = "false")
 }
@@ -182,7 +182,7 @@ test "same-source import aliased as assert_eq is not lowered as the builtin thro
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { cmp as assert_eq }\nexport fn answer() -> Int { assert_eq(a = 1, b = 2) }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "false")
 }
@@ -194,7 +194,7 @@ test "same-source imported inspect is not lowered as the builtin through FS merg
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn inspect(a: Int, _expected: String) -> Int { a + 1 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(a = 1, _expected = \"ignored\") }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
 }
 
@@ -205,20 +205,20 @@ test "same-source import aliased as inspect is not lowered as the builtin throug
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn view(a: Int, _expected: String) -> Int { a + 1 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { view as inspect }\nexport fn answer() -> Int { inspect(a = 1, _expected = \"ignored\") }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
 }
 
 fn compile_file_error(path: String, entry: String) -> String with Env + Exception + Fs {
   handle {
-    let _ = compile_file_wasi_only(entry_path = path, entry_name = entry)
+    let _ = compile_file_wasi_only(entry_path = path, entry_name = entry, checked_error_row = false)
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
 fn merged_source_error(_ path: String) -> String with Env + Exception + Fs {
   handle {
-    let _ = merged_program_source_fs(path)
+    let _ = merged_program_source_fs(path, checked_error_row = false)
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -242,7 +242,7 @@ test "merged source keeps a dependency re-export from suppressing an entry built
   Fs::write_bytes(inner_path, bytes = string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(facade_path, bytes = string_to_bytes("export ./inner.vibe { cmp as assert_eq }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert }\nexport fn answer() -> Int with Console {\n  let _ = forwarded_assert(a = 1, b = 2)\n  assert_eq(1, 2)\n  0\n}\n"))
-  let bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer", exports_stripped = false)
+  let bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path, checked_error_row = false), entry_name = "answer", exports_stripped = false, checked_error_row = false)
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "true")
 }
@@ -347,9 +347,9 @@ test "entry import rewrite may use a retained re-export source name" {
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn source_value() -> Int { 7 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { source_value as local_value }\nexport ./dep.vibe { source_value as public_value }\nexport fn answer() -> Int { local_value() }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
-  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer", exports_stripped = false)
+  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path, checked_error_row = false), entry_name = "answer", exports_stripped = false, checked_error_row = false)
   assert_wasm_magic(merged_bytes)
 }
 
@@ -362,9 +362,9 @@ test "retained import survives a colliding re-export alias" {
   Fs::write_bytes(a_path, bytes = string_to_bytes("export fn f() -> Int { 7 }\n"))
   Fs::write_bytes(b_path, bytes = string_to_bytes("export fn h() -> Int { 8 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./a.vibe { f as local_value }\nexport ./a.vibe { f as public_a }\nexport ./b.vibe { h as f }\nexport fn answer() -> Int { local_value() }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
-  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer", exports_stripped = false)
+  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path, checked_error_row = false), entry_name = "answer", exports_stripped = false, checked_error_row = false)
   assert_wasm_magic(merged_bytes)
 }
 
@@ -392,11 +392,11 @@ test "collision preservation selects the latest same-local import" {
   Fs::write_bytes(b_path, bytes = string_to_bytes("export fn second() -> Int { 22 }\n"))
   Fs::write_bytes(c_path, bytes = string_to_bytes("export fn blocker() -> Int { 33 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./a.vibe { first as local }\nimport ./b.vibe { second as local }\nexport ./b.vibe { second as public_b }\nexport ./c.vibe { blocker as second }\nexport fn answer() -> Int { local() }\n"))
-  let merged = merged_program_source_fs(main_path)
+  let merged = merged_program_source_fs(main_path, checked_error_row = false)
   assert(String::contains(merged, needle = "let rec local = () -> Int { 22 }"))
   assert(!String::contains(merged, needle = "let rec local = () -> Int { 11 }"))
-  assert_wasm_magic(compile_file_wasi_only(entry_path = main_path, entry_name = "answer"))
-  assert_wasm_magic(compile_generated_source_wasi_only(source = merged, entry_name = "answer", exports_stripped = false))
+  assert_wasm_magic(compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false))
+  assert_wasm_magic(compile_generated_source_wasi_only(source = merged, entry_name = "answer", exports_stripped = false, checked_error_row = false))
 }
 
 test "same-source plain assert_eq re-export remains callable through FS merge" {
@@ -406,10 +406,10 @@ test "same-source plain assert_eq re-export remains callable through FS merge" {
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn assert_eq(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("export ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(a = 1, b = 2) }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "false")
-  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer", exports_stripped = false)
+  let merged_bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path, checked_error_row = false), entry_name = "answer", exports_stripped = false, checked_error_row = false)
   assert_wasm_magic(merged_bytes)
   inspect(bytes_contains_ascii(bytes = merged_bytes, needle = "assert_eq failed"), content = "false")
 }
@@ -421,7 +421,7 @@ test "same-source plain inspect re-export remains callable through FS merge" {
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn inspect(a: Int, _expected: String) -> Int { a + 1 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("export ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(a = 1, _expected = \"ignored\") }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
 }
 
@@ -434,8 +434,8 @@ test "non-entry facade can call its plain re-export after FS namespacing" {
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn foo() -> Int { 41 }\n"))
   Fs::write_bytes(facade_path, bytes = string_to_bytes("export ./dep.vibe { foo }\nexport fn bar() -> Int { foo() + 1 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./facade.vibe { bar }\nexport fn answer() -> Int { bar() }\n"))
-  assert_wasm_magic(compile_file_wasi_only(entry_path = main_path, entry_name = "answer"))
-  assert_wasm_magic(compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer", exports_stripped = false))
+  assert_wasm_magic(compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false))
+  assert_wasm_magic(compile_generated_source_wasi_only(source = merged_program_source_fs(main_path, checked_error_row = false), entry_name = "answer", exports_stripped = false, checked_error_row = false))
 }
 
 test "later plain re-export cancels an earlier same-name alias blocker" {
@@ -447,8 +447,8 @@ test "later plain re-export cancels an earlier same-name alias blocker" {
   Fs::write_bytes(a_path, bytes = string_to_bytes("export fn f() -> Int { 1 }\n"))
   Fs::write_bytes(b_path, bytes = string_to_bytes("export fn foo() -> Int { 2 }\n"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("export ./a.vibe { f as foo }\nexport ./b.vibe { foo }\nexport fn answer() -> Int { foo() }\n"))
-  assert_wasm_magic(compile_file_wasi_only(entry_path = main_path, entry_name = "answer"))
-  assert_wasm_magic(compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer", exports_stripped = false))
+  assert_wasm_magic(compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false))
+  assert_wasm_magic(compile_generated_source_wasi_only(source = merged_program_source_fs(main_path, checked_error_row = false), entry_name = "answer", exports_stripped = false, checked_error_row = false))
 }
 
 test "compile_file_wasi_only: simple file produces valid WASM" {
@@ -456,7 +456,7 @@ test "compile_file_wasi_only: simple file produces valid WASM" {
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(main_path, bytes = string_to_bytes("export let answer: () -> Int = () -> { 40 + 2 }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
 }
 
@@ -465,7 +465,7 @@ test "compile_file_wasi_only: profiler effect imports now_us host builtin" {
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(main_path, bytes = string_to_bytes("effect Profiler { NowUs -> Int }\nexport let answer: () -> Int with Profiler = () -> { perform Profiler::NowUs }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
   assert(bytes_contains_ascii(bytes = bytes, needle = "vibe"))
   assert(bytes_contains_ascii(bytes = bytes, needle = "profile-now-us"))
@@ -476,7 +476,7 @@ test "compile_file_wasi_only: profiler effect imports heap_bytes host builtin" {
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(main_path, bytes = string_to_bytes("effect Profiler { HeapBytes -> Int }\nexport let answer: () -> Int with Profiler = () -> { perform Profiler::HeapBytes }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
   assert(bytes_contains_ascii(bytes = bytes, needle = "vibe"))
   assert(bytes_contains_ascii(bytes = bytes, needle = "profile-heap-bytes"))
@@ -487,7 +487,7 @@ test "compile_file_wasi_only: no profiler use reserves no profiler import" {
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(main_path, bytes = string_to_bytes("export let answer: () -> Int = () -> { 40 + 2 }\n"))
-  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
+  let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer", checked_error_row = false)
   assert_wasm_magic(bytes)
   assert(!bytes_contains_ascii(bytes = bytes, needle = "profile-heap-bytes"))
   assert(!bytes_contains_ascii(bytes = bytes, needle = "profile-now-us"))
@@ -528,21 +528,21 @@ fn write_source(path: String, text: String) -> Unit with Fs {
 /// matches the EXPECTED literal (CLAUDE.md, executable fixture snapshots).
 fn wasi_only_outcome(label: String, entry_path: String) -> String with Env + Fs {
   String::concat(label, String::concat(": ", handle {
-    let _ = compile_file_wasi_only(entry_path = entry_path, entry_name = "main")
+    let _ = compile_file_wasi_only(entry_path = entry_path, entry_name = "main", checked_error_row = false)
     "accepted"
   } with { Exception::Throw(message) => message }))
 }
 
 fn library_outcome(label: String, dep_path: String) -> String with Env + Fs {
   String::concat(label, String::concat(": ", handle {
-    let _ = compile_file_wasi_library(dep_path)
+    let _ = compile_file_wasi_library(dep_path, checked_error_row = false)
     "accepted"
   } with { Exception::Throw(message) => message }))
 }
 
 fn linked_outcome(label: String, entry_path: String) -> String with Env + Fs {
   String::concat(label, String::concat(": ", handle {
-    let _ = compile_file_wasi_linked_artifacts(entry_path = entry_path, entry_name = "_start")
+    let _ = compile_file_wasi_linked_artifacts(entry_path = entry_path, entry_name = "_start", checked_error_row = false)
     "accepted"
   } with { Exception::Throw(message) => message }))
 }
