@@ -46,6 +46,8 @@ import @vibe/compiler/codegen/common_base {
   int_parse_expr,
   is_ctor_call,
   is_eident,
+  map_scalar_index_count_flag,
+  map_scalar_slot_bit,
   resolve_func,
   resolve_local,
   sized_bytes_new_expr,
@@ -80,6 +82,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_eqz,
   emit_i64_ge_s,
   emit_i64_mul,
+  emit_i64_or,
   emit_i64_shl,
   emit_i64_shr_s,
   emit_if_i64,
@@ -1056,19 +1059,28 @@ fn cc_map_delete_copy_path(buf: Bytes, ctx: CompileCtx, map_l: Int, key_l: Int, 
   // See the matching comment in Map::set above. idx_l is dead after the
   // copy loop; out_l already holds the final count (just stored above),
   // no need to re-load it.
-  if !scalar_key && ctx.map_build_index_func_idx >= 0 {
+  // #2334: a scalar-keyed map gets the index too (see Map::set).
+  if ctx.map_build_index_func_idx >= 0 {
     emit_local_get(buf = buf, idx = out_l)
     emit_i64_const(buf = buf, value = 8)
     emit_i64_ge_s(buf)
     emit_if_void(buf)
     emit_local_get(buf = buf, idx = new_l)
     emit_local_get(buf = buf, idx = out_l)
+    if scalar_key {
+      emit_i64_const(buf = buf, value = map_scalar_index_count_flag)
+      emit_i64_or(buf)
+    } else ()
     emit_call(buf = buf, func_idx = ctx.map_build_index_func_idx)
     emit_local_set(buf = buf, idx = idx_l)
     emit_local_get(buf = buf, idx = new_l)
     emit_i32_wrap_i64(buf)
     emit_local_get(buf = buf, idx = idx_l)
     emit_i32_wrap_i64(buf)
+    if scalar_key {
+      emit_i32_const(buf = buf, value = map_scalar_slot_bit)
+      emit_i32_add(buf)
+    } else ()
     emit_i32_store(buf = buf, align = 2, offset = 4)
     emit_end(buf)
   } else {
@@ -1590,15 +1602,19 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // See the matching comment in Map::set above. fb_l (the builder handle)
     // is dead after the memory_copy (and, on the RC lane, released above)
     // -- reused here as scratch for the built index pointer.
-    if scalar_key {
-      cc_map_mark_scalar(buf = buf, map_l = fm_l)
-    } else if ctx.map_build_index_func_idx >= 0 {
+    // #2334: a scalar-keyed map is indexed with the scalar hash, and its
+    // slot carries `map_scalar_slot_bit` whether or not an index was built.
+    if ctx.map_build_index_func_idx >= 0 {
       emit_local_get(buf = buf, idx = fc_l)
       emit_i64_const(buf = buf, value = 8)
       emit_i64_ge_s(buf)
       emit_if_void(buf)
       emit_local_get(buf = buf, idx = fm_l)
       emit_local_get(buf = buf, idx = fc_l)
+      if scalar_key {
+        emit_i64_const(buf = buf, value = map_scalar_index_count_flag)
+        emit_i64_or(buf)
+      } else ()
       emit_call(buf = buf, func_idx = ctx.map_build_index_func_idx)
       emit_local_set(buf = buf, idx = fb_l)
       emit_local_get(buf = buf, idx = fm_l)
@@ -1607,6 +1623,9 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf = buf, align = 2, offset = 4)
       emit_end(buf)
+    } else ()
+    if scalar_key {
+      cc_map_mark_scalar(buf = buf, map_l = fm_l)
     } else {
       ()
     }

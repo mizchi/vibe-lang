@@ -1,0 +1,132 @@
+// #2334: a scalar-keyed map past 8 entries carries a hash index, built with
+// the scalar hash and probed with an exact i64 compare. These rows pin what
+// the index must not change: keys that agree in their low bits, keys whose
+// low 32 bits are zero, negative keys, replacement, deletion back under the
+// threshold, the shared (copy) and unique (in-place) update paths, and a
+// frozen `MapBuilder`. The same file runs on the linear and the wasm-gc
+// lanes (tests/gates/mid/6b_40, step 40h8s).
+
+fn spaced(_ n: Int, step: Int) -> Map[Int, Int] {
+  let mut m: Map[Int, Int] = Map::new()
+  let mut i = 0
+  while i < n {
+    m = Map::set(m, key = i * step, value = i)
+    i = i + 1
+  }
+  m
+}
+
+fn count_hits(_ m: Map[Int, Int], n: Int, step: Int) -> Int {
+  let mut hits = 0
+  let mut i = 0
+  while i < n {
+    if Map::has_key(m, key = i * step) && Map::get(m, key = i * step) == i {
+      hits = hits + 1
+    } else ()
+    i = i + 1
+  }
+  hits
+}
+
+test "keys that agree in their low 20 bits" {
+  let step = 1 << 20
+  let m = spaced(300, step = step)
+  inspect(Map::size(m), content = "300")
+  inspect(count_hits(m, n = 300, step = step), content = "300")
+  inspect(Map::has_key(m, key = 300 * step), content = "false")
+  inspect(Map::has_key(m, key = step + 1), content = "false")
+}
+
+test "keys whose low 32 bits are zero" {
+  let step = 1 << 32
+  let m = spaced(40, step = step)
+  inspect(Map::size(m), content = "40")
+  inspect(count_hits(m, n = 40, step = step), content = "40")
+  inspect(Map::has_key(m, key = 40 * step), content = "false")
+  inspect(Map::get(m, key = 39 * step), content = "39")
+}
+
+test "negative keys" {
+  let m = spaced(50, step = -3)
+  inspect(Map::size(m), content = "50")
+  inspect(count_hits(m, n = 50, step = -3), content = "50")
+  inspect(Map::has_key(m, key = 3), content = "false")
+  inspect(Map::get(m, key = -147), content = "49")
+}
+
+test "replacing keys after the index exists keeps one entry each" {
+  let mut m = spaced(30, step = 5)
+  let mut i = 0
+  while i < 30 {
+    m = Map::set(m, key = i * 5, value = i * 100)
+    i = i + 1
+  }
+  inspect(Map::size(m), content = "30")
+  inspect(Map::get(m, key = 0), content = "0")
+  inspect(Map::get(m, key = 145), content = "2900")
+}
+
+test "deleting back under the threshold, then growing again" {
+  let mut m = spaced(20, step = 1)
+  let mut i = 0
+  while i < 15 {
+    m = Map::delete(m, key = i)
+    i = i + 1
+  }
+  inspect(Map::size(m), content = "5")
+  inspect(Map::has_key(m, key = 3), content = "false")
+  inspect(Map::get(m, key = 17), content = "17")
+  let mut j = 100
+  while j < 120 {
+    m = Map::set(m, key = j, value = j)
+    j = j + 1
+  }
+  inspect(Map::size(m), content = "25")
+  inspect(Map::get(m, key = 119), content = "119")
+  inspect(Map::get(m, key = 15), content = "15")
+  inspect(Map::has_key(m, key = 14), content = "false")
+}
+
+test "a shared map is not changed by an update of its copy" {
+  let base = spaced(12, step = 7)
+  let grown = Map::set(base, key = 1000, value = -1)
+  let shrunk = Map::delete(base, key = 14)
+  inspect(Map::size(base), content = "12")
+  inspect(Map::has_key(base, key = 1000), content = "false")
+  inspect(Map::get(base, key = 14), content = "2")
+  inspect(Map::get(grown, key = 1000), content = "-1")
+  inspect(Map::get(grown, key = 77), content = "11")
+  inspect(Map::has_key(shrunk, key = 14), content = "false")
+  inspect(Map::get(shrunk, key = 77), content = "11")
+}
+
+test "Char keys past the threshold" {
+  let mut m: Map[Char, Int] = Map::new()
+  let letters = "abcdefghijklmnopqrstuvwxyz"
+  let mut i = 0
+  while i < 26 {
+    m = Map::set(m, key = Char::from_int(String::byte_at(letters, at = i)), value = i)
+    i = i + 1
+  }
+  inspect(Map::size(m), content = "26")
+  inspect(Map::get(m, key = 'a'), content = "0")
+  inspect(Map::get(m, key = 'z'), content = "25")
+  inspect(Map::has_key(m, key = 'A'), content = "false")
+}
+
+test "a frozen builder is indexed, and stays a scalar map" {
+  let b = MapBuilder::new()
+  let mut i = 0
+  while i < 64 {
+    MapBuilder::set(b, key = i << 32, value = i)
+    i = i + 1
+  }
+  let m = MapBuilder::freeze(b)
+  inspect(Map::size(m), content = "64")
+  inspect(Map::get(m, key = 63 << 32), content = "63")
+  inspect(Map::has_key(m, key = 64 << 32), content = "false")
+  let m2 = Map::set(m, key = 7, value = 700)
+  inspect(Map::size(m2), content = "65")
+  inspect(Map::get(m2, key = 7), content = "700")
+  inspect(Map::get(m2, key = 7 << 32), content = "7")
+}
