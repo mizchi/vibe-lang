@@ -2158,7 +2158,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // what the value flows into is remembered and checked against the
           // field's real type when the receiver resolves.
           let (field_ty, c_after) = match resolved {
-            CtVar(pending_id) => if open_formal_name_for_var(id = pending_id, s = s1) == "" {
+            CtVar(pending_id) => if !checker_call_header_is_probe() && deferred_result_pending(id = pending_id, s = s1) {
+              // Keep a projection of a pending result in the same queue as
+              // its producer and consumers, so chains settle in order.
+              defer_expr_check(operands = [pending_id], subject = "field ." + field, off = field_off, c = c1, check = (settled, deferred_errors) -> {
+                let receiver = subst_apply(s = settled, ty = obj_ty)
+                let ty = field_read_type(resolved = receiver, field = field, defs = defs, s1 = settled, errors = deferred_errors, field_off = field_off, dot_off = dot_off)
+                (ty, settled)
+              })
+            } else if open_formal_name_for_var(id = pending_id, s = s1) == "" {
               let (result_tv, nc) = fresh_var(c1)
               Array::push(deferred_field_reads, value = (pending_id, field, field_off, dot_off, match obj {
                 EIdent(recv_name, _) => recv_name,
