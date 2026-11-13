@@ -9,7 +9,8 @@
 // beside a handle-bound closure; and a binding that only shares its spelling
 // with one a handle-bound closure is assigned to -- shadowed by it, beside it
 // in another block, or a binder of the same spelling -- which keeps a fact of
-// its own.
+// its own; and a binder of a plain closure written in the scrutinee beside
+// one that performs the handled effect, which holds only its own part.
 effect Ask {
   Get() -> Int
 }
@@ -17,6 +18,15 @@ effect Ask {
 let saved: Array[() -> Int] = []
 
 let ints: Array[Int] = []
+
+struct Pair {
+  a: () -> Int;
+  b: () -> Int
+}
+
+enum Two {
+  T(() -> Int, () -> Int)
+}
 
 fn keep(f: () -> Int) -> Int {
   Array::push(saved, value = f)
@@ -239,6 +249,67 @@ fn shadowed_by_binders() -> Int {
   last_kept()
 }
 
+fn fresh_tuple_plain_part() -> Int {
+  handle {
+    match (() -> perform Ask::Get() + 1, () -> 26) {
+      (_, q) => {
+        let _ = keep(f = q)
+      }
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn fresh_let_tuple_plain_part() -> Int {
+  handle {
+    let (_, q) = (() -> perform Ask::Get() + 1, () -> 27)
+    let _ = keep(f = q)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn fresh_struct_plain_part() -> Int {
+  handle {
+    match Pair::{
+      a: () -> perform Ask::Get() + 1,
+      b: () -> 28
+    } {
+      Pair::{ a, b } => {
+        let _ = a
+        let _ = keep(f = b)
+      }
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn fresh_nested_plain_part() -> Int {
+  handle {
+    match (Some(() -> perform Ask::Get() + 1), () -> 29) {
+      (_, q) => {
+        let _ = keep(f = q)
+      }
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn fresh_ctor_plain_part() -> Int {
+  handle {
+    match Two::T(() -> perform Ask::Get() + 1, () -> 30) {
+      Two::T(_, q) => {
+        let _ = keep(f = q)
+      }
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
 test "a binder over a closure that performs nothing the handle answers may keep it" {
   inspect(plain_for(), content = "7")
   inspect(plain_match(), content = "8")
@@ -268,4 +339,12 @@ test "a binding sharing its spelling with one assigned a handle-bound closure ke
   inspect(assigned_in_inner_closure(), content = "23")
   inspect(shadowed_by_loop_param(), content = "24")
   inspect(shadowed_by_binders(), content = "25")
+}
+
+test "a binder of a plain closure written beside a fresh handle-bound one holds only its part" {
+  inspect(fresh_tuple_plain_part(), content = "26")
+  inspect(fresh_let_tuple_plain_part(), content = "27")
+  inspect(fresh_struct_plain_part(), content = "28")
+  inspect(fresh_nested_plain_part(), content = "29")
+  inspect(fresh_ctor_plain_part(), content = "30")
 }

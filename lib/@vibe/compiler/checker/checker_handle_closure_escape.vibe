@@ -221,7 +221,10 @@ struct HceWalk {
   /// The identity the next `let` or `loop` parameter the walk binds takes.
   mut next_decl: Int;
   /// Whether this walk added to `assigned`.
-  mut grew: Bool
+  mut grew: Bool;
+  /// Where the producers of each argument of the call the walk last
+  /// finished begin, and where the last one's end (`hce_match_parts`).
+  mut arg_marks: Array[Int]
 }
 
 /// Refuse a handle-bound value leaving the handle `body` / `arms` checked
@@ -566,7 +569,8 @@ fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names
     loops: array_empty(),
     assigned: assigned,
     next_decl: 0,
-    grew: false
+    grew: false,
+    arg_marks: array_empty()
   }
 }
 
@@ -890,14 +894,17 @@ fn hce_bind_pat(st: HceWalk, pat: Pat, label: String) -> Unit {
 }
 
 /// #4051: bind the names `pat` binds when it takes apart `src`, which holds
-/// the effect bases `held` and created no handle-bound value of its own (it
-/// only names some). Where `src` is written in the pattern's own shape -- a
-/// tuple, a constructor's call, a struct literal -- each part of the pattern
-/// holds what the matching part names, so the `n` of `match (g, 1) { (_, n)
-/// => .. }` is a plain value; any other binder holds `held`.
-fn hce_bind_pat_from(st: HceWalk, pat: Pat, src: Expr, held: String, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Unit {
+/// the effect bases `held`. Where `src` is written in the pattern's own
+/// shape -- a tuple, a constructor's call, a struct literal -- each part of
+/// the pattern holds what the matching part holds, so the `n` of `match (g,
+/// 1) { (_, n) => .. }` is a plain value; any other binder holds `held`.
+/// `known` is what each of `src`'s parts holds and whether it created a
+/// handle-bound value, as `hce_match_parts` read it for a scrutinee; empty,
+/// a part holds what it names (`hce_names_held`) and created none.
+fn hce_bind_pat_from(st: HceWalk, pat: Pat, src: Expr, held: String, known: Array[(String, Bool)], env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Unit {
   let src = hce_unwrap_value(src)
   let parts: Array[Expr] = array_empty()
+  let at: Array[Int] = array_empty()
   let subs: Array[Pat] = array_empty()
   let shaped = match (pat, src) {
     (PTuple(ps), ETuple(es)) => if Array::length(ps) == Array::length(es) {
@@ -905,6 +912,7 @@ fn hce_bind_pat_from(st: HceWalk, pat: Pat, src: Expr, held: String, env: TypeEn
         Array::push(subs, value = p)
       }
       for e in es {
+        Array::push(at, value = Array::length(parts))
         Array::push(parts, value = e)
       }
       true
@@ -916,6 +924,7 @@ fn hce_bind_pat_from(st: HceWalk, pat: Pat, src: Expr, held: String, env: TypeEn
         Array::push(subs, value = p)
       }
       for e in es {
+        Array::push(at, value = Array::length(parts))
         Array::push(parts, value = call_arg_value(e))
       }
       true
@@ -926,18 +935,21 @@ fn hce_bind_pat_from(st: HceWalk, pat: Pat, src: Expr, held: String, env: TypeEn
       let mut all = true
       for pf in pfields {
         let (fname, fp) = pf
-        let mut hit: Option[Expr] = None
+        let mut hit: Option[(Int, Expr)] = None
+        let mut ei = 0
         for ef in efields {
           let (ename, ev) = ef
           if ename == fname && hit is None {
-            hit = Some(ev)
+            hit = Some((ei, ev))
           } else {
             ()
           }
+          ei = ei + 1
         }
         match hit {
-          Some(ev) => {
+          Some((k, ev)) => {
             Array::push(subs, value = fp)
+            Array::push(at, value = k)
             Array::push(parts, value = ev)
           },
           None => all = false
@@ -951,16 +963,106 @@ fn hce_bind_pat_from(st: HceWalk, pat: Pat, src: Expr, held: String, env: TypeEn
     let mut i = 0
     while i < Array::length(subs) {
       let part = Array::get(parts, at = i)
-      let part_held = hce_names_held(e = part, st = st, env = env, defs = defs, s = s)
-      if part_held == "" {
-        hce_bind_pat(st = st, pat = Array::get(subs, at = i), label = "")
+      let k = Array::get(at, at = i)
+      let (part_held, part_fresh) = if k < Array::length(known) {
+        Array::get(known, at = k)
       } else {
-        hce_bind_pat_from(st = st, pat = Array::get(subs, at = i), src = part, held = part_held, env = env, defs = defs, s = s)
+        (hce_names_held(e = part, st = st, env = env, defs = defs, s = s), false)
+      }
+      if part_held == "" || part_fresh {
+        hce_bind_pat(st = st, pat = Array::get(subs, at = i), label = part_held)
+      } else {
+        hce_bind_pat_from(st = st, pat = Array::get(subs, at = i), src = part, held = part_held, known = array_empty(), env = env, defs = defs, s = s)
       }
       i = i + 1
     }
   } else {
     hce_bind_pat(st = st, pat = pat, label = held)
+  }
+}
+
+/// Walk a `match` scrutinee `e` and answer what it holds (`hce_walk_source`).
+/// When it is written as a tuple, a call or a struct literal, also push to
+/// `parts`, for each element, argument or field in order, what it holds --
+/// the locals it names and the handle-bound values it created -- and whether
+/// it created any: a closure performing the handled effect beside a plain
+/// one, `(() -> perform Ask::Get(), () -> 7)`, leaves the plain one plain
+/// (Codex on #4066).
+fn hce_match_parts(e: Expr, parts: Array[(String, Bool)], st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> String {
+  let src = hce_unwrap_value(e)
+  let pieces: Array[Expr] = array_empty()
+  let walked = match src {
+    ETuple(es) => {
+      for x in es {
+        Array::push(pieces, value = x)
+      }
+      false
+    },
+    ERecord(_, fields, _) => {
+      for fv in fields {
+        let (_, x) = fv
+        Array::push(pieces, value = x)
+      }
+      false
+    },
+    ECall(EIdent(_, _), es, _, _) => if hce_is_paren(src) {
+      false
+    } else {
+      for x in es {
+        Array::push(pieces, value = call_arg_value(x))
+      }
+      true
+    },
+    _ => false
+  }
+  if Array::length(pieces) == 0 {
+    hce_walk_source(e = e, st = st, env = env, defs = defs, s = s)
+  } else {
+    let marks: Array[Int] = array_empty()
+    let mut held = ""
+    if walked {
+      // A call is walked whole, so its own work is done; it leaves where
+      // each argument's producers begin. Marks from before this walk are
+      // not this call's, so they are cleared first and must not predate it.
+      let start = Array::length(st.producers)
+      st.arg_marks = array_empty()
+      held = hce_walk_source(e = e, st = st, env = env, defs = defs, s = s)
+      for m in st.arg_marks {
+        if m >= start {
+          Array::push(marks, value = m)
+        } else {
+          ()
+        }
+      }
+    } else {
+      // A tuple or struct literal is only its parts, walked in order, each
+      // where `hce_walk` would walk it (a child's position).
+      for x in pieces {
+        Array::push(marks, value = Array::length(st.producers))
+        st.pos = 2
+        held = hce_set_union(a = held, b = hce_walk_source(e = x, st = st, env = env, defs = defs, s = s))
+      }
+      Array::push(marks, value = Array::length(st.producers))
+    }
+    if Array::length(marks) == Array::length(pieces) + 1 {
+      let mut k = 0
+      for x in pieces {
+        let from = Array::get(marks, at = k)
+        let upto = Array::get(marks, at = k + 1)
+        let mut part = hce_names_held(e = x, st = st, env = env, defs = defs, s = s)
+        let mut pi = from
+        while pi < upto && pi < Array::length(st.producers) {
+          let (_, _, plabel, _) = Array::get(st.producers, at = pi)
+          part = hce_set_union(a = part, b = plabel)
+          pi = pi + 1
+        }
+        Array::push(parts, value = (part, upto > from))
+        k = k + 1
+      }
+    } else {
+      ()
+    }
+    held
   }
 }
 
@@ -1095,15 +1197,16 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
     // the kept closure trapped once the handle was gone.
     EMatch(scrutinee, marms) => {
       let producers_before = Array::length(st.producers)
-      let held = hce_walk_source(e = scrutinee, st = st, env = env, defs = defs, s = s)
+      let parts: Array[(String, Bool)] = array_empty()
+      let held = hce_match_parts(e = scrutinee, parts = parts, st = st, env = env, defs = defs, s = s)
       let fresh = Array::length(st.producers) > producers_before
       for arm in marms {
         let (pat, abody) = arm
         let mark = Array::length(st.scope)
-        if fresh || held == "" {
+        if held == "" || fresh && Array::length(parts) == 0 {
           hce_bind_pat(st = st, pat = pat, label = held)
         } else {
-          hce_bind_pat_from(st = st, pat = pat, src = scrutinee, held = held, env = env, defs = defs, s = s)
+          hce_bind_pat_from(st = st, pat = pat, src = scrutinee, held = held, known = parts, env = env, defs = defs, s = s)
         }
         hce_walk(e = abody, st = st, env = env, defs = defs, s = s)
         Array::truncate(st.scope, length = mark)
@@ -1177,9 +1280,11 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       st.pos = 0
       hce_walk(e = callee, st = st, env = env, defs = defs, s = s)
       let arg_reach = hce_arg_reach(callee = callee, st = st, env = env, defs = defs, s = s)
+      let marks: Array[Int] = array_empty()
       let mut ai = 0
       for arg in args {
         let producers_before = Array::length(st.producers)
+        Array::push(marks, value = producers_before)
         st.pos = hce_beside_local(reach = arg_reach, args = args, ai = ai, st = st, env = env)
         hce_walk(e = arg, st = st, env = env, defs = defs, s = s)
         // A closure handed to a parameter whose row names its effect (or a
@@ -1225,6 +1330,8 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         }
         ai = ai + 1
       }
+      Array::push(marks, value = Array::length(st.producers))
+      st.arg_marks = marks
       ()
     },
     ELabeledArg(_, _, inner) => {
