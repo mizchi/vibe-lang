@@ -341,7 +341,11 @@ fn prelude_reuse_body(_ stmt: Stmt) -> Option[(Option[TypeExpr], Expr)] {
 
 /// The names `stmt` references by spelling, and whether any reference is
 /// opaque (`dce_statement_refs`).
-fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
+/// The names `stmt` references, and whether it references something opaque
+/// (`dce_statement_refs`, definition and root together). A build takes it
+/// once per statement and hands it to `prelude_reuse_avoid` and
+/// `prelude_reuse_quiet`.
+export fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
   let (def_refs, def_opaque, root_refs, root_opaque) = dce_statement_refs(stmt)
   let all: Array[String] = []
   for r in def_refs {
@@ -363,7 +367,7 @@ fn prelude_reuse_binder_ok(_ name: String) -> Bool {
   !String::starts_with(name, prefix = "__") || String::starts_with(name, prefix = "__exn_payload")
 }
 
-export fn prelude_reuse_quiet(stmt: Stmt, scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
+export fn prelude_reuse_quiet(stmt: Stmt, refs: (Array[String], Bool), scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
   match prelude_reuse_body(stmt) {
     // A marker only the checker reads (positional parameters, a test's
     // declared row, qualified pattern references): the passes skip it, so
@@ -372,9 +376,9 @@ export fn prelude_reuse_quiet(stmt: Stmt, scope: PreludeReuseScope, avoid: MutSe
     Some((ann, body)) => {
       let flags = [false, false]
       prelude_reuse_expr_flags(expr = body, scope = scope, out = flags)
-      let (refs, opaque) = prelude_reuse_refs(stmt)
+      let (names, opaque) = refs
       let mut ok = !Array::get(flags, at = 0) && !Array::get(flags, at = 1) && !opaque && !prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
-      for r in refs {
+      for r in names {
         ok = ok && !MutSet::has(avoid, x = r)
       }
       for b in edp_statement_binder_log(stmt) {
@@ -494,7 +498,7 @@ fn prelude_reuse_lambda_binders(expr: Expr, out: MutSet[String]) -> Unit {
 /// The names a quiet statement must avoid, given which statements are
 /// relevant: every name from which a relevant statement is reachable, and
 /// every name a relevant statement binds to a lambda.
-export fn prelude_reuse_avoid(stmts: Array[Stmt], relevant: Array[Bool]) -> MutSet[String] {
+export fn prelude_reuse_avoid(stmts: Array[Stmt], refs: Array[(Array[String], Bool)], relevant: Array[Bool]) -> MutSet[String] {
   let avoid = MutSet::new_string()
   // name -> the statements that reference it
   let users: MutMap[String, Array[Int]] = MutMap::new_string()
@@ -507,8 +511,8 @@ export fn prelude_reuse_avoid(stmts: Array[Stmt], relevant: Array[Bool]) -> MutS
       SLetMut(name, _, _) => name,
       _ => ""
     })
-    let (refs, _) = prelude_reuse_refs(stmt)
-    for r in refs {
+    let (names_here, _) = Array::get(refs, at = i)
+    for r in names_here {
       match MutMap::get(users, k = r) {
         Some(at) => Array::push(at, value = i),
         None => MutMap::set(users, k = r, v = [i])
