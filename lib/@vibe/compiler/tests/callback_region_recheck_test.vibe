@@ -150,3 +150,21 @@ test "a mutable callback over an accumulator that can hold region values is stil
   let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let mut keep = (acc: Array[MutList[Int]], c: MutList[Int]) -> acc\n    keep = (acc: Array[MutList[Int]], c: MutList[Int]) -> acc\n    let _ = Array::fold(cells, init = sink, f = keep)\n    0\n  }\n}\n"
   assert(String::contains(check_source_report(src), needle = "bind `keep` to the closure with `let`"))
 }
+
+// Codex on #4057: a receiver or accumulator is an alias of the regions its
+// location predates, not of every active region. Declared inside `region r`
+// and used inside a nested `region s`, it may hold `r`'s values but not `s`'s;
+// declared outside both, neither.
+test "a container declared inside an outer region may take that region's values in a nested one" {
+  assert(check_source_ok("fn build() -> Int {\n  let v = region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    let outer: Array[MutList[Int]] = []\n    let boxes = [outer]\n    let got = region s {\n      let _ = Array::map(boxes, f = (a) -> {\n        Array::push(a, value = cell)\n        0\n      })\n      1\n    }\n    got + Array::length(outer)\n  }\n  v\n}\n"))
+  assert(check_source_ok("fn build() -> Int {\n  let v = region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    let mine: Array[MutList[Int]] = []\n    let got = region s {\n      let kept = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n        Array::push(acc, value = cell)\n        acc\n      })\n      Array::length(kept)\n    }\n    got + Array::length(mine)\n  }\n  v\n}\n"))
+}
+
+test "a container may not take a value of a region it predates, nested or not" {
+  assert(String::contains(check_source_report("fn build() -> Int {\n  let v = region r {\n    let outer: Array[MutList[Int]] = []\n    let boxes = [outer]\n    let got = region s {\n      let cell = MutList::empty(s)\n      MutList::push(cell, 3)\n      let _ = Array::map(boxes, f = (a) -> {\n        Array::push(a, value = cell)\n        0\n      })\n      1\n    }\n    got + Array::length(outer)\n  }\n  v\n}\n"), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report("fn build() -> Int {\n  let outer: Array[MutList[Int]] = []\n  let boxes = [outer]\n  let v = region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    region s {\n      let _ = Array::map(boxes, f = (a) -> {\n        Array::push(a, value = cell)\n        0\n      })\n      1\n    }\n  }\n  v\n}\n"), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report("fn build() -> Int {\n  let outer: Array[MutList[Int]] = []\n  let boxes = [outer]\n  let v = region r {\n    region s {\n      let cell = MutList::empty(s)\n      MutList::push(cell, 3)\n      let _ = Array::map(boxes, f = (a) -> {\n        Array::push(a, value = cell)\n        0\n      })\n      1\n    }\n  }\n  v\n}\n"), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report("fn build() -> Int {\n  let v = region r {\n    let mine: Array[MutList[Int]] = []\n    let got = region s {\n      let cell = MutList::empty(s)\n      MutList::push(cell, 3)\n      let _ = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n        Array::push(acc, value = cell)\n        acc\n      })\n      1\n    }\n    got + Array::length(mine)\n  }\n  v\n}\n"), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report("fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let v = region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    region s {\n      let _ = Array::fold([1, 2], init = sink, f = (acc, x) -> {\n        Array::push(acc, value = cell)\n        acc\n      })\n      1\n    }\n  }\n  v\n}\n"), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report("fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let v = region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    let mine: Array[MutList[Int]] = []\n    region s {\n      let _ = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n        Array::push(acc, value = cell)\n        sink\n      })\n      1\n    }\n  }\n  v\n}\n"), needle = "region escapes its scope"))
+}
