@@ -112,7 +112,7 @@ export enum TypeDef {
   /// (`CtStruct(n)` / `CtEnum(n)` / `CtNamed(n, params)`), so an annotation
   /// naming it unifies with what the package's functions return, while no
   /// field, variant or constructor is visible.
-  TDOpaque(String, Array[String], Type)
+  TDOpaque(String, Array[String], Type, String)
 }
 
 /// Checker-internal authority for where a value binding was resolved.
@@ -532,6 +532,11 @@ fn type_definition_origin_marker(_ name: String) -> String {
   String::concat("#typedef-origin:", name)
 }
 
+/// Attach the source declaration to a projected type, including a renamed export.
+export fn env_bind_type_definition_origin(env: TypeEnv, name: String, origin: BindingOrigin) -> TypeEnv {
+  EnvBind(type_definition_origin_marker(name), env_value_binding_with_origin(ty = CtUnknown, origin = origin), env)
+}
+
 /// Origin carried beside the nearest declaration node for `name`.
 ///
 /// The marker is an internal binding with a spelling source programs cannot
@@ -631,7 +636,7 @@ fn type_definition_name(_ def: TypeDef) -> String {
     TDAlias(name, _, _) => name,
     TDEffect(name, _, _, _, _) => name,
     TDEffectSet(name, _) => name,
-    TDOpaque(name, _, _) => name
+    TDOpaque(name, _, _, _) => name
   }
 }
 
@@ -651,7 +656,7 @@ export fn env_preserve_type_definition_origins(env: TypeEnv, source: TypeEnv) ->
         let name = type_definition_name(Array::get(defs, at = i))
         match source_type_definition_origin(env = source, name = name) {
           Some(origin) => {
-            out = EnvBind(type_definition_origin_marker(name), env_value_binding_with_origin(ty = CtUnknown, origin = origin), out)
+            out = env_bind_type_definition_origin(env = out, name = name, origin = origin)
           },
           None => ()
         }
@@ -1619,20 +1624,26 @@ export fn effect_type_param_names(params: Array[String], kinds: Array[String]) -
 /// was published withheld (`TDOpaque`): the name to refuse a construction,
 /// field read or destructuring of. `None` for anything this module may see.
 export fn opaque_type_name_of(defs: Array[TypeDef], ty: Type) -> Option[String] {
-  let head = match ty {
-    CtStruct(n) => n,
-    CtEnum(n) => n,
-    CtNamed(n, _) => n,
-    _ => ""
-  }
-  if head == "" {
-    None
-  } else {
-    match find_typedef(defs = defs, name = head) {
-      Some(TDOpaque(n, _, _)) => Some(n),
-      _ => None
+  let mut current = ty
+  let mut fuel = Array::length(defs)
+  while fuel > 0 {
+    let head = match current {
+      CtStruct(n) => n,
+      CtEnum(n) => n,
+      CtNamed(n, _) => n,
+      _ => ""
     }
+    if head == "" {
+      return None
+    }
+    match find_typedef(defs = defs, name = head) {
+      Some(TDOpaque(n, _, _, _)) => return Some(n),
+      Some(TDAlias(_, _, target)) => current = target,
+      _ => return None
+    }
+    fuel = fuel - 1
   }
+  None
 }
 
 /// #4115: the refusal for touching an opaque type's representation outside
@@ -1658,8 +1669,8 @@ export fn opaque_qualified_name_refusal(defs: Array[TypeDef], name: String) -> O
   if at <= 0 {
     None
   } else {
-    match find_typedef(defs = defs, name = String::substring(name, start = 0, end = at)) {
-      Some(TDOpaque(oname, _, _)) => Some(opaque_type_refusal(name = oname, what = "`" + String::substring(name, start = at + 2, end = n) + "` is not visible here")),
+    match opaque_type_name_of(defs = defs, ty = CtNamed(String::substring(name, start = 0, end = at), [])) {
+      Some(oname) => Some(opaque_type_refusal(name = oname, what = "`" + String::substring(name, start = at + 2, end = n) + "` is not visible here")),
       _ => None
     }
   }
@@ -1681,7 +1692,7 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
         TDAlias(n, _, _) => n,
         TDEffect(n, _, _, _, _) => n,
         TDEffectSet(n, _) => n,
-        TDOpaque(n, _, _) => n
+        TDOpaque(n, _, _, _) => n
       }
       if dname == name {
         result = Some(d)

@@ -940,7 +940,7 @@ export fn typedef_index_of_from(defs: Array[TypeDef], name: String, from: Int) -
       TDAlias(n, _, _) => n == name,
       TDEffect(n, _, _, _, _) => n == name,
       TDEffectSet(n, _) => n == name,
-      TDOpaque(n, _, _) => n == name
+      TDOpaque(n, _, _, _) => n == name
     }
     if matched {
       found = i
@@ -1254,7 +1254,7 @@ fn imported_decl_kind(item: ImportItem, expected: ImportKind, initial_env: TypeE
         } else {
           None
         },
-        TDOpaque(name, _, _) => if name == item.name {
+        TDOpaque(name, _, _, _) => if name == item.name {
           Some("opaque type")
         } else {
           None
@@ -1346,7 +1346,7 @@ fn import_kind_article(_ label: String) -> String {
   }
 }
 
-fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String, errors: Array[String]) -> Unit {
+fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String, errors: Array[String], contract_reexport: Bool) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
     let item = Array::get(items, at = i)
@@ -1368,7 +1368,9 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
         None => (),
         Some(actual) => {
           let wanted = import_kind_label(expected)
-          if !import_kind_matches(expected = expected, actual = actual) {
+          // Legacy bodyless contract entries can be satisfied by traits.
+          let legacy_trait = contract_reexport && expected == ImportOpaque && actual == "trait"
+          if !legacy_trait && !import_kind_matches(expected = expected, actual = actual) {
             // `(from '<path>')` is what locate_import_kind_msg anchors on, so a
             // comment that mentions the name earlier cannot claim the column.
             Array::push(errors, value = "import kind mismatch: `\{item.name}` is \{import_kind_article(actual)} \{actual}, not \{import_kind_article(wanted)} \{wanted} (from '\{path}')")
@@ -1380,9 +1382,9 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
   }
 }
 
-export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String] {
+export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String, contract_reexport: Bool) -> Array[String] {
   let errors = array_empty()
-  check_import_item_kinds(items = items, initial_env = initial_env, builtin_authority = builtin_authority, path = path, errors = errors)
+  check_import_item_kinds(items = items, initial_env = initial_env, builtin_authority = builtin_authority, path = path, errors = errors, contract_reexport = contract_reexport)
   errors
 }
 
@@ -1431,13 +1433,13 @@ export fn import_item_namespace_alias_errors(items: Array[ImportItem], initial_e
   errors
 }
 
-export fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[String]) -> Unit {
+export fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[String], imports_already_projected: Bool) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
-      SImport(path, items) => check_import_item_kinds(items = items, initial_env = initial_env, builtin_authority = path == "@vibe/builtin", path = path, errors = errors),
-      SReExport(path, items) => check_import_item_kinds(items = items, initial_env = initial_env, builtin_authority = path == "@vibe/builtin", path = path, errors = errors),
-      SModule(_, _, body) => check_import_kinds(stmts = body, initial_env = initial_env, errors = errors),
+      SImport(path, items) => check_import_item_kinds(items = items, initial_env = initial_env, builtin_authority = path == "@vibe/builtin", path = path, errors = errors, contract_reexport = false),
+      SReExport(path, items) => check_import_item_kinds(items = items, initial_env = initial_env, builtin_authority = path == "@vibe/builtin", path = path, errors = errors, contract_reexport = imports_already_projected),
+      SModule(_, _, body) => check_import_kinds(stmts = body, initial_env = initial_env, errors = errors, imports_already_projected = imports_already_projected),
       _ => ()
     }
     i = i + 1
@@ -1588,7 +1590,7 @@ export fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs
       TDAlias(n, _, _) => n,
       TDEffect(n, _, _, _, _) => n,
       TDEffectSet(n, _) => n,
-      TDOpaque(n, _, _) => n
+      TDOpaque(n, _, _, _) => n
     }
     // First declaration wins, matching find_typedef and the import cache's
     // first-match rule. A projected interface never contains effects here.
@@ -1636,8 +1638,8 @@ export fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs
           Array::push(type_def_binders, value = array_empty())
         },
         TDEffectSet(_, _) => (),
-        TDOpaque(opaque_name, params, identity) => {
-          Array::push(defs, value = TDOpaque(opaque_name, params, identity))
+        TDOpaque(opaque_name, params, identity, origin) => {
+          Array::push(defs, value = TDOpaque(opaque_name, params, identity, origin))
           Array::push(type_def_binders, value = array_empty())
         }
       }

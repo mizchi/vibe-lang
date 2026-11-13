@@ -186,7 +186,6 @@ import ./checker_closure_capture_row.vibe {
   let_rec_without_self_capture,
   railway_anchor_off,
   railway_ident_lookup_name,
-  railway_is_ident,
   railway_kind_from_match,
   railway_not_option_msg,
   railway_origin_env,
@@ -224,6 +223,10 @@ import ./checker_eq_generalized_site.vibe {
 
 import ./checker_map_literal.vibe {
   map_literal_ground, resume_continuation_marker, resume_is_continuation
+}
+
+import ./checker_lambda_result.vibe {
+  check_return_value
 }
 
 import ./checker_int32.vibe {
@@ -1135,7 +1138,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Array::push(errors, value = String::concat("rename one of the two `\{repeated}` in this pattern: a pattern binds each name once (to compare two parts, bind them apart and test `a == b` in a guard)", off_marker(railway_expr_off(scrutinee))))
           }
           let pat_err_before = Array::length(errors)
-          let arm_env = check_pattern(pat = pat, scrutinee_ty = scr_ty, env = rail_env, defs = defs, errors = errors)
+          let arm_env = check_pattern(pat = pat, scrutinee_ty = subst_apply(s = si, ty = scr_ty), env = rail_env, defs = defs, errors = errors)
           // #3640: `Some(t)` out of a spawn-shaped function's optional closure
           // parameter is trusted like the parameter (`spawn_safe_marker`).
           let arm_env = match spawn_safe_option_binder(env = env, scrutinee = scrutinee, pat = pat) {
@@ -2607,32 +2610,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     },
     EReturn(e) => {
       let (et, s1, c1) = check_expr_capture(expr = e, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
-      // Check the returned value against the enclosing function's annotated
-      // return type (bound as `__return__` by the EFn arm). Ground-gated via
-      // check_assignable, so a generic return type is not over-rejected.
-      match env_lookup(env = env, name = "__return__") {
-        Some(rt) => {
-          let rte = subst_apply(s = s1, ty = rt)
-          let ate = subst_apply(s = s1, ty = et)
-          // #1947: `?` lowers to `return None`. The EMatch railway hook
-          // reports that in source-level terms; do not also emit
-          // `got Option[?]` against the synthetic None.
-          let skip_railway_none = match env_lookup(env = env, name = "__railway_q__") {
-            Some(_) => railway_is_ident(e = e, want = "None"),
-            None => false
-          }
-          if skip_railway_none {
-            ()
-          } else {
-            // Explicit `return e`: anchor on `e` itself, so this spelling locates
-            // the same way the implicit tail-expression return does above.
-            check_assignable_set_end(string_lit_end(e))
-            let _ = check_assignable(expected = rte, actual = int32_assigned_type(e = e, expected = rte, actual = ate, s = s1, errors = errors, off = railway_expr_off(e)), s = s1, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
-            ()
-          }
-        },
-        None => ()
-      }
+      // Check the returned value against the enclosing function's result type
+      // (bound as `__return__` by the EFn arm; #4062: also when unwritten).
+      let s1 = check_return_value(e = e, et = et, env = env, s = s1, errors = errors)
       let s2 = match env_lookup(env = env, name = "__return_provenance__") {
         Some(CtVar(id)) => {
           mark_return_provenance_written(id)

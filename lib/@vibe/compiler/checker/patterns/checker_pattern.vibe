@@ -419,6 +419,15 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
     PCtor(raw_name, sub_pats) => {
       // #3422: a qualified `Maybe::Some` resolves by its bare variant name.
       let name = pattern_ctor_base_name(raw_name)
+      let qualifier = pattern_ctor_owner(raw_name)
+      let opaque = match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
+        Some(n) => Some(n),
+        None => opaque_type_name_of(defs = defs, ty = CtNamed(qualifier, []))
+      }
+      match opaque {
+        Some(n) => Array::push(errors, value = opaque_type_refusal(name = n, what = "its constructor `" + name + "` is not visible here")),
+        None => ()
+      }
       let builtin_payload = match scrutinee_ty {
         CtOption(elem) => if name == "Some" {
           Some([elem])
@@ -429,9 +438,10 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         },
         _ => None
       }
-      let ctor_payload = match builtin_payload {
-        Some(types) => Some(("Option", types)),
-        None => find_ctor_in_defs(defs = defs, ctor_name = name)
+      let ctor_payload = match (opaque, builtin_payload) {
+        (Some(_), _) => None,
+        (None, Some(types)) => Some(("Option", types)),
+        (None, None) => find_ctor_in_defs(defs = defs, ctor_name = name)
       }
       match ctor_payload {
         Some(info) => {
@@ -543,25 +553,6 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           bind_subs(0, env)
         },
         None => {
-          // #4115: a constructor of an opaque enum is not visible outside its
-          // package, so the pattern names nothing -- refused rather than left
-          // to match nothing.
-          let qualifier = pattern_ctor_owner(raw_name)
-          let opaque = match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
-            Some(n) => Some(n),
-            None => if qualifier == "" {
-              None
-            } else {
-              match find_typedef(defs = defs, name = qualifier) {
-                Some(TDOpaque(n, _, _)) => Some(n),
-                _ => None
-              }
-            }
-          }
-          match opaque {
-            Some(n) => Array::push(errors, value = opaque_type_refusal(name = n, what = "its constructor `" + name + "` is not visible here")),
-            None => ()
-          }
           let splen = Array::length(sub_pats)
           let rec bind_unknown: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
             if i >= splen {
@@ -646,10 +637,17 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         }
       }
     },
-    POr(left, _right) => check_pattern(pat = left, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors),
+    POr(left, right) => {
+      let _ = check_pattern(pat = right, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors)
+      check_pattern(pat = left, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors)
+    },
     PStruct(sname, fields) => {
       // #4115: a struct pattern reads the fields of what it destructures.
-      match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
+      let opaque = match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
+        Some(n) => Some(n),
+        None => opaque_type_name_of(defs = defs, ty = CtNamed(sname, []))
+      }
+      match opaque {
         Some(n) => Array::push(errors, value = opaque_type_refusal(name = n, what = "it cannot be destructured here (`" + sname + "::{ .. }`)")),
         None => ()
       }

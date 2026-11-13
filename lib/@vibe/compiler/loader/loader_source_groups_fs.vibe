@@ -70,7 +70,7 @@ import @vibe/compiler/contract {
   contract_facade_marker,
   contract_hash_with,
   contract_surface_effects,
-  contract_surface_lines,
+  contract_surface_lines_with_seals,
   contract_surface_rows_sorted,
   ctr_es_collect_tables,
   ctr_es_expand_row_string,
@@ -83,6 +83,7 @@ import @vibe/compiler/contract {
   package_hash_from_sources_with,
   package_id_matches,
   parse_contract_program,
+  parse_contract_surface,
   replace_generated_hash_directive,
   require_line_source_clause,
   semver_parts,
@@ -683,11 +684,11 @@ export fn check_module_with_config(source: String, path: String, sources: Array[
 /// each impl's raw import spelling), so the hash is location-independent —
 /// the same function serves `vibe hash` on a working directory and store
 /// verification of an installed copy.
-fn collect_package_hash_inputs(_ path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Source + SourceIngest {
+fn collect_package_hash_inputs(_ path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt], Array[String]) with Env + Exception + Source + SourceIngest {
   validate_index_layout(path)
   let raw = perform Source::Read(path)
   let (_, blanked) = extract_require_pins(raw)
-  let (decls, opaques, extra) = parse_contract_program(lex(blanked))
+  let (decls, opaques, extra, sealed) = parse_contract_surface(lex(blanked))
   let (impl_raws0, type_defs) = classify_contract_stmts(extra)
   let package_contract = normalize_path(path)
   let dir = dir_of_path(package_contract)
@@ -742,10 +743,10 @@ fn collect_package_hash_inputs(_ path: String) -> (Array[(String, String)], Arra
       ri = ri + 1
     }
   }
-  (sources, decls, opaques, type_defs)
+  (sources, decls, opaques, type_defs, sealed)
 }
 
-fn collect_package_hash_inputs_fs(_ path: String, cfg: TargetCfg, checked_error_row: Bool) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Fs {
+fn collect_package_hash_inputs_fs(_ path: String, cfg: TargetCfg, checked_error_row: Bool) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt], Array[String]) with Env + Exception + Fs {
   handle {
     collect_package_hash_inputs(path)
   } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(path = p, source = text, cfg = cfg, checked_error_row = checked_error_row)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(path = p, pin_blanked = text, cfg = cfg, checked_error_row = checked_error_row)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(path = p, pin_blanked = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
@@ -764,8 +765,8 @@ export fn contract_package_hashes_fs_with_config(_ path: String, cfg: TargetCfg,
 /// at `path`, over any provider (`contract_package_hashes_fs_algo` is the
 /// filesystem one).
 export fn contract_package_hashes_source(path: String, algo: String) -> (String, String) with Env + Exception + Source + SourceIngest {
-  let (sources, decls, opaques, type_defs) = collect_package_hash_inputs(path)
-  (package_hash_from_sources_with(algo = algo, sources = sources), contract_hash_with(algo = algo, fn_decls = decls, opaque_names = opaques, type_defs = type_defs))
+  let (sources, decls, opaques, type_defs, sealed) = collect_package_hash_inputs(path)
+  (package_hash_from_sources_with(algo = algo, sources = sources), contract_hash_with(algo = algo, fn_decls = decls, opaque_names = opaques, type_defs = type_defs, sealed_names = sealed))
 }
 
 export fn contract_package_hashes_fs_algo(path: String, algo: String, checked_error_row: Bool) -> (String, String) with Env + Exception + Fs {
@@ -774,12 +775,12 @@ export fn contract_package_hashes_fs_algo(path: String, algo: String, checked_er
 
 /// The same operation with caller-owned target flags and cache identity.
 export fn contract_package_hashes_fs_algo_with_config(path: String, algo: String, cfg: TargetCfg, checked_error_row: Bool) -> (String, String) with Env + Exception + Fs {
-  let (sources, decls, opaques, type_defs) = collect_package_hash_inputs_fs(path, cfg = cfg, checked_error_row = checked_error_row)
-  (package_hash_from_sources_with(algo = algo, sources = sources), contract_hash_with(algo = algo, fn_decls = decls, opaque_names = opaques, type_defs = type_defs))
+  let (sources, decls, opaques, type_defs, sealed) = collect_package_hash_inputs_fs(path, cfg = cfg, checked_error_row = checked_error_row)
+  (package_hash_from_sources_with(algo = algo, sources = sources), contract_hash_with(algo = algo, fn_decls = decls, opaque_names = opaques, type_defs = type_defs, sealed_names = sealed))
 }
 
 fn verify_recorded_package_id(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> Unit with Env + Exception + Source + SourceIngest {
-  let (sources, _, _, _) = collect_package_hash_inputs(index_path)
+  let (sources, _, _, _, _) = collect_package_hash_inputs(index_path)
   if package_id_matches(id = pin_hash, sources = sources) {
     ()
   } else {
@@ -1001,11 +1002,11 @@ fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool, cfg: Targe
 export fn publish_check_fs(prev_contract_path: String, next_contract_path: String, prev_version: String, next_version: String) -> Array[String] with Exception + Fs {
   let prev_raw = Fs::read_file(prev_contract_path)
   let (_, prev_blanked) = extract_require_pins(prev_raw)
-  let (pd, po, pextra) = parse_contract_program(lex(prev_blanked))
+  let (pd, po, pextra, psealed) = parse_contract_surface(lex(prev_blanked))
   let (_, ptypes) = classify_contract_stmts(pextra)
   let next_raw = Fs::read_file(next_contract_path)
   let (_, next_blanked) = extract_require_pins(next_raw)
-  let (nd, no, nextra) = parse_contract_program(lex(next_blanked))
+  let (nd, no, nextra, nsealed) = parse_contract_surface(lex(next_blanked))
   let (_, ntypes) = classify_contract_stmts(nextra)
   // #754: versions come from the PACKAGE-side `version x.y.z` directive when
   // the caller does not pass them; a caller-passed version that contradicts
@@ -1038,7 +1039,7 @@ export fn publish_check_fs(prev_contract_path: String, next_contract_path: Strin
   } else {
     // Rows sorted: `with { Fs, Console }` and `with { Console, Fs }` require
     // the same authority, so reordering one is not a breaking change (#3673).
-    verify_publish_bump(prev_version = pv, next_version = nv, old_lines = contract_surface_rows_sorted(contract_surface_lines(fn_decls = pd, opaque_names = po, type_defs = ptypes)), new_lines = contract_surface_rows_sorted(contract_surface_lines(fn_decls = nd, opaque_names = no, type_defs = ntypes)))
+    verify_publish_bump(prev_version = pv, next_version = nv, old_lines = contract_surface_rows_sorted(contract_surface_lines_with_seals(fn_decls = pd, opaque_names = po, type_defs = ptypes, sealed_names = psealed)), new_lines = contract_surface_rows_sorted(contract_surface_lines_with_seals(fn_decls = nd, opaque_names = no, type_defs = ntypes, sealed_names = nsealed)))
   }
 }
 
@@ -1047,9 +1048,9 @@ export fn publish_check_fs(prev_contract_path: String, next_contract_path: Strin
 /// what `vibe pkg update` compares, so a reordered contract is unchanged.
 export fn contract_surface_lines_fs(_ path: String) -> Array[String] with Exception + Fs {
   let (_, blanked) = extract_require_pins(Fs::read_file(path))
-  let (d, o, extra) = parse_contract_program(lex(blanked))
+  let (d, o, extra, sealed) = parse_contract_surface(lex(blanked))
   let (_, types) = classify_contract_stmts(extra)
-  contract_surface_lines(fn_decls = d, opaque_names = o, type_defs = types)
+  contract_surface_lines_with_seals(fn_decls = d, opaque_names = o, type_defs = types, sealed_names = sealed)
 }
 
 /// `contract_surface_effects` of the contract at `path`, with every effectset
@@ -1059,10 +1060,10 @@ export fn contract_surface_lines_fs(_ path: String) -> Array[String] with Except
 /// alias would miss it.
 export fn contract_surface_effects_fs(_ path: String) -> Array[String] with Exception + Fs {
   let (_, blanked) = extract_require_pins(Fs::read_file(path))
-  let (d, o, extra) = parse_contract_program(lex(blanked))
+  let (d, o, extra, sealed) = parse_contract_surface(lex(blanked))
   let (_, types) = classify_contract_stmts(extra)
   let (es_names, es_members) = ctr_es_collect_tables(types)
-  let effects = contract_surface_effects(contract_surface_lines(fn_decls = d, opaque_names = o, type_defs = types))
+  let effects = contract_surface_effects(contract_surface_lines_with_seals(fn_decls = d, opaque_names = o, type_defs = types, sealed_names = sealed))
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(effects) {
