@@ -79,12 +79,13 @@ export fn direct_known_fn_params(stmts: Array[Stmt], exclude: Array[String]) -> 
       seen: MutSet::new_string()
     }
     let all: Array[String] = []
-    let mut more = true
+    let prog = kp_program(stmts = stmts, exclude = exclude)
+    let mut more = Array::length(prog.stmt) > 0
     let mut rounds = 0
     while more && rounds < 8 {
       let known_before = Array::length(rewritten.fns)
-      let dead = kp_dead(stmts = stmts, rewritten = rewritten)
-      let done = kp_run(stmts = stmts, exclude = exclude, dead = dead, rewritten = rewritten)
+      let dead = kp_dead(stmts = stmts, prog = prog, rewritten = rewritten)
+      let done = kp_run(stmts = stmts, prog = prog, dead = dead, rewritten = rewritten)
       for d in done {
         Array::push(all, value = d)
       }
@@ -113,45 +114,77 @@ fn kp_key(f: String, k: Int) -> String {
 /// The rewritten slots whose parameter is now dead: no call of it is left in
 /// its function's body, and every other occurrence is an argument passed on
 /// to a dead slot (a greatest fixpoint). A function value passed at a dead
-/// slot is never called through it and never escapes.
-fn kp_dead(stmts: Array[Stmt], rewritten: KpSlots) -> MutSet[String] {
-  let dead = MutSet::new_string()
-  let bodies: MutMap[String, Expr] = MutMap::new_string()
-  for stmt in stmts {
-    match stmt {
-      SLet(_, _, n, _, EFn(_, _, _, _, _, body)) => MutMap::set(bodies, k = n, v = body),
-      _ => ()
-    }
-  }
-  let mut i = 0
-  while i < Array::length(rewritten.fns) {
-    MutSet::add(dead, x = kp_key(f = Array::get(rewritten.fns, at = i), k = Array::get(rewritten.ks, at = i)))
-    i = i + 1
-  }
-  let mut changed = true
-  while changed {
-    changed = false
-    i = 0
+/// slot is never called through it and never escapes. Answers a mask of dead
+/// positions per function, so asking about a call's argument allocates
+/// nothing (`kp_is_dead`).
+fn kp_dead(stmts: Array[Stmt], prog: KpProgram, rewritten: KpSlots) -> MutMap[String, Int] {
+  let dead: MutMap[String, Int] = MutMap::new_string()
+  if Array::length(rewritten.fns) == 0 {
+    dead
+  } else {
+    let mut i = 0
     while i < Array::length(rewritten.fns) {
-      let key = kp_key(f = Array::get(rewritten.fns, at = i), k = Array::get(rewritten.ks, at = i))
-      if MutSet::has(dead, x = key) {
-        let ok = match MutMap::get(bodies, k = Array::get(rewritten.fns, at = i)) {
-          Some(body) => kp_only_passed_dead(e = body, name = Array::get(rewritten.names, at = i), dead = dead),
-          None => false
-        }
-        if !ok {
-          let _ = MutSet::delete(dead, x = key)
-          changed = true
+      kp_set_dead(dead = dead, f = Array::get(rewritten.fns, at = i), k = Array::get(rewritten.ks, at = i), on = true)
+      i = i + 1
+    }
+    let mut changed = true
+    while changed {
+      changed = false
+      i = 0
+      while i < Array::length(rewritten.fns) {
+        let f = Array::get(rewritten.fns, at = i)
+        let k = Array::get(rewritten.ks, at = i)
+        if kp_is_dead(dead = dead, f = f, k = k) {
+          // A rewritten function is one of the program's functions, so its
+          // body is the statement `prog` records for it.
+          let ok = match MutMap::get(prog.at, k = f) {
+            Some(fi) => match Array::get(stmts, at = Array::get(prog.stmt, at = fi)) {
+              SLet(_, _, _, _, EFn(_, _, _, _, _, body)) => kp_only_passed_dead(e = body, name = Array::get(rewritten.names, at = i), dead = dead),
+              _ => false
+            },
+            None => false
+          }
+          if !ok {
+            kp_set_dead(dead = dead, f = f, k = k, on = false)
+            changed = true
+          } else {
+            ()
+          }
         } else {
           ()
         }
-      } else {
-        ()
+        i = i + 1
       }
-      i = i + 1
+    }
+    dead
+  }
+}
+
+/// Whether position `k` of `f` is a dead slot.
+fn kp_is_dead(dead: MutMap[String, Int], f: String, k: Int) -> Bool {
+  if k >= bmask_max_param() || !MutMap::has(dead, k = f) {
+    false
+  } else {
+    match MutMap::get(dead, k = f) {
+      Some(m) => bmask_has(mask = m, i = k),
+      None => false
     }
   }
-  dead
+}
+
+/// Mark position `k` of `f` dead, or live again.
+fn kp_set_dead(dead: MutMap[String, Int], f: String, k: Int, on: Bool) -> Unit {
+  if k < bmask_max_param() {
+    let m = match MutMap::get(dead, k = f) {
+      Some(m) => m,
+      None => 0
+    }
+    MutMap::set(dead, k = f, v = if on {
+      m|(1<<k)
+    } else {
+      m&~(1<<k)
+    })
+  } else ()
 }
 
 /// The expression an argument passes, under its label.
@@ -164,7 +197,7 @@ fn kp_arg_value(_ a: Expr) -> Expr {
 
 /// Whether every occurrence of `name` in `e` is an argument at a dead slot:
 /// not called, and not used any other way.
-fn kp_only_passed_dead(e: Expr, name: String, dead: MutSet[String]) -> Bool {
+fn kp_only_passed_dead(e: Expr, name: String, dead: MutMap[String, Int]) -> Bool {
   match e {
     EIdent(n, _) => n != name,
     ECall(callee, args, _, _) => {
@@ -181,7 +214,7 @@ fn kp_only_passed_dead(e: Expr, name: String, dead: MutSet[String]) -> Bool {
       while ok && k < Array::length(args) {
         let a = Array::get(args, at = k)
         ok = match kp_arg_value(a) {
-          EIdent(n, _) => n != name || direct && MutSet::has(dead, x = kp_key(f = fname, k = k)),
+          EIdent(n, _) => n != name || direct && kp_is_dead(dead = dead, f = fname, k = k),
           _ => kp_only_passed_dead(e = a, name = name, dead = dead)
         }
         k = k + 1
@@ -203,26 +236,29 @@ fn kp_only_passed_dead(e: Expr, name: String, dead: MutSet[String]) -> Bool {
   }
 }
 
-/// Every name `e` uses as a VALUE -- each `EIdent` except a direct callee --
-/// leaving out a bare name passed at a dead slot. Without dead slots this is
-/// a superset of `ca_collect_valued_idents`' answer.
-fn kp_valued(e: Expr, dead: MutSet[String], out: MutSet[String]) -> Unit {
+/// Every name in `of` that `e` uses as a VALUE -- each `EIdent` except a
+/// direct callee -- leaving out a bare name passed at a dead slot. Without
+/// dead slots this is a superset of `ca_collect_valued_idents`' answer, cut
+/// to `of`.
+fn kp_valued(e: Expr, dead: MutMap[String, Int], of: MutMap[String, Int], out: MutSet[String]) -> Unit {
   match e {
-    EIdent(n, _) => MutSet::add(out, x = n),
+    EIdent(n, _) => if MutMap::has(of, k = n) {
+      MutSet::add(out, x = n)
+    } else (),
     ECall(callee, args, _, _) => {
       let fname = match callee {
         EIdent(f, _) => f,
         _ => {
-          kp_valued(e = callee, dead = dead, out = out)
+          kp_valued(e = callee, dead = dead, of = of, out = out)
           ""
         }
       }
       let mut k = 0
       while k < Array::length(args) {
         let a = Array::get(args, at = k)
-        let skip = fname != "" && MutSet::has(dead, x = kp_key(f = fname, k = k)) && kp_arg_value(a) is EIdent(_, _)
+        let skip = fname != "" && kp_arg_value(a) is EIdent(_, _) && kp_is_dead(dead = dead, f = fname, k = k)
         if !skip {
-          kp_valued(e = a, dead = dead, out = out)
+          kp_valued(e = a, dead = dead, of = of, out = out)
         } else {
           ()
         }
@@ -234,7 +270,7 @@ fn kp_valued(e: Expr, dead: MutSet[String], out: MutSet[String]) -> Unit {
       let end = expr_children_top()
       let mut i = mark
       while i < end {
-        kp_valued(e = expr_child_at(i), dead = dead, out = out)
+        kp_valued(e = expr_child_at(i), dead = dead, of = of, out = out)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -280,12 +316,118 @@ fn kp_index_of(names: Array[String], name: String) -> Int {
   at
 }
 
-/// What `direct_known_fn_params` knows about the program's functions and
-/// their function-typed parameters. Function `i` is the `i`-th declared-once
-/// function no binder spells, at statement `stmt[i]`. A function with a
-/// candidate parameter owns one slot per parameter from `base[i]`. A slot's
-/// `state` is 0 (no function reaches it yet), 1 (only `known`) or 2 (more
-/// than one, or something that is not a function name).
+/// What `direct_known_fn_params` knows about the program's functions, which
+/// no round changes: a rewrite renames callees only, so it moves no binder,
+/// declaration or parameter. Function `i` is the `i`-th declared-once
+/// function no binder spells, at statement `stmt[i]`, with base parameter
+/// names `params[i]`; `rebound[i]` masks the parameters its body rebinds,
+/// `cand[i]` the function-typed ones it could take (before the value-use and
+/// exclusion tests), and `const_ok[i]` says whether it may be the known
+/// function.
+struct KpProgram {
+  at: MutMap[String, Int];
+  stmt: Array[Int];
+  params: Array[Array[String]];
+  rebound: Array[Int];
+  cand: Array[Int];
+  const_ok: Array[Bool];
+  excluded: MutSet[String];
+  cands: MutMap[String, Int]
+}
+
+/// The round-independent facts. `cands` names the functions with a
+/// candidate parameter, so the value walk can ask about exactly those.
+fn kp_program(stmts: Array[Stmt], exclude: Array[String]) -> KpProgram {
+  let declared: MutMap[String, Int] = MutMap::new_string()
+  for stmt in stmts {
+    let name = match stmt {
+      SLet(_, _, n, _, _) => n,
+      SFnDecl(_, n, _, _, _) => n,
+      _ => ""
+    }
+    if name != "" {
+      match MutMap::get(declared, k = name) {
+        Some(c) => MutMap::set(declared, k = name, v = c + 1),
+        None => MutMap::set(declared, k = name, v = 1)
+      }
+    }
+  }
+  // A binder that spells a declared name. Only declared names are asked
+  // about, so the others are dropped as each statement is read.
+  let bound = MutSet::new_string()
+  let scratch: Array[String] = []
+  for stmt in stmts {
+    let _ = match stmt {
+      SLet(_, _, _, _, v) => md_collect_shadow_names(e = v, out = scratch),
+      SLetMut(_, _, v) => md_collect_shadow_names(e = v, out = scratch),
+      SLetPat(_, v) => md_collect_shadow_names(e = v, out = scratch),
+      SExpr(v) => md_collect_shadow_names(e = v, out = scratch),
+      STest(_, v) => md_collect_shadow_names(e = v, out = scratch),
+      SBench(_, v) => md_collect_shadow_names(e = v, out = scratch),
+      _ => 0
+    }
+    for b in scratch {
+      if MutMap::has(declared, k = b) {
+        MutSet::add(bound, x = b)
+      } else ()
+    }
+    Array::truncate(scratch, length = 0)
+  }
+  let prog = KpProgram::{
+    at: MutMap::new_string(),
+    stmt: [],
+    params: [],
+    rebound: [],
+    cand: [],
+    const_ok: [],
+    excluded: bp_name_set(exclude),
+    cands: MutMap::new_string()
+  }
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, at = si) {
+      SLet(_, _, name, sig, EFn(_, bounds, params, _, _, body)) => if MutMap::get(declared, k = name) == Some(1) && !MutSet::has(bound, x = name) {
+        MutMap::set(prog.at, k = name, v = Array::length(prog.stmt))
+        Array::push(prog.stmt, value = si)
+        let names = kp_param_names(params)
+        Array::push(prog.params, value = names)
+        Array::truncate(scratch, length = 0)
+        let _ = md_collect_shadow_names(e = body, out = scratch)
+        let mut rebound = 0
+        let mut cand = 0
+        let mut k = 0
+        while k < Array::length(names) && k < bmask_max_param() {
+          let pn = Array::get(names, at = k)
+          if kp_index_of(names = scratch, name = pn) >= 0 {
+            rebound = rebound|(1<<k)
+          } else {
+            if pn != "" && kp_param_is_fn(params = params, sig = sig, k = k) {
+              cand = cand|(1<<k)
+            } else {
+              ()
+            }
+          }
+          k = k + 1
+        }
+        Array::push(prog.rebound, value = rebound)
+        Array::push(prog.cand, value = cand)
+        if cand != 0 {
+          MutMap::set(prog.cands, k = name, v = Array::length(prog.stmt) - 1)
+        } else ()
+        Array::push(prog.const_ok, value = bp_thunk_shape_ok(name = name, bounds = bounds, params = params))
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  prog
+}
+
+/// What one round knows: the program's facts, plus the slots of the
+/// functions it takes. A function with a candidate parameter owns one slot
+/// per parameter from `base[i]`. A slot's `state` is 0 (no function reaches
+/// it yet), 1 (only `known`) or 2 (more than one, or something that is not
+/// a function name).
 struct KpFacts {
   at: MutMap[String, Int];
   stmt: Array[Int];
@@ -302,126 +444,84 @@ struct KpFacts {
   site_name: Array[String]
 }
 
-/// The pass past the nested-module test.
-fn kp_run(stmts: Array[Stmt], exclude: Array[String], dead: MutSet[String], rewritten: KpSlots) -> Array[String] {
+/// One round of the pass.
+fn kp_run(stmts: Array[Stmt], prog: KpProgram, dead: MutMap[String, Int], rewritten: KpSlots) -> Array[String] {
+  // Only a function with a candidate parameter can be taken, so only those
+  // names are asked about as values.
+  let cands = prog.cands
   let valued_set = MutSet::new_string()
-  for stmt in stmts {
-    match stmt {
-      SLet(_, _, _, _, v) => kp_valued(e = v, dead = dead, out = valued_set),
-      SLetMut(_, _, v) => kp_valued(e = v, dead = dead, out = valued_set),
-      SLetPat(_, v) => kp_valued(e = v, dead = dead, out = valued_set),
-      SExpr(v) => kp_valued(e = v, dead = dead, out = valued_set),
-      STest(_, v) => kp_valued(e = v, dead = dead, out = valued_set),
-      SBench(_, v) => kp_valued(e = v, dead = dead, out = valued_set),
-      _ => ()
-    }
-  }
-  let excluded = bp_name_set(exclude)
-  let binders = array_empty()
-  for stmt in stmts {
-    match stmt {
-      SLet(_, _, _, _, v) => md_collect_shadow_names(e = v, out = binders),
-      SLetMut(_, _, v) => md_collect_shadow_names(e = v, out = binders),
-      SLetPat(_, v) => md_collect_shadow_names(e = v, out = binders),
-      SExpr(v) => md_collect_shadow_names(e = v, out = binders),
-      STest(_, v) => md_collect_shadow_names(e = v, out = binders),
-      SBench(_, v) => md_collect_shadow_names(e = v, out = binders),
-      _ => 0
-    }
-  }
-  let bound = bp_name_set(binders)
-  let declared: MutMap[String, Int] = MutMap::new_string()
-  for stmt in stmts {
-    let name = match stmt {
-      SLet(_, _, n, _, _) => n,
-      SFnDecl(_, n, _, _, _) => n,
-      _ => ""
-    }
-    if name != "" {
-      match MutMap::get(declared, k = name) {
-        Some(c) => MutMap::set(declared, k = name, v = c + 1),
-        None => MutMap::set(declared, k = name, v = 1)
+  if MutMap::size(cands) > 0 {
+    for stmt in stmts {
+      match stmt {
+        SLet(_, _, _, _, v) => kp_valued(e = v, dead = dead, of = cands, out = valued_set),
+        SLetMut(_, _, v) => kp_valued(e = v, dead = dead, of = cands, out = valued_set),
+        SLetPat(_, v) => kp_valued(e = v, dead = dead, of = cands, out = valued_set),
+        SExpr(v) => kp_valued(e = v, dead = dead, of = cands, out = valued_set),
+        STest(_, v) => kp_valued(e = v, dead = dead, of = cands, out = valued_set),
+        SBench(_, v) => kp_valued(e = v, dead = dead, of = cands, out = valued_set),
+        _ => ()
       }
     }
-  }
+  } else ()
   let facts = KpFacts::{
-    at: MutMap::new_string(),
-    stmt: [],
-    params: [],
-    rebound: [],
+    at: prog.at,
+    stmt: prog.stmt,
+    params: prog.params,
+    rebound: prog.rebound,
     base: [],
-    const_ok: [],
+    const_ok: prog.const_ok,
     state: [],
     known: [],
     site_slot: [],
     site_ref: [],
     site_name: []
   }
-  let scratch: Array[String] = []
-  let mut si = 0
-  while si < Array::length(stmts) {
-    match Array::get(stmts, at = si) {
-      SLet(_, _, name, sig, EFn(_, bounds, params, _, _, body)) => if MutMap::get(declared, k = name) == Some(1) && !MutSet::has(bound, x = name) {
-        MutMap::set(facts.at, k = name, v = Array::length(facts.stmt))
-        Array::push(facts.stmt, value = si)
-        let names = kp_param_names(params)
-        Array::push(facts.params, value = names)
-        Array::truncate(scratch, length = 0)
-        let _ = md_collect_shadow_names(e = body, out = scratch)
-        let takes = !MutSet::has(valued_set, x = name) && !MutSet::has(excluded, x = name)
-        let mut rebound = 0
-        let mut cand = 0
-        let mut k = 0
-        while k < Array::length(names) && k < bmask_max_param() {
-          let pn = Array::get(names, at = k)
-          if kp_index_of(names = scratch, name = pn) >= 0 {
-            rebound = rebound|(1<<k)
-          } else {
-            if takes && pn != "" && kp_param_is_fn(params = params, sig = sig, k = k) {
-              cand = cand|(1<<k)
-            } else {
-              ()
-            }
-          }
-          k = k + 1
-        }
-        Array::push(facts.rebound, value = rebound)
-        Array::push(facts.const_ok, value = bp_thunk_shape_ok(name = name, bounds = bounds, params = params))
-        if cand == 0 {
-          Array::push(facts.base, value = 0 - 1)
-        } else {
-          Array::push(facts.base, value = Array::length(facts.state))
-          k = 0
-          while k < Array::length(names) {
-            Array::push(facts.state, value = if bmask_has(mask = cand, i = k) {
-              0
-            } else {
-              2
-            })
-            Array::push(facts.known, value = "")
-            k = k + 1
-          }
-        }
-      },
-      _ => ()
+  let mut fi = 0
+  while fi < Array::length(prog.stmt) {
+    let name = kp_fn_name(stmts = stmts, at = Array::get(prog.stmt, at = fi))
+    let takes = !MutSet::has(valued_set, x = name) && !MutSet::has(prog.excluded, x = name)
+    let cand = if takes {
+      Array::get(prog.cand, at = fi)
+    } else {
+      0
     }
-    si = si + 1
+    if cand == 0 {
+      Array::push(facts.base, value = 0 - 1)
+    } else {
+      Array::push(facts.base, value = Array::length(facts.state))
+      let names = Array::get(prog.params, at = fi)
+      let mut k = 0
+      while k < Array::length(names) {
+        Array::push(facts.state, value = if bmask_has(mask = cand, i = k) {
+          0
+        } else {
+          2
+        })
+        Array::push(facts.known, value = "")
+        k = k + 1
+      }
+    }
+    fi = fi + 1
   }
   if Array::length(facts.state) == 0 {
     array_empty()
   } else {
-    si = 0
+    let mut si = 0
     while si < Array::length(stmts) {
       match Array::get(stmts, at = si) {
         SLet(_, _, name, _, v) => {
           let caller = match v {
-            EFn(_, _, _, _, _, _) => match MutMap::get(facts.at, k = name) {
-              Some(fi) => if Array::get(facts.stmt, at = fi) == si {
-                fi
-              } else {
-                0 - 1
-              },
-              None => 0 - 1
+            EFn(_, _, _, _, _, _) => if MutMap::has(facts.at, k = name) {
+              match MutMap::get(facts.at, k = name) {
+                Some(f) => if Array::get(facts.stmt, at = f) == si {
+                  f
+                } else {
+                  0 - 1
+                },
+                None => 0 - 1
+              }
+            } else {
+              0 - 1
             },
             _ => 0 - 1
           }
@@ -472,12 +572,14 @@ fn kp_give_up(facts: KpFacts, f: Int) -> Unit {
 /// is the function whose body `e` is, or -1.
 fn kp_scan(e: Expr, caller: Int, facts: KpFacts) -> Unit {
   match e {
-    ECall(EIdent(fname, _), args, _, _) => match MutMap::get(facts.at, k = fname) {
-      Some(f) => if Array::get(facts.base, at = f) >= 0 {
-        kp_site(f = f, args = args, caller = caller, facts = facts)
-      } else (),
-      None => ()
-    },
+    ECall(EIdent(fname, _), args, _, _) => if MutMap::has(facts.at, k = fname) {
+      match MutMap::get(facts.at, k = fname) {
+        Some(f) => if Array::get(facts.base, at = f) >= 0 {
+          kp_site(f = f, args = args, caller = caller, facts = facts)
+        } else (),
+        None => ()
+      }
+    } else (),
     _ => ()
   }
   let mark = expr_children_push(e)
