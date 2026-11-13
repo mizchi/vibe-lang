@@ -78,10 +78,6 @@ import ./checker_region_retention_arms.vibe {
   retention_assigned_values_into
 }
 
-import ./checker_merge_capture_provenance.vibe {
-  literal_item_is_inert
-}
-
 import ./checker_region_retention_summary.vibe {
   retention_any_nursery
 }
@@ -442,7 +438,7 @@ fn callback_param_predates(ps: Array[(String, Option[TypeExpr])], outer: Array[A
     pi = pi + 1
   }
   if grow > 0 {
-    let returned = match callback_result_location(e = body, ps = ps, sets = out, body = body, hidden = array_empty(), env = scope) {
+    let returned = match callback_result_location(e = body, ps = ps, sets = out, body = body, hidden = array_empty()) {
       Some(set) => set,
       None => callback_region_names(scope)
     }
@@ -471,44 +467,53 @@ fn callback_param_predates(ps: Array[(String, Option[TypeExpr])], outer: Array[A
 /// Where the callback's result `e` lives, when the text establishes it: a
 /// parameter of the literal that the body neither rebinds on the way to the
 /// result (`hidden`) nor assigns answers its own predated regions (`sets`),
-/// and a fresh array, tuple or record literal the union of its non-scalar
-/// items'. Anything else is `None`, and the caller counts it as predating
+/// and a fresh array, tuple or record literal the union of its items' (a
+/// scalar literal adds nothing, any other item must be established in turn,
+/// never by its type). Anything else is `None`, and the caller counts it as predating
 /// every active region: a call (`get_sink()` may return a binding declared
 /// before the region, and a callee's body is not read here), a field, a
 /// conditional, a binding the body declares, or one it captures, which it may
 /// have reassigned (Codex on #4078).
-fn callback_result_location(e: Expr, ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String], env: TypeEnv) -> Option[Array[String]] {
+fn callback_result_location(e: Expr, ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String]) -> Option[Array[String]] {
   match e {
     EIdent(n, _) => if callback_has(items = hidden, wanted = n) {
       None
     } else {
       callback_param_location(name = n, ps = ps, sets = sets, body = body)
     },
-    ESeq(_, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
-    ELet(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x), env = env),
-    ELetMut(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x), env = env),
-    ELetRec(x, _, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x), env = env),
-    EArray(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
-    ETuple(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
+    ESeq(_, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = hidden),
+    ELet(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x)),
+    ELetMut(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x)),
+    ELetRec(x, _, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x)),
+    EArray(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden),
+    ETuple(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden),
     ERecord(_, fields, _) => callback_items_location(items = for f in fields {
       f.1
-    }, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
+    }, ps = ps, sets = sets, body = body, hidden = hidden),
     _ => None
   }
 }
 
-/// The regions a fresh literal's items predate: nothing for a scalar, an
-/// item's own location otherwise, and `None` when any item's is not known.
-fn callback_items_location(items: Array[Expr], ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String], env: TypeEnv) -> Option[Array[String]] {
+/// The regions a fresh literal's items predate: nothing for a scalar literal
+/// written in place, an item's own location otherwise, and `None` when any
+/// item's is not known.
+fn callback_items_location(items: Array[Expr], ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String]) -> Option[Array[String]] {
   let merged: Array[String] = []
   let mut known = true
   for item in items {
+    // Read from the text alone: an item's type would be resolved in the
+    // callback's definition scope, where a parameter or a body binding
+    // (`let h = ..; Holder::{ items: h.items }`) names something else.
     let scalar = match item {
-      EIdent(_, _) => false,
-      _ => literal_item_is_inert(item = item, env = env)
+      EInt(_) => true,
+      EFloat(_) => true,
+      EString(_, _) => true,
+      EBool(_) => true,
+      EUnit => true,
+      _ => false
     }
     if known && !scalar {
-      match callback_result_location(e = item, ps = ps, sets = sets, body = body, hidden = hidden, env = env) {
+      match callback_result_location(e = item, ps = ps, sets = sets, body = body, hidden = hidden) {
         Some(set) => for rname in set {
           if !callback_has(items = merged, wanted = rname) {
             Array::push(merged, value = rname)
