@@ -1,0 +1,78 @@
+// #3417: row set-equality (`types_equal` / `unify_effects`) compares a
+// generic effect's arguments when both rows spell them with closed builtin
+// types only, so `Box[Int]` and `Box[String]` are different rows. A bare
+// label, a formal or variable argument, and anything this cannot read still
+// compare by the effect's name, as before (#1340).
+
+import @vibe/compiler/core {
+  RowItem, Subst, Type, parse_row_items, row_item_of_label, types_equal, unify_effects
+}
+
+/// A function `() -> Int` performing `row`.
+fn thunk(_ row: String) -> Type {
+  CtFn([], CtInt, Some(row))
+}
+
+/// Do the two rows compare equal, as function rows?
+fn same(a: String, b: String) -> Bool {
+  types_equal(a = thunk(a), b = thunk(b))
+}
+
+/// Does `unify_effects` accept `a` against `b`?
+fn unifies(a: String, b: String) -> Bool {
+  match unify_effects(ea = Some(a), eb = Some(b), s = SubstEmpty) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// `row_item_of_label`'s reading, spelled for comparison.
+fn shown(_ item: RowItem) -> String {
+  match item {
+    RowEffect(name, args) => if Array::length(args) == 0 {
+      "effect " + name
+    } else {
+      "effect " + name + " <" + String::join(args, sep = "|") + ">"
+    },
+    RowInst(_) => "inst",
+    RowProvenance(label) => "provenance " + label
+  }
+}
+
+test "a label reads as one row item" {
+  inspect(shown(row_item_of_label("IO")), content = "effect IO")
+  inspect(shown(row_item_of_label("Box[Int]")), content = "effect Box <Int>")
+  inspect(shown(row_item_of_label("Pair[Int, Array[ String ]]")), content = "effect Pair <Int|Array[String]>")
+  inspect(shown(row_item_of_label("Box[Int]::Get")), content = "effect Box[Int]::Get")
+  inspect(shown(row_item_of_label("#einst:Box:17")), content = "inst")
+  inspect(shown(row_item_of_label("#region_4")), content = "provenance #region_4")
+  let items: Array[String] = []
+  for item in parse_row_items(Some("IO, Exception[(Int, Int) -> Int]")) {
+    Array::push(items, value = shown(item))
+  }
+  inspect(String::join(items, sep = "; "), content = "effect IO; effect Exception <(Int,Int)->Int>")
+}
+
+test "closed builtin arguments that differ are different rows" {
+  assert(!same(a = "Box[Int]", b = "Box[String]"))
+  assert(!unifies(a = "Box[Int]", b = "Box[String]"))
+  assert(!same(a = "Box[Array[Int]]", b = "Box[Array[String]]"))
+  assert(!same(a = "IO, Box[Int]", b = "Box[String], IO"))
+  assert(!same(a = "Box[Int], Box[String]", b = "Box[Int], Box[Bool]"))
+}
+
+test "closed builtin arguments that agree are the same row" {
+  assert(same(a = "Box[Int]", b = "Box[Int]"))
+  assert(unifies(a = "Box[Int]", b = "Box[Int]"))
+  assert(same(a = "Box[Array[ Int ]], IO", b = "IO, Box[Array[Int]]"))
+  assert(same(a = "Box[Int], Box[String]", b = "Box[String], Box[Int]"))
+}
+
+test "a bare, formal or unreadable argument still compares by name" {
+  assert(same(a = "Box", b = "Box[Int]"))
+  assert(same(a = "Box[T]", b = "Box[Int]"))
+  assert(same(a = "Box[Pt]", b = "Box[Qt]"))
+  assert(same(a = "Box[t3]", b = "Box[String]"))
+  assert(unifies(a = "Box[T]", b = "Box[String]"))
+  assert(!same(a = "Box[Int]", b = "Fs"))
+}

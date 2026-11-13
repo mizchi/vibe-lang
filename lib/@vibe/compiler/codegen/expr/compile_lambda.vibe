@@ -83,6 +83,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_load,
   emit_i64_store,
   emit_rc_dup_guarded,
+  emit_rc_path_drop,
   emit_rc_word_inc_saturating,
   emit_str_ref,
   expr_tag,
@@ -1486,8 +1487,9 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     ()
   }
   // A parameter consumed on some paths only (`pe_dup_merge`): its dups were
-  // taken above, so the epilogue releases one on a path that ran none of its
-  // marked consumes, as linked_compile's function epilogue does.
+  // taken above, so the epilogue releases the ones a path did not spend --
+  // its rows less the marked consumes it ran -- as linked_compile's function
+  // epilogue does.
   let lam_ppd_params = array_empty()
   let lam_ppd_flags = array_empty()
   let mut lam_body_nl = lam_nl
@@ -1527,18 +1529,10 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     }
     let mut ppk = 0
     while ppk < Array::length(lam_ppd_params) {
-      emit_local_get(buf = lam_buf, idx = Array::get(lam_ppd_flags, at = ppk))
-      emit_i64_eqz(lam_buf)
-      emit_if_void(lam_buf)
-      // One plan row per reference the path still holds (#1980).
+      // One plan row per reference the parameter's marks track, less the
+      // marks this path ran (#1980).
       let (ppkn, _) = Array::get(norm_params, at = Array::get(lam_ppd_params, at = ppk))
-      let mut pdk = array_count_str(arr = lam_path_drops, s = ppkn)
-      while pdk > 0 {
-        emit_local_get(buf = lam_buf, idx = Array::get(lam_ppd_params, at = ppk))
-        emit_call(buf = lam_buf, func_idx = ctx.rc_drop_func_idx)
-        pdk = pdk - 1
-      }
-      emit_end(lam_buf)
+      emit_rc_path_drop(buf = lam_buf, flag = Array::get(lam_ppd_flags, at = ppk), local_idx = Array::get(lam_ppd_params, at = ppk), count = array_count_str(arr = lam_path_drops, s = ppkn), drop_fn_idx = ctx.rc_drop_func_idx)
       ppk = ppk + 1
     }
   }

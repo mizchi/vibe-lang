@@ -53,10 +53,12 @@ export enum PerceusActionKind {
   // back, guarded at run time by a per-binding flag local, and
   // `PaConsumeMark(name)` -- one per occurrence that spends the binding's
   // initial reference, keyed by the occurrence's source offset in
-  // `use_offset` -- is where codegen sets the flag. Flag set: the reference
-  // moved out on this path, skip the drop; flag clear: this path still holds
-  // it, drop it. The bump and wasm-gc lanes ignore both kinds, so the pair
-  // degrades to today's leak-direction behavior.
+  // `use_offset` -- is where codegen counts one in the flag. Nonzero: the
+  // reference moved out on this path, skip the drop; zero: this path still
+  // holds it, drop it. A `pe_dup_merge` binding marks every occurrence a dup
+  // was planned for and takes one `PaPathDrop` row per dup row, and its drop
+  // releases the rows less the count. The bump and wasm-gc lanes ignore both
+  // kinds, so the pair degrades to today's leak-direction behavior.
   PaPathDrop;
   PaConsumeMark;
   // #2837 truncate reclamation (see `plan_truncate_release`).
@@ -203,9 +205,9 @@ export struct PCtx {
   // Branch-dependent dups of a plain `let` (`pe_dup_merge`). Codegen takes
   // every dup the plan budgets for one at the binding's declaration site, on
   // every path. `dmark_*` are the occurrences those dups were planned for
-  // (id, offset, name, and whether a merge already dropped its row);
-  // `drm_*` the rows a merge found redundant; `dsplit_*` the occurrences that
-  // become PaConsumeMark rows.
+  // (id, offset, name, and whether a merge already dropped its row) -- every
+  // one of them becomes a PaConsumeMark row when the binding takes a path
+  // drop; `drm_*` the rows a merge found redundant.
   // Each binding's name, by id (`pe_declare`). Codegen keys a path drop by
   // NAME, so a mark may only be emitted for a name no other binding has.
   mut decl_names: Array[String];
@@ -216,17 +218,8 @@ export struct PCtx {
   mut dmark_offs: Array[Int];
   mut dmark_names: Array[String];
   mut dmark_dead: Array[Bool];
-  mut dmark_marked: Array[Bool];
   mut drm_ids: Array[Int];
   mut drm_offs: Array[Int];
-  mut dsplit_ids: Array[Int];
-  mut dsplit_offs: Array[Int];
-  mut dsplit_names: Array[String];
-  // Per marking merge, the binding id and how many references a path that
-  // ran none of its marks is sure to hold beyond what the path consumes
-  // there (`pe_dup_merge`); a binding's path drop releases the least of them.
-  mut dspare_ids: Array[Int];
-  mut dspare_counts: Array[Int];
   // #3141: per binding id, how many of the references the binding holds the
   // walk has consumed so far -- one per owning occurrence (a dup'd one
   // consumes its dup, the last one the initial reference) and one per
@@ -246,6 +239,9 @@ export struct PCtx {
   mut exit_rems: Array[Int];
   mut exit_cons: Array[Int];
   mut exit_names: Array[String];
+  // #1980: per candidate row, whether codegen may release it by the count of
+  // consume marks the path ran (`pe_exit`, `pe_emit_exit_rows`).
+  mut exit_counted: Array[Bool];
   mut actions: Array[PerceusAction]
 }
 
@@ -336,11 +332,23 @@ export let pf_param: Int = 512
 
 // An early exit and `pe_dup_merge`. PF_DMARK_SEEN: the walk has recorded an
 // occurrence a dup of this binding was planned for (`pe_note_dup_occurrence`).
-// PF_EXIT_LATE: an exit row for it was taken after such an occurrence, so a
-// path reaching that exit may have run a consume mark (`pe_dsplit_ok`).
+// PF_EXIT_LATE: an exit row for it was taken after such an occurrence, and
+// the path reaching that exit may have consumed it other than through a
+// consume mark (`pe_dsplit_ok`). PF_CONS_UNMARKED: the walk has seen such a
+// consume -- an owning occurrence that is not a recorded dup occurrence
+// (the last use, a capture, a loop-carried one) or a transfer into an alias.
 let pf_dmark_seen: Int = 1024
 
 let pf_exit_late: Int = 2048
+
+let pf_cons_unmarked: Int = 4096
+
+/// #1980: binding `id` was consumed by something other than a recorded dup
+/// occurrence, so a consume mark count cannot say what a path reaching a
+/// later exit holds (`pe_exit`).
+export fn pe_note_unmarked_consume(ctx: PCtx, id: Int) -> Unit {
+  pe_flag_or(ctx = ctx, id = id, bit = pf_cons_unmarked)
+}
 
 /// Is `id` a binding whose planned dups codegen takes up front, on every path
 /// -- a plain `let`, or a parameter?
@@ -467,7 +475,6 @@ export fn pe_note_dup_occurrence(ctx: PCtx, id: Int, name: String, use_offset: I
     Array::push(ctx.dmark_offs, value = use_offset)
     Array::push(ctx.dmark_names, value = name)
     Array::push(ctx.dmark_dead, value = false)
-    Array::push(ctx.dmark_marked, value = false)
   } else {
     ()
   }
@@ -488,21 +495,6 @@ fn pe_dmark_live(ctx: PCtx, id: Int, from: Int, to: Int) -> Int {
   n
 }
 
-/// Does `dmark_*[from, to)` hold a marked occurrence of binding `id`?
-fn pe_dmark_any_marked(ctx: PCtx, id: Int, from: Int, to: Int) -> Bool {
-  let mut found = false
-  let mut i = from
-  while !found && i < to {
-    if Array::get(ctx.dmark_ids, at = i) == id && Array::get(ctx.dmark_marked, at = i) {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
 /// The arms of a branch -- an `if`'s two, a `match`'s -- walked the recorded
 /// occurrences `dmark_*[bounds[a], bounds[a + 1])`, and every arm left plain
 /// `let` `id` with uses still owed (no arm took its initial reference). Each
@@ -512,35 +504,24 @@ fn pe_dmark_any_marked(ctx: PCtx, id: Int, from: Int, to: Int) -> Bool {
 /// held two dups for one consume and leaked one either way, and with no
 /// `else` consume it leaked one whenever `c` was false.
 ///
-/// With `live[a]` the arm's live occurrences of `id` and `M` their maximum:
+/// With `live[a]` the arm's live occurrences of `id` and `M` their maximum,
+/// every arm but one maximal arm gives up its live occurrences' rows, so the
+/// budget is `M` (`drm_*`, applied by `pe_apply_dup_splits`). A path through
+/// any arm consumes at most its own arm's occurrences, which is at most `M`,
+/// whether or not their rows survived: every occurrence moves one of the
+/// references taken at the declaration.
 ///
-/// - every arm but one maximal arm gives up its live occurrences' rows, so
-///   the budget is `M` (`drm_*`, applied by `pe_apply_dup_splits`);
-/// - when some arm has fewer than `M`, or an arm already holds a mark from an
-///   inner merge, every occurrence in a maximal arm -- including ones an inner
-///   merge already counted out -- becomes a consume mark, and the guarded
-///   path drop releases `M - S` references on a path that ran none of them,
-///   `S` the most occurrences a smaller arm has (0 when every arm is
-///   maximal). The count is recorded per merge (`dspare_*`), and a binding's
-///   drop releases the least any of its merges recorded.
-///
-/// Neither can release a reference a path still needs. Removing rows leaves
-/// `M` for a path through any arm, which consumes at most its own arm's
-/// occurrences and the rows of any it did not count. A path that ran no mark
-/// went through a smaller arm, consuming at most `S` here, or through a
-/// maximal arm without reaching an occurrence, consuming none: either way it
-/// holds `M - S` references this merge budgeted and it did not spend. Every
-/// other merge or occurrence leaves a path at least the references it spent,
-/// and a merge enclosing a marking one marks too (below), so the outermost
-/// marking merge is on every path to the scope end and the least count over
-/// the binding's merges is held on every path that ran no mark. The
-/// inner-mark rule is what keeps that true across nesting: `if a { keep(v) }
-/// else if b { keep(v) }` is symmetric at the outer merge, which drops the
-/// inner arm's row, so the outer `then` path -- consuming its whole budget --
-/// must run a mark of its own, or the inner merge's path drop fires on it. A
-/// path that runs no mark through a smaller arm with fewer than `S`
-/// occurrences -- the `0` arm of a `match` whose arms take 2, 1 and 0 --
-/// still leaks the difference.
+/// When some arm has fewer than `M`, a path can end the binding's scope
+/// holding references nothing will consume, and the binding takes a path drop
+/// (`pf_dsplit`). `pe_emit_path_release` then marks EVERY recorded occurrence
+/// of it -- in this merge's arms, in other merges, and outside any -- and
+/// gives it one path-drop row per row left in its budget: the flag counts the
+/// marks a path ran, which is the references it consumed, and the drop
+/// releases the rest. That is exact on every path, so it needs no per-merge
+/// bound: `match` arms consuming 2, 1 and 0, and two `if`s that each consume
+/// on one arm, release what each path still holds. A flag that only recorded
+/// whether any mark ran could not: it would release a fixed number on every
+/// path that ran none, and nothing on one that ran any.
 export fn pe_dup_merge(ctx: PCtx, id: Int, bounds: Array[Int]) -> Unit {
   let k = Array::length(bounds) - 1
   if Array::get(ctx.view_call_let, at = id) || Array::get(ctx.borrowed_view, at = id) {
@@ -566,47 +547,7 @@ export fn pe_dup_merge(ctx: PCtx, id: Int, bounds: Array[Int]) -> Unit {
       a = a + 1
     }
     if mx > 0 {
-      // Marks first: they include the occurrences about to be counted out.
-      // An arm already holding a mark (an inner merge's) needs the same of
-      // every maximal arm: removing rows below leaves a path through another
-      // maximal arm with no reference to spare, so it must stand the drop
-      // down too. A mark only ever withholds the drop -- an extra one leaks,
-      // a missing one releases a reference still held.
-      if mn < mx || pe_dmark_any_marked(ctx = ctx, id = id, from = Array::get(bounds, at = 0), to = Array::get(bounds, at = k)) {
-        // `below`: the most occurrences a smaller arm has. A path that runs
-        // no mark here took a smaller arm, consuming at most that many, or a
-        // maximal arm without reaching an occurrence, consuming none.
-        let mut below = 0
-        let mut ma = 0
-        while ma < k {
-          let lo = Array::get(bounds, at = ma)
-          let hi = Array::get(bounds, at = ma + 1)
-          let ml = pe_dmark_live(ctx = ctx, id = id, from = lo, to = hi)
-          if ml < mx && ml > below {
-            below = ml
-          } else {
-            ()
-          }
-          if ml == mx {
-            let mut i = lo
-            while i < hi {
-              if Array::get(ctx.dmark_ids, at = i) == id && !Array::get(ctx.dmark_marked, at = i) {
-                Array::set(ctx.dmark_marked, at = i, value = true)
-                Array::push(ctx.dsplit_ids, value = id)
-                Array::push(ctx.dsplit_offs, value = Array::get(ctx.dmark_offs, at = i))
-                Array::push(ctx.dsplit_names, value = Array::get(ctx.dmark_names, at = i))
-              } else {
-                ()
-              }
-              i = i + 1
-            }
-          } else {
-            ()
-          }
-          ma = ma + 1
-        }
-        Array::push(ctx.dspare_ids, value = id)
-        Array::push(ctx.dspare_counts, value = mx - below)
+      if mn < mx {
         pe_flag_or(ctx = ctx, id = id, bit = pf_dsplit)
       } else {
         ()
@@ -676,7 +617,8 @@ export fn pe_dup_merge_arms(ctx: PCtx, n: Int, bounds: Array[Int], owed: (Int) -
 /// May binding `id`'s `pe_dup_merge` decisions be applied? Not when any merge
 /// declined it, when the #2389 split already guards it (one flag cannot serve
 /// both), or when it is a `let` an early exit releases after an occurrence
-/// its dups were planned for (`pf_exit_late`).
+/// its dups were planned for and after a consume no mark counts
+/// (`pf_exit_late`).
 ///
 /// An exit row is resolved after the redundant rows are dropped
 /// (`pe_emit_exit_rows` reads the reduced budget `B`), and its count is at
@@ -688,14 +630,18 @@ export fn pe_dup_merge_arms(ctx: PCtx, n: Int, bounds: Array[Int], owed: (Int) -
 /// whatever exits its body has. Where a path consumed less than `cons`, the
 /// exit leaks the difference, as the declined plan did.
 ///
-/// A `let`'s exit release is guarded on its path flag as well, so on a path
-/// that ran a consume mark it releases nothing, where the declined plan
-/// released the row's count. An exit taken before every occurrence the dups
-/// were planned for is reached by no such path: every mark is one of those
-/// occurrences, and none sits in a loop the binding is declared outside of.
-/// Only an exit after one declines the merge. The guard-clause shape `if bad
-/// { return d }` ahead of a branch that consumes the binding used to decline
-/// it, leaking one dup per call that skipped the consume (#1980).
+/// A `let`'s exit release is guarded on its path flag as well. An exit taken
+/// before every occurrence the dups were planned for is reached by no path
+/// that ran a consume mark: every mark is one of those occurrences, and none
+/// sits in a loop the binding is declared outside of. So the guard-clause
+/// shape `if bad { return d }` ahead of a branch that consumes the binding
+/// merges (#1980). An exit after such an occurrence merges too when every
+/// consume the walk saw before it was a mark (`pe_exit`): the flag then
+/// counts what the path consumed, and the exit's counted row releases the
+/// initial reference and every dup less that count, exactly what the path
+/// holds (`pe_emit_exit_rows`). Only an exit after some other consume -- the
+/// last use, a capture, an alias transfer -- or one inside a loop the binding
+/// is declared outside of declines the merge.
 export fn pe_dsplit_ok(ctx: PCtx, id: Int) -> Bool {
   !pe_flag_has(ctx = ctx, id = id, bit = pf_dsplit_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_split) && (pe_flag_has(ctx = ctx, id = id, bit = pf_param) || !pe_flag_has(ctx = ctx, id = id, bit = pf_exit_late))
 }
@@ -1183,11 +1129,20 @@ export fn pe_exit(ctx: PCtx, scope: PScope, kind: Int, floor: Int, operand: Expr
           // #3175: a split binding (see `pe_emit_exit_rows`) is a candidate
           // with nothing remaining, too.
           if id >= floor && id < Array::length(ctx.remaining) && pe_flag_has(ctx = ctx, id = id, bit = pf_exit_owner) && (Array::get(ctx.remaining, at = id) > 0 || pe_flag_has(ctx = ctx, id = id, bit = pf_split)) && !Array::get(ctx.scalar, at = id) && !Array::get(ctx.view_call_let, at = id) {
-            if pe_flag_has(ctx = ctx, id = id, bit = pf_dmark_seen) {
+            // #1980: past a recorded dup occurrence, a `let`'s exit can
+            // still release exactly what the path holds -- its initial
+            // reference and every dup, less the consume marks the path ran
+            // -- when nothing else consumed it on the way: no unmarked
+            // consume was walked, and the exit is not inside a loop the
+            // binding is declared outside of (a later iteration's walk-later
+            // occurrence runs first). Otherwise it declines the merge.
+            let counted = pe_flag_has(ctx = ctx, id = id, bit = pf_dmark_seen) && pe_flag_has(ctx = ctx, id = id, bit = pf_let) && !pe_flag_has(ctx = ctx, id = id, bit = pf_cons_unmarked) && id >= ctx.loop_floor
+            if pe_flag_has(ctx = ctx, id = id, bit = pf_dmark_seen) && !counted {
               pe_flag_or(ctx = ctx, id = id, bit = pf_exit_late)
             } else {
               ()
             }
+            Array::push(ctx.exit_counted, value = counted)
             Array::push(ctx.exit_ids, value = id)
             Array::push(ctx.exit_ords, value = ord)
             Array::push(ctx.exit_rems, value = Array::get(ctx.remaining, at = id))
@@ -1254,15 +1209,25 @@ export fn pe_emit_exit_rows(_ ctx: PCtx) -> Unit {
       // end (`pf_used_after`), so an exit in between leaves it holding exactly
       // what that drop releases. The row says so with a count of -1: release
       // once, under the same path flag, which codegen requires.
+      //
+      // #1980: a `let` with a counted path flag, at an exit `pe_exit` found
+      // nothing but its consume marks could have consumed it before, holds
+      // its initial reference and every dup less the marks the path ran. A
+      // count of `-k` says so: release `k` less the flag's count, under the
+      // flag, and nothing without one (codegen). `-1` is the split row's
+      // case of the same rule.
       let path_row = rem == 0 && pe_path_dropped(ctx = ctx, id = id)
+      let counted_row = Array::get(ctx.exit_counted, at = ei) && id < Array::length(dups) && pe_dsplit_marks_ok(ctx = ctx, id = id)
       let count = if path_row {
         0 - 1
+      } else if counted_row {
+        0 - (1 + Array::get(dups, at = id))
       } else if held < rem {
         held
       } else {
         rem
       }
-      if count > 0 || path_row {
+      if count > 0 || path_row || counted_row {
         Array::push(ctx.actions, value = PerceusAction::{
           kind: PaExitDrop,
           name: Array::get(ctx.exit_names, at = ei),

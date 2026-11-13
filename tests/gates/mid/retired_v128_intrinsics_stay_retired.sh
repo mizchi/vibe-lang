@@ -520,12 +520,17 @@ echo "[compiler-gate] RC parameter-branch, field-arm and truncate-tally guard ok
 # `if c { sink(v) }` kept the consume's dup on every call that took neither
 # (pe_dsplit_ok). An exit row reads the merged budget and releases what the
 # path that consumed the most still holds; a parameter's exit release reads
-# no path flag, and a `let`'s exit before every consume runs no mark. The
-# fixture measured 4,905,100 B at N=20000 before and 1,652 B after; the bound
-# is 4,000. Its controls keep the consumed values past the call -- behind the
-# guard, in the arm the exit leaves from, and with the exit after the consume
-# -- so the shadow run is what proves no exit or path drop released a value
-# still held.
+# no path flag, and a `let`'s exit before every consume runs no mark. A
+# `let`'s exit after a consume merges too when only consume marks consumed
+# it on the way: the path flag counts them, and the exit's counted row
+# releases the initial reference and every dup less that count. The fixture
+# measured 4,905,100 B at N=20000 before the first change; with the
+# exit-after shapes added it measured 5,752,276 B before the counted exit row
+# and 2,620 B after. The bound is 4,000. Its controls keep the consumed
+# values past the call -- behind the guard, in the arm the exit leaves from,
+# with the exit after the consume and between two consuming merges -- so the
+# shadow run is what proves no exit or path drop released a value still
+# held.
 echo "[compiler-gate] 40e8/40 RC branch-dup early-exit guard"
 gate_workdir bxdir "_build/_gate_rc_branch_dup_exit"
 for bx_mode in 1 shadow; do
@@ -549,20 +554,23 @@ if [ "$bx_result" != "0" ]; then
   echo "[compiler-gate] FAIL: rc_branch_dup_exit wrong result $bx_result (want 0)" >&2; exit 1
 fi
 if [ "$bx_used" -ge 4000 ]; then
-  echo "[compiler-gate] FAIL: rc_branch_dup_exit heap_used=$bx_used >= 4000 (an early exit declines a branch-dup merge, so the consume's dup is held on the paths that skip it; measured 4905100 at N=20000 when it did)" >&2; exit 1
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit heap_used=$bx_used >= 4000 (an early exit declines a branch-dup merge, so the consume's dup is held on the paths that skip it; measured 4905100 at N=20000 when every exit did, and 5752276 when an exit after a consume did)" >&2; exit 1
 fi
 rm -rf "$bxdir"
 echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
 
-# 40e9. #1980: a path that skips two or more of a branch's consumes releases
-# every dup it holds. pe_dup_merge's guarded path drop released one
-# reference, so `if c { sink(v) + sink(v) } else { 0 }` kept a dup on every
-# call that took the `else`. It now releases `M - S` (one PaPathDrop row
-# each): the larger arm's consumes less the most a smaller arm has, the
-# least over the binding's merges. The fixture measured 6,162,004 B at
-# N=20000 before; the bound is 4,000. Its controls keep the consumed values
-# past the call, so the shadow run is what proves no path drop released a
-# value still held, and the answer is checked on bump, rc, shadow and gc.
+# 40e9. #1980: a path drop releases every dup the path still holds.
+# pe_dup_merge's guarded path drop released one reference, so `if c {
+# sink(v) + sink(v) } else { 0 }` kept a dup on every call that took the
+# `else`; then `M - S` on any path that ran no mark, which still leaked on
+# `match` arms consuming 2, 1 and 0 and on two merges in sequence. Every
+# occurrence a dup was planned for is a mark now, the path flag counts them,
+# and the drop releases its rows less that count. The fixture measured
+# 6,162,004 B at N=20000 with one release, and its later shapes leaked
+# 586,716 B to 1,466,628 B each under `M - S`; the bound is 4,000. Its
+# controls keep the consumed values past the call, so the shadow run is what
+# proves no path drop released a value still held, and the answer is checked
+# on bump, rc, shadow and gc.
 echo "[compiler-gate] 40e9/40 RC branch-dup short-by-two guard"
 gate_workdir sbdir "_build/_gate_rc_branch_dup_short_by_two"
 for sb_lane in bump rc shadow gc; do
@@ -577,7 +585,7 @@ for sb_lane in bump rc shadow gc; do
       echo "[compiler-gate] FAIL: could not measure rc_branch_dup_short_by_two heap ($sb_json)" >&2; exit 1
     fi
     if [ "$sb_used" -ge 4000 ]; then
-      echo "[compiler-gate] FAIL: rc_branch_dup_short_by_two heap_used=$sb_used >= 4000 (a branch-dup path drop releases fewer references than the path holds; measured 6162004 at N=20000 when it released one)" >&2; exit 1
+      echo "[compiler-gate] FAIL: rc_branch_dup_short_by_two heap_used=$sb_used >= 4000 (a branch-dup path drop releases fewer references than the path holds; measured 6162004 at N=20000 when it released one, and 586716-1466628 per shape when it released M - S on an unmarked path)" >&2; exit 1
     fi
   fi
 done

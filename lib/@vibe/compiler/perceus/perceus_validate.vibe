@@ -18,8 +18,9 @@
 //     the function entry, once per row, on every path;
 //   - the scope-end drop releases one reference when any `PaDrop` row names
 //     the binding (a parameter's only from the plan's parameter suffix);
-//   - each `PaPathDrop` row releases one more on a path that reached no
-//     `PaConsumeMark` occurrence;
+//   - the `PaPathDrop` rows release one reference each, less the
+//     `PaConsumeMark` occurrences the path reached (codegen counts them in
+//     the binding's path flag);
 //   - `let a = x` retains `x` when a `PaAliasDup(a)` row exists, does
 //     nothing when `a` is never mentioned and has no drop (the dead-alias
 //     elision), and transfers `x`'s reference into `a` otherwise.
@@ -50,9 +51,10 @@
 // innermost `let`), the test codegen applies before it trusts an exit's
 // rows. A `throw` outside every `handle` body leaves like a `return`.
 // A path that leaves the scope that way releases its consuming
-// occurrences plus the `PaExitDrop` count for it (a guarded `-1` row: once,
-// for a plain `let` with a path drop, when no consume mark ran; a borrowed
-// parameter: one fewer, as codegen gives it), and not the scope-end drops.
+// occurrences plus the `PaExitDrop` count for it (a counted `-k` row: `k`
+// less the consume marks the path ran, for a plain `let` with a path drop;
+// a borrowed parameter: one fewer, as codegen gives it), and not the
+// scope-end drops.
 // Codegen may keep a binding the exit operand reads through
 // (`rc_exit_operand_ok`), which only releases less than the plan says, so
 // a balanced exit cannot hide an over-release. An exit numbered apart from
@@ -122,17 +124,17 @@ import ./perceus_pctx.vibe {
 //# Path outcomes
 
 /// One way through a binding's scope: how many consuming occurrences of the
-/// binding it reaches, whether one of them is a planned consume mark, how it
+/// binding it reaches, how many of those are planned consume marks, how it
 /// left the innermost loop (`brk` 0 not at all, 1 `break`, 2 `continue` --
 /// the rest of the iteration does not run -- and 3 `return`, which leaves
 /// the function), how many references a store into a loop-result slot gave
 /// the binding (`acq`), what the early exit it left the binding's scope by
 /// releases of it (`xr`, the exit's `PaExitDrop` count, and `xg`, the row is
-/// the guarded `-1` one), and the branch choices that lead there
+/// a counted `-xr` one), and the branch choices that lead there
 /// (`if1:then,loop1:twice`; empty when no branch decided anything).
 struct RvOut {
   c: Int;
-  marked: Bool;
+  marked: Int;
   brk: Int;
   acq: Int;
   xr: Int;
@@ -192,11 +194,11 @@ struct RvState {
   mut handle_depth: Int
 }
 
-fn rv_out(c: Int, marked: Bool, brk: Int, acq: Int, path: String) -> RvOut {
+fn rv_out(c: Int, marked: Int, brk: Int, acq: Int, path: String) -> RvOut {
   rv_out_x(c = c, marked = marked, brk = brk, acq = acq, xr = 0, xg = false, path = path)
 }
 
-fn rv_out_x(c: Int, marked: Bool, brk: Int, acq: Int, xr: Int, xg: Bool, path: String) -> RvOut {
+fn rv_out_x(c: Int, marked: Int, brk: Int, acq: Int, xr: Int, xg: Bool, path: String) -> RvOut {
   RvOut::{
     c: c,
     marked: marked,
@@ -209,7 +211,17 @@ fn rv_out_x(c: Int, marked: Bool, brk: Int, acq: Int, xr: Int, xg: Bool, path: S
 }
 
 fn rv_unit() -> Array[RvOut] {
-  [rv_out(c = 0, marked = false, brk = 0, acq = 0, path = "")]
+  [rv_out(c = 0, marked = 0, brk = 0, acq = 0, path = "")]
+}
+
+/// 1 when the occurrence at `off` is a planned consume mark: codegen counts
+/// each one the path runs in the binding's flag.
+fn rv_mark(st: RvState, off: Int) -> Int {
+  if rv_has_int(xs = st.marks, v = off) {
+    1
+  } else {
+    0
+  }
 }
 
 fn rv_has_int(xs: Array[Int], v: Int) -> Bool {
@@ -276,7 +288,7 @@ fn rv_seq(a: Array[RvOut], b: Array[RvOut]) -> Array[RvOut] {
       let mut j = 0
       while j < Array::length(b) {
         let ob = Array::get(b, at = j)
-        rv_add(outs = out, o = rv_out_x(c = oa.c + ob.c, marked = oa.marked || ob.marked, brk = ob.brk, acq = oa.acq + ob.acq, xr = oa.xr + ob.xr, xg = oa.xg || ob.xg, path = rv_join(a = oa.path, b = ob.path)))
+        rv_add(outs = out, o = rv_out_x(c = oa.c + ob.c, marked = oa.marked + ob.marked, brk = ob.brk, acq = oa.acq + ob.acq, xr = oa.xr + ob.xr, xg = oa.xg || ob.xg, path = rv_join(a = oa.path, b = ob.path)))
         j = j + 1
       }
     }
@@ -485,7 +497,7 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
         // retains it and releases the iterable after the loop, or leaves both
         // undone; either way the binding's own reference is untouched.
         [
-          rv_out(c = 0, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+          rv_out(c = 0, marked = rv_mark(st = st, off = off), brk = 0, acq = 0, path = "")
         ]
       } else {
         if rv_carried(st) {
@@ -495,7 +507,7 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
           ()
         }
         [
-          rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+          rv_out(c = 1, marked = rv_mark(st = st, off = off), brk = 0, acq = 0, path = "")
         ]
       }
     } else {
@@ -791,7 +803,7 @@ fn rv_number_exit(st: RvState, kind: Int, operand: Expr) -> Int {
   ord
 }
 
-/// `x`'s `PaExitDrop` count at exit `ord` (-1: the guarded row); 0 when the
+/// `x`'s `PaExitDrop` count at exit `ord` (`-k`: a counted row); 0 when the
 /// exit has no row for it.
 fn rv_exit_count(st: RvState, ord: Int) -> Int {
   let mut out = 0
@@ -825,13 +837,13 @@ fn rv_exit(st: RvState, kind: Int, operand: Expr, brk: Int) -> Array[RvOut] {
     let xr = if n > 0 {
       n
     } else {
-      0
+      0 - n
     }
     [
-      rv_out_x(c = 0, marked = false, brk = brk, acq = 0, xr = xr, xg = n < 0, path = "")
+      rv_out_x(c = 0, marked = 0, brk = brk, acq = 0, xr = xr, xg = n < 0, path = "")
     ]
   } else {
-    [rv_out(c = 0, marked = false, brk = brk, acq = 0, path = "")]
+    [rv_out(c = 0, marked = 0, brk = brk, acq = 0, path = "")]
   }
 }
 
@@ -867,7 +879,7 @@ fn rv_item(st: RvState, e: Expr) -> Array[RvOut] {
       Array::push(st.cons_offs, value = off)
       st.loop_sites = st.loop_sites + 1
       [
-        rv_out(c = 0, marked = rv_has_int(xs = st.marks, v = off), brk = 0, acq = 0, path = "")
+        rv_out(c = 0, marked = rv_mark(st = st, off = off), brk = 0, acq = 0, path = "")
       ]
     } else {
       rv_walk(st = st, e = e, consume = true)
@@ -1042,7 +1054,7 @@ fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOu
         // A transfer; in a loop it runs once per iteration.
         Array::push(st.cons_offs, value = soff)
         [
-          rv_out(c = 1, marked = rv_has_int(xs = st.marks, v = soff), brk = 0, acq = 0, path = "")
+          rv_out(c = 1, marked = rv_mark(st = st, off = soff), brk = 0, acq = 0, path = "")
         ]
       }
     } else {
@@ -1093,7 +1105,7 @@ fn rv_slot_store(st: RvState, v: Expr, b: Expr, consume: Bool) -> Array[RvOut] {
   }
   let vo = rv_walk_off(st = st, e = v, consume = true)
   let stored = rv_seq(a = vo, b = [
-    rv_out(c = 0, marked = false, brk = 0, acq = 1, path = "")
+    rv_out(c = 0, marked = 0, brk = 0, acq = 1, path = "")
   ])
   rv_seq(a = stored, b = rv_walk(st = st, e = b, consume = consume))
 }
@@ -1382,11 +1394,11 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
 
 /// The ledger for one binding: on every path, the references it holds
 /// (`init` plus its dups) equal the ones the path releases (its consuming
-/// occurrences, the scope-end drop, and the path drop when no marked
-/// occurrence ran). A path that left the scope by an early exit releases
+/// occurrences, the scope-end drop, and the path drop: one per row, less the
+/// marked occurrences the path ran). A path that left the scope by an early exit releases
 /// its consuming occurrences and the exit's row instead of the scope-end
-/// drops: the count, or for the guarded `-1` row one when no marked
-/// occurrence ran -- codegen releases that one only for a `let` whose scope
+/// drops: the count, or for a counted `-k` row `k` less the marked
+/// occurrences the path ran -- codegen releases that one only for a `let` whose scope
 /// end is guarded on a path flag (`rc_exit_release`), so not for a
 /// parameter (`param`) or a binding with no path drop. A borrowed parameter
 /// releases one fewer than its row says, as codegen gives it. A loop-result slot holds what its store gave it, with
@@ -1445,21 +1457,24 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, param: Bool, 
     } else {
       init + dups
     }
-    let unguarded = if path_drop > 0 && !o.marked {
-      path_drop
+    let unguarded = if path_drop > o.marked {
+      path_drop - o.marked
     } else {
       0
     }
-    // The guarded `-1` exit row releases once, as codegen does: only a
-    // #2389 split binding gets one, and its path drop is a single row. A
-    // count of rows here would model a release codegen never emits.
-    let guarded = if o.xg && !o.marked && !param && path_drop > 0 {
-      1
-    } else {
-      0
-    }
-    let exit_release = if !borrowed {
-      o.xr + guarded
+    // A counted `-k` exit row releases `k` less the consume marks the path
+    // ran, under the path flag, as codegen does (`rc_exit_release`): a
+    // #2389 split binding's is `-1`, a #1980 merged binding's its initial
+    // reference and every dup. Without a path drop codegen has no flag and
+    // releases nothing there, and neither does a parameter's exit.
+    let exit_release = if o.xg {
+      if !param && path_drop > 0 && o.xr > o.marked {
+        o.xr - o.marked
+      } else {
+        0
+      }
+    } else if !borrowed {
+      o.xr
     } else if o.xr > 1 {
       o.xr - 1
     } else {

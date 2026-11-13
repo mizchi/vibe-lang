@@ -61,6 +61,31 @@ fn drop_first(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool) -> Arra
   out
 }
 
+/// The plan without its last row `pick` accepts.
+fn drop_last(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool) -> Array[PerceusAction] {
+  let mut last = 0 - 1
+  let mut i = 0
+  while i < Array::length(plan) {
+    if pick(Array::get(plan, at = i)) {
+      last = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let out: Array[PerceusAction] = []
+  let mut j = 0
+  while j < Array::length(plan) {
+    if j != last {
+      Array::push(out, value = Array::get(plan, at = j))
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
 /// The plan with its first row `pick` accepts written twice.
 fn twice_first(plan: Array[PerceusAction], pick: (PerceusAction) -> Bool) -> Array[PerceusAction] {
   let out: Array[PerceusAction] = []
@@ -112,6 +137,13 @@ let merge = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    
 // drop is two rows.
 let short_two = "let run: (Bool) -> Int = (c) -> {\n  let u = A([1])\n  let n = if c {\n    keep(u) + keep(u)\n  } else {\n    0\n  }\n  n + len(u)\n}"
 
+// #1980: two merges in sequence, each consuming on one arm, and `match`
+// arms consuming 2, 1 and 0. A path's flag counts the marks it ran, so its
+// path drop releases the rows it did not spend.
+let seq_two = "let run: (Bool) -> Int = (c) -> {\n  let u = A([1])\n  let n = if c {\n    keep(u)\n  } else {\n    0\n  }\n  let m = if !c {\n    keep(u)\n  } else {\n    0\n  }\n  n + m + len(u)\n}"
+
+let arms_two_one_none = "let run: (Bool) -> Int = (c) -> {\n  let u = A([1])\n  let k = if c {\n    2\n  } else {\n    1\n  }\n  let n = match k {\n    0 => keep(u) + keep(u),\n    1 => keep(u),\n    _ => 0\n  }\n  n + len(u)\n}"
+
 //# Clean plans
 
 test "two consumes of one binding take one dup" {
@@ -134,6 +166,16 @@ test "a branch-dependent dup balances both branches" {
 test "a branch two dups short releases both on the other branch" {
   assert(String::contains(plan(short_two), needle = "run u path_drop 2"))
   assert(validate(short_two) == "")
+}
+
+test "two merges in sequence release what each path did not spend" {
+  assert(String::contains(plan(seq_two), needle = "run u path_drop 2"))
+  inspect(tagged(tag = "seq", out = validate(seq_two)), content = "seq: clean")
+}
+
+test "arms of two, one and none release what each path did not spend" {
+  assert(String::contains(plan(arms_two_one_none), needle = "run u path_drop 2"))
+  inspect(tagged(tag = "arms", out = validate(arms_two_one_none)), content = "arms: clean")
 }
 
 test "an alias that transfers and one that dups both balance" {
@@ -197,12 +239,14 @@ test "one path drop row short leaks on the branch two dups short" {
 }
 
 test "a path drop row too many releases one more than held" {
+  // The drop releases its rows less the marks a path ran, so the extra row
+  // over-releases on the consuming branch as well; the first witness is it.
   let out = edited(body = short_two, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
     twice_first(plan = p, pick = (a: PerceusAction) -> Bool {
       pa_is_path_drop(a) && a.name == "u"
     })
   })
-  inspect(out, content = "run u if1:else: owned value released 1 more than held")
+  inspect(out, content = "run u if1:then: owned value released 1 more than held")
 }
 
 test "a deleted consume mark releases twice on the consuming branch" {
@@ -212,6 +256,27 @@ test "a deleted consume mark releases twice on the consuming branch" {
     })
   })
   inspect(out, content = "run d if1:then: owned value released 1 more than held")
+}
+
+test "a deleted consume mark of two in sequence releases one more than held" {
+  let out = edited(body = seq_two, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_consume_mark(a) && a.name == "u"
+    })
+  })
+  // A path through either consume alone now releases the row the deleted
+  // mark should have counted.
+  assert(String::contains(out, needle = ": owned value released 1 more than held"))
+}
+
+test "a deleted consume mark in the one-consume arm releases one more than held" {
+  // The marks are in source order, so the last is the `1` arm's.
+  let out = edited(body = arms_two_one_none, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_last(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_consume_mark(a) && a.name == "u"
+    })
+  })
+  assert(String::contains(out, needle = "match1:arm2: owned value released 1 more than held"))
 }
 
 test "a consume mark on a borrowed occurrence is structural" {
@@ -227,18 +292,19 @@ test "a borrowed parameter consumed without a dup" {
   inspect(rc_validate_source(source = src, fn_filter = "sink", checked_error_row = false), content = "")
 }
 
+// Slice 3 checks early exits. The guard's consume is a mark the path flag
+// counts (#1980): the exit's counted row releases what the returning path
+// still holds, and the fall-through's path drop the dup it did not spend.
+// This shape leaked that dup while the merge declined. More exit shapes are
+// in perceus_validate_exit_test.vibe.
+test "an early return that consumes releases the dup on the path that does not return" {
+  inspect(tagged(tag = "early return", out = validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}")), content = "early return: clean")
+}
+
 //# Known leaks
 
 test "a binding consumed on one branch and read in place on the other" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  if c {\n    keep(A(t))\n  } else {\n    Array::get(t, at = 0)\n  }\n}"), content = "run t if1:else: owned value not consumed")
-}
-
-// Slice 3 checks early exits: the plan takes a dup at the declaration for
-// the guard's consume and releases it at the exit, so the path that never
-// reaches the exit keeps it (112 B per call, measured). More exit shapes are
-// in perceus_validate_exit_test.vibe.
-test "an early return that consumes leaks the dup on the path that does not return" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d if1:else: owned value not consumed")
 }
 
 //# Not checked

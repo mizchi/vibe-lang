@@ -16,6 +16,10 @@ import @vibe/compiler/core {
   unify
 }
 
+import @vibe/compiler/checker/resume {
+  arm_tail_all_return
+}
+
 import @vibe/compiler/checker/type_relations {
   branch_join_widens
 }
@@ -285,11 +289,12 @@ export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subs
     (subst_apply(s = s, ty = actual), s, c)
   } else {
     let tail = int32_tail(body)
+    let has_fallthrough = !arm_tail_all_return(tail)
     let mut inferred = s
     let mut next = c
     if Array::length(deferred) > 0 {
       let holes: Array[Type] = []
-      if !(tail is EReturn(_)) {
+      if has_fallthrough {
         let (ns, nc) = constrain_return_literal(e = tail, actual = actual, result = result, holes = holes, s = inferred, c = next)
         inferred = ns
         next = nc
@@ -312,27 +317,26 @@ export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subs
       ()
     }
     let s = inferred
-    let s_tail = match tail {
-      // A body that ends in `return e` was checked there.
-      EReturn(_) => s,
-      _ => {
-        let what = if returned {
-          "the value at the end of this function disagrees with its `return`: give them one type, or write the result type"
-        } else {
-          "return type mismatch"
-        }
-        let widened = match result {
-          CtVar(id) => widen_unwritten_result(id = id, anchor = subst_apply(s = s, ty = result), later = subst_apply(s = s, ty = actual), s = s),
-          _ => None
-        }
-        match widened {
-          Some(ns) => ns,
-          None => {
-            check_assignable_set_end(string_lit_end(body))
-            check_assignable(expected = subst_apply(s = s, ty = result), actual = int32_literal_adapt(e = tail, expected = result, actual = subst_apply(s = s, ty = actual), s = s, errors = errors, off = tail_expr_off(body)), s = s, errors = errors, what = what, off = tail_expr_off(body))
-          }
+    let s_tail = if has_fallthrough {
+      let what = if returned {
+        "the value at the end of this function disagrees with its `return`: give them one type, or write the result type"
+      } else {
+        "return type mismatch"
+      }
+      let widened = match result {
+        CtVar(id) => widen_unwritten_result(id = id, anchor = subst_apply(s = s, ty = result), later = subst_apply(s = s, ty = actual), s = s),
+        _ => None
+      }
+      match widened {
+        Some(ns) => ns,
+        None => {
+          check_assignable_set_end(string_lit_end(body))
+          check_assignable(expected = subst_apply(s = s, ty = result), actual = int32_literal_adapt(e = tail, expected = result, actual = subst_apply(s = s, ty = actual), s = s, errors = errors, off = tail_expr_off(body)), s = s, errors = errors, what = what, off = tail_expr_off(body))
         }
       }
+    } else {
+      // All tail paths were checked at their explicit returns.
+      s
     }
     let mut out = s_tail
     for d in deferred {

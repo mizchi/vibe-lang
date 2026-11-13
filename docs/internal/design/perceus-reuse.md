@@ -195,8 +195,8 @@ nothing.
 The planner records each occurrence that spends the binding's initial
 reference as `PaConsumeMark` (keyed by its source offset) and emits one
 `PaPathDrop` for the binding. The `let` lowering gives the drop back guarded by
-a flag local that the marked occurrences set: flag set, the reference moved
-out on this path; flag clear, this path still holds it. Both places that can
+a flag local that each marked occurrence increments: nonzero, the reference
+moved out on this path; zero, this path still holds it. Both places that can
 spend the initial reference — `pe_use` and the `ELet` alias arm — call
 `pe_note_initial_ref_spent`, so neither can go unmarked.
 
@@ -254,46 +254,48 @@ arm's live occurrences and their maximum `M`:
 
 - every arm but one maximal arm gives up its occurrences' rows (dropped by
   `pe_apply_dup_splits` before the plan is indexed), so the budget is `M`;
-- when an arm has fewer than `M`, or an arm already holds a mark from an
-  inner merge, the occurrences in the maximal arms become `PaConsumeMark`
-  rows and the binding gets a `PaPathDrop`: the guarded drop above releases
-  `M - S` references on a path that ran none of them, `S` the most
-  occurrences a smaller arm has (0 when every arm is maximal). The drop is
-  one row per reference, and a binding with several marking merges takes the
-  least count any of them gives.
+- when an arm has fewer than `M`, the binding takes a path drop. Every
+  recorded occurrence of it becomes a `PaConsumeMark` row -- in this merge,
+  in any other, and outside every merge -- and the binding gets one
+  `PaPathDrop` row per dup row left in its budget.
 
-Neither can release a reference a path still needs: a path consumes at most
-its own arm's occurrences, and one that ran no mark took a smaller arm
-(at most `S` of them) or a maximal arm without reaching one (none). A merge
-enclosing a marking merge marks too, so the outermost one is on every path
-to the scope end, and every path that ran no mark holds the least count.
-The inner-mark rule keeps that true across nesting. In `if a { keep(v) }
-else if b { keep(v) }` the outer merge is symmetric and drops the inner
-arm's row, so the outer `then` path spends its whole budget; without a mark
-of its own it ran no mark, and the inner merge's path drop released the
-reference `keep` stored (the checker's effect tables, found by the 40f2
-shadow smoke). A mark only withholds the drop, so an extra one costs a leak
-and a missing one a premature release.
+Codegen counts the marks a path runs in the binding's flag local, and the
+path drop releases its rows less that count (one `flag < k` guard per row,
+`emit_rc_path_drop`). Every recorded occurrence moves one of the references
+taken at the declaration, whether or not its row survived a merge, so the
+count is what the path consumed and the release is exactly what it still
+holds: `match` arms consuming 2, 1 and 0 release 0, 1 and 2, and two `if`s
+that each consume on one arm release 0, 1, 1 and 2. A path never consumes
+more than the budget, because a merge keeps the rows of its largest arm.
+
+A flag that only records whether any mark ran cannot do this: a fixed
+release on the paths that ran none is short on the `0` arm of the `match`
+above, and a path through one of two sequential merges ran a mark and would
+release nothing while holding the other merge's dup.
 
 A merge declines (the binding keeps today's rows) when an arm took the
 initial reference (the split above owns that), when an occurrence has no
 source offset or sits in a loop the binding is declared outside of. Its
 marks are withheld when another binding of the plan has its name: codegen
-gives a `PaPathDrop` to every `let` of the row's name. A path that runs no
-mark through an arm with fewer than `S` occurrences still leaks the
-difference: `match` arms taking 2, 1 and 0 release one on the `0` arm, which
-held two. `fixtures/rc_branch_dup_short_by_two_test.vibe` (gate row 40e9)
-bounds the shapes the count covers and runs that one under shadow.
+gives a `PaPathDrop` to every `let` of the row's name.
+`fixtures/rc_branch_dup_short_by_two_test.vibe` (gate row 40e9) bounds the
+shapes and runs controls that keep the consumed values under shadow.
 
 An early exit's row is resolved after the redundant rows are dropped, so it
 reads the merged budget `B`: it releases at most `1 + B - cons`, `cons` the
 most any path reaching the exit consumed, which no path holds less than. A
-`let`'s exit release is also guarded on its path flag, so a path that ran a
-mark releases nothing there; the whole binding declines when an exit row is
-taken after an occurrence its dups were planned for (`pf_exit_late`), where
-the declined plan released the row's count. An exit before every such
-occurrence -- the guard clause `if bad { return d }` ahead of the branch --
-is reached by no path that ran a mark, and merges.
+`let`'s exit release is also guarded on its path flag. An exit before every
+occurrence its dups were planned for -- the guard clause `if bad { return d
+}` ahead of the branch -- is reached by no path that ran a mark, and merges.
+An exit after such an occurrence merges when the walk saw nothing but marks
+consume the binding before it (no last use, capture or alias transfer --
+`pf_cons_unmarked`) and the exit is not inside a loop the binding is
+declared outside of. Its row is then counted: `-k`, `k` the initial
+reference plus every dup row, and codegen releases `k` less the flag's
+count under the flag, exactly what the path holds, or nothing where the
+binding got no flag (`rc_exit_release`). A #2389 split binding's `-1` row is
+the same rule. Any other exit after an occurrence declines the merge
+(`pf_exit_late`), and the declined plan releases the row's count.
 
 A parameter is the same case: its planned dups are taken at function entry
 (`pf_param`), so `fn f(v) { if c { keep(v) }; use(v) }` leaked one per call
