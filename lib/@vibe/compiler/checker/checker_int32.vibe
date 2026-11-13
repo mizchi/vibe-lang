@@ -37,6 +37,45 @@ export fn int32_literal_value(_ e: Expr) -> Option[Int] {
   }
 }
 
+/// Whether literal adaptation can change part of this inferred type once
+/// an expected integer width is available.
+export fn int32_literal_can_adapt(e: Expr, actual: Type) -> Bool {
+  match e {
+    EIf(_, then_e, else_e) => int32_literal_can_adapt(e = int32_tail(then_e), actual = actual) && int32_literal_can_adapt(e = int32_tail(else_e), actual = actual),
+    _ => match actual {
+      CtInt => int32_literal_value(e) is Some(_),
+      CtArray(CtInt) => match e {
+        EArray(items) => int32_array_items_are_literals(items),
+        _ => false
+      },
+      CtTuple(types) => match e {
+        ETuple(items) => if Array::length(items) == Array::length(types) {
+          let mut i = 0
+          while i < Array::length(items) {
+            if int32_literal_can_adapt(e = Array::get(items, at = i), actual = Array::get(types, at = i)) {
+              return true
+            }
+            i = i + 1
+          }
+          false
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtOption(inner) => match e {
+        ECall(EIdent(ctor, _), args, _, _) => ctor == "Some" && Array::length(args) == 1 && int32_literal_can_adapt(e = Array::get(args, at = 0), actual = inner),
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+fn int32_array_items_are_literals(_ items: Array[Expr]) -> Bool {
+  Array::length(items) > 0 && Array::all(items, f = (item) -> int32_literal_value(item) is Some(_))
+}
+
 /// #3730: the type an integer literal `e` takes where a value of type
 /// `expected` is wanted. A literal checks as `Int32` / `UInt32` where that
 /// type is expected, and is refused (naming the range) when it does not
@@ -221,24 +260,14 @@ fn int32_array_literal_fit(e: Expr, want: Type, elem: Type, actual: Type, s: Sub
     _ => false
   }
   match e {
-    EArray(items) => if actual_is_int_array && Array::length(items) > 0 {
-      let mut all = true
+    EArray(items) => if actual_is_int_array && int32_array_items_are_literals(items) {
       for it in items {
-        if int32_literal_value(it) is None {
-          all = false
+        match int32_literal_value(it) {
+          Some(n) => int32_literal_range_check(n = n, want = elem, errors = errors, off = off),
+          None => ()
         }
       }
-      if all {
-        for it in items {
-          match int32_literal_value(it) {
-            Some(n) => int32_literal_range_check(n = n, want = elem, errors = errors, off = off),
-            None => ()
-          }
-        }
-        want
-      } else {
-        actual
-      }
+      want
     } else {
       actual
     },
