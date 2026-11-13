@@ -565,3 +565,33 @@ test "two for elements of one name are each checked" {
   // shares a name with another binding.
   inspect(tagged(tag = "shared", out = validate(elem_shared)), content = "shared: clean")
 }
+
+test "a for element used repeatedly in aggregate items is checked" {
+  let body = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1])]\n  let mut k = 0\n  for x in ds {\n    let ys = [x, x]\n    let pair = (x, x)\n    k = k + Array::length(ys) + keep(pair.0) + keep(pair.1)\n  }\n  k\n}"
+  inspect(tagged(tag = "aggregate", out = validate(body)), content = "aggregate: clean")
+}
+
+test "a for element used as a constructor argument is checked" {
+  let body = "enum Box { B(D) }\nlet run: (Bool) -> Int = (c) -> {\n  let ds = [A([1])]\n  let mut k = 0\n  for x in ds {\n    let boxed = [B(x)]\n    k = k + Array::length(boxed)\n  }\n  k\n}"
+  inspect(tagged(tag = "constructor", out = validate(body)), content = "constructor: clean")
+}
+
+test "a for element stays borrowed across a nested loop" {
+  let body = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1])]\n  let mut k = 0\n  for x in ds {\n    for y in ds { k = k + keep(x) + keep(y) }\n    k = k + keep(x)\n  }\n  k\n}"
+  inspect(tagged(tag = "nested", out = validate(body)), content = "nested: clean")
+}
+
+test "a for element is balanced on continue and break paths" {
+  let body = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1])]\n  let mut k = 0\n  for x in ds {\n    if c { continue } else { () }\n    k = k + keep(x)\n    if c { break } else { () }\n    k = k + keep(x)\n  }\n  k\n}"
+  inspect(tagged(tag = "exits", out = validate(body)), content = "exits: clean")
+}
+
+test "returning a call that consumes a for element is checked" {
+  let body = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1])]\n  for x in ds {\n    if c { return keep(x) } else { () }\n    let _ = len(x)\n  }\n  0\n}"
+  inspect(tagged(tag = "return", out = validate(body)), content = "return: clean")
+}
+
+test "moving a for element into a mutable slot remains not checked" {
+  let body = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1])]\n  for x in ds {\n    let mut y = x\n    let _ = keep(y)\n  }\n  0\n}"
+  inspect(tagged(tag = "mutable", out = validate(body)), content = "mutable: run x -: not checked: loop: consumed through a branch or block value\nrun * -: not checked: 0 pattern binders, 1 let mut")
+}
