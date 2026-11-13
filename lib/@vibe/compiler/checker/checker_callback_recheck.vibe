@@ -37,7 +37,7 @@
 //# is always checked again inside a region.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, TypeDef, TypeEnv, TypeExpr, call_arg_value, call_arg_values, env_bind, env_mut_escape, subst_apply, type_to_string
+  Expr, Subst, Type, TypeDef, TypeEnv, TypeExpr, call_arg_value, call_arg_values, env_mut_escape, subst_apply, type_to_string
 }
 
 import @vibe/core {
@@ -48,14 +48,6 @@ import @vibe/compiler/checker/diagnostics {
   off_marker
 }
 
-import @vibe/compiler/checker/traits {
-  env_marker_before
-}
-
-import ./checker_builtin_arg_head_rest.vibe {
-  ascription_lambda_ann
-}
-
 import ./checker_closure_capture_row.vibe {
   tail_expr_off, type_mentions_active_region
 }
@@ -64,13 +56,16 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   env_has_active_region
 }
 
+import ./checker_merge_capture_provenance.vibe {
+  expression_aliases_outer_binding
+}
+
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture
 }
 
 import ./checker_region_retention.vibe {
   retention_active_regions,
-  retention_arg_predates,
   retention_counter_gap,
   retention_local_callback_unresolved,
   retention_local_closure,
@@ -80,10 +75,6 @@ import ./checker_region_retention.vibe {
 
 import ./checker_region_retention_types.vibe {
   retention_type_hides_region
-}
-
-import ./checker_region_retention_arms.vibe {
-  retention_assigned_values_into, retention_result_items
 }
 
 import ./checker_region_retention_summary.vibe {
@@ -110,7 +101,7 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
           let known = for pt in ptys {
             Some(subst_apply(s = s, ty = pt))
           }
-          callback_recheck(arg = Array::get(args, at = ai), param_tys = known, outer = array_empty(), grow = 0, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
+          callback_recheck(arg = Array::get(args, at = ai), param_tys = known, outer = array_empty(), env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
         },
         _ => ()
       }
@@ -126,21 +117,17 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
 /// element type without binding it, so its type variable stays open and
 /// `lambda_arg_param_write_check` cannot read it. Their parameter at `pidx`
 /// receives each element, so the callback is checked again with the element
-/// type there. The one at `pidx` is an element of `recv`, so it is checked
-/// as an alias of the regions `recv`'s location predates (#4050:
-/// `Array::map(boxes, (a) -> { Array::push(a, value = cell); 0 })` with
-/// `boxes = [outer]` stored the region value in `outer`, where
-/// `Array::get(boxes, at = 0)` is refused). A parameter before `pidx` is
-/// `Array::fold`'s accumulator: it starts as `leads` (`init`) and is then
-/// what the callback returned, so it predates what either does. The regions
-/// are those the argument's location predates (`retention_arg_predates`, the
-/// retention check's own answer), not every active region: a receiver
-/// declared inside `region r` and mapped inside a nested `region s` may hold
-/// `r`'s values. Either counts only where its type, read from the callback's
-/// `fn_ty`, can hold a region value (`callback_param_transports`): an `Int`
-/// accumulator or an `Array[Int]` element keeps nothing of the region
-/// whatever it aliases.
-export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, leads: Array[Expr], recv_ty: Type, fn_ty: Type, pidx: Int, s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
+/// type there. A parameter before `pidx` is `Array::fold`'s accumulator,
+/// which may hold a binding declared outside the region; the one at `pidx`
+/// is an element of `recv`, so when `recv` aliases a binding declared
+/// outside the region, so does it (#4050: `Array::map(boxes, (a) -> {
+/// Array::push(a, value = cell); 0 })` with `boxes = [outer]` stored the
+/// region value in `outer`, where `Array::get(boxes, at = 0)` is refused).
+/// Either counts only where its type, read from the callback's `fn_ty`, can
+/// hold a region value (`callback_param_transports`): an `Int` accumulator
+/// or an `Array[Int]` element keeps nothing of the region whatever it
+/// aliases.
+export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, recv_ty: Type, fn_ty: Type, pidx: Int, s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
   if env_has_active_region(env) {
     match subst_apply(s = s, ty = recv_ty) {
       CtArray(elem) => {
@@ -158,8 +145,8 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, leads: Array[Expr],
           })
           pi = pi + 1
         }
-        let outer: Array[Array[String]] = []
-        let mut grow = 0
+        let elem_outer = expression_aliases_outer_binding(expr = call_arg_value(recv), env = env)
+        let outer: Array[Bool] = []
         let mut oi = 0
         while oi <= pidx {
           // The type the callback gives this parameter: the element's at
@@ -171,37 +158,10 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, leads: Array[Expr],
           } else {
             None
           }
-          let transports = callback_param_transports(ty = pty, env = env, defs = defs)
-          let from = if oi == pidx {
-            Some(call_arg_value(recv))
-          } else if oi < Array::length(leads) {
-            Some(call_arg_value(Array::get(leads, at = oi)))
-          } else {
-            None
-          }
-          Array::push(outer, value = match from {
-            Some(e) => if transports {
-              // A leading argument seeds a writable accumulator.
-              callback_input_predates(arg = e, env = env, follow_bindings = oi < pidx)
-            } else {
-              array_empty()
-            },
-            // A parameter this call seeds from nothing written here may
-            // hold anything.
-            None => if transports {
-              callback_region_names(env)
-            } else {
-              array_empty()
-            }
-          })
-          if oi < pidx && transports {
-            grow = oi + 1
-          } else {
-            ()
-          }
+          Array::push(outer, value = (oi < pidx || elem_outer) && callback_param_transports(ty = pty, env = env, defs = defs))
           oi = oi + 1
         }
-        callback_recheck(arg = call_arg_value(arg), param_tys = known, outer = outer, grow = grow, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
+        callback_recheck(arg = call_arg_value(arg), param_tys = known, outer = outer, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
       },
       _ => ()
     }
@@ -212,16 +172,14 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, leads: Array[Expr],
 
 /// Check the callback `arg` again with `param_tys` (the type the call gives
 /// each parameter, where it is known) when a parameter's type there carries
-/// an active region, or a parameter may hold a binding declared before one:
-/// `outer` holds, for each parameter, the regions the location it is handed
-/// predates, and the parameters below `grow` also hold what the callback
-/// returns. A literal written at the call is read at the call; a
+/// an active region, or a parameter `outer` marks may hold a binding declared
+/// outside it. A literal written at the call is read at the call; a
 /// name a local `let` binds to a literal is read where it was written (#3360:
 /// `let stash = (c) -> { .. }; Array::map(cells, stash)`), and is identified
 /// by the closure it names, so a `let rec` callback that hands itself to a
 /// call again is re-checked once for each shape. Any other callback is read
 /// as the literal that calls it (#4049).
-fn callback_recheck(arg: Expr, param_tys: Array[Option[Type]], outer: Array[Array[String]], grow: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
+fn callback_recheck(arg: Expr, param_tys: Array[Option[Type]], outer: Array[Bool], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
   let literal = match arg {
     EFn(_, _, _, _, _, body) => Some((arg, env, callback_literal_identity(body))),
     // A local `let` closure is read where it was written. Any other name --
@@ -236,14 +194,14 @@ fn callback_recheck(arg: Expr, param_tys: Array[Option[Type]], outer: Array[Arra
   }
   match literal {
     Some((lit, scope, identity)) => match lit {
-      EFn(_, _, ps, _, _, body) => callback_recheck_literal(lit = lit, identity = identity, ps = ps, body = body, scope = scope, param_tys = param_tys, outer = outer, grow = grow, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child),
+      EFn(_, _, ps, _, _, body) => callback_recheck_literal(lit = lit, identity = identity, ps = ps, body = body, scope = scope, param_tys = param_tys, outer = outer, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child),
       _ => ()
     },
-    None => if grow > 0 || callback_any(outer) || callback_carries_region(param_tys = param_tys, env = env) {
+    None => if callback_any(outer) || callback_carries_region(param_tys = param_tys, env = env) {
       if !callback_refuse_untraced(arg = arg, env = env, errors = errors) {
         let lit = callback_calling_literal(arg = arg, arity = Array::length(param_tys))
         match lit {
-          EFn(_, _, ps, _, _, body) => callback_recheck_literal(lit = lit, identity = "", ps = ps, body = body, scope = env, param_tys = param_tys, outer = outer, grow = grow, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child),
+          EFn(_, _, ps, _, _, body) => callback_recheck_literal(lit = lit, identity = "", ps = ps, body = body, scope = env, param_tys = param_tys, outer = outer, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child),
           _ => ()
         }
       } else {
@@ -290,24 +248,21 @@ fn callback_calling_literal(arg: Expr, arity: Int) -> Expr {
 
 /// `callback_recheck` for the closure literal `lit` (parameters `ps`, body
 /// `body`), written in `scope`. `identity` names the closure ("" when it
-/// has no identity of its own). Each parameter is checked as an alias of a
-/// binding declared before the regions `outer` holds for it; one below
-/// `grow` also before those the literal's result predates
-/// (`callback_param_predates`).
+/// has no identity of its own). Each parameter `outer` marks is checked as
+/// an alias of a binding declared outside every active region.
 /// An annotated parameter is asked too: a closure bound before the region was
 /// checked where the region was not open. A write the literal's own check
 /// already refused is reported once (`callback_report`).
-fn callback_recheck_literal(lit: Expr, identity: String, ps: Array[(String, Option[TypeExpr])], body: Expr, scope: TypeEnv, param_tys: Array[Option[Type]], outer: Array[Array[String]], grow: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
+fn callback_recheck_literal(lit: Expr, identity: String, ps: Array[(String, Option[TypeExpr])], body: Expr, scope: TypeEnv, param_tys: Array[Option[Type]], outer: Array[Bool], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
   let base = c + retention_counter_gap()
   let regions = retention_active_regions(env)
   let names = for r in regions {
     let (rname, _) = r
     rname
   }
-  let predates_by = callback_param_predates(ps = ps, outer = outer, grow = grow, body = body, scope = scope)
   let overrides = array_empty()
   let shape: Array[String] = []
-  let mut carries = callback_any(predates_by)
+  let mut carries = callback_any(outer)
   let mut pi = 0
   while pi < Array::length(ps) {
     let known = if pi < Array::length(param_tys) {
@@ -330,7 +285,11 @@ fn callback_recheck_literal(lit: Expr, identity: String, ps: Array[(String, Opti
         CtVar(base + pi)
       }
     }
-    let predates = Array::get(predates_by, at = pi)
+    let predates = if pi < Array::length(outer) && Array::get(outer, at = pi) {
+      names
+    } else {
+      array_empty()
+    }
     Array::push(overrides, value = (pty, predates, "", array_empty()))
     pi = pi + 1
   }
@@ -350,9 +309,13 @@ fn callback_recheck_literal(lit: Expr, identity: String, ps: Array[(String, Opti
     } else {
       identity
     }
-    let key = String::concat("callback|", String::concat(who, String::concat("|", String::concat(String::join(shape, sep = ","), String::concat("|", String::concat(String::join(names, sep = ","), String::concat("|outer:", String::join(for o in predates_by {
-      String::join(o, sep = "+")
-    }, sep = "/"))))))))
+    let key = String::concat("callback|", String::concat(who, String::concat("|", String::concat(String::join(shape, sep = ","), String::concat("|", String::concat(String::join(names, sep = ","), String::concat("|outer:", String::join(for o in outer {
+      if o {
+        "1"
+      } else {
+        "0"
+      }
+    }, sep = ""))))))))
     let (kind, _) = retention_recheck(lit = lit, scope = scope, regions = regions, overrides = overrides, key = key, defs = defs, s = s, c = base + Array::length(ps) + 1, found = found, check_child = check_child)
     callback_report(found = found, kind = kind, regions = regions, body = body, errors = errors)
   } else {
@@ -411,230 +374,12 @@ fn callback_param_transports(ty: Option[Type], env: TypeEnv, defs: Array[TypeDef
   }
 }
 
-/// Whether any parameter's set of predated regions is non-empty.
-fn callback_any(_ sets: Array[Array[String]]) -> Bool {
+fn callback_any(_ flags: Array[Bool]) -> Bool {
   let mut any = false
-  for set in sets {
-    any = any || Array::length(set) > 0
+  for f in flags {
+    any = any || f
   }
   any
-}
-
-/// An input to an element callback may be returned by a call whose arguments
-/// do not reveal the returned storage. Preserve the conservative region set
-/// unless the location can be read from the input.
-fn callback_input_predates(arg: Expr, env: TypeEnv, follow_bindings: Bool) -> Array[String] {
-  if callback_input_location_known(arg, env = env, follow_bindings = follow_bindings) {
-    retention_arg_predates(arg = arg, env = env)
-  } else {
-    callback_region_names(env)
-  }
-}
-
-/// Preserve unknown storage through a local binding and subsequent aliases,
-/// and mark a binding whose initializer's storage is known, so that only a
-/// marked binding is known later.
-export fn callback_bind_input_storage(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr) -> TypeEnv {
-  if callback_input_location_known(val, env = def_env, follow_bindings = true) {
-    env_bind(env = env, name = callback_input_storage_known_key(name), ty = CtUnit)
-  } else {
-    env_bind(env = env, name = callback_input_storage_key(name), ty = CtUnit)
-  }
-}
-
-fn callback_input_storage_key(_ name: String) -> String {
-  String::concat("#callback_input_storage_unknown:", name)
-}
-
-fn callback_input_storage_known_key(_ name: String) -> String {
-  String::concat("#callback_input_storage_known:", name)
-}
-
-/// Whether the name a fold's accumulator is seeded from has known storage.
-/// That holds for a `let` marked known when it was bound, and for a name
-/// declared before every active region, which predates each of them anyway.
-/// Any other name is unknown: a `for` or `match` binder, a closure's
-/// parameter, or a `let mut` may hold a getter's result (Codex on #4078).
-fn callback_input_name_known(name: String, env: TypeEnv) -> Bool {
-  env_mut_escape(env = env, name = name) is None && env_marker_before(env = env, marker = callback_input_storage_key(name), name = name) is None && (env_marker_before(env = env, marker = callback_input_storage_known_key(name), name = name) is Some(_) || Array::length(retention_arg_predates(arg = EIdent(name, 0), env = env)) >= Array::length(retention_active_regions(env)))
-}
-
-fn callback_input_location_known(_ e: Expr, env: TypeEnv, follow_bindings: Bool) -> Bool {
-  match e {
-    EIdent(name, _) => if follow_bindings {
-      callback_input_name_known(name = name, env = env)
-    } else {
-      true
-    },
-    ECall(EIdent(wrapper, _), args, _, _) => if (wrapper == "__index" || wrapper == "$source_span") && Array::length(args) > 0 {
-      callback_input_location_known(Array::get(args, at = 0), env = env, follow_bindings = follow_bindings)
-    } else {
-      false
-    },
-    ECall(callee, args, _, _) => if Array::length(args) == 1 && ascription_lambda_ann(callee) is Some(_) {
-      callback_input_location_known(Array::get(args, at = 0), env = env, follow_bindings = follow_bindings)
-    } else {
-      false
-    },
-    ELet(_, _, _, _)|ELetMut(_, _, _, _)|ELetRec(_, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _)|EMatch(_, _)|ELoop(_, _)|EForIn(_, _, _, _)|EHandle(_, _) => false,
-    _ => Array::all(retention_result_items(e), f = (item) -> callback_input_location_known(item, env = env, follow_bindings = follow_bindings))
-  }
-}
-
-/// The names of the regions active in `env`.
-fn callback_region_names(_ env: TypeEnv) -> Array[String] {
-  for r in retention_active_regions(env) {
-    let (rname, _) = r
-    rname
-  }
-}
-
-/// The regions each parameter of the literal (`ps`, `body`, written in
-/// `scope`) is an alias of a binding declared before: those `outer` holds for
-/// it, and for a parameter below `grow` (a fold accumulator, which is then
-/// what the callback returned) also those the body's result predates
-/// (`callback_result_location`). Returning the accumulator adds nothing;
-/// returning anything whose location the text does not establish adds every
-/// active region.
-fn callback_param_predates(ps: Array[(String, Option[TypeExpr])], outer: Array[Array[String]], grow: Int, body: Expr, scope: TypeEnv) -> Array[Array[String]] {
-  let out: Array[Array[String]] = []
-  let mut pi = 0
-  while pi < Array::length(ps) {
-    Array::push(out, value = if pi < Array::length(outer) {
-      Array::get(outer, at = pi)
-    } else {
-      array_empty()
-    })
-    pi = pi + 1
-  }
-  if grow > 0 {
-    let returned = match callback_result_location(e = body, ps = ps, sets = out, body = body, hidden = array_empty()) {
-      Some(set) => set,
-      None => callback_region_names(scope)
-    }
-    let mut gi = 0
-    while gi < grow && gi < Array::length(out) {
-      let merged: Array[String] = []
-      for rname in Array::get(out, at = gi) {
-        Array::push(merged, value = rname)
-      }
-      for rname in returned {
-        if !callback_has(items = merged, wanted = rname) {
-          Array::push(merged, value = rname)
-        } else {
-          ()
-        }
-      }
-      Array::set(out, at = gi, value = merged)
-      gi = gi + 1
-    }
-  } else {
-    ()
-  }
-  out
-}
-
-/// Where the callback's result `e` lives, when the text establishes it: a
-/// parameter of the literal that the body neither rebinds on the way to the
-/// result (`hidden`) nor assigns answers its own predated regions (`sets`),
-/// and a fresh array, tuple or record literal the union of its items' (a
-/// scalar literal adds nothing, any other item must be established in turn,
-/// never by its type). Anything else is `None`, and the caller counts it as predating
-/// every active region: a call (`get_sink()` may return a binding declared
-/// before the region, and a callee's body is not read here), a field, a
-/// conditional, a binding the body declares, or one it captures, which it may
-/// have reassigned (Codex on #4078).
-fn callback_result_location(e: Expr, ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String]) -> Option[Array[String]] {
-  match e {
-    EIdent(n, _) => if callback_has(items = hidden, wanted = n) {
-      None
-    } else {
-      callback_param_location(name = n, ps = ps, sets = sets, body = body)
-    },
-    ESeq(_, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = hidden),
-    ELet(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x)),
-    ELetMut(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x)),
-    ELetRec(x, _, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x)),
-    EArray(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden),
-    ETuple(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden),
-    ERecord(_, fields, _) => callback_items_location(items = for f in fields {
-      f.1
-    }, ps = ps, sets = sets, body = body, hidden = hidden),
-    _ => None
-  }
-}
-
-/// The regions a fresh literal's items predate: nothing for a scalar literal
-/// written in place, an item's own location otherwise, and `None` when any
-/// item's is not known.
-fn callback_items_location(items: Array[Expr], ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String]) -> Option[Array[String]] {
-  let merged: Array[String] = []
-  let mut known = true
-  for item in items {
-    // Read from the text alone: an item's type would be resolved in the
-    // callback's definition scope, where a parameter or a body binding
-    // (`let h = ..; Holder::{ items: h.items }`) names something else.
-    let scalar = match item {
-      EInt(_) => true,
-      EFloat(_) => true,
-      EString(_, _) => true,
-      EBool(_) => true,
-      EUnit => true,
-      _ => false
-    }
-    if known && !scalar {
-      match callback_result_location(e = item, ps = ps, sets = sets, body = body, hidden = hidden) {
-        Some(set) => for rname in set {
-          if !callback_has(items = merged, wanted = rname) {
-            Array::push(merged, value = rname)
-          } else {
-            ()
-          }
-        },
-        None => known = false
-      }
-    } else {
-      ()
-    }
-  }
-  if known {
-    Some(merged)
-  } else {
-    None
-  }
-}
-
-/// The regions parameter `name` of the literal predates, unless `body`
-/// assigns it; `None` for a name that is not a parameter.
-fn callback_param_location(name: String, ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr) -> Option[Array[String]] {
-  let mut found: Option[Array[String]] = None
-  let mut pi = 0
-  while pi < Array::length(ps) && pi < Array::length(sets) {
-    let (pname, _) = Array::get(ps, at = pi)
-    if pname == name {
-      found = Some(Array::get(sets, at = pi))
-    } else {
-      ()
-    }
-    pi = pi + 1
-  }
-  let assigned: Array[Expr] = []
-  retention_assigned_values_into(e = body, name = name, out = assigned)
-  if Array::length(assigned) > 0 {
-    None
-  } else {
-    found
-  }
-}
-
-/// `items` with `name` added.
-fn callback_with(items: Array[String], name: String) -> Array[String] {
-  let out: Array[String] = []
-  for item in items {
-    Array::push(out, value = item)
-  }
-  Array::push(out, value = name)
-  out
 }
 
 fn callback_carries_region(param_tys: Array[Option[Type]], env: TypeEnv) -> Bool {
