@@ -36,6 +36,10 @@
 #      VIBE_SCHEDULER_TRACE on a compile writes no trace and fails naming
 #      VIBE_CFG=telemetry -- an empty trace would read as a run that planned
 #      nothing.
+#      Heap marks are the same shape: the emitter is absent, and
+#      VIBE_PROFILE_MEMORY_MARKS=1 on a compile fails naming VIBE_CFG=telemetry
+#      rather than printing no marks, and only after the stale-sidecar cleanup
+#      (a planted VIBE_INCREMENTAL_TELEMETRY_OUT file must be gone).
 #   3. ACCEPTANCE. The two production lanes still compile, and the default
 #      lane's output runs. Cfg, unstable authorization and generated-source
 #      trust remain per-compilation inputs to this same artifact.
@@ -56,6 +60,8 @@
 #       telemetry-enabled stage2)
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --scheduler-trace-only
 #       runs check 2b's scheduler-trace half alone (likewise)
+#   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --memory-marks-only
+#       runs check 2b's heap-mark half alone (likewise)
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -66,6 +72,7 @@ SCAN_ONLY=""
 TOOLS_ONLY=0
 TELEMETRY_ONLY=0
 SCHEDULER_TRACE_ONLY=0
+MEMORY_MARKS_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifact) ARTIFACT="$2"; shift 2 ;;
@@ -74,6 +81,7 @@ while [ "$#" -gt 0 ]; do
     --tools-only) TOOLS_ONLY=1; shift ;;
     --telemetry-only) TELEMETRY_ONLY=1; shift ;;
     --scheduler-trace-only) SCHEDULER_TRACE_ONLY=1; shift ;;
+    --memory-marks-only) MEMORY_MARKS_ONLY=1; shift ;;
     *) echo "check-compile-only-lanes: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -121,6 +129,11 @@ ABSENT_PATTERNS="$ABSENT_PATTERNS|ingestion_pipeline_telemetry_json|ingestion_pi
 # (`scheduler_trace_planned` / `_published` / `_publish`) and the
 # `scheduler_trace_refusal` stub keep other names and may remain.
 ABSENT_PATTERNS="$ABSENT_PATTERNS|scheduler_trace_project|scheduler_trace_step"
+# #2498: the heap-mark emitter (cli_adapter_cli_main_with_lanes.vibe). Only
+# the `#cfg(telemetry)` marks reach it; their no-op twins
+# (`profile_memory_mark`, `profile_memory_phase_mark`) and the
+# `profile_memory_marks_refusal` stub keep other names and may remain.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|profile_memory_mark_emit"
 
 scan_names() { # <wasm>
   local wasm="$1" listing
@@ -323,9 +336,31 @@ if [ "$TELEMETRY_ONLY" = 1 ]; then
   echo "compile-only-lanes: telemetry refusal ok"
   exit 0
 fi
+# Heap marks ride a compile too. The generation's stage2 compiles the probe
+# and prints its marks; a build without them must refuse by name, after the
+# same stale-sidecar cleanup as the scheduler trace above.
+refuse_memory_marks() {
+  local stale="$WORK/stale_incremental_telemetry.json"
+  printf 'stale sidecar from an earlier run\n' >"$stale"
+  compile_probe refuse_memory_marks VIBE_PROFILE_MEMORY_MARKS=1 VIBE_INCREMENTAL_TELEMETRY_OUT="$stale"
+  if [ -s "$PROBE_OUT" ]; then
+    fail "VIBE_PROFILE_MEMORY_MARKS=1 was ACCEPTED by $ARTIFACT (invoke $ENTRY): it compiled the probe"
+  fi
+  if grep -qF "stale sidecar from an earlier run" "$stale" 2>/dev/null; then
+    fail "VIBE_PROFILE_MEMORY_MARKS=1 was refused before the stale-sidecar cleanup by $ARTIFACT (invoke $ENTRY): the earlier run's VIBE_INCREMENTAL_TELEMETRY_OUT sidecar survived the refused invocation"
+  fi
+  grep -qF "VIBE_CFG=telemetry" <<<"$(cat "$WORK/refuse_memory_marks.log")
+$PROBE_DIAG" \
+    || fail "VIBE_PROFILE_MEMORY_MARKS=1 was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_memory_marks.log") ${PROBE_DIAG}'"
+}
 if [ "$SCHEDULER_TRACE_ONLY" = 1 ]; then
   refuse_scheduler_trace
   echo "compile-only-lanes: scheduler trace refusal ok"
+  exit 0
+fi
+if [ "$MEMORY_MARKS_ONLY" = 1 ]; then
+  refuse_memory_marks
+  echo "compile-only-lanes: heap-mark refusal ok"
   exit 0
 fi
 
@@ -338,6 +373,8 @@ refuse_telemetry
 echo "compile-only-lanes: telemetry refusal ok (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT refused, no sidecar)"
 refuse_scheduler_trace
 echo "compile-only-lanes: telemetry refusal ok (VIBE_SCHEDULER_TRACE refused, no trace)"
+refuse_memory_marks
+echo "compile-only-lanes: telemetry refusal ok (VIBE_PROFILE_MEMORY_MARKS=1 refused after the sidecar cleanup)"
 
 # 3. acceptance: the default (RC) lane and the bump lane compile; they differ;
 # the default output runs.
