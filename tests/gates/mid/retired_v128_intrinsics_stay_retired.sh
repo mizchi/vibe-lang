@@ -520,12 +520,17 @@ echo "[compiler-gate] RC parameter-branch, field-arm and truncate-tally guard ok
 # `if c { sink(v) }` kept the consume's dup on every call that took neither
 # (pe_dsplit_ok). An exit row reads the merged budget and releases what the
 # path that consumed the most still holds; a parameter's exit release reads
-# no path flag, and a `let`'s exit before every consume runs no mark. The
-# fixture measured 4,905,100 B at N=20000 before and 1,652 B after; the bound
-# is 4,000. Its controls keep the consumed values past the call -- behind the
-# guard, in the arm the exit leaves from, and with the exit after the consume
-# -- so the shadow run is what proves no exit or path drop released a value
-# still held.
+# no path flag, and a `let`'s exit before every consume runs no mark. A
+# `let`'s exit after a consume merges too when only consume marks consumed
+# it on the way: the path flag counts them, and the exit's counted row
+# releases the initial reference and every dup less that count. The fixture
+# measured 4,905,100 B at N=20000 before the first change; with the
+# exit-after shapes added it measured 5,752,276 B before the counted exit row
+# and 2,620 B after. The bound is 4,000. Its controls keep the consumed
+# values past the call -- behind the guard, in the arm the exit leaves from,
+# with the exit after the consume and between two consuming merges -- so the
+# shadow run is what proves no exit or path drop released a value still
+# held.
 echo "[compiler-gate] 40e8/40 RC branch-dup early-exit guard"
 gate_workdir bxdir "_build/_gate_rc_branch_dup_exit"
 for bx_mode in 1 shadow; do
@@ -549,7 +554,7 @@ if [ "$bx_result" != "0" ]; then
   echo "[compiler-gate] FAIL: rc_branch_dup_exit wrong result $bx_result (want 0)" >&2; exit 1
 fi
 if [ "$bx_used" -ge 4000 ]; then
-  echo "[compiler-gate] FAIL: rc_branch_dup_exit heap_used=$bx_used >= 4000 (an early exit declines a branch-dup merge, so the consume's dup is held on the paths that skip it; measured 4905100 at N=20000 when it did)" >&2; exit 1
+  echo "[compiler-gate] FAIL: rc_branch_dup_exit heap_used=$bx_used >= 4000 (an early exit declines a branch-dup merge, so the consume's dup is held on the paths that skip it; measured 4905100 at N=20000 when every exit did, and 5752276 when an exit after a consume did)" >&2; exit 1
 fi
 rm -rf "$bxdir"
 echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
