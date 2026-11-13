@@ -1,7 +1,7 @@
 // Trait bounds.
 
 import @vibe/compiler/lowering/trait_namespaces {
-  dict_param_name, expand_constructor_alias, lookup_trait_sigs, trait_operation_is_derived_binding
+  applied_formal_head, dict_param_name, lookup_trait_sigs, trait_operation_is_derived_binding
 }
 
 import @vibe/compiler/core {
@@ -175,23 +175,21 @@ export fn find_array_elem_recv_index(params: Array[(String, Option[TypeExpr])], 
 }
 
 /// Index of the first parameter whose annotation applies constructor `tp`,
-/// for example `xs: F[A]` for a kinded `F[_]` binder.
-export fn find_constructor_recv_index(params: Array[(String, Option[TypeExpr])], tp: String, stmts: Array[Stmt]) -> Int {
+/// for example `xs: F[A]` for a kinded `F[_]` binder. `tparams` are the
+/// binder's own type parameters: they shadow a top-level alias of the same
+/// name while the annotation's aliases are expanded (#4070).
+export fn find_constructor_recv_index(params: Array[(String, Option[TypeExpr])], tp: String, tparams: Array[String], stmts: Array[Stmt]) -> Int {
+  let formals = Array::concat(tparams, [tp])
   let mut i = 0
   let mut idx = -1
   while i < Array::length(params) {
     let (_, ann) = Array::get(params, at = i)
     match ann {
-      Some(raw_ann) => match expand_constructor_alias(ret = raw_ann, stmts = stmts, fuel = Array::length(stmts) + 1) {
-        TyApp(head, _) => if head == tp {
-          idx = i
-          i = Array::length(params)
-        } else {
-          i = i + 1
-        },
-        _ => {
-          i = i + 1
-        }
+      Some(raw_ann) => if applied_formal_head(ty = raw_ann, stmts = stmts, formals = formals) == tp {
+        idx = i
+        i = Array::length(params)
+      } else {
+        i = i + 1
       },
       _ => {
         i = i + 1
@@ -313,25 +311,24 @@ fn tys_have_data_occurrence(ts: Array[TypeExpr], tp: String) -> Bool {
 /// The constructor formal that owns a generic function's result, after
 /// expanding aliases such as `Apply[F, A] = F[A]`. Nested-call witness
 /// recovery must follow this formal's receiver rather than whichever
-/// constructor bound was declared first.
-export fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)], stmts: Array[Stmt]) -> String {
+/// constructor bound was declared first. `tparams` shadow top-level aliases of
+/// the same name, as in `find_constructor_recv_index`.
+export fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)], tparams: Array[String], stmts: Array[Stmt]) -> String {
   match ret {
-    Some(raw_ret) => match expand_constructor_alias(ret = raw_ret, stmts = stmts, fuel = Array::length(stmts) + 1) {
-      TyApp(head, _) => {
-        let mut i = 0
-        let mut result = ""
-        while i < Array::length(threaded) {
-          let (type_param, _, recv_idx) = Array::get(threaded, at = i)
-          if type_param == head && is_constructor_recv_index(recv_idx) {
-            result = head
-            i = Array::length(threaded)
-          } else {
-            i = i + 1
-          }
+    Some(raw_ret) => {
+      let head = applied_formal_head(ty = raw_ret, stmts = stmts, formals = tparams)
+      let mut i = 0
+      let mut result = ""
+      while head != "" && i < Array::length(threaded) {
+        let (type_param, _, recv_idx) = Array::get(threaded, at = i)
+        if type_param == head && is_constructor_recv_index(recv_idx) {
+          result = head
+          i = Array::length(threaded)
+        } else {
+          i = i + 1
         }
-        result
-      },
-      _ => ""
+      }
+      result
     },
     None => ""
   }
@@ -423,7 +420,7 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, bounds, params, _, _, fbody) => {
+        EFn(tparams, bounds, params, _, _, fbody) => {
           // Codex P1 on #1869 (round 2): the `__dict_` parameter-name prefix
           // is RESERVED for the dict-passing desugar's generated witness
           // parameters. The ordinary source check runs before desugaring, but
@@ -459,7 +456,7 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, at = bi)
             let tpname = type_param_name(tp)
-            let has_carrier = find_recv_index(params = params, tp = tpname) >= 0 || find_constructor_recv_index(params = params, tp = tpname, stmts = stmts) >= 0 || find_array_elem_recv_index(params = params, tp = tpname) >= 0 || Array::length(find_nested_recv_indices(params = params, tp = tpname)) > 0 || str_array_contains(arr = gimpl_owners, val = qualified_head(fname))
+            let has_carrier = find_recv_index(params = params, tp = tpname) >= 0 || find_constructor_recv_index(params = params, tp = tpname, tparams = tparams, stmts = stmts) >= 0 || find_array_elem_recv_index(params = params, tp = tpname) >= 0 || Array::length(find_nested_recv_indices(params = params, tp = tpname)) > 0 || str_array_contains(arr = gimpl_owners, val = qualified_head(fname))
             if has_carrier {
               ()
             } else {
@@ -475,6 +472,31 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
     i = i + 1
   }
   out
+}
+
+fn type_spelling(_ t: TypeExpr) -> String {
+  match t {
+    TyName(n) => type_param_name(n),
+    TyApp(h, args) => type_param_name(h) + "[" + String::join(for a in args {
+      type_spelling(a)
+    }, sep = ", ") + "]",
+    TyTuple(items) => "(" + String::join(for a in items {
+      type_spelling(a)
+    }, sep = ", ") + ")",
+    TyUnit => "Unit",
+    TyFn(ps, r, _) => "(" + String::join(for a in ps {
+      type_spelling(a)
+    }, sep = ", ") + ") -> " + type_spelling(r)
+  }
+}
+
+/// A trait reference as its source spells it (`Takes[F[Int]]`), not its
+/// storage key (#4070).
+fn trait_ref_spelling(_ key: String) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => type_spelling(reference),
+    None => key
+  }
 }
 
 /// Scan one carrier-less bound's function body for `tp::member` references
@@ -495,7 +517,7 @@ fn push_undispatchable_refs(e: Expr, fname: String, tp: String, trait_list: Arra
               match trait_method_sig_binders_deep(env = env, trait_name = tr, method_name = member) {
                 Some(_) => {
                   reported = true
-                  let msg = String::concat(fname, String::concat(": `", String::concat(nm, String::concat("` cannot be dispatched here: no parameter of `", String::concat(fname, String::concat("` carries the `[", String::concat(tp, String::concat(": ", String::concat(tr, String::concat("]` witness. Add a parameter of type `", String::concat(tp, String::concat("` (or `Array[", String::concat(tp, String::concat("]`) so call sites can supply the impl, or call `", String::concat(member, "` on a concrete type instead.")))))))))))))))
+                  let msg = String::concat(fname, String::concat(": `", String::concat(nm, String::concat("` cannot be dispatched here: no parameter of `", String::concat(fname, String::concat("` carries the `[", String::concat(tp, String::concat(": ", String::concat(trait_ref_spelling(tr), String::concat("]` witness. Add a parameter of type `", String::concat(tp, String::concat("` (or `Array[", String::concat(tp, String::concat("]`) so call sites can supply the impl, or call `", String::concat(member, "` on a concrete type instead.")))))))))))))))
                   if str_array_contains(arr = out, val = msg) {
                     ()
                   } else {
