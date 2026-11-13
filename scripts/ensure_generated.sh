@@ -243,7 +243,12 @@ echo "[ensure-generated] regenerating 5 artifacts (fingerprint $FP)"
 # The stamp is removed FIRST so an interrupted or failed run cannot leave a
 # stamp that vouches for half-written artifacts.
 rm -f "$STAMP"
-VIBE_REGEN_MODULE_SOURCE=1 \
+# The five artifacts are always the DEFAULT compiler flavor (#2498): an
+# inherited VIBE_COMPILER_CFG is not in the fingerprint, so honoring it here
+# would stamp a flavor the stamp cannot tell apart. A build that wants another
+# flavor (scripts/build_compile_only.sh) runs the generator into its own outputs.
+env -u VIBE_COMPILER_CFG \
+  VIBE_REGEN_MODULE_SOURCE=1 \
   VIBE_ADAPTER_MODULE_SOURCE_OUT="$COMPILER_DIR/_cli_adapter_module_source.vibe" \
   bash "$SCRIPT_DIR/generate_bundle.sh"
 

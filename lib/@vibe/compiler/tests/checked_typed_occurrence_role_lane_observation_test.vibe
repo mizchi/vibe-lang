@@ -1,7 +1,7 @@
 //# Append-aligned typed-occurrence role/lane observation
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
+  EffectOwner, Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
 }
 
 import @vibe/compiler/checker {
@@ -65,8 +65,8 @@ fn dot_fixture(_ shared: Bool) -> Array[Stmt] {
 }
 
 test "role/lane observation is append-aligned and opaque" {
-  let legacy = check_program_result(observation_fixture())
-  match check_program_typed_occurrence_role_lane_observation(observation_fixture()) {
+  let legacy = check_program_result(observation_fixture(), checked_error_row = false)
+  match check_program_typed_occurrence_role_lane_observation(observation_fixture(), checked_error_row = false) {
     Some(observation) => {
       assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == Array::length(legacy.typed_occurrences))
       assert_role(observation = observation, row = 0, expected = "Identifier")
@@ -90,7 +90,7 @@ test "role/lane observation is append-aligned and opaque" {
       }
       let snapshot = canonical_checked_typed_occurrence_role_lane_snapshot(observation)
       assert(String::index_of(snapshot, needle = "vibe-checked-typed-occurrence-role-lane-observation:v1") == 0)
-      match check_program_typed_occurrence_role_lane_observation(observation_fixture()) {
+      match check_program_typed_occurrence_role_lane_observation(observation_fixture(), checked_error_row = false) {
         Some(repeated) => assert(snapshot == canonical_checked_typed_occurrence_role_lane_snapshot(repeated)),
         None => assert(false)
       }
@@ -100,7 +100,7 @@ test "role/lane observation is append-aligned and opaque" {
 }
 
 test "dot projection and field-name roles preserve shared-offset behavior" {
-  match check_program_typed_occurrence_role_lane_observation(dot_fixture(false)) {
+  match check_program_typed_occurrence_role_lane_observation(dot_fixture(false), checked_error_row = false) {
     Some(observation) => {
       assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 4)
       assert_role(observation = observation, row = 0, expected = "CallResult")
@@ -110,7 +110,7 @@ test "dot projection and field-name roles preserve shared-offset behavior" {
     },
     None => assert(false)
   }
-  match check_program_typed_occurrence_role_lane_observation(dot_fixture(true)) {
+  match check_program_typed_occurrence_role_lane_observation(dot_fixture(true), checked_error_row = false) {
     Some(observation) => {
       assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 3)
       assert_role(observation = observation, row = 2, expected = "DotProjection")
@@ -124,7 +124,7 @@ test "qualified rewrites are classified at append time as synthetic" {
   let stmts = [
     SLet(false, false, "value", None, EDot(EIdent("mod", 40), "value", 41, 42))
   ]
-  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env) {
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env, checked_error_row = false) {
     Some(observation) => {
       assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 1)
       assert_role(observation = observation, row = 0, expected = "Identifier")
@@ -140,7 +140,7 @@ test "qualified call rewrite captures its result as synthetic" {
     SLet(false, false, "value", None, ECall(EDot(EIdent("mod", 45), "f", 46, 47), array_empty(), 48, [
     ]))
   ]
-  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env) {
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env, checked_error_row = false) {
     Some(observation) => {
       assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 1)
       assert_role(observation = observation, row = 0, expected = "CallResult")
@@ -159,7 +159,7 @@ test "bare receiver-method rewrite is classified as synthetic" {
       EIdent("box", 56)
     ], 57, []))
   ]
-  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env) {
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env, checked_error_row = false) {
     Some(observation) => {
       let count = checked_typed_occurrence_role_lane_observation_row_count(observation)
       assert(count >= 3)
@@ -174,7 +174,7 @@ test "resume value recheck has an explicit auxiliary lane" {
   let stmts = [
     SEffectDef(false, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("Int"))
-    ]),
+    ], ProgramHandled),
     SLet(false, false, "handled", None, EHandle(EInt(1), [
       (PCtor("Ask::Get", array_empty()), ECall(EIdent("resume", -1), [
         EIdent("outer", 50)
@@ -182,7 +182,7 @@ test "resume value recheck has an explicit auxiliary lane" {
     ]))
   ]
   let initial_env = env_bind(env = EnvEmpty, name = "outer", ty = CtInt)
-  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env) {
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts = stmts, initial_env = initial_env, checked_error_row = false) {
     Some(observation) => {
       assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 2)
       assert_role(observation = observation, row = 0, expected = "Identifier")
@@ -195,8 +195,8 @@ test "resume value recheck has an explicit auxiliary lane" {
 }
 
 test "ordinary and with-env observation entry points have parity" {
-  match check_program_typed_occurrence_role_lane_observation(observation_fixture()) {
-    Some(ordinary) => match check_program_with_env_typed_occurrence_role_lane_observation(stmts = observation_fixture(), initial_env = EnvEmpty) {
+  match check_program_typed_occurrence_role_lane_observation(observation_fixture(), checked_error_row = false) {
+    Some(ordinary) => match check_program_with_env_typed_occurrence_role_lane_observation(stmts = observation_fixture(), initial_env = EnvEmpty, checked_error_row = false) {
       Some(with_env) => assert(canonical_checked_typed_occurrence_role_lane_snapshot(ordinary) == canonical_checked_typed_occurrence_role_lane_snapshot(with_env)),
       None => assert(false)
     },

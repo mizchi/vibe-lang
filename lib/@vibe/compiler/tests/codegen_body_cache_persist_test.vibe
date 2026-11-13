@@ -695,26 +695,26 @@ test "persisted body cache: verify survives an entry edit; on matches a fresh co
   // Mirrors the lane's own key derivation: content-independent, but scoped
   // to the entry path so unrelated roots sharing an entry name (`run`)
   // cannot race on one artifact slot.
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)), checked_error_row = false)
   remove_file_if_exists(artifact_path)
   // Run 1: no artifact yet -- verify has nothing to replay, compiles fresh
   // and stores the harvest.
-  let bytes1 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false)
+  let bytes1 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false, checked_error_row = false)
   assert(Fs::exists(artifact_path))
   // Run 2, nothing edited: every file matches the stored table, so the
   // whole harvest replays -- and verify throws if any replayed byte
   // differs from the fresh compile.
-  let bytes2 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false)
+  let bytes2 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false, checked_error_row = false)
   assert(bytes_eq(a = bytes1, b = bytes2))
   // Run 3, entry edited: only the helper prefix may replay; verify again
   // proves the replayed prefix bytes are what a fresh compile produces.
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_source2))
-  let bytes3 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false)
+  let bytes3 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false, checked_error_row = false)
   assert(!bytes_eq(a = bytes2, b = bytes3))
   // "on" mode replays without the double compile; its output must be
   // byte-identical to the plain production lane's.
-  let on_bytes = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "on", exports_stripped = false)
-  let fresh_bytes = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false)
+  let on_bytes = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "on", exports_stripped = false, checked_error_row = false)
+  let fresh_bytes = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false, checked_error_row = false)
   assert(bytes_eq(a = on_bytes, b = fresh_bytes))
   // On-disk corruption: flip one byte inside the stored artifact's body
   // region (same length, valid framing). The payload checksum must reject
@@ -723,7 +723,7 @@ test "persisted body cache: verify survives an entry edit; on matches a fresh co
   let flip_at = Bytes::length(stored) / 2
   Bytes::set(stored, at = flip_at, value = (Bytes::get(stored, at = flip_at) + 1)&255)
   Fs::write_bytes(artifact_path, bytes = stored)
-  let after_corruption = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "on", exports_stripped = false)
+  let after_corruption = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "on", exports_stripped = false, checked_error_row = false)
   assert(bytes_eq(a = after_corruption, b = fresh_bytes))
   // A guard-flipping edit (a new unmangled entry helper changes the global
   // name-membership guard) under VERIFY: the drift is an expected cache
@@ -732,7 +732,7 @@ test "persisted body cache: verify survives an entry edit; on matches a fresh co
   // linked_compile's own validation stands down.
   let main_source3 = String::concat(main_source2, "\nlet spare_helper: () -> Int = () -> { 7 }\nlet run2: () -> Int = () -> { spare_helper() }")
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_source3))
-  let bytes5 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false)
+  let bytes5 = compile_file_fs_mode_rc_body_cached(entry_path = main_path, entry_name = "run", cache_mode = "verify", exports_stripped = false, checked_error_row = false)
   assert(Bytes::length(bytes5) > 0)
 }
 
@@ -1026,10 +1026,10 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   Fs::write_bytes(a_path, bytes = string_to_bytes(a_source))
   Fs::write_bytes(b_path, bytes = string_to_bytes(b_source))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)), checked_error_row = false)
   remove_file_if_exists(artifact_path)
   let cold_counts: Array[Int] = []
-  let cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts, exports_stripped = false)
+  let cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts, exports_stripped = false, checked_error_row = false)
   // Nothing offered on a cold run; everything rebuilt.
   inspect(Array::get(cold_counts, at = 0), content = "0")
   let cold_n = Array::get(cold_counts, at = 1)
@@ -1039,7 +1039,7 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   // guard still holds for the files after it.
   Fs::write_bytes(a_path, bytes = string_to_bytes(String::concat(a_source, "\n// touched")))
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts, exports_stripped = false)
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts, exports_stripped = false, checked_error_row = false)
   // Sharper than "fewer": everything the file table offered was REPLAYED, so
   // the compile rebuilt exactly the rest. Under the prefix rule the offer
   // itself is zero -- the first file mismatched -- which is what the mutation
@@ -1047,13 +1047,13 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   assert(Array::get(warm_counts, at = 0) > 0)
   inspect(Array::get(warm_counts, at = 1) + Array::get(warm_counts, at = 0) == cold_n, content = "true")
   // Reuse is not an excuse to answer differently.
-  assert(bytes_eq(a = warm, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false)))
+  assert(bytes_eq(a = warm, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false, checked_error_row = false)))
   // And the same edit under verify, which compiles twice and throws on the
   // first differing byte -- the replayed bodies are what the compiler itself
   // emits for this build, not merely bytes that link.
   Fs::write_bytes(a_path, bytes = string_to_bytes(String::concat(a_source, "\n// touched twice")))
   let verify_counts: Array[Int] = []
-  let verified = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "verify", counts_out = verify_counts, exports_stripped = false)
+  let verified = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "verify", counts_out = verify_counts, exports_stripped = false, checked_error_row = false)
   assert(Array::get(verify_counts, at = 0) > 0)
   assert(Bytes::length(verified) > 0)
   // LENGTHENING an existing literal in `a` keeps the statement count, the
@@ -1074,11 +1074,11 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   let a_moved = "export let a_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let a_one: () -> String = () -> { \"alpha one is now a good deal longer\" }\nexport let a_two: () -> String = () -> { \"alpha two\" }"
   Fs::write_bytes(a_path, bytes = string_to_bytes(a_moved))
   let moved_counts: Array[Int] = []
-  let moved = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = moved_counts, exports_stripped = false)
+  let moved = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = moved_counts, exports_stripped = false, checked_error_row = false)
   // Offered by the file table, and replayed: fewer bodies rebuilt than cold.
   assert(Array::get(moved_counts, at = 0) > 0)
   inspect(Array::get(moved_counts, at = 1) < cold_n, content = "true")
-  assert(bytes_eq(a = moved, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false)))
+  assert(bytes_eq(a = moved, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false, checked_error_row = false)))
 }
 
 test "#2669: a layout-drifting edit recompiles fully, then the next build replays it all" {
@@ -1105,18 +1105,18 @@ test "#2669: a layout-drifting edit recompiles fully, then the next build replay
   let b_base = String::concat("import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nstruct PbA { pa: Int }\nstruct PbB { pb: Int }\n", b_body)
   let b_longer = String::concat("import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nstruct PbB { pb: Int }\nstruct PbA { pa: Int }\n", b_body)
   let main_source = "import ./vibe_body_cache_pfx_b.vibe { p_b_one, p_b_two }\nlet run: () -> Int = () -> { String::length(p_b_one()) + p_b_two() }"
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)), checked_error_row = false)
   remove_file_if_exists(artifact_path)
   Fs::write_bytes(a_path, bytes = string_to_bytes(a_source))
   Fs::write_bytes(b_path, bytes = string_to_bytes(b_base))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
   let cold_counts: Array[Int] = []
-  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts, exports_stripped = false)
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts, exports_stripped = false, checked_error_row = false)
   let cold_n = Array::get(cold_counts, at = 1)
   Fs::write_bytes(b_path, bytes = string_to_bytes(b_longer))
   let edited_counts: Array[Int] = []
-  let edited = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = edited_counts, exports_stripped = false)
-  assert(bytes_eq(a = edited, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false)))
+  let edited = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = edited_counts, exports_stripped = false, checked_error_row = false)
+  assert(bytes_eq(a = edited, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false, checked_error_row = false)))
   // Non-vacuity: the file table DID offer the prefix's entries, so it is the
   // body loop that declined them, not the decoder.
   inspect(Array::get(edited_counts, at = 0) > 0, content = "true")
@@ -1125,8 +1125,8 @@ test "#2669: a layout-drifting edit recompiles fully, then the next build replay
   // Nothing changed since: the artifact is the edited build's whole harvest,
   // so the next build replays it all.
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts, exports_stripped = false)
-  assert(bytes_eq(a = warm, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false)))
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts, exports_stripped = false, checked_error_row = false)
+  assert(bytes_eq(a = warm, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = false, checked_error_row = false)))
   inspect(Array::get(warm_counts, at = 1) < cold_n, content = "true")
 }
 
@@ -1167,12 +1167,12 @@ test "#2669: a layout-drifting edit recompiles fully, then the next build replay
 /// They differ only in whether a Bool parameter is foldable.
 fn body_cache_reuse_counts(path: String, source: String) -> (Int, Int) with Env + Exception + Fs {
   Fs::write_bytes(path, bytes = string_to_bytes(source))
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(path)), checked_error_row = false)
   remove_file_if_exists(artifact_path)
   let cold: Array[Int] = []
-  let _ = compile_file_fs_mode_rc_body_cached_counted(entry_path = path, entry_name = "run", cache_mode = "on", counts_out = cold, exports_stripped = false)
+  let _ = compile_file_fs_mode_rc_body_cached_counted(entry_path = path, entry_name = "run", cache_mode = "on", counts_out = cold, exports_stripped = false, checked_error_row = false)
   let warm: Array[Int] = []
-  let _ = compile_file_fs_mode_rc_body_cached_counted(entry_path = path, entry_name = "run", cache_mode = "on", counts_out = warm, exports_stripped = false)
+  let _ = compile_file_fs_mode_rc_body_cached_counted(entry_path = path, entry_name = "run", cache_mode = "on", counts_out = warm, exports_stripped = false, checked_error_row = false)
   (Array::get(warm, at = 0), Array::length(cold))
 }
 
@@ -1189,10 +1189,10 @@ test "#2818: a folded entry build replays, and persists a harvest that can" {
   let path = "/tmp/vibe_bc_2818_folded.vibe"
   let (offered, _) = body_cache_reuse_counts(path = path, source = folded_body_source)
   inspect(offered > 0, content = "true")
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(path)), checked_error_row = false)
   inspect(Fs::exists(artifact_path), content = "true")
   // And the compile itself is unchanged by any of this.
-  assert(bytes_eq(a = compile_file_fs_mode_rc_body_cached(entry_path = path, entry_name = "run", cache_mode = "on", exports_stripped = false), b = compile_file_fs_mode_rc(entry_path = path, entry_name = "run", exports_stripped = false)))
+  assert(bytes_eq(a = compile_file_fs_mode_rc_body_cached(entry_path = path, entry_name = "run", cache_mode = "on", exports_stripped = false, checked_error_row = false), b = compile_file_fs_mode_rc(entry_path = path, entry_name = "run", exports_stripped = false, checked_error_row = false)))
 }
 
 test "#2818: flipping a caller's literal in ANOTHER file recompiles the folded body" {
@@ -1216,35 +1216,35 @@ test "#2818: flipping a caller's literal in ANOTHER file recompiles the folded b
   let main_false = "import ./vibe_bc_2818_gate.vibe { g_eq, g_other, gate }\nlet run: () -> Int = () -> { if g_eq() { gate(on = false) + g_other() } else { 0 } }"
   Fs::write_bytes(gate_path, bytes = string_to_bytes(gate_source))
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_true))
-  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)), checked_error_row = false)
   remove_file_if_exists(artifact_path)
   let cold: Array[Int] = []
-  let _ = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = cold, exports_stripped = true)
+  let _ = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = cold, exports_stripped = true, checked_error_row = false)
   let cold_n = Array::get(cold, at = 1)
   // Unchanged: the folded `gate` replays like everything else.
   let warm: Array[Int] = []
-  let warm_bytes = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = warm, exports_stripped = true)
+  let warm_bytes = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = warm, exports_stripped = true, checked_error_row = false)
   assert(Array::get(warm, at = 0) > 0)
   assert(Array::get(warm, at = 1) < cold_n)
-  assert(bytes_eq(a = warm_bytes, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true)))
+  assert(bytes_eq(a = warm_bytes, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true, checked_error_row = false)))
   // The flip. The gate file is still offered -- it did not change -- and the
   // answer must still be a fresh compile's, byte for byte.
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_false))
   let flipped: Array[Int] = []
-  let flipped_bytes = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = flipped, exports_stripped = true)
+  let flipped_bytes = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = flipped, exports_stripped = true, checked_error_row = false)
   assert(Array::get(flipped, at = 0) > 0)
-  assert(bytes_eq(a = flipped_bytes, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true)))
+  assert(bytes_eq(a = flipped_bytes, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true, checked_error_row = false)))
   // The artifact that build refreshed holds `gate` under its NEW signature
   // only: flipping back must not find the `false` body under `0t`, nor the
   // stale `true` body carried over by the merge under `0f`.
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_true))
   let back: Array[Int] = []
-  let back_bytes = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = back, exports_stripped = true)
-  assert(bytes_eq(a = back_bytes, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true)))
+  let back_bytes = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = back, exports_stripped = true, checked_error_row = false)
+  assert(bytes_eq(a = back_bytes, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true, checked_error_row = false)))
   // And verify, which compiles twice and throws on the first differing byte,
   // agrees across another flip.
   Fs::write_bytes(main_path, bytes = string_to_bytes(main_false))
   let verify: Array[Int] = []
-  let verified = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "verify", counts_out = verify, exports_stripped = true)
-  assert(bytes_eq(a = verified, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true)))
+  let verified = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "verify", counts_out = verify, exports_stripped = true, checked_error_row = false)
+  assert(bytes_eq(a = verified, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run", exports_stripped = true, checked_error_row = false)))
 }

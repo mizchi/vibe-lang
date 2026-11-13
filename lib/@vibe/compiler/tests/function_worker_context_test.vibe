@@ -105,7 +105,7 @@ fn same_bytes(a: Bytes, b: Bytes) -> Bool {
   same
 }
 
-fn compile_source(source: String, rc: Bool) -> Bytes with Exception {
+fn compile_source(source: String, rc: Bool, checked_error_row: Bool) -> Bytes with Exception {
   merged_offset_space_reset()
   merged_offset_space_add(path = "input.vibe", source = source, base = 0)
   let (tokens, starts, _) = lex_with_offsets(source)
@@ -241,7 +241,7 @@ fn assert_validation_owns_authority(ctx: FunctionContext, product: CodegenBodyCa
 }
 
 fn assert_snapshot_parity(source: String, rc: Bool, require_pool: Bool) -> Unit with Env + Exception + Fs {
-  let expected = compile_source(source = source, rc = rc)
+  let expected = compile_source(source = source, rc = rc, checked_error_row = false)
   let calls = [0]
   let actual = function_with_executor(executor = (plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
     assert(!coverage)
@@ -322,11 +322,11 @@ fn assert_snapshot_parity(source: String, rc: Bool, require_pool: Bool) -> Unit 
     } else ()
     FunctionContext::replay_function_products(context, products = merged)
   }, action = () -> Bytes with Env + Exception + Fs {
-    compile_source(source = source, rc = rc)
+    compile_source(source = source, rc = rc, checked_error_row = false)
   })
   assert_eq(Array::get(calls, at = 0), 1)
   assert(same_bytes(a = expected, b = actual))
-  assert(same_bytes(a = expected, b = compile_source(source = source, rc = rc)))
+  assert(same_bytes(a = expected, b = compile_source(source = source, rc = rc, checked_error_row = false)))
   assert_eq(Array::get(calls, at = 0), 1)
 }
 
@@ -357,7 +357,7 @@ test "function replay survives discarded preparation syntax" {
           "fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nfn main() -> Unit allows Console { let f = make(2); println(f(9)) }",
           "fn fail(n: Int) -> Int with Exception { if n > 0 { throw(\"boom\") } else { n } }\nfn main() -> Int allows Exception { handle { fail(1) } with { Exception::Throw(_) => 7 } }"
         ] {
-          let expected = compile_source(source = source, rc = rc)
+          let expected = compile_source(source = source, rc = rc, checked_error_row = false)
           let calls = [0]
           let actual = function_with_executor(executor = (plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
             Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
@@ -405,7 +405,7 @@ test "function replay survives discarded preparation syntax" {
               FunctionContext::replay_function_products(ctx, products = products)
             }
           }, action = () -> Bytes with Env + Exception + Fs {
-            compile_source(source = source, rc = rc)
+            compile_source(source = source, rc = rc, checked_error_row = false)
           })
           assert(Array::get(calls, at = 0) == 1)
           if !same_bytes(a = expected, b = actual) {

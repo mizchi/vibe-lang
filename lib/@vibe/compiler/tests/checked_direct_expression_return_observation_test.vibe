@@ -1,7 +1,7 @@
 //# Complete direct checker-return expression observation regression coverage
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
+  EffectOwner, Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
 }
 
 import @vibe/compiler/checker {
@@ -65,7 +65,7 @@ fn direct_fixture() -> Array[Stmt] {
 }
 
 test "direct return observation reconciles every retained preorder coordinate" {
-  match check_program_direct_expression_return_observation(direct_fixture()) {
+  match check_program_direct_expression_return_observation(direct_fixture(), checked_error_row = false) {
     Some(observation) => {
       assert(checked_direct_expression_return_observation_row_count(observation) == 13)
       match checked_direct_expression_return_observation_statement_path_at(observation = observation, row_index = 0) {
@@ -109,7 +109,7 @@ test "direct return observation retains nested source paths despite type-first c
       SLet(false, false, "tuple", None, ETuple([EInt(1), EInt(2)]))
     ])
   ]
-  match check_program_direct_expression_return_observation(stmts) {
+  match check_program_direct_expression_return_observation(stmts, checked_error_row = false) {
     Some(observation) => {
       assert(checked_direct_expression_return_observation_row_count(observation) == 4)
       direct_assert_statement_path(observation = observation, row = 0, expected = [
@@ -138,7 +138,7 @@ test "direct return observation preserves effectset-expanded topology and canoni
     SEffectSet(false, "Caps", ["Fs", "Error"]),
     SLet(false, false, "f", None, EFn(array_empty(), array_empty(), array_empty(), None, Some("Caps"), EIf(EBool(true), EInt(1), EInt(2))))
   ]
-  match check_program_direct_expression_return_observation(stmts) {
+  match check_program_direct_expression_return_observation(stmts, checked_error_row = false) {
     Some(observation) => {
       assert(checked_direct_expression_return_observation_row_count(observation) == 5)
       let mut row = 0
@@ -179,7 +179,7 @@ test "direct return observation canonicalizes final substitutions exactly" {
       ("value", None)
     ], Some(TyName("Int")), None, EIdent("value", 90)))
   ]
-  match check_program_direct_expression_return_observation(stmts) {
+  match check_program_direct_expression_return_observation(stmts, checked_error_row = false) {
     Some(observation) => match checked_direct_expression_return_observation_type_at(observation = observation, row_index = 1) {
       // The raw parameter variable was unified with the annotated return.
       Some(ty) => assert(ty == "I0"),
@@ -190,8 +190,8 @@ test "direct return observation canonicalizes final substitutions exactly" {
 }
 
 test "direct return observation has with-env parity and deterministic snapshots" {
-  match check_program_direct_expression_return_observation(direct_fixture()) {
-    Some(ordinary) => match check_program_with_env_direct_expression_return_observation(stmts = direct_fixture(), initial_env = env_bind(env = EnvEmpty, name = "seed", ty = CtInt)) {
+  match check_program_direct_expression_return_observation(direct_fixture(), checked_error_row = false) {
+    Some(ordinary) => match check_program_with_env_direct_expression_return_observation(stmts = direct_fixture(), initial_env = env_bind(env = EnvEmpty, name = "seed", ty = CtInt), checked_error_row = false) {
       Some(with_env) => assert(canonical_checked_direct_expression_return_snapshot(ordinary) == canonical_checked_direct_expression_return_snapshot(with_env)),
       None => assert(false)
     },
@@ -204,7 +204,7 @@ test "direct return observation preserves ordinary checker errors" {
     SLet(false, false, "value", Some(TyName("Int")), EString("wrong", -1))
   ]
   handle {
-    match check_program_direct_expression_return_observation(invalid) {
+    match check_program_direct_expression_return_observation(invalid, checked_error_row = false) {
       None => assert(false),
       Some(_) => assert(false)
     }
@@ -216,33 +216,33 @@ test "direct return observation refuses skipped, synthetic, and auxiliary routes
     SLet(false, false, "value", None, ECall(EIdent("Some", 10), [EInt(1)], 11, [
     ]))
   ]
-  match check_program_direct_expression_return_observation(recognized) {
+  match check_program_direct_expression_return_observation(recognized, checked_error_row = false) {
     None => (),
     Some(_) => assert(false)
   }
   let spread = [SLet(false, false, "value", None, ESpread(EInt(2)))]
-  match check_program_direct_expression_return_observation(spread) {
+  match check_program_direct_expression_return_observation(spread, checked_error_row = false) {
     None => (),
     Some(_) => assert(false)
   }
   let synthetic = [
     SLet(false, false, "value", None, EDot(EIdent("mod", 40), "value", 41, 42))
   ]
-  match check_program_with_env_direct_expression_return_observation(stmts = synthetic, initial_env = env_bind(env = EnvEmpty, name = "mod.value", ty = CtInt)) {
+  match check_program_with_env_direct_expression_return_observation(stmts = synthetic, initial_env = env_bind(env = EnvEmpty, name = "mod.value", ty = CtInt), checked_error_row = false) {
     None => (),
     Some(_) => assert(false)
   }
   let auxiliary = [
     SEffectDef(false, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("Int"))
-    ]),
+    ], ProgramHandled),
     SLet(false, false, "handled", None, EHandle(EInt(1), [
       (PCtor("Ask::Get", array_empty()), ECall(EIdent("resume", -1), [
         EIdent("outer", 50)
       ], -1, []))
     ]))
   ]
-  match check_program_with_env_direct_expression_return_observation(stmts = auxiliary, initial_env = env_bind(env = EnvEmpty, name = "outer", ty = CtInt)) {
+  match check_program_with_env_direct_expression_return_observation(stmts = auxiliary, initial_env = env_bind(env = EnvEmpty, name = "outer", ty = CtInt), checked_error_row = false) {
     None => (),
     Some(_) => assert(false)
   }
@@ -257,7 +257,7 @@ test "direct return observation remains available for a large retained row set" 
   }
   match check_program_direct_expression_return_observation([
     SLet(false, false, "many", None, EArray(elements))
-  ]) {
+  ], checked_error_row = false) {
     Some(observation) => {
       assert(checked_direct_expression_return_observation_row_count(observation) == 16385)
       direct_assert_expression_path(observation = observation, row = 0, expected = array_empty())

@@ -13,25 +13,25 @@ test "a module check publishes its environment and lowering table together" {
   let source = "export fn answer() -> Int { 42 }"
   Fs::write_file(path, contents = source)
   let fingerprint = typing_module_fingerprint(source_fingerprint = compact_string_fingerprint(source), dep_fps = [
-  ], typing_semantics_seed = typing_semantics_seed())
+  ], typing_semantics_seed = typing_semantics_seed(checked_error_row = false))
   let cache_path = persistent_type_env_cache_path(fingerprint)
   if Fs::exists(cache_path) {
     Fs::remove(cache_path)
   } else {
     ()
   }
-  let cold = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source), path = path)
+  let cold = db_typecheck_fs(db = db_set_source(db = db_new(checked_error_row = false), path = path, source = source), path = path)
   assert(db_parse_count(cold) > 0)
   let text = Fs::read_file(cache_path)
   inspect(String::substring(text, start = 0, end = 10), content = "version\t11")
   inspect(String::contains(text, needle = "\nmodule_typed_lowering_offsets\tv8\n"), content = "true")
-  let warm = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source), path = path)
+  let warm = db_typecheck_fs(db = db_set_source(db = db_new(checked_error_row = false), path = path, source = source), path = path)
   inspect(db_parse_count(warm), content = "0")
   // Keep the valid environment and remove only the lowering section.
   let split = String::index_of(text, needle = "module_typed_lowering_offsets\tv8")
   assert(split > 0)
   Fs::write_file(cache_path, contents = text[0: split])
-  let repaired = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source), path = path)
+  let repaired = db_typecheck_fs(db = db_set_source(db = db_new(checked_error_row = false), path = path, source = source), path = path)
   assert(db_parse_count(repaired) > 0)
   assert(Fs::read_file(cache_path) == text)
   // A worker without a table must not borrow this process's previous memo.
@@ -39,7 +39,7 @@ test "a module check publishes its environment and lowering table together" {
     Some(record) => Fs::write_file(cache_path, contents = persistent_module_cache_text(env = record.env, lowering = None)),
     None => assert(false)
   }
-  let worker_repaired = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source), path = path)
+  let worker_repaired = db_typecheck_fs(db = db_set_source(db = db_new(checked_error_row = false), path = path, source = source), path = path)
   assert(db_parse_count(worker_repaired) > 0)
   assert(Fs::read_file(cache_path) == text)
 }

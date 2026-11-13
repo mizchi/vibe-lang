@@ -203,7 +203,7 @@ test "one escaping member keeps the whole recursive component owned" {
 let ctx_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn walk(ctx: Ctx, k: Int) -> Int {\n  if k <= 0 {\n    ctx.n\n  } else {\n    walk(ctx = ctx, k = k - 1) + Array::length(ctx.xs)\n  }\n}\n\nfn use1(ctx: Ctx) -> Int {\n  ctx.n + 1\n}\n\nfn three(ctx: Ctx, c: Bool) -> Int {\n  if c {\n    use1(ctx) + use1(ctx) + use1(ctx)\n  } else {\n    0\n  }\n}\n\nexport fn main() -> Int {\n  let cx = Ctx::{ n: 1, xs: [1, 2] }\n  walk(ctx = cx, k = 3) + three(ctx = cx, c = true)\n}\n"
 
 test "rc-classify reports the self-recursive field reader as borrow_param" {
-  let out = rc_classify_source(ctx_prelude)
+  let out = rc_classify_source(ctx_prelude, checked_error_row = false)
   inspect(classify_line(out = out, name = "walk"), content = "walk borrow_param")
   inspect(classify_line(out = out, name = "use1"), content = "use1 borrow_param")
 }
@@ -211,7 +211,7 @@ test "rc-classify reports the self-recursive field reader as borrow_param" {
 test "rc-plan takes no dup of a parameter that is only read and passed on" {
   // Before: `walk ctx dup 1` and `three ctx dup 2` plus a path drop, which
   // left two references behind on the path that skips the reads.
-  let plan = rc_plan_source(source = ctx_prelude, fn_filter = "")
+  let plan = rc_plan_source(source = ctx_prelude, fn_filter = "", checked_error_row = false)
   assert(!String::contains(plan, needle = "walk ctx dup"))
   assert(!String::contains(plan, needle = "three ctx dup"))
   assert(!String::contains(plan, needle = "three ctx path_drop"))

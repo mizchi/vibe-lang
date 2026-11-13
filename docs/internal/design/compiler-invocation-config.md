@@ -1,8 +1,11 @@
 # Compiler invocation configuration (#1953)
 
 Target `#cfg` flags have scoped entries for the flat-source RC compiler,
-shared FS parsing, source collection, filesystem and in-memory typechecking, source merging, owned typed-lowering inputs, and checked source-group codegen. These are migration slices,
-not completion of #1953 or a claim that the compiler as a whole is reentrant.
+shared FS parsing, source collection, filesystem and in-memory typechecking,
+source merging, owned typed-lowering inputs, and checked source-group codegen.
+Checked Exception-row policy is explicit across checking, caching, tooling, and
+workers. These are migration slices, not completion of #1953 or a claim that
+the compiler as a whole is reentrant.
 
 ## Boundary and authority
 
@@ -334,6 +337,38 @@ paths after bump codegen and alternating explicit tagged/raw assemblies.
 This isolates representation selection; other mutable codegen state still
 prevents claiming that the whole compiler supports arbitrary concurrent calls.
 
+## Checked Exception-row policy
+
+Checker and effect-pass entries take `checked_error_row: Bool` explicitly.
+The compiler adapter and checker/function/lowering workers capture their
+`VIBE_CHECK_ERROR_ROW` default once at entry (`0` opts out). Component requests
+always check rows. Standalone CLI entries and `collect_all_diagnostics` keep
+their historical fresh-process unchecked behavior; configured diagnostic
+entries accept the policy explicitly. No setter or process-wide policy cell
+remains. The flag-only `Config` effect grants no Exception-row authority.
+
+`TypeDb`, `CheckJob`, and `ModuleJob` retain the immutable policy that selects
+both checking and semantic cache identity. Changing a retained DB's policy
+invalidates derived environments, Ripple results, merge/module products, and
+artifacts while preserving source inputs and cumulative counters. Optional
+typing observations retain their accepting policy and refuse a freshness
+attestation for a job checked under another policy. Ordinary checks allocate
+no observation wrapper. Keeping the
+same policy preserves warm reuse. Persistent artifact and AST adapters receive
+that same policy rather than inferring it from setter order or `Env`.
+
+Owned `CheckedLoweringInputs` include the accepted policy and reject a merge
+request for another one. The query preparation state drops derived typing on
+a policy change; hover memos key both the source and the policy and cannot
+serve a table from another mode. Filesystem hover sessions also compare the
+policy before reusing a typing through the unchanged-stat-token fast path. These values hold configuration, while
+mutable checker observations and compiler scratch tables remain separate work.
+
+`invocation_config_error_row_test.vibe` covers successful and refused component
+requests, alternating explicit policies, and a paused outer compile resumed
+after nested checked requests. `invocation_config_error_row_cache_test.vibe`
+covers retained DBs, lowering inputs, and hover tables across a policy change.
+
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
@@ -343,7 +378,6 @@ prevents claiming that the whole compiler supports arbitrary concurrent calls.
 | In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection and checking use scoped identities for parse, semantic use, import-name, re-export and generated-type reuse. Other merge/tooling entries retain compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
 | Generated-source authority | positional CLI's `VIBE_INTERNAL_TRUSTED_SOURCE`; source compilers receive `trusted_generated` | Preserve the out-of-band authorization; source bytes must never enable the bypass. It is not granted by the flag-only `Config` effect. |
-| Checked Exception-row mode | `checker/effects/checker_effects_dh_call_to_binding.vibe`: `error_row_mode_cell`, CLI `VIBE_CHECK_ERROR_ROW` | Migrate the checker/effect-pass policy together after the target flags. This remains shared configuration, unlike checked type facts belonging to a compilation. |
 | Checked-module cache mode | `runtime/checked_module_cache/cache.vibe`: `checked_cache_mode`, CLI `VIBE_CHECKED_MODULE_CACHE` | Immutable policies and configured load/commit/statement-handoff entries separate mode from mutable contents. Walk/CLI transport and policy-bound ownership remain to migrate. |
 | Typing reuse policy | `runtime/typecheck_fs_*`, adapter `set_experimental_typing_dependency_env_reuse_enabled` | Preserve the check-only/compile distinction and cache validation; do not treat mutable memo contents as configuration. |
 | AST and ingestion-stamp cache policy | `compiler/cache/cache_underlying.vibe`: `ast_cache_enabled_cell`, `ingestion_stamp_enabled_cell` | Explicit AST parse/prefetch and ingestion fingerprint entries accept immutable policies; separate effects capture them once. Compatibility entries retain process memos. Collection/typecheck/CLI orchestration and mutable cache contents remain to migrate. |

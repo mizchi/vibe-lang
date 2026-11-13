@@ -82,7 +82,8 @@ struct TypeAtFsKept {
   source: String;
   fingerprint: String;
   tokens: Array[(String, Int)];
-  typing: Option[TypeAtFsTyping]
+  typing: Option[TypeAtFsTyping];
+  checked_error_row: Bool
 }
 
 //# Functions
@@ -116,7 +117,7 @@ fn type_at_fs_line_shift(entry: String, source: String) -> Int {
 /// Check `text`, the ingested entry, against the import environment its
 /// imports project. `keep` copies the local `let` rows, for a typing that
 /// outlives the next check of any source.
-fn type_at_fs_check(text: String, line_shift: Int, import_env: TypeEnv, keep: Bool) -> TypeAtFsTyping with Exception {
+fn type_at_fs_check(text: String, line_shift: Int, import_env: TypeEnv, keep: Bool, checked_error_row: Bool) -> TypeAtFsTyping with Exception {
   // A fresh parse: the checker mutates the statements it is handed.
   let (tokens, starts, _) = lex_with_offsets(text)
   let stmts = parse_program_located(tokens = tokens, starts = starts, source = text)
@@ -124,15 +125,15 @@ fn type_at_fs_check(text: String, line_shift: Int, import_env: TypeEnv, keep: Bo
   // this is on (#3050).
   local_let_types_begin()
   let checked = handle {
-    check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env)
+    check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env, checked_error_row = checked_error_row)
   } with { Exception::Throw(message) => {
     local_let_types_end(); throw(message)
   } }
   local_let_types_end()
   let typed = if keep {
-    type_at_typed_kept(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env)
+    type_at_typed_kept(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env, checked_error_row = checked_error_row)
   } else {
-    type_at_typed(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env)
+    type_at_typed(table = checked.typed_occurrences, subst = checked.final_subst, env = checked.final_env, checked_error_row = checked_error_row)
   }
   TypeAtFsTyping::{
     text: text,
@@ -141,26 +142,26 @@ fn type_at_fs_check(text: String, line_shift: Int, import_env: TypeEnv, keep: Bo
   }
 }
 
-fn type_at_fs_answer(typing: TypeAtFsTyping, line: Int, col: Int) -> String {
-  type_at_source_typed(source = typing.text, line = line + typing.line_shift, col = col, typed = Some(typing.typed))
+fn type_at_fs_answer(typing: TypeAtFsTyping, line: Int, col: Int, checked_error_row: Bool) -> String {
+  type_at_source_typed(source = typing.text, line = line + typing.line_shift, col = col, typed = Some(typing.typed), checked_error_row = checked_error_row)
 }
 
 /// The type of the identifier at 1-based (`line`, `col`) of `source`, the
 /// contents of `path`, typed with its imports resolved. "" as in
 /// `type_at_source`.
-export fn type_at_fs(path: String, source: String, line: Int, col: Int) -> String with Env + Fs {
+export fn type_at_fs(path: String, source: String, line: Int, col: Int, checked_error_row: Bool) -> String with Env + Fs {
   let typing = handle {
-    let context = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new())
+    let context = query_project_context_fs(path = path, source = source, replacement = None, state = query_project_state_new(), checked_error_row = checked_error_row)
     let shift = type_at_fs_line_shift(entry = context.entry_source, source = source)
     if shift < 0 {
       None
     } else {
-      Some(type_at_fs_check(text = context.entry_source, line_shift = shift, import_env = context.import_env, keep = false))
+      Some(type_at_fs_check(text = context.entry_source, line_shift = shift, import_env = context.import_env, keep = false, checked_error_row = checked_error_row))
     }
   } with { Exception::Throw(_) => None }
   match typing {
-    Some(t) => type_at_fs_answer(typing = t, line = line, col = col),
-    None => type_at_source(source = source, line = line, col = col)
+    Some(t) => type_at_fs_answer(typing = t, line = line, col = col, checked_error_row = checked_error_row),
+    None => type_at_source(source = source, line = line, col = col, checked_error_row = checked_error_row)
   }
 }
 
@@ -207,12 +208,12 @@ export fn type_at_fs_session_release(session: TypeAtFsSession, path: String) -> 
 
 /// The kept typing, when it is of this buffer and nothing it was built from
 /// may have changed since.
-fn type_at_fs_session_current(session: TypeAtFsSession, path: String, source: String) -> Option[Option[TypeAtFsTyping]] with Fs {
+fn type_at_fs_session_current(session: TypeAtFsSession, path: String, source: String, checked_error_row: Bool) -> Option[Option[TypeAtFsTyping]] with Fs {
   if Array::get(session.invalid, at = 0) {
     None
   } else {
     match Array::get(session.kept, at = 0) {
-      Some(k) => if k.path == path && k.source == source && k.fingerprint != "" && query_project_tokens_unchanged(k.tokens) {
+      Some(k) => if k.path == path && k.source == source && k.checked_error_row == checked_error_row && k.fingerprint != "" && query_project_tokens_unchanged(k.tokens) {
         Some(k.typing)
       } else {
         None
@@ -224,15 +225,15 @@ fn type_at_fs_session_current(session: TypeAtFsSession, path: String, source: St
 
 /// Walk the project for this buffer and type it, unless the walk finds the
 /// kept revision's fingerprint again.
-fn type_at_fs_session_walk(session: TypeAtFsSession, path: String, source: String) -> Option[TypeAtFsTyping] with Env + Exception + Fs {
+fn type_at_fs_session_walk(session: TypeAtFsSession, path: String, source: String, checked_error_row: Bool) -> Option[TypeAtFsTyping] with Env + Exception + Fs {
   // Counted before the walk: a walk that fails (an import that no longer
   // resolves) is still a walk this session made.
   Array::set(session.walks, at = 0, value = Array::get(session.walks, at = 0) + 1)
-  let context = query_project_context_fs(path = path, source = source, replacement = None, state = Array::get(session.state, at = 0))
+  let context = query_project_context_fs(path = path, source = source, replacement = None, state = Array::get(session.state, at = 0), checked_error_row = checked_error_row)
   Array::set(session.state, at = 0, value = context.state)
   Array::set(session.invalid, at = 0, value = false)
   let same = match Array::get(session.kept, at = 0) {
-    Some(k) => if k.path == path && k.source == source && k.fingerprint == context.entry_fingerprint && k.fingerprint != "" {
+    Some(k) => if k.path == path && k.source == source && k.checked_error_row == checked_error_row && k.fingerprint == context.entry_fingerprint && k.fingerprint != "" {
       Some(k.typing)
     } else {
       None
@@ -248,7 +249,7 @@ fn type_at_fs_session_walk(session: TypeAtFsSession, path: String, source: Strin
         None
       } else {
         handle {
-          Some(type_at_fs_check(text = context.entry_source, line_shift = shift, import_env = context.import_env, keep = true))
+          Some(type_at_fs_check(text = context.entry_source, line_shift = shift, import_env = context.import_env, keep = true, checked_error_row = checked_error_row))
         } with { Exception::Throw(_) => None }
       }
     }
@@ -258,7 +259,8 @@ fn type_at_fs_session_walk(session: TypeAtFsSession, path: String, source: Strin
     source: source,
     fingerprint: context.entry_fingerprint,
     tokens: context.closure_tokens,
-    typing: typing
+    typing: typing,
+    checked_error_row: checked_error_row
   }))
   typing
 }
@@ -268,15 +270,15 @@ fn type_at_fs_session_walk(session: TypeAtFsSession, path: String, source: Strin
 /// this lane (it does not check with its imports, the walk failed, or its
 /// ingested text is not the buffer with lines in front of it). A caller
 /// answers `None` from the single-module typing, as `type_at_fs` does.
-export fn type_at_fs_session_answer(session: TypeAtFsSession, path: String, source: String, line: Int, col: Int) -> Option[String] with Env + Fs {
-  let typing = match type_at_fs_session_current(session = session, path = path, source = source) {
+export fn type_at_fs_session_answer(session: TypeAtFsSession, path: String, source: String, line: Int, col: Int, checked_error_row: Bool) -> Option[String] with Env + Fs {
+  let typing = match type_at_fs_session_current(session = session, path = path, source = source, checked_error_row = checked_error_row) {
     Some(kept) => kept,
     None => handle {
-      type_at_fs_session_walk(session = session, path = path, source = source)
+      type_at_fs_session_walk(session = session, path = path, source = source, checked_error_row = checked_error_row)
     } with { Exception::Throw(_) => None }
   }
   match typing {
-    Some(t) => Some(type_at_fs_answer(typing = t, line = line, col = col)),
+    Some(t) => Some(type_at_fs_answer(typing = t, line = line, col = col, checked_error_row = checked_error_row)),
     None => None
   }
 }

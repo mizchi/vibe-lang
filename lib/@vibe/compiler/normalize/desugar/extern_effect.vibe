@@ -1,0 +1,160 @@
+// Host-provided effects (ADR-0124, #2656).
+
+import @vibe/compiler/core {
+  EffectOwner, Expr, Stmt, TypeExpr, extern_effect_binding_source, set_program_extern_effects
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+/// ADR-0124 (#2656): bind the operations of every `extern effect` to the
+/// host. Run after the check, it replaces each declaration with the
+/// bindings `extern_effect_binding_source` writes: the operation `Kv::get`
+/// becomes a function that calls field `get#<WIT signature>` of the core
+/// import module `vibe:effect:./Kv`, the way an imported component's export
+/// is called. A runner links that module to the provider bound at launch.
+/// The declaration itself leaves the program, so no later pass mistakes the
+/// effect for one a handler discharges.
+///
+/// The names are recorded too (`set_program_extern_effects`), so code
+/// generation refuses an operation this pass did not bind -- one declared
+/// inside a `module` -- by name rather than as an internal error.
+export fn bind_extern_effects(_ stmts: Array[Stmt]) -> Unit with Exception {
+  bind_extern_effects_owned(stmts = stmts, owners = [])
+}
+
+/// `bind_extern_effects` for a program partitioned by module: `owners[i]` is
+/// the module of `stmts[i]` (the split lowering route's `stmt_file_id`), and
+/// every binding takes its declaration's module, so the two stay aligned.
+/// An empty `owners` tracks nothing.
+export fn bind_extern_effects_owned(stmts: Array[Stmt], owners: Array[Int]) -> Unit with Exception {
+  let hosts: Array[String] = []
+  xe_collect_hosts(stmts = stmts, out = hosts)
+  set_program_extern_effects(hosts)
+  if Array::length(hosts) > 0 {
+    let tracked = Array::length(owners) == Array::length(stmts) && Array::length(owners) > 0
+    let kept: Array[Stmt] = []
+    let kept_owners: Array[Int] = []
+    let mut i = 0
+    while i < Array::length(stmts) {
+      let before = Array::length(kept)
+      match Array::get(stmts, at = i) {
+        SEffectDef(_, name, _, ops, HostProvided) => xe_bind(effect = name, ops = ops, out = kept),
+        other => Array::push(kept, value = other)
+      }
+      if tracked {
+        let mut k = before
+        while k < Array::length(kept) {
+          Array::push(kept_owners, value = Array::get(owners, at = i))
+          k = k + 1
+        }
+      }
+      i = i + 1
+    }
+    Array::truncate(stmts, length = 0)
+    for stmt in kept {
+      Array::push(stmts, value = stmt)
+    }
+    if tracked {
+      Array::truncate(owners, length = 0)
+      for o in kept_owners {
+        Array::push(owners, value = o)
+      }
+    }
+  }
+  ()
+}
+
+fn xe_collect_hosts(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SEffectDef(_, name, _, _, HostProvided) => Array::push(out, value = name),
+      SModule(_, _, inner) => xe_collect_hosts(stmts = inner, out = out),
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// The component valtype code of a type an operation may use: `s64` for an
+/// `Int`, `string` for a `String`. The checker admits nothing else
+/// (`extern_effect_decl_errors`).
+fn xe_code(_ te: TypeExpr) -> Int {
+  match te {
+    TyName(n) => if n == "String" {
+      0x73
+    } else {
+      0x78
+    },
+    _ => 0x78
+  }
+}
+
+/// `effect` spelled in the lowercase letters a function name allows, one to
+/// one: an uppercase letter becomes `_` and its lowercase, and `_` doubles,
+/// so `MyAPI` (`_my_a_p_i`) and `MyApi` (`_my_api`) never share helpers.
+fn xe_lower(_ s: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < String::length(s) {
+    let c = String::byte_at(s, at = i)
+    if c >= 65 && c <= 90 {
+      out = String::concat(out, String::concat("_", String::from_byte(c + 32)))
+    } else if c == 95 {
+      out = String::concat(out, "__")
+    } else {
+      out = String::concat(out, String::from_byte(c))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn xe_bind(effect: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], out: Array[Stmt]) -> Unit with Exception {
+  // The name's length leads, so no effect's prefix starts another's (the
+  // per-character code is prefix-free): `Kv`'s wrapper `__xe2_kv_op_op_x`
+  // cannot be a helper of an effect `KvOp` (`__xe4_kv_op_`).
+  let prefix = "__xe\{String::length(effect)}\{xe_lower(effect)}_"
+  let coded: Array[(String, Array[Int], Array[Int])] = []
+  for op in ops {
+    let (name, params, ret) = op
+    let ps: Array[Int] = []
+    for p in params {
+      Array::push(ps, value = xe_code(p))
+    }
+    let rs: Array[Int] = []
+    match ret {
+      TyUnit => (),
+      TyName(n) => if n != "Unit" {
+        Array::push(rs, value = xe_code(ret))
+      },
+      _ => Array::push(rs, value = xe_code(ret))
+    }
+    Array::push(coded, value = (name, ps, rs))
+  }
+  let bound = parse_program(lex(extern_effect_binding_source(prefix = prefix, effect = effect, ops = coded)))
+  let wrapper = "\{prefix}op_"
+  for stmt in bound {
+    Array::push(out, value = xe_private(stmt = stmt, wrapper = wrapper, effect = effect))
+  }
+  ()
+}
+
+/// A binding statement, private, with the wrapper of operation `op` renamed
+/// to `<effect>::<op>`.
+fn xe_private(stmt: Stmt, wrapper: String, effect: String) -> Stmt {
+  match stmt {
+    SLet(_, recursive, name, ty, body) => SLet(false, recursive, xe_name(name = name, wrapper = wrapper, effect = effect), ty, body),
+    SFnDecl(_, name, body, requires, ensures) => SFnDecl(false, xe_name(name = name, wrapper = wrapper, effect = effect), body, requires, ensures),
+    _ => stmt
+  }
+}
+
+fn xe_name(name: String, wrapper: String, effect: String) -> String {
+  if String::starts_with(name, prefix = wrapper) {
+    "\{effect}::\{String::substring(name, start = String::length(wrapper), end = String::length(name))}"
+  } else {
+    name
+  }
+}

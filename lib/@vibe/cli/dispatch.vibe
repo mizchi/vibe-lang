@@ -147,7 +147,7 @@ fn artifact_cache_disabled() -> Bool with Env {
   Env::get("VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE") == "1"
 }
 
-fn compile_release_file_mode_for_cli(input_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs + Env {
+fn compile_release_file_mode_for_cli(input_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> Bytes with Exception + Fs + Env {
   // #2305: without the ADR-0068 opt-in, take the UNCACHED lane.
   //
   // `compile_file_fs_mode_cached` returns on a persistent-artifact hit before
@@ -175,12 +175,12 @@ fn compile_release_file_mode_for_cli(input_path: String, entry_name: String, mod
   // neither had a check. Every artifact-producing path in this dispatcher goes
   // through this function, so gating it covers them by construction instead of
   // by remembering.
-  reject_unstable_entry(input_path)
+  reject_unstable_entry(input_path, checked_error_row = checked_error_row)
   unstable_closure_reset()
   let bytes = if artifact_cache_disabled() || !unstable_opt_in_granted() {
-    compile_release_file_mode_uncached(input_path = input_path, entry_name = entry_name, mode = mode)
+    compile_release_file_mode_uncached(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
   } else {
-    compile_release_file_mode(input_path = input_path, entry_name = entry_name, mode = mode)
+    compile_release_file_mode(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
   }
   reject_unstable_closure()
   bytes
@@ -189,13 +189,13 @@ fn compile_release_file_mode_for_cli(input_path: String, entry_name: String, mod
 /// The profiled twin, gated identically. The profiled paths produce artifacts
 /// too, and gating only the plain helper left `compile-lite --profile` and the
 /// positional profiled path writing wasm with no opt-in.
-fn compile_release_file_mode_for_cli_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Exception + Fs + Env + Profiler {
-  reject_unstable_entry(input_path)
+fn compile_release_file_mode_for_cli_profiled(input_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> (Bytes, Int, Int, Int, Int, Int, Int) with Exception + Fs + Env + Profiler {
+  reject_unstable_entry(input_path, checked_error_row = checked_error_row)
   unstable_closure_reset()
   let result = if artifact_cache_disabled() || !unstable_opt_in_granted() {
-    compile_release_file_mode_uncached_profiled(input_path = input_path, entry_name = entry_name, mode = mode)
+    compile_release_file_mode_uncached_profiled(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
   } else {
-    compile_release_file_mode_profiled(input_path = input_path, entry_name = entry_name, mode = mode)
+    compile_release_file_mode_profiled(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
   }
   reject_unstable_closure()
   result
@@ -340,12 +340,12 @@ export fn parse_compile_lite_args(_ args: Array[String]) -> (String, String, Str
   (input_path, output_path, entry_name, mode, in_memory)
 }
 
-export fn selfhost_cli_compile_lite_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Profiler {
+export fn selfhost_cli_compile_lite_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Profiler {
   let (input_path, output_path, entry_name, mode, in_memory, profile_tsv_path, profile_callstack_path) = parse_compile_lite_args_with_profile(args)
   if !input_file_exists(input_path) {
     1
   } else if profile_tsv_path == "" && profile_callstack_path == "" {
-    let bytes = compile_release_file_mode_for_cli(input_path = input_path, entry_name = entry_name, mode = mode)
+    let bytes = compile_release_file_mode_for_cli(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
     if in_memory {
       0
     } else {
@@ -354,7 +354,7 @@ export fn selfhost_cli_compile_lite_args(_ args: Array[String]) -> Int with Exce
     }
   } else {
     let total_start = profiler_now_us()
-    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path = input_path, entry_name = entry_name, mode = mode)
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
     if in_memory {
       let total_us = elapsed_profile_us_since(total_start)
       write_optional_profile(path = profile_tsv_path, content = compile_lite_profile_tsv(load_us = load_us, type_us = type_us, bundle_us = bundle_us, parse_us = parse_us, compile_us = compile_us, write_us = 0, total_us = total_us))
@@ -399,11 +399,11 @@ fn unstable_opt_in_granted() -> Bool with Env {
   Env::get("VIBE_UNSTABLE") == "1"
 }
 
-fn reject_unstable_entry(_ input_path: String) -> Unit with Exception + Fs + Env {
+fn reject_unstable_entry(_ input_path: String, checked_error_row: Bool) -> Unit with Exception + Fs + Env {
   if unstable_opt_in_granted() {
     ()
   } else {
-    let diags = check_unstable_surface_warnings_from_path(input_path)
+    let diags = check_unstable_surface_warnings_from_path(input_path, checked_error_row = checked_error_row)
     if Array::length(diags) > 0 {
       throw(String::join(diags, sep = "\n"))
     } else {
@@ -445,12 +445,12 @@ fn profile_callstack_env() -> String with Env {
   Env::get("VIBE_PROFILE_CALLSTACK")
 }
 
-export fn selfhost_cli_low_level_args_profiled(input_path: String, output_path: String, entry_name: String, mode: String, profile_tsv_path: String, profile_callstack_path: String) -> Int with Exception + Fs + Env + Profiler {
+export fn selfhost_cli_low_level_args_profiled(input_path: String, output_path: String, entry_name: String, mode: String, profile_tsv_path: String, profile_callstack_path: String, checked_error_row: Bool) -> Int with Exception + Fs + Env + Profiler {
   if !input_file_exists(input_path) {
     throw(String::concat("no such input file: ", input_path))
   } else {
     let total_start = profiler_now_us()
-    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path = input_path, entry_name = entry_name, mode = mode)
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
     let write_start = profiler_now_us()
     write_executable_wasm(output_path = output_path, bytes = bytes, entry_name = entry_name)
     let write_us = elapsed_profile_us_since(write_start)
@@ -461,12 +461,12 @@ export fn selfhost_cli_low_level_args_profiled(input_path: String, output_path: 
   }
 }
 
-fn low_level_compile_release_profiled(input_path: String, output_path: String, entry_name: String, mode: String, profile_tsv_path: String, profile_callstack_path: String) -> Int with Exception + Fs + Env + Profiler {
+fn low_level_compile_release_profiled(input_path: String, output_path: String, entry_name: String, mode: String, profile_tsv_path: String, profile_callstack_path: String, checked_error_row: Bool) -> Int with Exception + Fs + Env + Profiler {
   if artifact_cache_disabled() {
-    selfhost_cli_low_level_args_profiled(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode, profile_tsv_path = profile_tsv_path, profile_callstack_path = profile_callstack_path)
+    selfhost_cli_low_level_args_profiled(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode, profile_tsv_path = profile_tsv_path, profile_callstack_path = profile_callstack_path, checked_error_row = checked_error_row)
   } else {
     let total_start = profiler_now_us()
-    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path = input_path, entry_name = entry_name, mode = mode)
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
     let write_start = profiler_now_us()
     write_executable_wasm(output_path = output_path, bytes = bytes, entry_name = entry_name)
     let write_us = elapsed_profile_us_since(write_start)
@@ -491,7 +491,7 @@ fn low_level_read_as(input_path: String, output_path: String, entry_name: String
   String::concat(String::concat(String::concat("read `", input_path), "` as the input path, `"), String::concat(String::concat(output_path, "` as the output path, `"), String::concat(entry_name, "` as the entry name")))
 }
 
-export fn selfhost_cli_low_level_args(input_path: String, output_path: String, entry_name: String, mode: String) -> Int with Exception + Fs + Env + Profiler {
+export fn selfhost_cli_low_level_args(input_path: String, output_path: String, entry_name: String, mode: String, checked_error_row: Bool) -> Int with Exception + Fs + Env + Profiler {
   if input_path == "" {
     throw(String::concat("no input path -- ", low_level_usage()))
   }
@@ -511,11 +511,11 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
       let profile_tsv_path = profile_tsv_env()
       let profile_callstack_path = profile_callstack_env()
       if profile_tsv_path == "" && profile_callstack_path == "" {
-        let bytes = compile_release_file_mode_for_cli(input_path = input_path, entry_name = entry_name, mode = mode)
+        let bytes = compile_release_file_mode_for_cli(input_path = input_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
         write_executable_wasm(output_path = output_path, bytes = bytes, entry_name = entry_name)
         0
       } else {
-        low_level_compile_release_profiled(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode, profile_tsv_path = profile_tsv_path, profile_callstack_path = profile_callstack_path)
+        low_level_compile_release_profiled(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode, profile_tsv_path = profile_tsv_path, profile_callstack_path = profile_callstack_path, checked_error_row = checked_error_row)
       }
     }
   }
@@ -524,17 +524,17 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
     // ingested, so the verdict covers exactly the bytes it is about to write.
     // The earlier preflight authorized one filesystem snapshot and let the
     // builder emit a second (Codex review), and paid for a second traversal.
-    reject_unstable_entry(input_path)
-    write_linked_debug_build_checked(input_path = input_path, output_path = output_path, entry_name = entry_name, allow_unstable = unstable_opt_in_granted())
+    reject_unstable_entry(input_path, checked_error_row = checked_error_row)
+    write_linked_debug_build_checked(input_path = input_path, output_path = output_path, entry_name = entry_name, allow_unstable = unstable_opt_in_granted(), checked_error_row = checked_error_row)
     0
   }
   else if mode == "check" {
     // #2305 (Codex review): the positional `<input> <output> <entry> check`
     // fallback is a public path too, and it went straight to
     // `check_linked_file` while the command-style `check` above was gated.
-    reject_unstable_entry(input_path)
+    reject_unstable_entry(input_path, checked_error_row = checked_error_row)
     unstable_closure_reset()
-    let status = check_linked_file(input_path)
+    let status = check_linked_file(input_path, checked_error_row = checked_error_row)
     reject_unstable_closure()
     status
   }
@@ -543,12 +543,12 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
   }
 }
 
-fn low_level_cli_main() -> Int with Exception + Fs + Env + Profiler {
+fn low_level_cli_main(checked_error_row: Bool) -> Int with Exception + Fs + Env + Profiler {
   let input_path = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(index = 2, env_name = "VIBE_ENTRY"))
   let mode = read_arg(3)
-  selfhost_cli_low_level_args(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode)
+  selfhost_cli_low_level_args(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode, checked_error_row = checked_error_row)
 }
 
 /// Dispatch on an explicit argv array (element 0 is the subcommand). Kept
@@ -556,7 +556,7 @@ fn low_level_cli_main() -> Int with Exception + Fs + Env + Profiler {
 /// real CLI command routing with injected args. cli_main (entry.vibe)
 /// wraps this with the Profiler/Error handlers; the regression tests in
 /// dispatch_test.vibe drive it through that same wrapper.
-export fn selfhost_cli_dispatch_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
+export fn selfhost_cli_dispatch_args(_ args: Array[String], checked_error_row: Bool) -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
   // #2513: the `#cfg` flag set for every module this invocation parses and
   // every cache key it touches. Same call as cli_adapter.vibe's cli_main;
   // this dispatcher never passes through that entry.
@@ -567,19 +567,19 @@ export fn selfhost_cli_dispatch_args(_ args: Array[String]) -> Int with Exceptio
     Array::get(args, at = 0)
   }
   if user_dispatch_is_verb(first_arg) {
-    selfhost_cli_user_dispatch_args(args)
+    selfhost_cli_user_dispatch_args(args, checked_error_row = checked_error_row)
   } else {
     match first_arg {
-      "compile-lite" => selfhost_cli_compile_lite_args(args),
-      _ => low_level_cli_main()
+      "compile-lite" => selfhost_cli_compile_lite_args(args, checked_error_row = checked_error_row),
+      _ => low_level_cli_main(checked_error_row = checked_error_row)
     }
   }
 }
 
-export fn selfhost_cli_main() -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
-  selfhost_cli_dispatch_args(collect_cli_args())
+export fn selfhost_cli_main(checked_error_row: Bool) -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
+  selfhost_cli_dispatch_args(collect_cli_args(), checked_error_row = checked_error_row)
 }
 
 export fn cli_main() -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
-  selfhost_cli_main()
+  selfhost_cli_main(checked_error_row = false)
 }

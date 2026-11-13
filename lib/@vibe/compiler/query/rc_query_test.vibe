@@ -52,7 +52,7 @@ fn classify_has_name(out: String, name: String) -> Bool {
 
 test "rc_classify_source: a file with no functions is empty" {
   let src = "let x = 1\n"
-  assert_eq(rc_classify_source(src), "")
+  assert_eq(rc_classify_source(src, checked_error_row = false), "")
 }
 
 test "rc_classify_source: a let-signed Int function is scalar_ret" {
@@ -60,31 +60,31 @@ test "rc_classify_source: a let-signed Int function is scalar_ret" {
   // `fn` sugar's EFn return slot. `let f: (...) -> Int = ...` is the
   // form linked_compile actually classifies.
   let src = "let add: (Int, Int) -> Int = (a: Int, b: Int) -> Int { a + b }\n"
-  let out = rc_classify_source(src)
+  let out = rc_classify_source(src, checked_error_row = false)
   assert(classify_has_set(out = out, name = "add", set = "scalar_ret"))
 }
 
 test "rc_classify_source: a thin Array::get wrapper is borrow_ret" {
   let src = "enum Tok {\n  TEof;\n  TInt(Int)\n}\n\nfn peek(tokens: Array[Tok], pos: Int) -> Tok {\n  if pos < Array::length(tokens) {\n    Array::get(tokens, pos)\n  } else {\n    TEof\n  }\n}\n"
-  let out = rc_classify_source(src)
+  let out = rc_classify_source(src, checked_error_row = false)
   assert(classify_has_set(out = out, name = "peek", set = "borrow_ret"))
 }
 
 test "rc_classify_source: an annotated builder is not view_ret" {
   let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(out, i)\n    i = i + 1\n  }\n  out\n}\n"
-  let out = rc_classify_source(src)
+  let out = rc_classify_source(src, checked_error_row = false)
   assert(!classify_has_set(out = out, name = "make", set = "view_ret"))
 }
 
 test "rc_plan_source: a twice-used heap binding emits a dup" {
   let src = "fn pair(t: Array[Int]) -> (Array[Int], Array[Int]) {\n  (t, t)\n}\n"
-  let out = rc_plan_source(source = src, fn_filter = "pair")
+  let out = rc_plan_source(source = src, fn_filter = "pair", checked_error_row = false)
   assert(String::contains(out, needle = "pair t dup "))
 }
 
 test "rc_plan_source: --fn filters to that function" {
   let src = "fn keep(t: Array[Int]) -> Array[Int] {\n  t\n}\n\nfn pair(t: Array[Int]) -> (Array[Int], Array[Int]) {\n  (t, t)\n}\n"
-  let out = rc_plan_source(source = src, fn_filter = "keep")
+  let out = rc_plan_source(source = src, fn_filter = "keep", checked_error_row = false)
   assert(!String::contains(out, needle = "pair "))
 }
 
@@ -97,8 +97,8 @@ test "rc_plan_source: later-discovered wrapper is still a view" {
   // is not dropped.
   let zebra_first = "fn zebra(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn apple(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn use_apple(a: Array[Array[Int]]) -> Int {\n  let v = apple(a, 0)\n  Array::length(v)\n}\n"
   let apple_first = "fn apple(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn zebra(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn use_apple(a: Array[Array[Int]]) -> Int {\n  let v = apple(a, 0)\n  Array::length(v)\n}\n"
-  let out = rc_plan_source(source = zebra_first, fn_filter = "use_apple")
-  let flipped = rc_plan_source(source = apple_first, fn_filter = "use_apple")
+  let out = rc_plan_source(source = zebra_first, fn_filter = "use_apple", checked_error_row = false)
+  let flipped = rc_plan_source(source = apple_first, fn_filter = "use_apple", checked_error_row = false)
   assert_eq(out, flipped)
   assert(!String::contains(out, needle = "use_apple v drop"))
 }
@@ -106,7 +106,7 @@ test "rc_plan_source: later-discovered wrapper is still a view" {
 test "rc_plan_source: missing function throws" {
   let src = "fn keep(t: Array[Int]) -> Array[Int] {\n  t\n}\n"
   let caught = handle {
-    let _ = rc_plan_source(source = src, fn_filter = "missing")
+    let _ = rc_plan_source(source = src, fn_filter = "missing", checked_error_row = false)
     ""
   } with { Exception::Throw(msg) => msg }
   assert(String::contains(caught, needle = "missing"))

@@ -155,7 +155,7 @@ def assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, pr
     target = repo / "lib/@vibe/function_build/phases/entry.vibe"
     source = target.read_text()
     before = "finish_function_assembly(state = assembly, products = merged)"
-    after = 'compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", exports_stripped = false)'
+    after = 'compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", exports_stripped = false, checked_error_row = checked_error_row)'
     assert source.count(before) == 1
     overlay = private / "serial-finisher.vibe"
     overlay.write_text(source.replace(before, after))
@@ -165,7 +165,9 @@ def assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, pr
         VIBE_SOURCE_OVERLAY_WITH=str(overlay), VIBE_BUILD_CACHE_DIR=str(private / "compile-cache"))
     result = subprocess.run([str(runner), str(compiler), str(target), str(image), "__no_entry__"],
         cwd=repo, env=compile_env, capture_output=True, text=True, timeout=180)
-    assert result.returncode == 0 and image.is_file() and image.stat().st_size > 0, result
+    diagnostic = Path(str(image) + ".diag")
+    assert result.returncode == 0 and image.is_file() and image.stat().st_size > 0, (result,
+        diagnostic.read_text() if diagnostic.is_file() else "no compiler diagnostic")
     assert image.read_bytes() != (artifacts / "compile.wasm").read_bytes(), "mutant did not change image"
     config = private / "service.json"
     config.write_text(json.dumps({"version": 1, "worker": str(artifacts / "worker.wasm"),

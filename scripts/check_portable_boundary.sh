@@ -878,23 +878,23 @@ forbid_capability_authority() { # <file> <label>
 # because the gate runs in no CI job (#2577).
 require_line \
   "lib/@vibe/compiler/entry/source_compile/index.vpkg" \
-  '^fn compile_source\((_ )?source: String\) -> Bytes with Exception$' \
+  '^fn compile_source\((_ )?source: String, checked_error_row: Bool\) -> Bytes with Exception$' \
   "compile_source stays in-memory"
 require_line \
   "lib/@vibe/compiler/entry/source_compile/index.vpkg" \
-  '^fn compile_source_wasi\(source: String, entry_name: String\) -> Bytes with Exception$' \
+  '^fn compile_source_wasi\(source: String, entry_name: String, checked_error_row: Bool\) -> Bytes with Exception$' \
   "compile_source_wasi stays in-memory"
 require_line \
   "lib/@vibe/compiler/entry/source_compile/index.vpkg" \
-  '^fn compile_source_wasi_mode\(source: String, entry_name: String, mode: String\) -> Bytes with Exception$' \
+  '^fn compile_source_wasi_mode\(source: String, entry_name: String, mode: String, checked_error_row: Bool\) -> Bytes with Exception$' \
   "compile_source_wasi_mode stays in-memory"
 require_line \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
-  '^export fn compile_source_wasi_only\(source: String, entry_name: String, exports_stripped: Bool\) -> Bytes with Exception' \
+  '^export fn compile_source_wasi_only\(source: String, entry_name: String, exports_stripped: Bool, checked_error_row: Bool\) -> Bytes with Exception' \
   "compile_source_wasi_only stays in-memory"
 require_line \
   "lib/@vibe/compiler/entry/compiler/fs_compile/index.vpkg" \
-  '^fn compile_with_closure_sources_wasi_mode_uncached\(main_source: String, main_path: String, sources: Array\[\(String, String\)\], entry_name: String, mode: String\) -> Bytes with Exception$' \
+  '^fn compile_with_closure_sources_wasi_mode_uncached\(main_source: String, main_path: String, sources: Array\[\(String, String\)\], entry_name: String, mode: String, checked_error_row: Bool\) -> Bytes with Exception$' \
   "direct component closure compile stays in-memory"
 
 # The entry file gets one MORE alternative than the other two. Its row

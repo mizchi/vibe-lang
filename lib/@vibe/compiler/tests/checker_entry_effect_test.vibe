@@ -24,7 +24,7 @@ import @vibe/compiler/runtime {
 
 fn first_check_error(_ source: String) -> String {
   handle {
-    let _ = check_program(parse_program(lex(source)))
+    let _ = check_program(parse_program(lex(source)), checked_error_row = false)
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -32,7 +32,7 @@ fn first_check_error(_ source: String) -> String {
 fn first_located_check_error(_ source: String) -> String {
   handle {
     let (tokens, starts, _) = lex_with_offsets(source)
-    let _ = check_program(parse_program_located(tokens = tokens, starts = starts, source = source))
+    let _ = check_program(parse_program_located(tokens = tokens, starts = starts, source = source), checked_error_row = false)
     ""
   } with { Exception::Throw(msg) => locate_type_error(source = source, msg = msg) }
 }
@@ -748,4 +748,27 @@ test "#3143: a declared capability at the entry says why it is still refused" {
   let algebraic = first_check_error("effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit allows Ask {\n  let _ = perform Ask::Get()\n  ()\n}\n")
   assert(String::contains(algebraic, needle = "cannot discharge"))
   assert(!String::contains(algebraic, needle = "acts on a resource"))
+}
+
+test "#2656: an extern effect crosses the entry boundary" {
+  // ADR-0124: the catalog classifies an `extern effect` as a capability on
+  // `Process::Root` from its declaration, with no name added to the policy
+  // table, and the host supplies it: `main` is admitted, and the runner
+  // refuses before `main` when no provider is bound.
+  let host = first_check_error("extern effect Kv {\n  get(String) -> String\n}\n\nfn main() -> Unit allows Kv {\n  let _ = Kv::get(\"a\")\n  ()\n}\n")
+  inspect(host, content = "")
+  // A program-handled effect is still refused at the entry.
+  let algebraic = first_check_error("effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit allows Ask {\n  let _ = perform Ask::Get()\n  ()\n}\n")
+  assert(String::contains(algebraic, needle = "cannot discharge"))
+}
+
+test "#2656: an extern effect operation is a host function the checker types" {
+  // ADR-0124: `Kv::get(k)` is called like `Fs::read_file(p)` and carries
+  // `Kv` as its row, so a function that reaches it declares `with Kv`. The
+  // checker accepts this program; only a build refuses it, until a provider
+  // can be bound.
+  let ok = first_check_error("extern effect Kv {\n  get(String) -> String\n  put(String, String) -> Unit\n}\n\nfn read_key(k: String) -> String with Kv {\n  Kv::get(k)\n}\n\nfn copy_key(from: String, to: String) -> Unit with Kv {\n  Kv::put(to, read_key(k = from))\n}\n")
+  inspect(ok, content = "")
+  let wrong_arg = first_check_error("extern effect Kv {\n  get(String) -> String\n}\n\nfn read_key() -> String with Kv {\n  Kv::get(1)\n}\n")
+  assert(String::length(wrong_arg) > 0)
 }

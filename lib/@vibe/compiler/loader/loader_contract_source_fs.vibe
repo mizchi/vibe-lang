@@ -268,7 +268,7 @@ export fn set_exported_type_params_memo_row_bound(_ rows: Int) -> Unit {
   Array::set(exported_type_params_memo_row_bound, at = 0, value = rows)
 }
 
-fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String], cfg: TargetCfg) -> Array[(String, Array[String])] with Env + Exception + Fs {
+fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String], cfg: TargetCfg, checked_error_row: Bool) -> Array[(String, Array[String])] with Env + Exception + Fs {
   if contains_path(visited = visiting, path = path) {
     Array::set(exported_type_params_cycle_hits, at = 0, value = Array::get(exported_type_params_cycle_hits, at = 0) + 1)
     return array_empty()
@@ -315,7 +315,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
       let resolve_mark = Array::length(exported_type_params_resolve_log)
       let dep_mark = Array::length(dep_fingerprints)
       let hits_before = Array::get(exported_type_params_cycle_hits, at = 0)
-      let out = exported_type_params_uncached_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = visiting, cfg = cfg)
+      let out = exported_type_params_uncached_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = visiting, cfg = cfg, checked_error_row = checked_error_row)
       let reads = Array::slice(exported_type_params_read_log, start = log_mark, end = Array::length(exported_type_params_read_log))
       let fps = Array::slice(dep_fingerprints, start = dep_mark, end = Array::length(dep_fingerprints))
       let resolves = Array::slice(exported_type_params_resolve_log, start = resolve_mark, end = Array::length(exported_type_params_resolve_log))
@@ -434,12 +434,12 @@ fn exported_type_params_node(_ path: String, cfg: TargetCfg) -> (Array[(String, 
 /// two is parsed as its new body under the old token, so the next ask
 /// re-reads it; the other order would record the new token against the old
 /// parse), and the node's sources and resolutions go to the memo's logs.
-fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String], cfg: TargetCfg) -> Array[(String, Array[String])] with Env + Exception + Fs {
+fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String], cfg: TargetCfg, checked_error_row: Bool) -> Array[(String, Array[String])] with Env + Exception + Fs {
   let visiting_mark = Array::length(visiting)
   Array::push(visiting, value = path)
   let token = Fs::stat_token(path)
   Array::push(exported_type_params_read_log, value = (path, token))
-  let (out, node_paths, node_fingerprints, resolves) = exported_type_params_node_on_fs(path, cfg = cfg, visiting = visiting)
+  let (out, node_paths, node_fingerprints, resolves) = exported_type_params_node_on_fs(path, cfg = cfg, visiting = visiting, checked_error_row = checked_error_row)
   let mut ni = 0
   while ni < Array::length(node_paths) {
     Array::push(dep_paths, value = Array::get(node_paths, at = ni))
@@ -460,22 +460,22 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
 /// restores it to its own mark, success or failure, so it is empty between
 /// top-level asks.
 
-fn type_params_answer_fs(_ path: String, cfg: TargetCfg, visiting: Array[String]) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env + Fs {
+fn type_params_answer_fs(_ path: String, cfg: TargetCfg, visiting: Array[String], checked_error_row: Bool) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env + Fs {
   let mark = Array::length(visiting)
   let dep_paths = array_empty()
   let dep_fingerprints = array_empty()
   let answer = handle {
-    (exported_type_params_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = visiting, cfg = cfg), None)
+    (exported_type_params_fs(path = path, dep_paths = dep_paths, dep_fingerprints = dep_fingerprints, visiting = visiting, cfg = cfg, checked_error_row = checked_error_row), None)
   } with { Exception::Throw(message) => (array_empty(), Some(message)) }
   Array::truncate(visiting, length = mark)
   let (out, failure) = answer
   ((out, dep_paths, dep_fingerprints), failure)
 }
 
-fn exported_type_params_node_on_fs(_ path: String, cfg: TargetCfg, visiting: Array[String]) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + Fs {
+fn exported_type_params_node_on_fs(_ path: String, cfg: TargetCfg, visiting: Array[String], checked_error_row: Bool) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + Fs {
   handle {
     exported_type_params_node(path, cfg = cfg)
-  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw, cfg = cfg)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p, cfg = cfg, visiting = visiting)); ModuleParse::Parse(p, text) => resume(parse_answer_fs_with_config(path = p, source = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw, cfg = cfg, checked_error_row = checked_error_row)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p, cfg = cfg, visiting = visiting, checked_error_row = checked_error_row)); ModuleParse::Parse(p, text) => resume(parse_answer_fs_with_config(path = p, source = text, cfg = cfg, checked_error_row = checked_error_row)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// #1872: the exported type parameters of `path` over any provider, with
@@ -703,7 +703,7 @@ export fn validate_vibex_entry_source_with_config(path: String, source: String, 
         } else {
           ()
         },
-        SEffectDef(exported, name, _, _) => if exported && export_display == "" {
+        SEffectDef(exported, name, _, _, _) => if exported && export_display == "" {
           export_display = "export effect \{name}"
         } else {
           ()
@@ -2164,12 +2164,12 @@ fn record_unstable_candidate(path: String, ingested: String) -> Unit {
   }
 }
 
-export fn ingest_source_text_fs(path: String, raw: String) -> String with Env + Exception + Fs {
-  ingest_source_text_fs_with_config(path = path, raw = raw, cfg = target_cfg_ambient())
+export fn ingest_source_text_fs(path: String, raw: String, checked_error_row: Bool) -> String with Env + Exception + Fs {
+  ingest_source_text_fs_with_config(path = path, raw = raw, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// The same operation with caller-owned target flags and cache identity.
-export fn ingest_source_text_fs_with_config(path: String, raw: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
+export fn ingest_source_text_fs_with_config(path: String, raw: String, cfg: TargetCfg, checked_error_row: Bool) -> String with Env + Exception + Fs {
   // The serialized Iterator boundary is a trusted carrier only after sources
   // have been merged. Keep the common path allocation- and parse-free; a
   // comment mentioning the prefix pays one parse but remains accepted.
@@ -2183,7 +2183,7 @@ export fn ingest_source_text_fs_with_config(path: String, raw: String, cfg: Targ
     if String::starts_with(pin_blanked, prefix = contract_facade_marker) {
       pin_blanked
     } else {
-      String::concat(contract_facade_marker, desugar_contract_source_fs_with_config(path = path, source = pin_blanked, cfg = cfg))
+      String::concat(contract_facade_marker, desugar_contract_source_fs_with_config(path = path, source = pin_blanked, cfg = cfg, checked_error_row = checked_error_row))
     }
   } else {
     apply_vpkg_directory_shared_imports_fs_with_config(path = path, pin_blanked = pin_blanked, cfg = cfg)
@@ -2496,25 +2496,25 @@ fn contract_plan_on_fs(path: String, source: String) -> ContractPlan with Env + 
   } with { Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
-fn ingest_member_answer_fs(path: String, raw: String, cfg: TargetCfg) -> (String, Option[String]) with Env + Fs {
+fn ingest_member_answer_fs(path: String, raw: String, cfg: TargetCfg, checked_error_row: Bool) -> (String, Option[String]) with Env + Fs {
   handle {
-    (ingest_source_text_fs_with_config(path = path, raw = raw, cfg = cfg), None)
+    (ingest_source_text_fs_with_config(path = path, raw = raw, cfg = cfg, checked_error_row = checked_error_row), None)
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
 
-fn contract_build_on_fs(path: String, source: String, plan: ContractPlan, cfg: TargetCfg) -> ContractDesugared with Env + Exception + Fs {
+fn contract_build_on_fs(path: String, source: String, plan: ContractPlan, cfg: TargetCfg, checked_error_row: Bool) -> ContractDesugared with Env + Exception + Fs {
   let visiting: Array[String] = []
   handle {
     contract_build(path = path, source = source, plan = plan)
-  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw, cfg = cfg)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p, cfg = cfg, visiting = visiting)); ModuleParse::Parse(p, text) => resume(parse_answer_fs_with_config(path = p, source = text, cfg = cfg)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(path = p, raw = raw, cfg = cfg, checked_error_row = checked_error_row)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p, cfg = cfg, visiting = visiting, checked_error_row = checked_error_row)); ModuleParse::Parse(p, text) => resume(parse_answer_fs_with_config(path = p, source = text, cfg = cfg, checked_error_row = checked_error_row)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
-export fn desugar_contract_source_fs(path: String, source: String) -> String with Env + Exception + Fs {
-  desugar_contract_source_fs_with_config(path = path, source = source, cfg = target_cfg_ambient())
+export fn desugar_contract_source_fs(path: String, source: String, checked_error_row: Bool) -> String with Env + Exception + Fs {
+  desugar_contract_source_fs_with_config(path = path, source = source, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// The same operation with caller-owned target flags and cache identity.
-export fn desugar_contract_source_fs_with_config(path: String, source: String, cfg: TargetCfg) -> String with Env + Exception + Fs {
+export fn desugar_contract_source_fs_with_config(path: String, source: String, cfg: TargetCfg, checked_error_row: Bool) -> String with Env + Exception + Fs {
   let plan = contract_plan_on_fs(path = path, source = source)
   // #1100 (selfcompile-heap): everything below this point — per-member
   // ingest + full parse, conformance check, facade generation — is a pure
@@ -2627,7 +2627,7 @@ export fn desugar_contract_source_fs_with_config(path: String, source: String, c
   } else {
     ()
   }
-  let built = contract_build_on_fs(path = path, source = source, plan = plan, cfg = cfg)
+  let built = contract_build_on_fs(path = path, source = source, plan = plan, cfg = cfg, checked_error_row = checked_error_row)
   let facade_types_path = publish_vpkg_types_module_fs(vpkg_path = path, types_path = built.types_path, text = built.types_text, cfg = cfg)
   let facade_final = built.facade
   let reexport_dep_paths = built.dep_paths

@@ -107,6 +107,7 @@ type ImportItem
 type ImportKind
 type Pat
 type Stmt
+type EffectOwner
 type TypeExpr
 
 // --- types (core/'s own type-system enums, see header)
@@ -269,6 +270,8 @@ fn effect_catalog_in(_ declared: Array[(String, String)]) -> Array[(String, Effe
 fn classify_label_in(label: String, declared: Array[(String, String)]) -> Option[EffectRequirement]
 fn singleton_resource_of_kind(_ kind: String) -> Option[String]
 fn process_root_resource_kind() -> String
+fn set_program_extern_effects(_ names: Array[String]) -> Unit
+fn refuse_extern_effect_operation(_ name: String) -> Unit with Exception
 fn is_singleton_resource_kind(_ path: String) -> Bool
 fn predeclared_resources() -> Array[(String, String)]
 fn standard_host_provider_names() -> Array[String]
@@ -314,6 +317,8 @@ fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt]
 fn dce_stmts_before_trait_desugar(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt]
 fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool]
 fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool]
+fn dce_keep_flags_from_refs(stmts: Array[Stmt], entry_names: Array[String], refs: Array[(Array[String], Bool, Array[String], Bool)]) -> Array[Bool]
+fn dce_statement_refs(_ stmt: Stmt) -> (Array[String], Bool, Array[String], Bool)
 
 // --- const_bool_params
 fn fold_const_bool_params(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], exports_stripped: Bool) -> Int
@@ -432,6 +437,7 @@ fn type_to_string(_ ty: Type) -> String
 fn strip_published_formal_suffixes(_ text: String) -> String
 fn strip_published_row_marks(_ text: String) -> String
 fn is_effect_inst_label(_ label: String) -> Bool
+fn is_row_provenance_label(_ label: String) -> Bool
 type EffectInst
 fn effect_inst_label_text(_ inst: EffectInst) -> String
 fn effect_inst_of_label(_ label: String) -> Option[EffectInst]
@@ -475,14 +481,23 @@ fn erased_cmp_bound_refusal(env: TypeEnv, bound: String, resolved: Type) -> Stri
 fn generic_impl_cmp_refusal(env: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> Option[(String, String, Type)]
 fn impl_param_add32_marker() -> String
 fn is_alias_constructor(_ ty: Type) -> Bool
+fn resolve_trait_key_arg(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type
 fn canonical_trait_arg_type_expr(_ ty: Type) -> Option[TypeExpr]
+fn canonical_trait_key_checked(key: String, binders: Array[String], defs: Array[TypeDef]) -> (String, Option[String])
 fn canonical_trait_key(key: String, binders: Array[String], defs: Array[TypeDef]) -> String
+fn type_alias_decl_is_recursive(stmts: Array[Stmt], name: String, params: Array[String], body: TypeExpr) -> Bool
+fn kinded_alias_expansion_peak(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped: Array[Int], limit: Int) -> Int
+fn alias_expr_needs_shapes(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Bool
+fn alias_expansion_node_limit() -> Int
+fn type_expr_expansion_node_count(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int
 fn canonical_key_defs(_ stmts: Array[Stmt]) -> Array[TypeDef]
+fn canonical_key_defs_with(stmts: Array[Stmt], imported: Array[TypeDef]) -> Array[TypeDef]
 fn type_constructor_name(_ ty: Type) -> String
 
 // --- trait_ref_aliases (#3947)
-fn canonicalize_trait_ref_aliases(_ stmts: Array[Stmt]) -> Unit
-fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[(String, Array[String], TypeExpr)]) -> Unit
+fn canonicalize_trait_ref_aliases(_ stmts: Array[Stmt]) -> Array[String]
+fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[TypeDef]) -> Array[String]
+fn canonical_program_trait_key(key: String, binders: Array[String]) -> String
 
 // --- import_alias_rewrite
 opaque type ExportRenamePlan
@@ -604,6 +619,8 @@ fn wat_rewrite_callees(wat: String, from: Array[String], to: Array[String]) -> S
 // that names one foreign function. See wasm_import_binding.vibe.
 fn is_wasm_import_path(_ path: String) -> Bool
 fn wasm_import_module_name(_ path: String) -> String
+fn extern_effect_module_name(_ effect: String) -> String
+fn extern_effect_binding_source(prefix: String, effect: String, ops: Array[(String, Array[Int], Array[Int])]) -> String
 fn wasm_component_module_name(_ path: String) -> String
 fn wasm_memory_module_name(_ path: String) -> String
 fn wasm_component_field(name: String, params: Array[Int], results: Array[Int]) -> String

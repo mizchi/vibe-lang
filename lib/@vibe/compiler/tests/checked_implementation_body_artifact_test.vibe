@@ -37,12 +37,12 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Type, TypeDef, TypeEnv, env_cached
+  BindingOrigin, EffectOwner, EnvValueBinding, Type, TypeDef, TypeEnv, env_cached
 }
 
 fn normalized_function(_ source: String) -> Option[String] with Exception {
   match parse_source_located_with_binder_authority(source) {
-    Some(authority) => match normalized_checked_function_artifact_from_authority(authority) {
+    Some(authority) => match normalized_checked_function_artifact_from_authority(authority, checked_error_row = false) {
       Some(artifact) => Some(encode_normalized_checked_function_artifact_v1(artifact)),
       None => None
     },
@@ -52,7 +52,7 @@ fn normalized_function(_ source: String) -> Option[String] with Exception {
 
 fn normalized_join(_ source: String) -> Option[String] with Exception {
   match parse_source_located_with_binder_authority(source) {
-    Some(authority) => match normalized_checked_function_join_artifact_from_authority(authority) {
+    Some(authority) => match normalized_checked_function_join_artifact_from_authority(authority, checked_error_row = false) {
       Some(artifact) => Some(encode_normalized_checked_function_join_artifact_v1(artifact)),
       None => None
     },
@@ -62,7 +62,7 @@ fn normalized_join(_ source: String) -> Option[String] with Exception {
 
 fn normalized_leaf(_ source: String) -> Option[String] with Exception {
   match parse_source_located_with_binder_authority(source) {
-    Some(authority) => match normalized_checked_leaf_artifact_from_authority(authority) {
+    Some(authority) => match normalized_checked_leaf_artifact_from_authority(authority, checked_error_row = false) {
       Some(artifact) => Some(encode_normalized_checked_leaf_artifact_v1(artifact)),
       None => None
     },
@@ -96,7 +96,7 @@ import @vibe/parser {
 
 fn build(_ source: String) -> String with Exception {
   match parse_source_located_with_binder_authority(source) {
-    Some(authority) => match checked_implementation_body_artifact_from_authority(authority) {
+    Some(authority) => match checked_implementation_body_artifact_from_authority(authority, checked_error_row = false) {
       Some(artifact) => encode_checked_implementation_body_artifact_v1(artifact),
       None => ""
     },
@@ -120,13 +120,13 @@ test "#1958: exact source and binder provenance round-trip canonically" {
 }
 
 test "#1958: diagnosed and malformed sources publish no shadow artifact" {
-  assert(shadow_checked_implementation_body_artifact_from_source("fn broken() -> Int { \"wrong\" }\n") == None)
-  assert(shadow_checked_implementation_body_artifact_from_source("fn broken( -> Int { 1 }\n") == None)
+  assert(shadow_checked_implementation_body_artifact_from_source("fn broken() -> Int { \"wrong\" }\n", checked_error_row = false) == None)
+  assert(shadow_checked_implementation_body_artifact_from_source("fn broken( -> Int { 1 }\n", checked_error_row = false) == None)
 }
 
 test "#1958: repeated shadow modes produce byte-identical clean output" {
   let source = "/// stable docs\nexport fn value() -> Int { 1 }\n"
-  match (shadow_checked_implementation_body_artifact_from_source(source), shadow_checked_implementation_body_artifact_from_source(source)) {
+  match (shadow_checked_implementation_body_artifact_from_source(source, checked_error_row = false), shadow_checked_implementation_body_artifact_from_source(source, checked_error_row = false)) {
     (Some(first), Some(second)) => assert_eq(encode_checked_implementation_body_artifact_v1(first), encode_checked_implementation_body_artifact_v1(second)),
     _ => assert(false)
   }
@@ -134,8 +134,8 @@ test "#1958: repeated shadow modes produce byte-identical clean output" {
 
 test "#1958: direct-authority and source-shadow paths are byte-identical" {
   let source = "export fn value() -> Int { 1 }\n"
-  match (parse_source_located_with_binder_authority(source), shadow_checked_implementation_body_artifact_from_source(source)) {
-    (Some(authority), Some(shadow)) => match checked_implementation_body_artifact_from_authority(authority) {
+  match (parse_source_located_with_binder_authority(source), shadow_checked_implementation_body_artifact_from_source(source, checked_error_row = false)) {
+    (Some(authority), Some(shadow)) => match checked_implementation_body_artifact_from_authority(authority, checked_error_row = false) {
       Some(direct) => assert_eq(encode_checked_implementation_body_artifact_v1(direct), encode_checked_implementation_body_artifact_v1(shadow)),
       None => assert(false)
     },
@@ -365,8 +365,8 @@ test "#1958: function join rejects torn stale and cross-source authority" {
   let new_source = "fn value(x: Int) -> Int { x + 1 }\n"
   match (normalized_join(old_source), parse_source_located_with_binder_authority(old_source), parse_source_located_with_binder_authority(new_source)) {
     (Some(bytes), Some(old_authority), Some(new_authority)) => {
-      assert(normalized_checked_function_join_artifact_matches_authority(text = bytes, authority = old_authority))
-      assert(!normalized_checked_function_join_artifact_matches_authority(text = bytes, authority = new_authority))
+      assert(normalized_checked_function_join_artifact_matches_authority(text = bytes, authority = old_authority, checked_error_row = false))
+      assert(!normalized_checked_function_join_artifact_matches_authority(text = bytes, authority = new_authority, checked_error_row = false))
       assert(decode_normalized_checked_function_join_artifact_v1(String::substring(bytes, start = 0, end = String::length(bytes) - 1)) == None)
       assert(decode_normalized_checked_function_join_artifact_v1(String::concat(bytes, "x")) == None)
     },
@@ -431,7 +431,7 @@ test "#1958: cached value TypeEnv preserves exact index and rejects mismatch" {
 test "#1958: complete seeded final TypeEnv round-trips" {
   let source = "fn id[T](x: T) -> T { x }\n"
   match parse_source_located_with_binder_authority(source) {
-    Some(authority) => match normalized_value_type_env_artifact_from_authority(authority) {
+    Some(authority) => match normalized_value_type_env_artifact_from_authority(authority, checked_error_row = false) {
       Some(artifact) => {
         let bytes = encode_normalized_value_type_env_artifact_v1(artifact)
         assert(decode_normalized_value_type_env_artifact_v1(bytes) != None)
@@ -447,7 +447,7 @@ test "#1958: declaration and mutation TypeEnv nodes round-trip" {
     TDEnum("Choice", ["T"], [("Choice", [CtNamed("T", [])])]),
     TDStruct("Point", [("x", CtInt)], ["x"], []),
     TDAlias("Count", [], CtInt),
-    TDEffect("Log", [("Emit", [CtString], CtUnit)], [], []),
+    TDEffect("Log", [("Emit", [CtString], CtUnit)], [], [], ProgramHandled),
     TDEffectSet("Console", ["Log"])
   ]
   let env = EnvTraitDef("Show", [], false, [
@@ -500,8 +500,8 @@ test "#1958: shadow parity accepts exact current authority and rejects stale bod
   let retained = build(old_source)
   match (parse_source_located_with_binder_authority(old_source), parse_source_located_with_binder_authority(new_source)) {
     (Some(old_authority), Some(new_authority)) => {
-      assert(checked_implementation_body_artifact_matches_authority(text = retained, authority = old_authority))
-      assert(!checked_implementation_body_artifact_matches_authority(text = retained, authority = new_authority))
+      assert(checked_implementation_body_artifact_matches_authority(text = retained, authority = old_authority, checked_error_row = false))
+      assert(!checked_implementation_body_artifact_matches_authority(text = retained, authority = new_authority, checked_error_row = false))
     },
     _ => assert(false)
   }

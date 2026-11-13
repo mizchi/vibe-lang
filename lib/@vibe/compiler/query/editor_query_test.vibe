@@ -53,20 +53,20 @@ fn occ_contains(occ: Array[(Int, Int)], start: Int, end: Int) -> Bool {
 /// unrelated identifier one line down.
 test "type-at: col past end-of-line clamps to empty, does not spill into next line" {
   let src = "export let add = (a: Int, b: Int) -> Int { a + b }\nexport let subtract = (a: Int, b: Int) -> Int { a - b }\n"
-  assert(type_at_source(source = src, line = 1, col = 63) == "")
+  assert(type_at_source(source = src, line = 1, col = 63, checked_error_row = false) == "")
   assert(occ_len(binding_occurrences(source = src, line = 1, col = 63)) == 0)
   // Sanity: querying the real position of `subtract` still resolves.
-  assert(type_at_source(source = src, line = 2, col = 12) == "(Int, Int) -> Int")
+  assert(type_at_source(source = src, line = 2, col = 12, checked_error_row = false) == "(Int, Int) -> Int")
 }
 
 /// --- Item 1: line 0 is out of range (1-based) and must yield empty, not
 /// alias into line 1 via `linestart(=0) + col - 1`.
 test "type-at: line 0 (invalid, 1-based) yields empty, does not alias to line 1" {
   let src = "export let add = (a: Int, b: Int) -> Int { a + b }\n"
-  assert(type_at_source(source = src, line = 0, col = 12) == "")
+  assert(type_at_source(source = src, line = 0, col = 12, checked_error_row = false) == "")
   assert(occ_len(binding_occurrences(source = src, line = 0, col = 12)) == 0)
   // Sanity: the same column on the real line 1 resolves to `add`.
-  assert(type_at_source(source = src, line = 1, col = 12) == "(Int, Int) -> Int")
+  assert(type_at_source(source = src, line = 1, col = 12, checked_error_row = false) == "(Int, Int) -> Int")
 }
 
 /// --- Item 2: an identifier referenced inside a string interpolation
@@ -92,7 +92,7 @@ test "binding-at: identifier inside string interpolation resolves to its real sp
 
 test "type-at: identifier inside string interpolation resolves its type" {
   let src = "let name = \"world\"\nlet greeting = \"hello \\{name}\"\n"
-  assert(type_at_source(source = src, line = 2, col = 25) == "String")
+  assert(type_at_source(source = src, line = 2, col = 25, checked_error_row = false) == "String")
 }
 
 /// Codex P2 on #975: `parse_recur` anchors a fragment parse's located nodes at
@@ -125,7 +125,7 @@ test "binding-at: MULTI-TOKEN interpolation fragment resolves each identifier's 
   assert(occ_contains(occ = occ_b, start = 14, end = 15))
   assert(occ_contains(occ = occ_b, start = 35, end = 36))
   // Hovering `b` INSIDE the fragment (line 3, col 16 = offset 35) types it.
-  assert(type_at_source(source = src, line = 3, col = 16) == "Int")
+  assert(type_at_source(source = src, line = 3, col = 16, checked_error_row = false) == "Int")
 }
 
 /// --- Item 3: CRLF files must not drift -- `\r` must not be counted as
@@ -212,8 +212,8 @@ test "doc-at: no identifier at position yields empty" {
 test "type-at: call-site callee reports the function type, not the call result" {
   let src = "fn add(a: Int, b: Int) -> Int { a + b }\nlet x = add(a = 1, b = 2)\n"
   // line 2 = "let x = add(1, 2)"; `add` starts at col 9.
-  inspect(type_at_source(source = src, line = 2, col = 9), "(Int, Int) -> Int")
-  inspect(type_at_source(source = src, line = 2, col = 10), "(Int, Int) -> Int")
+  inspect(type_at_source(source = src, line = 2, col = 9, checked_error_row = false), "(Int, Int) -> Int")
+  inspect(type_at_source(source = src, line = 2, col = 10, checked_error_row = false), "(Int, Int) -> Int")
 }
 
 /// #1941 leftover: hovering the declaration name of `fn add` must report the
@@ -222,8 +222,8 @@ test "type-at: call-site callee reports the function type, not the call result" 
 test "type-at: fn declaration name reports the function type" {
   let src = "fn add(a: Int, b: Int) -> Int { a + b }\n"
   // line 1 = "fn add(...)"; `add` starts at col 4.
-  inspect(type_at_source(source = src, line = 1, col = 4), "(Int, Int) -> Int")
-  inspect(type_at_source(source = src, line = 1, col = 5), "(Int, Int) -> Int")
+  inspect(type_at_source(source = src, line = 1, col = 4, checked_error_row = false), "(Int, Int) -> Int")
+  inspect(type_at_source(source = src, line = 1, col = 5, checked_error_row = false), "(Int, Int) -> Int")
 }
 
 /// #1944 leftover: `doc_at_source` goes through `binding_occurrences`, and
@@ -295,22 +295,22 @@ test "doc-at: hovering a fn declaration resolves its doc comment" {
 
 test "type-at: function name is not stolen from a same-name call result" {
   let src = "export let add = (a: Int, b: Int) -> Int { a + b }\nfn main() -> Int { add(a = 1, b = 2) }\n"
-  assert(type_at_source(source = src, line = 1, col = 12) == "(Int, Int) -> Int")
+  assert(type_at_source(source = src, line = 1, col = 12, checked_error_row = false) == "(Int, Int) -> Int")
 }
 
 test "type-at: a comment let-star is not a binder" {
   let src = "// let* dead = o\nfn f(o: Option[Int]) -> Option[Int] {\n  let* x = o\n  Some(x + 1)\n}\n"
-  assert(type_at_source(source = src, line = 1, col = 8) == "")
+  assert(type_at_source(source = src, line = 1, col = 8, checked_error_row = false) == "")
 }
 
 test "type-at: let-star binder has the unwrapped payload type" {
   let src = "fn f(o: Option[Int]) -> Option[Int] {\n  let* x = o\n  Some(x + 1)\n}\n"
-  assert(type_at_source(source = src, line = 2, col = 8) == "Int")
+  assert(type_at_source(source = src, line = 2, col = 8, checked_error_row = false) == "Int")
 }
 
 test "type-at: earlier let-star x is not stolen by a later x" {
   let src = "fn f(o: Option[Int]) -> Option[Int] {\n  let* x = o\n  Some(x + 1)\n}\nfn g(s: Option[String]) -> Option[String] {\n  let* x = s\n  Some(x)\n}\n"
-  assert(type_at_source(source = src, line = 2, col = 8) == "Int")
+  assert(type_at_source(source = src, line = 2, col = 8, checked_error_row = false) == "Int")
 }
 
 test "binding-at: let-star binder includes the written name and its uses" {
@@ -325,8 +325,8 @@ test "binding-at: nested let-star binders are distinct" {
   let inner_occ = binding_occurrences(source = src, line = 3, col = 8)
   assert(occ_len(outer_occ) >= 2)
   assert(occ_len(inner_occ) >= 2)
-  assert(type_at_source(source = src, line = 2, col = 8) != "")
-  assert(type_at_source(source = src, line = 3, col = 8) != "")
+  assert(type_at_source(source = src, line = 2, col = 8, checked_error_row = false) != "")
+  assert(type_at_source(source = src, line = 3, col = 8, checked_error_row = false) != "")
 }
 
 // #3000: a binder's DECLARATION site answers with the same type as its uses.
@@ -335,20 +335,20 @@ test "binding-at: nested let-star binders are distinct" {
 // walk never saw the place a name is introduced.
 test "type-at: match arm pattern binder answers at its declaration" {
   let src = "fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => v + 1\n    None => 0\n  }\n}\n"
-  assert(type_at_source(source = src, line = 3, col = 10) == "Int")
-  assert(type_at_source(source = src, line = 3, col = 16) == "Int")
+  assert(type_at_source(source = src, line = 3, col = 10, checked_error_row = false) == "Int")
+  assert(type_at_source(source = src, line = 3, col = 16, checked_error_row = false) == "Int")
 }
 
 test "type-at: handler arm pattern binder answers at its declaration" {
   let src = "effect Log {\n  Emit(String) -> Unit\n}\nfn run(sink: Array[String]) -> Unit {\n  handle {\n    perform Log::Emit(\"hi\")\n  } with { Log::Emit(msg) => {\n    Array::push(sink, value = msg)\n    resume(())\n  } }\n}\n"
-  assert(type_at_source(source = src, line = 7, col = 22) == "String")
-  assert(type_at_source(source = src, line = 8, col = 31) == "String")
+  assert(type_at_source(source = src, line = 7, col = 22, checked_error_row = false) == "String")
+  assert(type_at_source(source = src, line = 8, col = 31, checked_error_row = false) == "String")
 }
 
 test "type-at: lambda parameter and local let answer at their declarations" {
   let src = "export let f = (n: Int) -> Int {\n  let g = n * 2\n  g\n}\n"
-  assert(type_at_source(source = src, line = 1, col = 17) == "Int")
-  assert(type_at_source(source = src, line = 2, col = 7) == "Int")
+  assert(type_at_source(source = src, line = 1, col = 17, checked_error_row = false) == "Int")
+  assert(type_at_source(source = src, line = 2, col = 7, checked_error_row = false) == "Int")
 }
 
 // #3050: a closure whose every use is a call. A callee's table row is the
@@ -357,11 +357,11 @@ test "type-at: lambda parameter and local let answer at their declarations" {
 // the local one. Both now answer with the local `let`'s own value type.
 test "type-at: a local closure used only as a callee answers at its declaration and its call" {
   let src = "fn main() -> Int {\n  let f = (x: Int) -> x + 1\n  f(1)\n}\n"
-  assert(type_at_source(source = src, line = 2, col = 7) == "(Int) -> Int")
-  assert(type_at_source(source = src, line = 3, col = 3) == "(Int) -> Int")
+  assert(type_at_source(source = src, line = 2, col = 7, checked_error_row = false) == "(Int) -> Int")
+  assert(type_at_source(source = src, line = 3, col = 3, checked_error_row = false) == "(Int) -> Int")
   let shadow_src = "fn f(s: String) -> String {\n  s\n}\nfn main() -> Int {\n  let f = (x: Int) -> x + 1\n  f(1)\n}\n"
-  assert(type_at_source(source = shadow_src, line = 6, col = 3) == "(Int) -> Int")
-  assert(type_at_source(source = shadow_src, line = 1, col = 4) == "(String) -> String")
+  assert(type_at_source(source = shadow_src, line = 6, col = 3, checked_error_row = false) == "(Int) -> Int")
+  assert(type_at_source(source = shadow_src, line = 1, col = 4, checked_error_row = false) == "(String) -> String")
 }
 
 // #3106: the same for a local `let rec`. `ELetRec` carries no offset, so the
@@ -371,34 +371,34 @@ test "type-at: a local closure used only as a callee answers at its declaration 
 // the call in `main` answers for the local, not the top-level `fn f`.
 test "type-at: a local let rec used only as a callee answers at its declaration and its calls" {
   let src = "fn main() -> Int {\n  let rec go = (n: Int) -> Int { if n == 0 { 0 } else { go(n - 1) } }\n  go(2)\n}\n"
-  assert(type_at_source(source = src, line = 2, col = 11) == "(Int) -> Int")
-  assert(type_at_source(source = src, line = 2, col = 57) == "(Int) -> Int")
-  assert(type_at_source(source = src, line = 3, col = 3) == "(Int) -> Int")
+  assert(type_at_source(source = src, line = 2, col = 11, checked_error_row = false) == "(Int) -> Int")
+  assert(type_at_source(source = src, line = 2, col = 57, checked_error_row = false) == "(Int) -> Int")
+  assert(type_at_source(source = src, line = 3, col = 3, checked_error_row = false) == "(Int) -> Int")
   let nested_src = "fn f(s: String) -> String {\n  s\n}\nfn main() -> Int {\n  let rec f = () -> Int {\n    let rec f = (n: Int) -> Int { if n == 0 { 0 } else { f(n - 1) } }\n    f(1)\n  }\n  f()\n}\n"
-  assert(type_at_source(source = nested_src, line = 5, col = 11) == "() -> Int")
-  assert(type_at_source(source = nested_src, line = 6, col = 13) == "(Int) -> Int")
-  assert(type_at_source(source = nested_src, line = 6, col = 58) == "(Int) -> Int")
-  assert(type_at_source(source = nested_src, line = 7, col = 5) == "(Int) -> Int")
-  assert(type_at_source(source = nested_src, line = 9, col = 3) == "() -> Int")
-  assert(type_at_source(source = nested_src, line = 1, col = 4) == "(String) -> String")
+  assert(type_at_source(source = nested_src, line = 5, col = 11, checked_error_row = false) == "() -> Int")
+  assert(type_at_source(source = nested_src, line = 6, col = 13, checked_error_row = false) == "(Int) -> Int")
+  assert(type_at_source(source = nested_src, line = 6, col = 58, checked_error_row = false) == "(Int) -> Int")
+  assert(type_at_source(source = nested_src, line = 7, col = 5, checked_error_row = false) == "(Int) -> Int")
+  assert(type_at_source(source = nested_src, line = 9, col = 3, checked_error_row = false) == "() -> Int")
+  assert(type_at_source(source = nested_src, line = 1, col = 4, checked_error_row = false) == "(String) -> String")
 }
 
 test "type-at: offset-free recursive closure answers at its declaration and call" {
   let src = "fn main() -> Int {\n  let rec f = () -> Int { 1 }\n  f()\n}\n"
-  inspect(type_at_source(source = src, line = 2, col = 11), content = "() -> Int")
-  inspect(type_at_source(source = src, line = 3, col = 3), content = "() -> Int")
+  inspect(type_at_source(source = src, line = 2, col = 11, checked_error_row = false), content = "() -> Int")
+  inspect(type_at_source(source = src, line = 3, col = 3, checked_error_row = false), content = "() -> Int")
 }
 
 test "type-at: an offset-free outer recursive binding cannot steal an inner key" {
   let src = "fn main() -> Int {\n  let rec f = () -> Int { 1 }\n  let rec g = () -> Int { 2 }\n  g()\n}\n"
-  inspect(type_at_source(source = src, line = 2, col = 11), content = "")
-  inspect(type_at_source(source = src, line = 3, col = 11), content = "() -> Int")
-  inspect(type_at_source(source = src, line = 4, col = 3), content = "() -> Int")
+  inspect(type_at_source(source = src, line = 2, col = 11, checked_error_row = false), content = "")
+  inspect(type_at_source(source = src, line = 3, col = 11, checked_error_row = false), content = "() -> Int")
+  inspect(type_at_source(source = src, line = 4, col = 3, checked_error_row = false), content = "() -> Int")
 }
 
 test "type-at: an unused pattern binder does not borrow a top-level name's type" {
   let src = "fn v() -> String {\n  \"x\"\n}\nfn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => 0\n    None => 1\n  }\n}\n"
-  assert(type_at_source(source = src, line = 6, col = 10) == "")
+  assert(type_at_source(source = src, line = 6, col = 10, checked_error_row = false) == "")
 }
 
 // #3000, the binder forms the first fix left out. A `let` destructuring (and a
@@ -408,48 +408,48 @@ test "type-at: an unused pattern binder does not borrow a top-level name's type"
 // use of the same name for the declaration.
 test "type-at: let destructuring binders answer at their declaration" {
   let src = "fn d(p: (Int, String)) -> String {\n  let (n, s) = p\n  let _ = n\n  s\n}\n"
-  assert(type_at_source(source = src, line = 2, col = 8) == "Int")
-  assert(type_at_source(source = src, line = 2, col = 11) == "String")
+  assert(type_at_source(source = src, line = 2, col = 8, checked_error_row = false) == "Int")
+  assert(type_at_source(source = src, line = 2, col = 11, checked_error_row = false) == "String")
 }
 
 test "type-at: constructor, struct and record destructuring binders answer at their declaration" {
   let ctor_src = "fn f(pt: Option[(Int, String)]) -> String {\n  let Some((px, py)) = pt\n  let _ = px\n  py\n}\n"
-  assert(type_at_source(source = ctor_src, line = 2, col = 13) == "Int")
-  assert(type_at_source(source = ctor_src, line = 2, col = 17) == "String")
+  assert(type_at_source(source = ctor_src, line = 2, col = 13, checked_error_row = false) == "Int")
+  assert(type_at_source(source = ctor_src, line = 2, col = 17, checked_error_row = false) == "String")
   let struct_src = "struct P { x: Int; y: String }\nfn f(p: P) -> String {\n  let P::{ x, y } = p\n  let _ = x\n  y\n}\n"
-  assert(type_at_source(source = struct_src, line = 3, col = 12) == "Int")
-  assert(type_at_source(source = struct_src, line = 3, col = 15) == "String")
+  assert(type_at_source(source = struct_src, line = 3, col = 12, checked_error_row = false) == "Int")
+  assert(type_at_source(source = struct_src, line = 3, col = 15, checked_error_row = false) == "String")
   assert(occ_len(binding_occurrences(source = struct_src, line = 3, col = 15)) == 2)
   let record_src = "fn f() -> Int {\n  let r = record { x: 10, y: 20 }\n  let record { x, y } = r\n  x + y\n}\n"
-  assert(type_at_source(source = record_src, line = 3, col = 16) == "Int")
+  assert(type_at_source(source = record_src, line = 3, col = 16, checked_error_row = false) == "Int")
   assert(occ_len(binding_occurrences(source = record_src, line = 3, col = 16)) == 2)
   // A record literal's field label spelled like a binder, between the scan
   // floor and the `let`, must not be taken for the declaration.
   let label_src = "fn f(p: (Int, String)) -> String {\n  let r = record { n: 1 }\n  let (n, s) = p\n  let _ = r\n  let _ = n\n  s\n}\n"
-  assert(type_at_source(source = label_src, line = 3, col = 8) == "Int")
+  assert(type_at_source(source = label_src, line = 3, col = 8, checked_error_row = false) == "Int")
   assert(occ_len(binding_occurrences(source = label_src, line = 3, col = 8)) == 2)
 }
 
 test "type-at: guard and is binders answer at their declaration" {
   let guard_src = "fn f(o: Option[Int]) -> Int {\n  guard o is Some(v) else {\n    return 0\n  }\n  v\n}\n"
-  assert(type_at_source(source = guard_src, line = 2, col = 19) == "Int")
+  assert(type_at_source(source = guard_src, line = 2, col = 19, checked_error_row = false) == "Int")
   let is_src = "fn f(o: Option[Int]) -> Int {\n  if o is Some(v) {\n    v\n  } else {\n    0\n  }\n}\n"
-  assert(type_at_source(source = is_src, line = 2, col = 16) == "Int")
+  assert(type_at_source(source = is_src, line = 2, col = 16, checked_error_row = false) == "Int")
 }
 
 test "type-at: top-level tuple destructuring binders answer at their declaration" {
   let src = "let (a, b) = (1, \"x\")\nfn f() -> String {\n  b\n}\n"
-  assert(type_at_source(source = src, line = 1, col = 6) == "Int")
-  assert(type_at_source(source = src, line = 1, col = 9) == "String")
+  assert(type_at_source(source = src, line = 1, col = 6, checked_error_row = false) == "Int")
+  assert(type_at_source(source = src, line = 1, col = 9, checked_error_row = false) == "String")
   assert(occ_len(binding_occurrences(source = src, line = 1, col = 9)) == 2)
 }
 
 test "type-at: for header binders answer at their declaration" {
   let src = "fn fo(xs: Array[Int]) -> Int {\n  let mut t = 0\n  for x in xs {\n    t = t + x\n  }\n  t\n}\n"
-  assert(type_at_source(source = src, line = 3, col = 7) == "Int")
+  assert(type_at_source(source = src, line = 3, col = 7, checked_error_row = false) == "Int")
   let idx_src = "fn fo(xs: Array[String]) -> Int {\n  let mut t = 0\n  for i, x in xs {\n    t = t + i + String::length(x)\n  }\n  t\n}\n"
-  assert(type_at_source(source = idx_src, line = 3, col = 7) == "Int")
-  assert(type_at_source(source = idx_src, line = 3, col = 10) == "String")
+  assert(type_at_source(source = idx_src, line = 3, col = 7, checked_error_row = false) == "Int")
+  assert(type_at_source(source = idx_src, line = 3, col = 10, checked_error_row = false) == "String")
 }
 
 test "binding-at: a destructuring binder is not confused with a same-named value" {
@@ -473,7 +473,7 @@ test "binding-at: a for binder is its declaration, not its first use" {
 
 test "type-at: a same-named field before a real match keeps the match order" {
   let src = "struct S { v: Int }\nfn f(p: S, o: Option[Int]) -> Int {\n  let k = p.v\n  match o {\n    Some(v) => v + k\n    None => 0\n  }\n}\n"
-  assert(type_at_source(source = src, line = 5, col = 10) == "Int")
+  assert(type_at_source(source = src, line = 5, col = 10, checked_error_row = false) == "Int")
 }
 
 test "type-at: no identifier under the cursor is told apart from an unknown type" {
@@ -486,5 +486,5 @@ test "type-at: no identifier under the cursor is told apart from an unknown type
   assert(type_at_ident_at(source = src, line = 99, col = 1) == "")
   // an identifier: the unused binder has no known type, but it IS a name
   assert(type_at_ident_at(source = src, line = 3, col = 10) == "v")
-  assert(type_at_source(source = src, line = 3, col = 10) == "")
+  assert(type_at_source(source = src, line = 3, col = 10, checked_error_row = false) == "")
 }

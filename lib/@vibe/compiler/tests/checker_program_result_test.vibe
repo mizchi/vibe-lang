@@ -2,6 +2,7 @@
 
 import @vibe/compiler/core {
   BindingOrigin,
+  EffectOwner,
   Expr,
   Stmt,
   Subst,
@@ -104,7 +105,7 @@ test "check_program_result retains production outputs" {
     SStruct(false, "Point", [("x", TyName("Int"))], array_empty(), array_empty(), array_empty()),
     SLet(false, false, "value", None, array_length_expr())
   ]
-  let checked = check_program_result(stmts)
+  let checked = check_program_result(stmts, checked_error_row = false)
   // The retained statements are the production checker's post-desugar input.
   assert(Array::length(checked.checked_stmts) == 2)
   match Array::get(checked.checked_stmts, at = 0) {
@@ -130,7 +131,7 @@ test "checker final env retains ordered trait header params" {
       "T",
       "U"
     ])
-  ])
+  ], checked_error_row = false)
   let params = trait_header_params(env = checked.final_env, wanted = "Iterator")
   assert(Array::length(params) == 2)
   assert(Array::get(params, at = 0) == "T")
@@ -144,8 +145,8 @@ test "production result retains every typedef form and enum binder provenance" {
       "T"
     ]),
     STypeAlias(false, "Wrapped", ["T"], TyName("T")),
-    SEffectDef(false, "Reader", ["T"], [("ask", array_empty(), TyName("T"))])
-  ])
+    SEffectDef(false, "Reader", ["T"], [("ask", array_empty(), TyName("T"))], ProgramHandled)
+  ], checked_error_row = false)
   let checked = observation.checked_program
   let type_def_binders = observation.type_def_binders
   assert(Array::length(checked.type_defs) == 4)
@@ -166,7 +167,7 @@ test "production result retains every typedef form and enum binder provenance" {
     _ => assert(false)
   }
   match Array::get(checked.type_defs, at = 3) {
-    TDEffect("Reader", _, params, _) => assert(Array::length(params) == 1),
+    TDEffect("Reader", _, params, _, _) => assert(Array::length(params) == 1),
     _ => assert(false)
   }
 }
@@ -178,7 +179,7 @@ test "check_program_with_env_result retains production outputs" {
     SStruct(false, "Record", [("value", TyName("Int"))], array_empty(), array_empty(), array_empty()),
     SLet(false, false, "copied", None, array_length_expr())
   ]
-  let observation = check_program_with_env_type_defs_observation(stmts = stmts, initial_env = initial_env)
+  let observation = check_program_with_env_type_defs_observation(stmts = stmts, initial_env = initial_env, checked_error_row = false)
   let checked = observation.checked_program
   let type_def_binders = observation.type_def_binders
   assert(Array::length(checked.checked_stmts) == 3)
@@ -202,8 +203,8 @@ test "check_program_with_env_result retains production outputs" {
 test "check_program remains compatible with check_program_result" {
   let result_env = check_program_result([
     SLet(false, false, "value", None, EInt(1))
-  ]).final_env
-  let legacy_env = check_program([SLet(false, false, "value", None, EInt(1))])
+  ], checked_error_row = false).final_env
+  let legacy_env = check_program([SLet(false, false, "value", None, EInt(1))], checked_error_row = false)
   assert_int_binding(env = result_env, name = "value")
   assert_int_binding(env = legacy_env, name = "value")
 }
@@ -212,10 +213,10 @@ test "check_program_with_env remains compatible with its result variant" {
   let initial_env = env_bind(env = EnvEmpty, name = "seed", ty = CtInt)
   let result_env = check_program_with_env_result(stmts = [
     SLet(false, false, "copied", None, EIdent("seed", -1))
-  ], initial_env = initial_env).final_env
+  ], initial_env = initial_env, checked_error_row = false).final_env
   let legacy_env = check_program_with_env(stmts = [
     SLet(false, false, "copied", None, EIdent("seed", -1))
-  ], initial_env = initial_env)
+  ], initial_env = initial_env, checked_error_row = false)
   assert_int_binding(env = result_env, name = "copied")
   assert_int_binding(env = legacy_env, name = "copied")
 }
@@ -258,7 +259,7 @@ test "typed occurrences preserve identifier rows across env builtin and qualifie
   let checked = check_program_result([
     SEnum(false, "Choice", array_empty(), [("Pick", array_empty())], array_empty()),
     SLet(false, false, "picked", None, EIdent("Choice::Pick", 30))
-  ])
+  ], checked_error_row = false)
   assert_typed_occurrences(actual = checked.typed_occurrences, expected = [
     (30, CtEnum("Choice"))
   ])

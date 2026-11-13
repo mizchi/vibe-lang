@@ -222,6 +222,11 @@ export struct PCtx {
   mut dsplit_ids: Array[Int];
   mut dsplit_offs: Array[Int];
   mut dsplit_names: Array[String];
+  // Per marking merge, the binding id and how many references a path that
+  // ran none of its marks is sure to hold beyond what the path consumes
+  // there (`pe_dup_merge`); a binding's path drop releases the least of them.
+  mut dspare_ids: Array[Int];
+  mut dspare_counts: Array[Int];
   // #3141: per binding id, how many of the references the binding holds the
   // walk has consumed so far -- one per owning occurrence (a dup'd one
   // consumes its dup, the last one the initial reference) and one per
@@ -514,19 +519,28 @@ fn pe_dmark_any_marked(ctx: PCtx, id: Int, from: Int, to: Int) -> Bool {
 /// - when some arm has fewer than `M`, or an arm already holds a mark from an
 ///   inner merge, every occurrence in a maximal arm -- including ones an inner
 ///   merge already counted out -- becomes a consume mark, and the guarded
-///   path drop releases one reference on a path that ran none of them.
+///   path drop releases `M - S` references on a path that ran none of them,
+///   `S` the most occurrences a smaller arm has (0 when every arm is
+///   maximal). The count is recorded per merge (`dspare_*`), and a binding's
+///   drop releases the least any of its merges recorded.
 ///
 /// Neither can release a reference a path still needs. Removing rows leaves
 /// `M` for a path through any arm, which consumes at most its own arm's
 /// occurrences and the rows of any it did not count. A path that ran no mark
-/// went through a smaller arm, or through a maximal arm without reaching an
-/// occurrence: either way it consumed fewer than `M` here, so the one drop
-/// releases a reference it holds. The inner-mark rule is what keeps that true
-/// across nesting: `if a { keep(v) } else if b { keep(v) }` is symmetric at
-/// the outer merge, which drops the inner arm's row, so the outer `then`
-/// path -- consuming its whole budget -- must run a mark of its own, or the
-/// inner merge's path drop fires on it. A shortfall of two or more on a path
-/// still leaks the rest, as before.
+/// went through a smaller arm, consuming at most `S` here, or through a
+/// maximal arm without reaching an occurrence, consuming none: either way it
+/// holds `M - S` references this merge budgeted and it did not spend. Every
+/// other merge or occurrence leaves a path at least the references it spent,
+/// and a merge enclosing a marking one marks too (below), so the outermost
+/// marking merge is on every path to the scope end and the least count over
+/// the binding's merges is held on every path that ran no mark. The
+/// inner-mark rule is what keeps that true across nesting: `if a { keep(v) }
+/// else if b { keep(v) }` is symmetric at the outer merge, which drops the
+/// inner arm's row, so the outer `then` path -- consuming its whole budget --
+/// must run a mark of its own, or the inner merge's path drop fires on it. A
+/// path that runs no mark through a smaller arm with fewer than `S`
+/// occurrences -- the `0` arm of a `match` whose arms take 2, 1 and 0 --
+/// still leaks the difference.
 export fn pe_dup_merge(ctx: PCtx, id: Int, bounds: Array[Int]) -> Unit {
   let k = Array::length(bounds) - 1
   if Array::get(ctx.view_call_let, at = id) || Array::get(ctx.borrowed_view, at = id) {
@@ -559,11 +573,21 @@ export fn pe_dup_merge(ctx: PCtx, id: Int, bounds: Array[Int]) -> Unit {
       // down too. A mark only ever withholds the drop -- an extra one leaks,
       // a missing one releases a reference still held.
       if mn < mx || pe_dmark_any_marked(ctx = ctx, id = id, from = Array::get(bounds, at = 0), to = Array::get(bounds, at = k)) {
+        // `below`: the most occurrences a smaller arm has. A path that runs
+        // no mark here took a smaller arm, consuming at most that many, or a
+        // maximal arm without reaching an occurrence, consuming none.
+        let mut below = 0
         let mut ma = 0
         while ma < k {
           let lo = Array::get(bounds, at = ma)
           let hi = Array::get(bounds, at = ma + 1)
-          if pe_dmark_live(ctx = ctx, id = id, from = lo, to = hi) == mx {
+          let ml = pe_dmark_live(ctx = ctx, id = id, from = lo, to = hi)
+          if ml < mx && ml > below {
+            below = ml
+          } else {
+            ()
+          }
+          if ml == mx {
             let mut i = lo
             while i < hi {
               if Array::get(ctx.dmark_ids, at = i) == id && !Array::get(ctx.dmark_marked, at = i) {
@@ -581,6 +605,8 @@ export fn pe_dup_merge(ctx: PCtx, id: Int, bounds: Array[Int]) -> Unit {
           }
           ma = ma + 1
         }
+        Array::push(ctx.dspare_ids, value = id)
+        Array::push(ctx.dspare_counts, value = mx - below)
         pe_flag_or(ctx = ctx, id = id, bit = pf_dsplit)
       } else {
         ()

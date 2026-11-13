@@ -13,7 +13,7 @@ import @vibe/compiler/checker/artifacts {
 }
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Stmt, TypeExpr
+  EffectOwner, Expr, ImportItem, Stmt, TypeExpr
 }
 
 import @vibe/compiler/syntax {
@@ -29,14 +29,14 @@ import ../parser.vibe {
 }
 
 fn artifact_text(_ stmts: Array[Stmt]) -> String with Exception {
-  match checked_exported_interface_artifact_from_checked_program(check_program_result(stmts)) {
+  match checked_exported_interface_artifact_from_checked_program(check_program_result(stmts, checked_error_row = false)) {
     Some(artifact) => encode_checked_exported_interface_artifact_v1(artifact),
     None => "<none>"
   }
 }
 
 fn artifact_fingerprint(_ stmts: Array[Stmt]) -> String with Exception {
-  match checked_exported_interface_artifact_from_checked_program(check_program_result(stmts)) {
+  match checked_exported_interface_artifact_from_checked_program(check_program_result(stmts, checked_error_row = false)) {
     Some(artifact) => checked_exported_interface_artifact_fingerprint_v1(artifact),
     None => "<none>"
   }
@@ -51,12 +51,12 @@ test "checked exported-interface artifact round-trips its complete public surfac
     STrait(true, "Show", ["Eq"], [("show", [TyName("Self")], TyName("String"))], [
       ("show", ["X"], [("X", ["Eq"])])
     ], ["Self"]),
-    SEffectDef(true, "Ask", ["T"], [("Get", [TyName("T")], TyName("String"))]),
+    SEffectDef(true, "Ask", ["T"], [("Get", [TyName("T")], TyName("String"))], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: Some("renamed") }
     ])
-  ])
+  ], checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(checked) {
     Some(artifact) => {
       let text = encode_checked_exported_interface_artifact_v1(artifact)
@@ -83,7 +83,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -99,7 +99,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -115,7 +115,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -131,7 +131,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -147,7 +147,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -161,7 +161,7 @@ test "checked exported-interface artifact observes every public declaration cate
     STrait(true, "Show", array_empty(), [("show", array_empty(), TyName("Int"))], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -177,7 +177,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Put", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -193,7 +193,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Other"]),
     SReExport("./dep.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -209,7 +209,7 @@ test "checked exported-interface artifact observes every public declaration cate
     ], array_empty(), array_empty()),
     SEffectDef(true, "Ask", array_empty(), [
       ("Get", array_empty(), TyName("String"))
-    ]),
+    ], ProgramHandled),
     SEffectSet(true, "Reads", ["Ask::Get"]),
     SReExport("./other.vibe", [
       ImportItem::{ kind: None, name: "remote", alias: None }
@@ -223,18 +223,31 @@ test "checked exported-interface artifact ignores private bodies and comments" {
   assert(first == second)
 }
 
+test "checked exported-interface artifact tells an extern effect from a program-handled one" {
+  // ADR-0124 (#2656): the same operations under another owner are another
+  // interface -- one is performed and handled, the other called and bound to
+  // a host provider -- so the identity changes with the owner.
+  let handled = parse_program(lex("export effect Kv {\n  Fetch() -> String\n}\n"))
+  let hosted = parse_program(lex("export extern effect Kv {\n  Fetch() -> String\n}\n"))
+  assert(artifact_text(handled) != artifact_text(hosted))
+  assert(artifact_fingerprint(handled) != artifact_fingerprint(hosted))
+  assert(String::contains(artifact_text(hosted), needle = "extern-effect"))
+  // A program-handled effect keeps the bytes it had before the owner existed.
+  assert(!String::contains(artifact_text(handled), needle = "extern-effect"))
+}
+
 test "checked exported-interface artifact fails closed for unknown exports and nested public values" {
   let unknown = check_program_result([
     SLet(false, false, "private", None, EInt(1)),
     SExport(["missing"])
-  ])
+  ], checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(unknown) {
     Some(_) => assert(false),
     None => assert(true)
   }
   let nested = check_program_result([
     SModule(true, "Public", [SLet(true, false, "value", None, EInt(1))])
-  ])
+  ], checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(nested) {
     Some(_) => assert(false),
     None => assert(true)

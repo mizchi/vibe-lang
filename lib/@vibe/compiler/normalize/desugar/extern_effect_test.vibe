@@ -1,0 +1,57 @@
+// ADR-0124 (#2656): every extern effect's bindings get names of their own.
+// They are added after the check, so no duplicate-declaration check can catch
+// a clash; two providers would silently share one raw stub.
+import ./extern_effect.vibe {
+  bind_extern_effects
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+fn bound_names(_ src: String) -> Array[String] with Exception {
+  let stmts = parse_program(lex(src))
+  bind_extern_effects(stmts)
+  let names: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => Array::push(names, value = name),
+      _ => ()
+    }
+  }
+  names
+}
+
+fn all_distinct(_ names: Array[String]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(names) {
+    let mut j = i + 1
+    while j < Array::length(names) {
+      if Array::get(names, at = i) == Array::get(names, at = j) {
+        ok = false
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+test "extern effects differing in case or by a prefix bind apart" {
+  let names = bound_names("extern effect MyAPI {\n  greet(String) -> String\n}\n\nextern effect MyApi {\n  greet(String) -> String\n}\n\nextern effect Kv {\n  op_x(String) -> String\n}\n\nextern effect KvOp {\n  x(String) -> String\n}\n")
+  assert(all_distinct(names))
+  for wanted in ["MyAPI::greet", "MyApi::greet", "Kv::op_x", "KvOp::x"] {
+    let mut found = false
+    for name in names {
+      if name == wanted {
+        found = true
+      }
+    }
+    assert(found)
+  }
+}

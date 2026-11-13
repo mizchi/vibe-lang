@@ -68,12 +68,12 @@ fn lom_write(_ k: Int) -> Unit with Fs {
 }
 
 fn lom_identity(_ grants: Array[(String, String)]) -> String with Env + Exception + Fs {
-  linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = grants, source_groups = collect_source_groups_fs(lom_main_path), exports_stripped = false)
+  linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = grants, source_groups = collect_source_groups_fs(lom_main_path, checked_error_row = false), exports_stripped = false)
 }
 
 fn lom_compile(_ mode: String) -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_rc_grants_memo(entry_path = lom_main_path, entry_name = "main", grants = [
-  ], memo_mode = mode, exports_stripped = false)
+  ], memo_mode = mode, exports_stripped = false, checked_error_row = false)
 }
 
 //# Tests
@@ -85,7 +85,7 @@ test "#2825: an identical rebuild replays the stored module, byte for byte" {
   assert(lom_bytes_eq(a = stored, b = fresh))
   // The slot now answers for this identity...
   assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = lom_identity([
-  ])) is Some(_))
+  ]), checked_error_row = false) is Some(_))
   // ...and the rebuild returns those bytes.
   assert(lom_bytes_eq(a = lom_compile("on"), b = fresh))
 }
@@ -97,7 +97,7 @@ test "#2825: an edited dependency misses and compiles what a fresh compile does"
   lom_write(2)
   let after = lom_identity([])
   assert(before != after)
-  assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = after) is None)
+  assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = after, checked_error_row = false) is None)
   let fresh = lom_compile("off")
   assert(lom_bytes_eq(a = lom_compile("on"), b = fresh))
   // The edit is in the module, not only in the identity.
@@ -107,7 +107,7 @@ test "#2825: an edited dependency misses and compiles what a fresh compile does"
 
 test "#2825: grants, entry and lane are part of the identity" {
   lom_write(1)
-  let groups = collect_source_groups_fs(lom_main_path)
+  let groups = collect_source_groups_fs(lom_main_path, checked_error_row = false)
   let base = linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = [
   ], source_groups = groups, exports_stripped = false)
   assert(base != linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = [
@@ -147,8 +147,8 @@ test "#2825: a stored module for another identity of the same length is not repl
   let last = String::length(identity) - 2
   let forged = String::concat(String::substring(identity, start = 0, end = last), String::concat("#", String::substring(identity, start = last + 1, end = String::length(identity))))
   assert(String::length(forged) == String::length(identity))
-  linked_output_memo_store(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = forged, wasm = lom_bytes("not a module"))
-  assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = identity) is None)
+  linked_output_memo_store(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = forged, wasm = lom_bytes("not a module"), checked_error_row = false)
+  assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = identity, checked_error_row = false) is None)
   let fresh = lom_compile("off")
   assert(lom_bytes_eq(a = lom_compile("on"), b = fresh))
 }
@@ -156,7 +156,7 @@ test "#2825: a stored module for another identity of the same length is not repl
 test "#2825: verify refuses a stored module that differs from a fresh compile" {
   lom_write(1)
   let identity = lom_identity([])
-  linked_output_memo_store(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = identity, wasm = lom_bytes("not a module"))
+  linked_output_memo_store(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = identity, wasm = lom_bytes("not a module"), checked_error_row = false)
   // `on` trusts the identity -- this is the replay the identity licenses...
   assert(lom_bytes_eq(a = lom_compile("on"), b = lom_bytes("not a module")))
   // ...and `verify` is what proves the licence wrong.

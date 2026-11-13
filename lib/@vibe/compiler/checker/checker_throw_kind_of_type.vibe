@@ -25,6 +25,7 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import @vibe/compiler/core {
+  EffectOwner,
   Expr,
   Pat,
   Stmt,
@@ -33,6 +34,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  alias_expansion_node_limit,
   apply_type_constructor,
   canonical_trait_arg_type_expr,
   canonical_trait_key,
@@ -52,6 +54,7 @@ import @vibe/compiler/core {
   instantiate,
   is_exception_label,
   resolve_builtin,
+  resolve_trait_key_arg,
   resolve_type_constructor_args,
   subst_apply,
   subst_bounds_for,
@@ -59,6 +62,7 @@ import @vibe/compiler/core {
   trait_method_sig_binders_deep,
   trait_method_sig_deep,
   type_constructor_name,
+  type_expr_expansion_node_count,
   type_to_string,
   unify
 }
@@ -751,7 +755,15 @@ export fn record_decl_exception_kinds(stmts: Array[Stmt], defs: Array[TypeDef], 
           scratch
         }, record_kinds = true)
         if complete && exported {
-          refuse_unpublishable_exception_row(t = resolve_type_expr_shadowed(te = te, defs = defs, shadow = params), owner = name, anchor = name, defs = defs, errors = errors)
+          // Completion reports the primary expansion error. Collecting a
+          // secondary publication diagnostic must not resolve that same
+          // refused expression again (#3995).
+          let limit = alias_expansion_node_limit()
+          if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = limit) <= limit {
+            refuse_unpublishable_exception_row(t = resolve_type_expr_shadowed(te = te, defs = defs, shadow = params), owner = name, anchor = name, defs = defs, errors = errors)
+          } else {
+            ()
+          }
         } else {
           ()
         }
@@ -1009,7 +1021,7 @@ fn report_generic_effect_row_arg_names(label: String, defs: Array[TypeDef], shad
   let bi = String::index_of(label, needle = "[")
   if bi > 0 && String::ends_with(label, suffix = "]") {
     let plain_generic = match find_typedef(defs = defs, name = String::trim(label[0: bi])) {
-      Some(TDEffect(_, _, all_etps, ekinds)) => {
+      Some(TDEffect(_, _, all_etps, ekinds, _)) => {
         let etps = effect_type_param_names(params = all_etps, kinds = ekinds)
         Array::length(etps) == 1 && type_param_arity(Array::get(etps, at = 0)) == 0
       },
@@ -1581,31 +1593,13 @@ fn trait_bound_type_expr(_ ty: Type) -> Option[TypeExpr] {
   canonical_trait_arg_type_expr(ty)
 }
 
-/// #3953: the type aliases `env` imports, `(name, params, body)`, with each
-/// body written back as a type expression the way a bound's argument is. An
-/// alias whose body has no such spelling (a still-open variable) is left out,
-/// so a key through it stays as written.
-export fn imported_trait_ref_aliases(_ env: TypeEnv) -> Array[(String, Array[String], TypeExpr)] {
-  let out: Array[(String, Array[String], TypeExpr)] = array_empty()
-  for def in env_type_defs(env) {
-    match def {
-      TDAlias(name, params, body) => match trait_bound_type_expr(body) {
-        Some(te) => Array::push(out, value = (name, params, te)),
-        None => ()
-      },
-      _ => ()
-    }
-  }
-  out
-}
-
 fn resolve_trait_bound_arg_expr(arg: TypeExpr, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> Option[TypeExpr] {
   match arg {
     TyName(name) => if name == trait_bound_self_marker {
       trait_bound_type_expr(self_ty)
     } else match parse_trait_bound_vid(name) {
       Some(vid) => trait_bound_type_expr(subst_apply(s = s, ty = CtVar(vid))),
-      None => trait_bound_type_expr(replace_trait_bound_self_type(ty = resolve_type_expr(te = arg, defs = defs), self_ty = self_ty))
+      None => trait_bound_type_expr(replace_trait_bound_self_type(ty = resolve_trait_key_arg(te = arg, defs = defs, shadow = array_empty()), self_ty = self_ty))
     },
     TyApp(name, args) => {
       let resolved_head = if name == trait_bound_self_marker {
@@ -1878,7 +1872,70 @@ export fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[T
           None
         }
       },
+      _ => host_effect_operation_type(defs = defs, qname = name)
+    }
+  }
+}
+
+/// ADR-0124 (#2656): the declaration of `name` when it is an `extern effect`,
+/// whose operations the host provides.
+fn host_effect_def(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
+  match find_typedef(defs = defs, name = name) {
+    Some(TDEffect(ename, ops, params, kinds, HostProvided)) => Some(TDEffect(ename, ops, params, kinds, HostProvided)),
+    _ => None
+  }
+}
+
+/// True when `name` is an `extern effect` (ADR-0124).
+export fn effect_is_host_provided(defs: Array[TypeDef], name: String) -> Bool {
+  match host_effect_def(defs = defs, name = name) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// ADR-0124 (#2656): an operation of an `extern effect` is a host function on
+/// the capability track, called as `Kv::get(k)` the way `Fs::read_file(p)`
+/// is: its type is the declared signature with the effect as its row.
+export fn host_effect_operation_type(defs: Array[TypeDef], qname: String) -> Option[Type] {
+  let at = String::index_of(qname, needle = "::")
+  if at <= 0 {
+    None
+  } else {
+    let eff = String::substring(qname, start = 0, end = at)
+    let op = String::substring(qname, start = at + 2, end = String::length(qname))
+    match host_effect_def(defs = defs, name = eff) {
+      Some(TDEffect(_, ops, _, _, _)) => {
+        let mut found: Option[Type] = None
+        for entry in ops {
+          let (oname, oparams, oret) = entry
+          if oname == op {
+            found = Some(CtFn(oparams, oret, Some(eff)))
+          }
+        }
+        found
+      },
       _ => None
+    }
+  }
+}
+
+/// ADR-0124 (#2656): `perform` and `handle` reach only program-handled
+/// effects. The refusal for an operation of an `extern effect`, or None.
+export fn host_effect_operation_misuse(defs: Array[TypeDef], qname: String, use_kind: String) -> Option[String] {
+  let at = String::index_of(qname, needle = "::")
+  if at <= 0 {
+    None
+  } else {
+    let eff = String::substring(qname, start = 0, end = at)
+    if effect_is_host_provided(defs = defs, name = eff) {
+      if use_kind == "perform" {
+        Some("call `\{qname}(..)` without `perform`: `\{eff}` is an `extern effect`, so its operations are host functions rather than performed operations")
+      } else {
+        Some("remove this handler arm: `\{eff}` is an `extern effect`, so the host provides `\{qname}` and a program cannot handle it -- to replace it in a test, bind a mock provider instead (#2656)")
+      }
+    } else {
+      None
     }
   }
 }

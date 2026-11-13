@@ -1,3 +1,7 @@
+import @vibe/compiler/core {
+  type_alias_decl_is_recursive
+}
+
 // lib/@vibe/compiler/checker/checker_stmt.vibe — labeled name check expr.
 
 import @vibe/compiler/checker/traits {
@@ -194,7 +198,7 @@ export fn stmt_is_type_decl(_ stmt: Stmt) -> Bool {
     SSuberror(_, _, _) => true,
     SStruct(_, _, _, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
-    SEffectDef(_, _, _, _) => true,
+    SEffectDef(_, _, _, _, _) => true,
     _ => false
   }
 }
@@ -491,56 +495,8 @@ export fn string_array_contains_exact(items: Array[String], wanted: String) -> B
   found
 }
 
-fn alias_decl_body(stmts: Array[Stmt], name: String) -> Option[(Array[String], TypeExpr)] {
-  let mut i = 0
-  let mut result = None
-  while i < Array::length(stmts) && result is None {
-    match Array::get(stmts, at = i) {
-      STypeAlias(_, alias_name, params, body) => if alias_name == name {
-        result = Some((params, body))
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  result
-}
-
-fn alias_type_expr_reaches(stmts: Array[Stmt], te: TypeExpr, shadow: Array[String], target: String, seen: Array[String]) -> Bool {
-  let refs = array_empty()
-  collect_texpr_ref_names(te = te, out = refs, seen = MutSet::new_string())
-  let mut i = 0
-  let mut reaches = false
-  while i < Array::length(refs) && !reaches {
-    let name = Array::get(refs, at = i)
-    if string_array_contains_exact(items = shadow, wanted = name) {
-      ()
-    } else if name == target {
-      reaches = true
-    } else if string_array_contains_exact(items = seen, wanted = name) {
-      ()
-    } else {
-      match alias_decl_body(stmts = stmts, name = name) {
-        Some((params, body)) => {
-          Array::push(seen, value = name)
-          if alias_type_expr_reaches(stmts = stmts, te = body, shadow = params, target = target, seen = seen) {
-            reaches = true
-          } else {
-            ()
-          }
-        },
-        None => ()
-      }
-    }
-    i = i + 1
-  }
-  reaches
-}
-
 export fn alias_decl_is_recursive(stmts: Array[Stmt], name: String, params: Array[String], body: TypeExpr) -> Bool {
-  alias_type_expr_reaches(stmts = stmts, te = body, shadow = params, target = name, seen = array_empty())
+  type_alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = body)
 }
 
 export fn collect_visible_type_stmts(stmts: Array[Stmt], to: Int, out: Array[Stmt]) -> Unit {
@@ -575,31 +531,6 @@ export fn recursive_alias_flags(_ stmts: Array[Stmt]) -> Array[Bool] {
     i = i + 1
   }
   flags
-}
-
-export fn alias_expansion_node_limit() -> Int {
-  262144
-}
-
-export fn capped_type_node_add(total: Int, extra: Int, limit: Int) -> Int {
-  if total > limit || extra > limit || total > limit - extra {
-    limit + 1
-  } else {
-    total + extra
-  }
-}
-
-export fn type_param_index(params: Array[String], name: String) -> Int {
-  let mut found = 0 - 1
-  let mut i = 0
-  while i < Array::length(params) && found < 0 {
-    if type_param_name(Array::get(params, at = i)) == name {
-      found = i
-    } else {
-      i = i + 1
-    }
-  }
-  found
 }
 
 //# Import-usage / discarded-value diagnostics (#1129, and the companion
@@ -963,7 +894,7 @@ fn collect_referenced_names_stmts_indexed(stmts: Array[Stmt], out: Array[String]
         }
       },
       SExternLet(_, te) => collect_texpr_ref_names(te = te, out = out, seen = seen),
-      SEffectDef(_, _, _, ops) => {
+      SEffectDef(_, _, _, ops, _) => {
         let mut oi = 0
         while oi < Array::length(ops) {
           let (_, ptypes, rty) = Array::get(ops, at = oi)

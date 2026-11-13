@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, impl_self_spellable, index_write_callee
+  EffectOwner, Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, impl_self_spellable, index_write_callee
 }
 
 import ./intern.vibe {
@@ -28,6 +28,7 @@ import ./parser_base.vibe {
   parse_binding_name_with_binder_context,
   parse_derive_names,
   parse_effect_stmt,
+  parse_effect_stmt_owned,
   parse_effect_stmt_with_binder_context,
   parse_enum_stmt,
   parse_enum_stmt_with_binder_context,
@@ -516,6 +517,8 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context
     TFn => parse_fn_stmt_with_binder_context(tokens = tokens, starts = starts, pos = pos + 1, exported = true, context = context),
     TIdent(ident_name) => if ident_name == "effect" {
       parse_effect_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)
+    } else if ident_name == "extern" && is_extern_effect_head(tokens = tokens, pos = pos + 1) {
+      parse_effect_stmt_owned(tokens = tokens, pos = pos + 2, exported = true, context = context, owner = HostProvided)
     } else if ident_name == "effectset" {
       parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = true, context = context)
     } else if ident_name == "resource" && is_resource_decl_head(tokens = tokens, pos = pos + 1) {
@@ -582,6 +585,15 @@ fn parse_percent_symbol_name(tokens: Array[Token], pos: Int, label: String, cont
   }
 }
 
+/// `extern effect Name` (ADR-0124): `effect` is a contextual word, so it is
+/// the extern declaration's head only when a name follows it.
+fn is_extern_effect_head(tokens: Array[Token], pos: Int) -> Bool {
+  match (peek(tokens = tokens, pos = pos), peek(tokens = tokens, pos = pos + 1)) {
+    (TIdent(word), TIdent(_)) => word == "effect",
+    _ => false
+  }
+}
+
 fn parse_extern_let_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   let lp = expect_tk(tokens = tokens, pos = pos, expected = "let")
   let (name, np) = parse_percent_symbol_name(tokens = tokens, pos = lp, label = "extern symbol name", context = context)
@@ -636,7 +648,11 @@ export fn parse_stmt_preserving_with_binder_context(tokens: Array[Token], starts
       "effect" => parse_effect_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = false, context = context),
       "effectset" => parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = false, context = context),
       "resource" => parse_resource_stmt(tokens = tokens, pos = pos + 1, context = context),
-      "extern" => parse_extern_let_stmt(tokens = tokens, pos = pos + 1, context = context),
+      "extern" => if is_extern_effect_head(tokens = tokens, pos = pos + 1) {
+        parse_effect_stmt_owned(tokens = tokens, pos = pos + 2, exported = false, context = context, owner = HostProvided)
+      } else {
+        parse_extern_let_stmt(tokens = tokens, pos = pos + 1, context = context)
+      },
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
         let (e, next) = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = pos, mode = 0, context = context)
