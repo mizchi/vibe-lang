@@ -1,0 +1,199 @@
+// #4013: the diagnostics a resident `vibe lsp --selfhost` session publishes
+// for a document that is a file on disk come from the import-resolving lane
+// -- the walk `vibe check` makes, kept by the session the hovers use -- and
+// not from the buffer typed alone.
+//
+// Typed alone, every imported type, every `Type::method` of an import and
+// every name a package's `index.vpkg` shares with its siblings is unknown.
+// Measured on main at 06fed0dee, over stdio: 62 errors published for
+// `lib/@vibe/compiler/loader/header_cache.vibe`, 3 for
+// `lib/@vibe/process/process.vibe` and 4 for the two-file project below, all
+// three of which `vibe check` accepts.
+//
+// What the lane must keep: a real type error, at its position in the buffer
+// (a package file is checked with the shared import lines in front of it),
+// and every syntax error the recovering parser collects.
+
+//# Imports
+
+import .{
+  lsp_hover_fs_walks, lsp_notify, lsp_published_diagnostics, lsp_request
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/json {
+  Json
+}
+
+//# Functions
+
+fn json_str(_ s: String) -> String {
+  Json::stringify(JStr(s))
+}
+
+fn uri_of(_ path: String) -> String {
+  String::concat("file://", path)
+}
+
+/// Built as values rather than parsed: the JSON parser recurses once per
+/// byte of a string, and a whole compiler source exhausts the host stack.
+fn open_params(uri: String, text: String) -> Json {
+  JObj(Map::from_pairs([
+    ("textDocument", JObj(Map::from_pairs([
+      ("uri", JStr(uri)),
+      ("version", JNum(1.0)),
+      ("text", JStr(text))
+    ])))
+  ]))
+}
+
+fn change_params(uri: String, text: String) -> Json {
+  JObj(Map::from_pairs([
+    ("textDocument", JObj(Map::from_pairs([
+      ("uri", JStr(uri)),
+      ("version", JNum(2.0))
+    ]))),
+    ("contentChanges", JArr([JObj(Map::from_pairs([("text", JStr(text))]))]))
+  ]))
+}
+
+fn pos_params(uri: String, line0: Int, char0: Int) -> Json {
+  Json::parse("{\"textDocument\":{\"uri\":\{json_str(uri)}},\"position\":{\"line\":\{line0},\"character\":\{char0}}}")
+}
+
+fn num(j: Json, key: String) -> Int {
+  Float64::to_int(Json::number(Json::field(j, key = key)))
+}
+
+/// Each published diagnostic as `severity L:C-L2:C2 message`, 1-based, one
+/// per line; "" when none was published.
+fn rows(_ diags: Json) -> String {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Json::length(diags) {
+    let d = Json::index(diags, idx = i)
+    let range = Json::field(d, key = "range")
+    let s = Json::field(range, key = "start")
+    let e = Json::field(range, key = "end")
+    let sev = if num(j = d, key = "severity") == 1 {
+      "error"
+    } else {
+      "warning"
+    }
+    let sl = num(j = s, key = "line") + 1
+    let sc = num(j = s, key = "character") + 1
+    let el = num(j = e, key = "line") + 1
+    let ec = num(j = e, key = "character") + 1
+    let message = Json::string(Json::field(d, key = "message"))
+    Array::push(out, value = "\{sev} \{sl}:\{sc}-\{el}:\{ec} \{message}")
+    i = i + 1
+  }
+  String::join(out, sep = "\n")
+}
+
+/// How many of the published diagnostics are errors.
+fn errors(_ diags: Json) -> Int {
+  let mut count = 0
+  let mut i = 0
+  while i < Json::length(diags) {
+    if num(j = Json::index(diags, idx = i), key = "severity") == 1 {
+      count = count + 1
+    } else ()
+    i = i + 1
+  }
+  count
+}
+
+/// Open `text` as the document `uri` and read what the session publishes.
+fn publish_open(uri: String, text: String) -> Json with Env + Fs {
+  let docs = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri, text = text), docs = Map::new())
+  lsp_published_diagnostics(uri = uri, docs = docs, checked_error_row = false)
+}
+
+fn dep_text() -> String {
+  "export struct Pt {\n  x: Int;\n  y: Int\n}\n\nexport fn Pt::sum(_ p: Pt) -> Int {\n  p.x + p.y\n}\n"
+}
+
+/// An imported type, its `Type::method` and a struct literal of it: each is
+/// an unknown name to the buffer typed alone.
+fn main_text() -> String {
+  "import ./dep.vibe {\n  Pt\n}\n\nfn total(_ p: Pt) -> Int {\n  Pt::sum(p)\n}\n\nfn make() -> Pt {\n  Pt::{ x: 1, y: 2 }\n}\n"
+}
+
+/// A fresh project directory holding `dep.vibe`; answers the path of
+/// `main.vibe`, which is written with `text`.
+fn project(name: String, text: String) -> String with Fs {
+  let dir = String::concat("_build/lsp_fs_diagnostics_4013/", name)
+  Fs::mkdir_p(dir)
+  Fs::write_file(String::concat(dir, "/dep.vibe"), contents = dep_text())
+  let main = String::concat(dir, "/main.vibe")
+  Fs::write_file(main, contents = text)
+  main
+}
+
+//# Tests
+
+test "#4013: a file importing a type publishes no error" {
+  let main = project(name = "imported_type", text = main_text())
+  inspect(rows(publish_open(uri = uri_of(main), text = main_text())), content = "")
+}
+
+test "#4013: a package file reading its index.vpkg's shared names publishes no error" {
+  // `ShResult` is declared only in `lib/@vibe/process/index.vpkg`. Opened by
+  // the absolute, percent-escaped URI an editor sends.
+  let path = "lib/@vibe/process/process.vibe"
+  let uri = String::concat("file://", String::concat(Fs::getcwd(), "/lib/%40vibe/process/process.vibe"))
+  inspect(rows(publish_open(uri = uri, text = Fs::read_file(path))), content = "")
+}
+
+test "#4013: loader/header_cache.vibe publishes no error" {
+  // `MutMap`, `TargetCfg` and the rest arrive through the package's shared
+  // imports and its imports of sibling packages.
+  let path = "lib/@vibe/compiler/loader/header_cache.vibe"
+  inspect(errors(publish_open(uri = uri_of(path), text = Fs::read_file(path))), content = "0")
+}
+
+test "#4013: a real type error is published at its position" {
+  let text = "import ./dep.vibe {\n  Pt\n}\n\nfn total(_ p: Pt) -> Int {\n  Pt::sum(p)\n}\n\nfn wrong() -> Int {\n  \"not an int\"\n}\n"
+  let main = project(name = "type_error", text = text)
+  inspect(rows(publish_open(uri = uri_of(main), text = text)), content = "error 10:3-10:15 return type mismatch: expected Int, got String")
+}
+
+test "#4013: a type error in a package file is located in the buffer, not past the shared imports" {
+  // The checker reads the file with the shared import lines in front of it;
+  // the published position is the buffer's own. The buffer is an unsaved
+  // edit: the file on disk is untouched.
+  let path = "lib/@vibe/process/process.vibe"
+  let text = String::concat(Fs::read_file(path), "\nfn broken_4013() -> Int {\n  \"s\"\n}\n")
+  let lines = Array::length(String::split(Fs::read_file(path), sep = "\n"))
+  let published = publish_open(uri = uri_of(path), text = text)
+  inspect(errors(published), content = "1")
+  inspect(rows(published) == "error \{lines + 2}:3-\{lines + 2}:6 return type mismatch: expected Int, got String", content = "true")
+}
+
+test "#4013: every syntax error is published, from the recovering parser" {
+  let text = "import ./dep.vibe {\n  Pt\n}\n\nfn f( -> Int {\n  1\n}\n\nfn ok(_ p: Pt) -> Int {\n  Pt::sum(p)\n}\n\nfn g() -> Int {\n  let = 3\n}\n"
+  let main = project(name = "syntax_errors", text = text)
+  inspect(rows(publish_open(uri = uri_of(main), text = text)), content = "error 5:7-5:8 expected parameter name, got '->'\nerror 14:7-14:8 expected binding name after 'let', got '='")
+  // The single-file lane reports the same two.
+  inspect(Array::length(collect_all_diagnostics(text)), content = "2")
+}
+
+test "#4013: an edit that fixes the error publishes none, and hovers reuse the walk" {
+  let text = "import ./dep.vibe {\n  Pt\n}\n\nfn wrong() -> Int {\n  \"s\"\n}\n"
+  let main = project(name = "fixed", text = text)
+  let uri = uri_of(main)
+  let docs = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri, text = text), docs = Map::new())
+  inspect(errors(lsp_published_diagnostics(uri = uri, docs = docs, checked_error_row = false)), content = "1")
+  let fixed = "import ./dep.vibe {\n  Pt\n}\n\nfn wrong(_ p: Pt) -> Int {\n  Pt::sum(p)\n}\n"
+  let docs2 = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri, text = fixed), docs = docs)
+  let walks = lsp_hover_fs_walks()
+  inspect(rows(lsp_published_diagnostics(uri = uri, docs = docs2, checked_error_row = false)), content = "")
+  // The revision the diagnostics walked is the one the hover types from.
+  let hover = lsp_request(method = "textDocument/hover", params = pos_params(uri = uri, line0 = 5, char0 = 4), docs = docs2, checked_error_row = false)
+  inspect(Json::is_null(hover), content = "false")
+  inspect(lsp_hover_fs_walks() - walks, content = "1")
+}
