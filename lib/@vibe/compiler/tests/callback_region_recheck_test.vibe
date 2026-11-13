@@ -168,3 +168,19 @@ test "a container may not take a value of a region it predates, nested or not" {
   assert(String::contains(check_source_report("fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let v = region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    region s {\n      let _ = Array::fold([1, 2], init = sink, f = (acc, x) -> {\n        Array::push(acc, value = cell)\n        acc\n      })\n      1\n    }\n  }\n  v\n}\n"), needle = "region escapes its scope"))
   assert(String::contains(check_source_report("fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let v = region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    let mine: Array[MutList[Int]] = []\n    region s {\n      let _ = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n        Array::push(acc, value = cell)\n        sink\n      })\n      1\n    }\n  }\n  v\n}\n"), needle = "region escapes its scope"))
 }
+
+// Codex on #4078: a fold's accumulator is whatever the callback returned, so
+// its location is read from the callback's result. Only a parameter the body
+// neither shadows nor assigns, or a fresh literal of such values, narrows it;
+// a call, a captured binding the body reassigns, or a name the body declares
+// predates every active region. Each of these compiled on 55e4d06d6 and put a
+// region list into a binding declared before the region.
+test "a fold callback that returns a location the text does not establish predates every region" {
+  let getter = "let kept: Array[MutList[Int]] = []\nfn get_sink() -> Array[MutList[Int]] {\n  kept\n}\n"
+  let head = "  region r {\n    let cell = MutList::empty(r)\n    MutList::push(cell, 3)\n    let mine: Array[MutList[Int]] = []\n"
+  let push = "      Array::push(acc, value = cell)\n"
+  assert(String::contains(check_source_report(String::concat(getter, String::concat("fn build() -> Int {\n", String::concat(head, String::concat("    let _ = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n", String::concat(push, "      get_sink()\n    })\n    1\n  }\n}\n")))))), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report(String::concat("fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let get = () -> sink\n", String::concat(head, String::concat("    let _ = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n", String::concat(push, "      get()\n    })\n    1\n  }\n}\n"))))), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report(String::concat(getter, String::concat("fn build() -> Int {\n", String::concat(head, String::concat("    let _ = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n", String::concat(push, "      let acc = get_sink()\n      acc\n    })\n    1\n  }\n}\n")))))), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report(String::concat(getter, String::concat("fn build() -> Int {\n", String::concat(head, String::concat("    let spare: Array[MutList[Int]] = []\n    let mut last = spare\n    let _ = Array::fold([1, 2], init = mine, f = (acc, x) -> {\n", String::concat(push, "      last = get_sink()\n      last\n    })\n    1\n  }\n}\n")))))), needle = "region escapes its scope"))
+}

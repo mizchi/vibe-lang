@@ -37,7 +37,7 @@
 //# is always checked again inside a region.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, TypeDef, TypeEnv, TypeExpr, call_arg_value, call_arg_values, env_bind, env_mut_escape, subst_apply, type_to_string
+  Expr, Subst, Type, TypeDef, TypeEnv, TypeExpr, call_arg_value, call_arg_values, env_mut_escape, subst_apply, type_to_string
 }
 
 import @vibe/core {
@@ -72,6 +72,14 @@ import ./checker_region_retention.vibe {
 
 import ./checker_region_retention_types.vibe {
   retention_type_hides_region
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_assigned_values_into
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  literal_item_is_inert
 }
 
 import ./checker_region_retention_summary.vibe {
@@ -418,11 +426,10 @@ fn callback_region_names(_ env: TypeEnv) -> Array[String] {
 /// The regions each parameter of the literal (`ps`, `body`, written in
 /// `scope`) is an alias of a binding declared before: those `outer` holds for
 /// it, and for a parameter below `grow` (a fold accumulator, which is then
-/// what the callback returned) also those the body's result predates, read
-/// with every parameter standing for its own location. Returning the
-/// accumulator adds nothing; returning a binding declared before a region,
-/// or a name the body binds itself (whose location this does not follow),
-/// adds that region or every active one.
+/// what the callback returned) also those the body's result predates
+/// (`callback_result_location`). Returning the accumulator adds nothing;
+/// returning anything whose location the text does not establish adds every
+/// active region.
 fn callback_param_predates(ps: Array[(String, Option[TypeExpr])], outer: Array[Array[String]], grow: Int, body: Expr, scope: TypeEnv) -> Array[Array[String]] {
   let out: Array[Array[String]] = []
   let mut pi = 0
@@ -435,24 +442,10 @@ fn callback_param_predates(ps: Array[(String, Option[TypeExpr])], outer: Array[A
     pi = pi + 1
   }
   if grow > 0 {
-    let mut at = scope
-    let mut bi = 0
-    while bi < Array::length(ps) {
-      let (pname, _) = Array::get(ps, at = bi)
-      at = env_bind(env = at, name = pname, ty = CtUnknown)
-      let set = Array::get(out, at = bi)
-      // A parameter that predates nothing carries no marker: the marker's
-      // presence alone reads as an alias of an outer binding.
-      if Array::length(set) > 0 {
-        at = env_bind(env = at, name = String::concat("__region_outer_alias__", pname), ty = CtTuple(for rname in set {
-          CtNamed(rname, [])
-        }))
-      } else {
-        ()
-      }
-      bi = bi + 1
+    let returned = match callback_result_location(e = body, ps = ps, sets = out, body = body, hidden = array_empty(), env = scope) {
+      Some(set) => set,
+      None => callback_region_names(scope)
     }
-    let returned = retention_arg_predates(arg = body, env = at)
     let mut gi = 0
     while gi < grow && gi < Array::length(out) {
       let merged: Array[String] = []
@@ -472,6 +465,100 @@ fn callback_param_predates(ps: Array[(String, Option[TypeExpr])], outer: Array[A
   } else {
     ()
   }
+  out
+}
+
+/// Where the callback's result `e` lives, when the text establishes it: a
+/// parameter of the literal that the body neither rebinds on the way to the
+/// result (`hidden`) nor assigns answers its own predated regions (`sets`),
+/// and a fresh array, tuple or record literal the union of its non-scalar
+/// items'. Anything else is `None`, and the caller counts it as predating
+/// every active region: a call (`get_sink()` may return a binding declared
+/// before the region, and a callee's body is not read here), a field, a
+/// conditional, a binding the body declares, or one it captures, which it may
+/// have reassigned (Codex on #4078).
+fn callback_result_location(e: Expr, ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String], env: TypeEnv) -> Option[Array[String]] {
+  match e {
+    EIdent(n, _) => if callback_has(items = hidden, wanted = n) {
+      None
+    } else {
+      callback_param_location(name = n, ps = ps, sets = sets, body = body)
+    },
+    ESeq(_, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
+    ELet(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x), env = env),
+    ELetMut(x, _, b, _) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x), env = env),
+    ELetRec(x, _, b) => callback_result_location(e = b, ps = ps, sets = sets, body = body, hidden = callback_with(items = hidden, name = x), env = env),
+    EArray(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
+    ETuple(items) => callback_items_location(items = items, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
+    ERecord(_, fields, _) => callback_items_location(items = for f in fields {
+      f.1
+    }, ps = ps, sets = sets, body = body, hidden = hidden, env = env),
+    _ => None
+  }
+}
+
+/// The regions a fresh literal's items predate: nothing for a scalar, an
+/// item's own location otherwise, and `None` when any item's is not known.
+fn callback_items_location(items: Array[Expr], ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr, hidden: Array[String], env: TypeEnv) -> Option[Array[String]] {
+  let merged: Array[String] = []
+  let mut known = true
+  for item in items {
+    let scalar = match item {
+      EIdent(_, _) => false,
+      _ => literal_item_is_inert(item = item, env = env)
+    }
+    if known && !scalar {
+      match callback_result_location(e = item, ps = ps, sets = sets, body = body, hidden = hidden, env = env) {
+        Some(set) => for rname in set {
+          if !callback_has(items = merged, wanted = rname) {
+            Array::push(merged, value = rname)
+          } else {
+            ()
+          }
+        },
+        None => known = false
+      }
+    } else {
+      ()
+    }
+  }
+  if known {
+    Some(merged)
+  } else {
+    None
+  }
+}
+
+/// The regions parameter `name` of the literal predates, unless `body`
+/// assigns it; `None` for a name that is not a parameter.
+fn callback_param_location(name: String, ps: Array[(String, Option[TypeExpr])], sets: Array[Array[String]], body: Expr) -> Option[Array[String]] {
+  let mut found: Option[Array[String]] = None
+  let mut pi = 0
+  while pi < Array::length(ps) && pi < Array::length(sets) {
+    let (pname, _) = Array::get(ps, at = pi)
+    if pname == name {
+      found = Some(Array::get(sets, at = pi))
+    } else {
+      ()
+    }
+    pi = pi + 1
+  }
+  let assigned: Array[Expr] = []
+  retention_assigned_values_into(e = body, name = name, out = assigned)
+  if Array::length(assigned) > 0 {
+    None
+  } else {
+    found
+  }
+}
+
+/// `items` with `name` added.
+fn callback_with(items: Array[String], name: String) -> Array[String] {
+  let out: Array[String] = []
+  for item in items {
+    Array::push(out, value = item)
+  }
+  Array::push(out, value = name)
   out
 }
 
