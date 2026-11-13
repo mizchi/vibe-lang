@@ -2280,6 +2280,8 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
       } else {
         callee
       }
+      // #4065: a constructor or a builtin stores its argument as data.
+      let data_callee = edp_callee_stores_data(stmts = wstmts, fn_defs = wfn_defs, callee_nm = callee_nm)
       let new_args = array_empty()
       let mut i = 0
       while i < Array::length(args) {
@@ -2295,7 +2297,11 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
         }
         match wrapped {
           Some(w) => Array::push(new_args, value = w),
-          None => Array::push(new_args, value = edp_etawrap_expr(e = a, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases))
+          None => Array::push(new_args, value = if data_callee {
+            edp_etawrap_data_item(x = a, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
+          } else {
+            edp_etawrap_expr(e = a, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
+          })
         }
         i = i + 1
       }
@@ -2397,10 +2403,10 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
       None => None
     }),
     EContinue(args) => EContinue(edp_etawrap_exprs(es = args, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
-    ETuple(items) => ETuple(edp_etawrap_exprs(es = items, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
-    EArray(items) => EArray(edp_etawrap_exprs(es = items, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
-    ERecord(n, fields, tas) => ERecord(n, edp_etawrap_pairs(pairs = fields, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases), tas),
-    EMap(fields) => EMap(edp_etawrap_pairs(pairs = fields, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
+    ETuple(items) => ETuple(edp_etawrap_data_items(es = items, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
+    EArray(items) => EArray(edp_etawrap_data_items(es = items, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
+    ERecord(n, fields, tas) => ERecord(n, edp_etawrap_data_pairs(pairs = fields, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases), tas),
+    EMap(fields) => EMap(edp_etawrap_data_pairs(pairs = fields, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
     ESpread(x) => ESpread(edp_etawrap_expr(e = x, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
     _ => e
   }
@@ -2409,6 +2415,62 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
 fn edp_etawrap_exprs(es: Array[Expr], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Array[Expr] {
   for x in es {
     edp_etawrap_expr(e = x, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
+  }
+}
+
+/// #4065: a value stored as DATA -- an array, tuple, record or map element,
+/// or a constructor's or builtin's argument -- is read back later and handed
+/// on with no row in sight, so the reader calls it at its row-free arity. A
+/// needing function stored there inside its handle is stored as its
+/// eta-expansion (`edp_etawrap_value`), which closes over the evidence in
+/// scope the way a direct call would. Outside the handle no evidence is in
+/// scope, and `edp_needing_escape` refuses the same position instead.
+fn edp_etawrap_data_item(x: Expr, in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Expr {
+  let (wstmts, wfn_defs, _, _) = wc
+  match x {
+    EIdent(an, _) => {
+      let root = edp_alias_root(name = an, needing = needing, aliases = aliases)
+      let wrapped = if root != "" && in_scope {
+        edp_etawrap_value(stmts = wstmts, fn_defs = wfn_defs, nm = root)
+      } else {
+        None
+      }
+      match wrapped {
+        Some(w) => w,
+        None => x
+      }
+    },
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_etawrap_data_item(x = v, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
+    _ => edp_etawrap_expr(e = x, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
+  }
+}
+
+fn edp_etawrap_data_items(es: Array[Expr], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Array[Expr] {
+  for x in es {
+    edp_etawrap_data_item(x = x, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
+  }
+}
+
+fn edp_etawrap_data_pairs(pairs: Array[(String, Expr)], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Array[(String, Expr)] {
+  for p in pairs {
+    let (n, v) = p
+    (n, edp_etawrap_data_item(x = v, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases))
+  }
+}
+
+/// #4065: does a call to `callee_nm` store its arguments as data? A
+/// constructor does (`Some(g)`, `Leaf(g)`), and so does a qualified callee the
+/// program does not define (`Array::push(xs, value = g)`). A bare name the
+/// program does not define stays a call -- it may be a local binding that
+/// aliases a needing function (`edp_arg_slot_accepts_needing`).
+export fn edp_callee_stores_data(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee_nm: String) -> Bool {
+  if callee_nm == "" {
+    false
+  } else {
+    let parts = String::split(callee_nm, sep = "::")
+    let last = Array::get(parts, at = Array::length(parts) - 1)
+    let ctor = String::length(last) > 0 && String::byte_at(last, at = 0) >= 65 && String::byte_at(last, at = 0) <= 90
+    ctor || (Array::length(parts) > 1 && edp_params_of_fn(stmts = stmts, fn_defs = fn_defs, nm = callee_nm) == None)
   }
 }
 

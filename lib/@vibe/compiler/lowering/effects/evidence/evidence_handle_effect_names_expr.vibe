@@ -2499,6 +2499,14 @@ export fn edp_mf_binders(_ facts: Array[EdpStmtFacts]) -> MutSet[String] {
   out
 }
 
+fn edp_row_lit_data_ident(e: Expr, ident_args: Array[String]) -> Unit {
+  match e {
+    EIdent(v, _) => Array::push(ident_args, value = v),
+    ELabeledArg(_, _, EIdent(v, _)) => Array::push(ident_args, value = v),
+    _ => ()
+  }
+}
+
 /// Every node edp_row_lit_scan_expr collects from: an `EFn` with a row
 /// annotation (a row literal, or the value a binding is collected for), and an
 /// identifier a `let` / `let rec` binds (collected when it names a needing
@@ -2512,10 +2520,21 @@ fn edp_row_lit_shape(expr: Expr, row_efn: Array[Bool], ident_lets: Array[String]
     ELet(_, EIdent(v, _), _, _) => Array::push(ident_lets, value = v),
     ELetRec(_, EIdent(v, _), _) => Array::push(ident_lets, value = v),
     ECall(_, args, _, _) => for arg in args {
-      match arg {
-        EIdent(v, _) => Array::push(ident_args, value = v),
-        _ => ()
-      }
+      edp_row_lit_data_ident(e = arg, ident_args = ident_args)
+    },
+    // #4065: an identifier stored as data (an element, a field or map value)
+    // is the other node edp_etawrap_data_item and edp_needing_escape stop at.
+    ETuple(items) => for item in items {
+      edp_row_lit_data_ident(e = item, ident_args = ident_args)
+    },
+    EArray(items) => for item in items {
+      edp_row_lit_data_ident(e = item, ident_args = ident_args)
+    },
+    ERecord(_, fields, _) => for field in fields {
+      edp_row_lit_data_ident(e = field.1, ident_args = ident_args)
+    },
+    EMap(fields) => for field in fields {
+      edp_row_lit_data_ident(e = field.1, ident_args = ident_args)
     },
     _ => ()
   }

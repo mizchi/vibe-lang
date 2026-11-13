@@ -1264,6 +1264,8 @@ scps_check_reject "err_effect_closure_literal_launder.vibe" "cannot see through"
 # to a row-FREE fn-typed slot used to compile clean and trap at runtime with
 # a wasm signature mismatch. Reject it, and keep the annotated form working.
 scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
+# #4065: the same closure stored as an array element outside its handle.
+scps_check_reject "err_effect_needing_value_data_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "dataesc"
 # Annotated / eta-wrapped needing-value pins now live in
 # fixtures/effect_needing_value_annotated_test.vibe and
 # fixtures/effect_needing_value_escape_wrapped_test.vibe (#1973).

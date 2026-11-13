@@ -1,0 +1,29 @@
+// #4065: a performing closure stored as DATA outside the `handle` that
+// answers it. Inside the handle the compiler stores its eta-expansion, which
+// closes over the handler in scope (effect_handle_bound_closure_data_test.vibe).
+// Here `work` is not inside the handle, so no handler is in scope to close
+// over: whoever reads the element back calls it without one. That used to
+// compile clean and trap in `apply` with an indirect call type mismatch; it is
+// refused at compile time instead, like the call-argument form in
+// err_effect_needing_value_escape.vibe.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn work() -> Int with Ask {
+  let g = () -> perform Ask::Get() + 1
+  apply(f = Array::get([g], at = 0))
+}
+
+let _start = () -> Int {
+  handle {
+    work()
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+_start()

@@ -9,7 +9,7 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 import ./evidence_ecall_arg_idents_expr.vibe {
-  edp_arg_slot_accepts_needing
+  edp_arg_slot_accepts_needing, edp_callee_stores_data
 }
 
 /// #1261: the first needing-function name that ESCAPES as a value into a
@@ -36,19 +36,26 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       } else {
         ""
       }
+      let data_callee = edp_callee_stores_data(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm)
       let mut i = 0
       while i < Array::length(args) && hit == "" {
         let a = Array::get(args, at = i)
-        let bare = match a {
-          EIdent(an, _) => if edp_str_array_contains(arr = needing, v = an) {
-            an
-          } else {
-            ""
-          },
-          _ => ""
+        let bare = if data_callee {
+          edp_needing_data_name(e = a, needing = needing)
+        } else {
+          match a {
+            EIdent(an, _) => if edp_str_array_contains(arr = needing, v = an) {
+              an
+            } else {
+              ""
+            },
+            _ => ""
+          }
         }
         if bare == "" {
           hit = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        } else if data_callee {
+          hit = bare
         } else if callee_nm != "" && edp_arg_slot_accepts_needing(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm, pos = i, ename = ename, es_names = es_names, es_members_list = es_members_list) {
           ()
         } else {
@@ -81,12 +88,49 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       None => ""
     },
     EContinue(args) => edp_needing_escape_exprs(es = args, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    ETuple(items) => edp_needing_escape_exprs(es = items, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    EArray(items) => edp_needing_escape_exprs(es = items, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    ERecord(_, fields, _) => edp_needing_escape_pairs(pairs = fields, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    EMap(fields) => edp_needing_escape_pairs(pairs = fields, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    ETuple(items) => edp_needing_escape_data(es = items, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    EArray(items) => edp_needing_escape_data(es = items, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    ERecord(_, fields, _) => edp_needing_escape_data(es = edp_pair_values(fields), needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    EMap(fields) => edp_needing_escape_data(es = edp_pair_values(fields), needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
     ESpread(x) => edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
     _ => ""
+  }
+}
+
+/// #4065: the needing function a data position names directly (`[g]`,
+/// `(g, 1)`, `Some(g)`, `Array::push(xs, value = g)`), or "". Inside its
+/// handle `edp_etawrap_data_item` has already replaced such a name with its
+/// eta-expansion, so a name still standing here has no evidence in scope:
+/// whoever reads it back calls it at its row-free arity and traps.
+fn edp_needing_data_name(e: Expr, needing: Array[String]) -> String {
+  match e {
+    EIdent(an, _) => if edp_str_array_contains(arr = needing, v = an) {
+      an
+    } else {
+      ""
+    },
+    ELabeledArg(_, _, v) => edp_needing_data_name(e = v, needing = needing),
+    _ => ""
+  }
+}
+
+fn edp_needing_escape_data(es: Array[Expr], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let mut hit = ""
+  let mut i = 0
+  while i < Array::length(es) && hit == "" {
+    let x = Array::get(es, at = i)
+    hit = edp_needing_data_name(e = x, needing = needing)
+    if hit == "" {
+      hit = edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn edp_pair_values(_ pairs: Array[(String, Expr)]) -> Array[Expr] {
+  for p in pairs {
+    p.1
   }
 }
 
