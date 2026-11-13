@@ -543,19 +543,33 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
 /// for the sets no nesting answers. `suspend_cps_pass` calls it after building
 /// grouped suspend drivers, so evidence migration sees single-effect sites.
 export fn evidence_split_handler_sets(_ stmts: Array[Stmt]) -> Array[String] {
-  evidence_split_handler_sets_in(stmts = stmts, statements = edp_handler_set_statements(stmts))
+  evidence_split_handler_sets_with_binders(stmts = stmts, binders = None)
+}
+
+/// evidence_split_handler_sets, given the program's binder census
+/// (`edp_collect_program_binders(stmts)`) when the caller already holds one
+/// for this exact tree. `suspend_cps_pass` does: it keeps its census current
+/// through every write it makes (#4039), and walking the program again here
+/// for the same set was 0.1 s of a warm build on the compiler's own sources
+/// (#4041).
+export fn evidence_split_handler_sets_with_binders(stmts: Array[Stmt], binders: Option[MutSet[String]]) -> Array[String] {
+  evidence_split_handler_sets_in(stmts = stmts, statements = edp_handler_set_statements(stmts), binders = binders)
 }
 
 /// evidence_split_handler_sets over `statements`, the program's
 /// edp_handler_set_statements.
-fn evidence_split_handler_sets_in(stmts: Array[Stmt], statements: Array[Int]) -> Array[String] {
+fn evidence_split_handler_sets_in(stmts: Array[Stmt], statements: Array[Int], binders: Option[MutSet[String]]) -> Array[String] {
   let errs = empty_str_array()
   if Array::length(statements) > 0 {
     let fn_defs = edp_collect_fn_defs(stmts)
     let es_names = array_empty()
     let es_members = array_empty()
     edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members)
-    let fx = (edp_ao_fn_positions(fn_defs), edp_fn_row_label_table(fn_defs = fn_defs, es_names = es_names, es_members_list = es_members), edp_collect_program_binders(stmts))
+    let census = match binders {
+      Some(kept) => kept,
+      None => edp_collect_program_binders(stmts)
+    }
+    let fx = (edp_ao_fn_positions(fn_defs), edp_fn_row_label_table(fn_defs = fn_defs, es_names = es_names, es_members_list = es_members), census)
     edp_split_handler_sets(stmts = stmts, indices = statements, may = (e: Expr, y: String) -> edp_ao_arm_may_perform(expr = e, y = y, fx = fx, hof_arg = false), at = (e: Expr, y: String) -> edp_ao_perform_offset(expr = e, y = y, fx = fx), errs = errs)
   } else ()
   errs
@@ -588,7 +602,7 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   // pipelines have already split in `suspend_cps_pass`; this is a no-op then,
   // and the facts say so without a walk of the program (#4040).
   let set_statements = edp_handler_set_statements_among(stmts = stmts, multi_arm = Some(edp_mf_multi_arm_handles(statement_facts)))
-  for e in evidence_split_handler_sets_in(stmts = stmts, statements = set_statements) {
+  for e in evidence_split_handler_sets_in(stmts = stmts, statements = set_statements, binders = None) {
     Array::push(errs, value = e)
   }
   // The split replaced its statements through edp_mf_set_stmt.
