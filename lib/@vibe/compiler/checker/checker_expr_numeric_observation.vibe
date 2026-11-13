@@ -410,21 +410,16 @@ export fn deferred_join_inputs(joined: Type, actual: Type, e: Expr, count: Int, 
   }
   let anchor = subst_apply(s = s, ty = joined)
   let current = subst_apply(s = s, ty = actual)
-  let pending_anchor = pending_type_id(ty = anchor, s = s)
-  let pending_current = pending_type_id(ty = current, s = s)
-  match (pending_anchor, pending_current) {
-    (Some(a), Some(b)) => Some([a, b]),
-    (Some(id), None) => if already_deferred || int32_literal_can_adapt(e = int32_tail(e), actual = current) {
-      Some([id])
-    } else {
-      None
-    },
-    (None, Some(id)) => if already_deferred || ((anchor is CtInt) && earlier_values_are_literals(count = count, earlier_at = earlier_at)) {
-      Some([id])
-    } else {
-      None
-    },
-    _ => None
+  let pending_anchor = pending_type_ids(ty = anchor, s = s)
+  let pending_current = pending_type_ids(ty = current, s = s)
+  if Array::length(pending_anchor) > 0 && Array::length(pending_current) > 0 {
+    Some(Array::concat(pending_anchor, pending_current))
+  } else if Array::length(pending_anchor) > 0 && (already_deferred || int32_literal_can_adapt(e = int32_tail(e), actual = current)) {
+    Some(pending_anchor)
+  } else if Array::length(pending_current) > 0 && (already_deferred || ((anchor is CtInt) && earlier_values_are_literals(count = count, earlier_at = earlier_at))) {
+    Some(pending_current)
+  } else {
+    None
   }
 }
 
@@ -432,17 +427,6 @@ fn pending_type_ids(ty: Type, s: Subst) -> Array[Int] {
   let ids: Array[Int] = []
   collect_type_var_ids(ty = ty, out = ids)
   Array::filter(ids, f = (id) -> deferred_result_pending(id = id, s = s))
-}
-
-fn pending_type_id(ty: Type, s: Subst) -> Option[Int] {
-  match ty {
-    CtVar(id) => if deferred_result_pending(id = id, s = s) {
-      Some(id)
-    } else {
-      None
-    },
-    _ => None
-  }
 }
 
 fn earlier_values_are_literals(count: Int, earlier_at: (Int) -> Expr) -> Bool {
