@@ -45,7 +45,7 @@ import ./evidence_slot_refusals.vibe {
 }
 
 import @vibe/compiler/lowering/effects/queries {
-  edp_is_identity_ascription, edp_str_array_contains
+  edp_is_identity_ascription, edp_program_decls_named, edp_str_array_contains
 }
 
 /// The slot (arity and row) a declared result `rty` gives the closure a
@@ -98,7 +98,7 @@ fn edp_result_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr
     }
     let mut next: Option[(Array[String], TypeExpr)] = None
     if String::length(head) > 0 {
-      for st in stmts {
+      for st in edp_program_decls_named(stmts = stmts, name = head) {
         match st {
           STypeAlias(_, an, tparams, body) => if an == head {
             next = Some((tparams, body))
@@ -150,7 +150,7 @@ fn edp_result_alias_tuple(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] 
     }
     let mut next: Option[TypeExpr] = None
     if String::length(head) > 0 {
-      for st in stmts {
+      for st in edp_program_decls_named(stmts = stmts, name = head) {
         match st {
           STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == Array::length(args) {
             next = Some(edp_type_expr_subst(te = body, names = edp_unkeyed_tparams(tparams), args = args))
@@ -224,6 +224,7 @@ export fn edp_type_expr_subst(te: TypeExpr, names: Array[String], args: Array[Ty
 /// (`edp_note_program_aliases`).
 let edp_program_aliases: Array[MutSet[String]] = []
 
+// review-lint: allow-program-walk (builds the set of the program's alias names)
 export fn edp_note_program_aliases(_ stmts: Array[Stmt]) -> Unit {
   Array::truncate(edp_program_aliases, length = 0)
   let names = MutSet::new_string()
@@ -253,6 +254,7 @@ let edp_row_field_structs: Array[MutMap[String, Array[(String, (Int, String))]]]
 let edp_row_field_tparams: Array[MutMap[String, Array[String]]] = []
 let edp_nested_row_structs: Array[String] = []
 
+// review-lint: allow-program-walk (builds the table of row-typed struct fields)
 /// #3582: a struct field declared `f: () -> Int with Ask` is called with the
 /// row's dict by whoever reads it, exactly as a parameter of that type is. A
 /// row that names one of the struct's own type parameters as a type argument
@@ -499,7 +501,7 @@ fn edp_struct_args_of(stmts: Array[Stmt], ty: TypeExpr, rn: String) -> Array[Typ
     if head == rn {
       out = args
     } else if String::length(head) > 0 && edp_is_program_alias(head) {
-      for st in stmts {
+      for st in edp_program_decls_named(stmts = stmts, name = head) {
         match st {
           STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == Array::length(args) {
             next = Some(edp_record_type_subst(ty = body, names = edp_unkeyed_tparams(tparams), args = args))
@@ -1012,7 +1014,7 @@ export fn edp_callback_kind(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Int 
         }
         let mut kind = -1
         if fuel > 0 && edp_is_program_alias(head) {
-          for st in stmts {
+          for st in edp_program_decls_named(stmts = stmts, name = head) {
             match st {
               STypeAlias(_, name, params, body) => if name == head && Array::length(params) == Array::length(args) {
                 kind = edp_callback_kind(ty = edp_type_expr_subst(te = body, names = edp_unkeyed_tparams(params), args = args), stmts = stmts, fuel = fuel - 1)
@@ -1127,7 +1129,7 @@ fn edp_type_contains_callback_row(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -
 fn edp_alias_contains_callback_row(name: String, args: Array[TypeExpr], stmts: Array[Stmt], fuel: Int) -> Bool {
   let mut found = false
   if edp_is_program_alias(name) {
-    for st in stmts {
+    for st in edp_program_decls_named(stmts = stmts, name = name) {
       match st {
         STypeAlias(_, n, params, body) => if n == name && Array::length(params) == Array::length(args) {
           found = edp_type_contains_callback_row(ty = edp_record_type_subst(ty = body, names = edp_unkeyed_tparams(params), args = args), stmts = stmts, fuel = fuel - 1)
@@ -1193,7 +1195,7 @@ fn edp_record_context_type_in(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Bo
     found = found || edp_type_contains_callback_row(ty = arg, stmts = stmts, fuel = 32)
   }
   if !found && edp_is_program_alias(head) {
-    for st in stmts {
+    for st in edp_program_decls_named(stmts = stmts, name = head) {
       match st {
         STypeAlias(_, n, names, body) => if n == head && Array::length(names) == Array::length(args) {
           found = edp_record_context_type_in(ty = edp_record_type_subst(ty = body, names = edp_unkeyed_tparams(names), args = args), stmts = stmts, fuel = fuel - 1)

@@ -63,6 +63,10 @@ EXCLUDE_PATTERNS=(
   # runs node, which refuses to instantiate one. scripts/test_wasm_import_gate.sh
   # runs it on viberun with `vibe test`, on both RC lanes.
   '^fixtures/wasm_import/narrow_import_test\.vibe$'
+  # ADR-0124 (#2656): its test calls an `extern effect`, whose provider this
+  # harness does not bind. scripts/test_wasm_import_gate.sh runs it with
+  # `vibe test --provide Greeter=greeter.component.wasm`, and without one.
+  '^fixtures/wasm_import/extern_greeter_test\.vibe$'
   # #3719: imports z3_wasi.wasm, which scripts/build_z3_wasi.sh builds (about
   # 25 minutes) and which is not committed, so it is absent here. The CI job
   # `prove-wasm` builds or restores it and runs this file with `vibe test`.

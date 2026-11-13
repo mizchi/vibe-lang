@@ -1,0 +1,38 @@
+// #4051: a closure that performs what a `handle` answers must not outlive
+// that handle, also when it reaches a function that keeps it through a
+// `match` arm's binder of a struct field. The binder used to be bound as a
+// plain value, so the call was not a keep route: `vibe check` was clean, and
+// calling the kept closure after the handle trapped
+// (`indirect call type mismatch`). `keep(f = g)` and `let x = g` were refused
+// already; fixtures/handle_bound_closure_binder_test.vibe holds the binder
+// shapes that stay accepted.
+effect Ask {
+  Get() -> Int
+}
+
+let saved: Array[() -> Int] = []
+
+struct Holder {
+  f: () -> Int
+}
+
+fn keep(f: () -> Int) -> Int {
+  Array::push(saved, value = f)
+  0
+}
+
+fn main() -> Unit allows Console {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    match Holder::{
+      f: g
+    } {
+      Holder::{ f } => {
+        let _ = keep(f = f)
+      }
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  let k = Array::get(saved, at = 0)
+  println("g=\{k()}")
+}
