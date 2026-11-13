@@ -219,10 +219,14 @@ fn main allows Console + Kv {
   `lib/@vibe/compiler/codegen/wit/wit_gen.vibe`, refuses a type parameter); and
   an operation whose parameter or result type the boundary cannot carry (§2).
   Each message names the edit. Row labels name an effect by its bare name, so
-  two packages that both declare `extern effect S3` in one program produce two
-  catalog rows for one name, which `effect_catalog_lookup_unique` already
-  refuses; the import namespace of §2 is package-qualified regardless, so a
-  provider binding never depends on which package a name came from.
+  two packages that both declare `extern effect S3` in one program are
+  refused when the program is linked, naming both packages and asking for one
+  to be renamed (`refuse_shared_extern_effect_names`,
+  `lib/@vibe/compiler/linker/merge/merge.vibe`; a package's contract and its
+  implementation are one declaration; two modules outside any package that
+  each declare one are two). The import namespace of §2 is
+  package-qualified regardless, so a provider binding never depends on which
+  package a name came from.
 - **Operations are on the capability track.** An `extern effect`'s
   operations are spelled `snake_case` and called as ordinary functions
   (`Kv::get(k)`), the way `Fs::read_file` is, because they are functions the
@@ -375,8 +379,9 @@ Each fails closed today:
   a bound provider the grant for: the grade is refused;
 - extern effects on the wasm-gc backend: the program is refused at build time;
 - package-qualified ids: the import module is `vibe:effect:./<Effect>` for
-  every extern effect, so two packages declaring one under the same name would
-  share a provider binding.
+  every extern effect. Two packages declaring one under the same name in one
+  program are refused at link time (§1), so they cannot share a provider
+  binding.
 
 ## Acceptance
 

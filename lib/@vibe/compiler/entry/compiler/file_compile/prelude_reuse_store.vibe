@@ -16,7 +16,14 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/compiler/codegen/wasi {
-  PreludeReuseRecord, prelude_reuse_arm, prelude_reuse_outcome, prelude_reuse_record_new, prelude_reuse_record_parts, prelude_reuse_take
+  PreludeReuseRecord,
+  prelude_reuse_arm,
+  prelude_reuse_identity,
+  prelude_reuse_outcome,
+  prelude_reuse_record_new,
+  prelude_reuse_record_parts,
+  prelude_reuse_take,
+  prelude_reuse_take_verified
 }
 
 import @vibe/compiler/core {
@@ -31,16 +38,20 @@ import @vibe/compiler/core {
 // One slot per entry path, replaced by each store, as the body cache keeps
 // one. Unset or `off` does neither, and the compile is exactly as without
 // the feature. A record that does not decode is treated as absent.
+//
+// `verify` (#4043) arms and stores the same way, but a build that replays
+// also runs the passes, produces their output, and fails when the replay
+// differs from it in any statement, offsets included.
 
-/// `VIBE_PRELUDE_REUSE`: `on` or `off` (also when unset).
+/// `VIBE_PRELUDE_REUSE`: `on`, `verify`, or `off` (also when unset).
 export fn prelude_reuse_mode() -> String with Env + Exception {
   let raw = Env::get("VIBE_PRELUDE_REUSE")
   if raw == "" || raw == "off" {
     "off"
-  } else if raw == "on" {
+  } else if raw == "on" || raw == "verify" {
     raw
   } else {
-    throw(String::concat("VIBE_PRELUDE_REUSE must be on or off, got: ", raw))
+    throw(String::concat("VIBE_PRELUDE_REUSE must be on, verify or off, got: ", raw))
   }
 }
 
@@ -56,11 +67,22 @@ export fn prelude_reuse_around(entry_path: String, entry_name: String, checked_e
       Some(bytes) => prelude_reuse_decode(bytes),
       None => None
     }
-    prelude_reuse_arm(previous = previous)
+    prelude_reuse_arm(previous = previous, verify = mode == "verify")
     let out = compile()
     match prelude_reuse_take() {
       Some(made) => store_persistent_artifact(kind = "prelude-reuse", entry_name = entry_name, fingerprint = slot, bytes = prelude_reuse_encode(made), checked_error_row = checked_error_row),
       None => ()
+    }
+    let differs = match prelude_reuse_take_verified() {
+      Some((replayed, fresh)) => prelude_reuse_divergence(replayed = replayed, fresh = fresh),
+      None => ""
+    }
+    let verdict = if mode != "verify" || !String::starts_with(prelude_reuse_outcome(), prefix = "replayed") {
+      ""
+    } else if differs == "" {
+      "; verified"
+    } else {
+      "; VERIFY FAILED: " + differs
     }
     // `VIBE_PRELUDE_REUSE_TRACE=<file>`: append whether the build replayed,
     // and why not, one line per compile.
@@ -71,9 +93,37 @@ export fn prelude_reuse_around(entry_path: String, entry_name: String, checked_e
       } else {
         ""
       }
-      Fs::write_file(trace, contents = before + "prelude-reuse: " + prelude_reuse_outcome() + "\n")
+      Fs::write_file(trace, contents = before + "prelude-reuse: " + prelude_reuse_outcome() + verdict + "\n")
+    } else ()
+    if differs != "" {
+      throw("VIBE_PRELUDE_REUSE=verify: the replayed prelude differs from the effect passes' output: " + differs + ". Build with VIBE_PRELUDE_REUSE=off, and report the edit that led here")
     } else ()
     out
+  }
+}
+
+/// Where a replay's statements first differ from the passes' own, or "" when
+/// they are the same statements, compared through their stored encoding
+/// (which keeps offsets).
+fn prelude_reuse_divergence(replayed: Array[Stmt], fresh: Array[Stmt]) -> String {
+  let n = Array::length(replayed)
+  let m = Array::length(fresh)
+  let mut found = ""
+  let mut i = 0
+  while found == "" && i < n && i < m {
+    let a = Bytes::new()
+    ast_binary_write_stmt(buf = a, st = Array::get(replayed, at = i))
+    let b = Bytes::new()
+    ast_binary_write_stmt(buf = b, st = Array::get(fresh, at = i))
+    if a != b {
+      found = "statement " + Int::to_string(i) + " is `" + prelude_reuse_identity(Array::get(replayed, at = i)) + "` replayed, `" + prelude_reuse_identity(Array::get(fresh, at = i)) + "` from the passes"
+    } else ()
+    i = i + 1
+  }
+  if found == "" && n != m {
+    "the replay made " + Int::to_string(n) + " statements and the passes " + Int::to_string(m)
+  } else {
+    found
   }
 }
 

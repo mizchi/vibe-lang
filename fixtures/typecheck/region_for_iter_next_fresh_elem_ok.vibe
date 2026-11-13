@@ -1,0 +1,54 @@
+// #4093: a `for` over a declared collection with no `next` of its own is
+// driven through `C::iter`, and the desugar binds only the element of the
+// returned iterator's `next` (`Some((element, rest))`). Here `Bag::iter`
+// keeps `self.items` and `Gen::next` hands out a fresh array, so the binder
+// is no part of `outer` and may hold a region value. `main` answers 10 * the
+// block's value + the outer array's length: 10 shows the loop never wrote
+// `outer`.
+trait Iterator[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+trait Iterable[T] {
+  iter(Self) -> Gen
+}
+
+struct Bag {
+  items: Array[Array[MutList[Int]]]
+}
+
+struct Gen {
+  items: Array[Array[MutList[Int]]];
+  left: Int
+}
+
+impl Iterator for Gen {
+  next(self) -> Option[(T, Gen)] {
+    if self.left > 0 {
+      let fresh: Array[MutList[Int]] = []
+      Some((fresh, Gen::{ items: self.items, left: self.left - 1 }))
+    } else {
+      None
+    }
+  }
+}
+
+impl Iterable for Bag {
+  iter(self) -> Gen {
+    Gen::{ items: self.items, left: 1 }
+  }
+}
+
+fn main() -> Int allows Exception {
+  let outer: Array[MutList[Int]] = []
+  let bag = Bag::{ items: [outer] }
+  let v = region r {
+    let cell = MutList::empty(r)
+    MutList::push(cell, 3)
+    for a in bag {
+      Array::push(a, value = cell)
+    }
+    1
+  }
+  v * 10 + Array::length(outer)
+}

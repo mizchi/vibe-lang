@@ -1,0 +1,33 @@
+// #4088: `Array::reverse` answers fresh outer storage, but it holds the very
+// arrays its source holds, so a push into an element read out of it is a
+// push into the array written in the source.
+effect Ask {
+  Get() -> Int
+}
+
+let saved: Array[() -> Int] = []
+
+fn keep(f: () -> Int) -> Int {
+  Array::push(saved, value = f)
+  0
+}
+
+fn keep_arr(xs: Array[() -> Int]) -> Int {
+  Array::push(saved, value = Array::get(xs, at = 0))
+  0
+}
+
+fn main() -> Unit allows Console {
+  let plain = () -> 7
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let inner: Array[() -> Int] = []
+    let rows = [inner]
+    let back = Array::reverse(rows)
+    Array::push(Array::get(back, at = 0), value = g)
+    let _ = keep_arr(xs = inner)
+    ()
+  } with { Ask::Get() => resume(5) }
+  let k = Array::get(saved, at = 0)
+  println("g=\{k()} \{plain()}")
+}

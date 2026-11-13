@@ -150,6 +150,15 @@ VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3acb/3 compile-lane typing dependency-env reuse oracle"
 node scripts/compile_typing_env_reuse_oracle.mjs "$stage2_wasm"
 
+# 3acc. #4043: prelude reuse (#4042) replays the effect passes' output across
+# builds. A corpus of edits runs through `VIBE_PRELUDE_REUSE=on`, `verify` and
+# `off` caches: each replay must produce the reuse-off module and executed
+# result, and each verify build must confirm the replay statement by
+# statement. The last three first-parent commits' CLI closures replay through
+# verify mode.
+echo "[compiler-gate] 3acc/3 prelude effect-pass reuse oracle"
+node scripts/prelude_reuse_oracle.mjs "$stage2_wasm"
+
 # 3ad. #2767: the per-file AST cache is written on every cold build and was
 # read on none -- the prefetch was hung on the module-header pass, which a warm
 # build never reaches because planning answers from the persistent dep list

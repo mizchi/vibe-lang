@@ -15,11 +15,15 @@
 //# so it may hold an `r1` value but not an `r2` one.
 
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, expr_children, find_typedef, type_name_has_iterator_impl
+  Expr, Pat, Type, TypeDef, TypeEnv, TypeExpr, env_bind, env_lookup, find_typedef, type_name_has_iterator_impl
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  ascription_lambda_ann
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  arg_is_region_token, expression_aliases_outer_binding, held_result_param_indices, literal_item_is_inert
+  arg_is_region_token, expression_aliases_outer_binding, literal_item_is_inert
 }
 
 import ./checker_region_retention.vibe {
@@ -148,12 +152,14 @@ fn binder_alias_bind_pairs(env: TypeEnv, ps: Array[Pat], es: Array[Expr], scope:
 /// its stored elements, so the binder reads `iterable`. A declared type
 /// iterated through its own protocol hands out what the protocol call the
 /// `for` desugar selects returns -- `C::next(iterable)`, `C::iter(iterable)`
-/// or `C::iter_get(iterable, i)` (`for_binder_protocols`) -- so the binder is
-/// judged as that call would be, and is marked with the regions it
-/// predates. A method whose body returns a fresh value marks nothing: an
-/// iterator built before the region may hand out a new array to write into.
-/// A method returning a stored part of `iterable`, or one whose body is not
-/// readable here, answers what `iterable` does.
+/// or `C::iter_get(iterable, i)` (`for_binder_protocols`) -- and the binder
+/// is marked by what that call's declaration hands out
+/// (`for_binder_source_regions`); for `C::iter` that is the returned
+/// iterator's `next` (#4093). An element the body builds fresh marks
+/// nothing: an iterator built before the region may hand out a new array to
+/// write into. One holding only parts of `iterable` is marked with what
+/// `iterable` predates, and any other -- a module-level binding, a call's
+/// result, a body not readable here -- with every active region.
 export fn region_for_binder_bind(env: TypeEnv, name: String, iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
   let active = match env_lookup(env = scope, name = "#active_region") {
     Some(CtNamed(_, _)) => true,
@@ -209,60 +215,289 @@ fn for_binder_sources(iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array
   }
 }
 
-/// The regions one source of a `for` element predates. A `C::next(xs)` call
-/// returns `Some((element, rest))`, and the desugar binds only `element`
-/// (`Some((x, __iter_rest))`), so when every result of `next`'s declaration
-/// is spelled `Some((e, rest))` or `None` the element is judged alone: it
-/// holds `xs` when some `e` holds `next`'s parameter, and nothing otherwise
-/// -- a continuation that keeps `self.items` does not make a fresh element
-/// an alias (Codex on #4061). A body that cannot be split that way (a
-/// `return`, a result held in a name or returned by a call) is judged as the
-/// whole call, as any other source is.
+/// The regions one source of a `for` element predates. A protocol call is
+/// judged by what its declaration hands out (`for_protocol_reach`): an
+/// element built fresh in the body marks nothing, one that holds only
+/// parts of the iterand marks what `iterable` predates, and any other --
+/// one that reaches a module-level binding, a call whose result is not read
+/// here, or a declaration that is not readable -- marks every active
+/// region (Codex on #4100). The iterand itself (an `Array`, a `Map`'s
+/// values) is judged as a value, as before.
 fn for_binder_source_regions(source: Expr, iterable: Expr, scope: TypeEnv) -> Array[String] {
-  let split = match source {
-    ECall(EIdent(callee, _), _, _, _) => if String::ends_with(callee, suffix = "::next") {
-      for_next_element_holds_self(callee = callee)
-    } else {
-      None
-    },
-    _ => None
+  let reach = match source {
+    ECall(EIdent(callee, _), _, _, _) => for_protocol_reach(callee = callee, scope = scope),
+    _ => -1
   }
-  match split {
-    Some(holds) => if holds {
-      region_outer_alias_regions(value = iterable, scope = scope, active = true)
-    } else {
-      []
-    },
-    None => region_outer_alias_regions(value = source, scope = scope, active = true)
+  if reach == 0 {
+    []
+  } else if reach == 1 {
+    region_outer_alias_regions(value = iterable, scope = scope, active = true)
+  } else if reach == 2 {
+    retention_active_region_names(scope)
+  } else {
+    region_outer_alias_regions(value = source, scope = scope, active = true)
   }
 }
 
-/// Whether the element component of `callee`'s results holds one of its
-/// parameters; None when its declaration is not readable here or a result
-/// is not spelled `Some((e, rest))` / `None`.
-fn for_next_element_holds_self(callee: String) -> Option[Bool] {
+/// The reach (`for_element_reach`) of the element the `for` desugar binds
+/// from the protocol call `callee`; -1 when `callee` is not a protocol call.
+/// - `C::next(xs)` returns `Some((element, rest))`, and the desugar binds
+///   only `element` (`Some((x, __iter_rest))`), so the element is read
+///   alone: a fresh one reaches nothing, however much the continuation
+///   keeps (Codex on #4061). One that holds `next`'s parameter holds the
+///   cursor, which after the first step is the previous `rest`, so it
+///   reaches what `rest` does as well.
+/// - `C::iter(xs)` is driven through `R::next` over the `R` it returns
+///   (`classify_sync_for_loop`), so the element is `R::next`'s, read the
+///   same way (#4093). When that one holds the cursor, the first cursor is
+///   `C::iter`'s result, so it reaches what that result does as well.
+/// - `C::iter_get(xs, i)` returns the element itself.
+fn for_protocol_reach(callee: String, scope: TypeEnv) -> Int {
+  if String::ends_with(callee, suffix = "::next") {
+    for_next_reach(callee = callee)
+  } else if String::ends_with(callee, suffix = "::iter") {
+    match for_iter_next_callee(iter_callee = callee, scope = scope) {
+      Some(next_callee) => {
+        let element = for_next_reach(callee = next_callee)
+        if element == 0 {
+          0
+        } else {
+          for_reach_max(a = element, b = for_result_reach(callee = callee))
+        }
+      },
+      None => 2
+    }
+  } else if String::ends_with(callee, suffix = "::iter_get") {
+    for_result_reach(callee = callee)
+  } else {
+    -1
+  }
+}
+
+/// The reach of the element `callee` (a `next`) hands out: 2 unless its
+/// declaration's body is pure (`for_body_is_pure`) and every result is
+/// spelled `Some((e, rest))` or `None`.
+fn for_next_reach(callee: String) -> Int {
   match retention_decl_value(callee) {
-    Some(EFn(_, _, params, _, _, body)) => if Array::length(params) > 0 && !for_body_has_return(body) {
-      match for_next_element_body(body) {
-        Some(element) => Some(Array::length(held_result_param_indices(body = element, params = params)) > 0),
-        None => None
+    Some(EFn(_, _, params, _, _, body)) => if Array::length(params) > 0 && for_body_is_pure(body) {
+      match for_next_component_body(body = body, at = 0) {
+        Some(element) => {
+          let names = for_param_names(params)
+          let er = for_element_reach(e = element, params = names, locals = for_no_locals())
+          if er == 1 {
+            match for_next_component_body(body = body, at = 1) {
+              Some(rest) => for_reach_max(a = 1, b = for_element_reach(e = rest, params = names, locals = for_no_locals())),
+              None => 2
+            }
+          } else {
+            er
+          }
+        },
+        None => 2
       }
     } else {
-      None
+      2
     },
+    _ => 2
+  }
+}
+
+/// The reach of what `callee`'s declaration returns; 2 when it is not
+/// readable here or its body is not pure (`for_body_is_pure`).
+fn for_result_reach(callee: String) -> Int {
+  match retention_decl_value(callee) {
+    Some(EFn(_, _, params, _, _, body)) => if for_body_is_pure(body) {
+      for_element_reach(e = body, params = for_param_names(params), locals = for_no_locals())
+    } else {
+      2
+    },
+    _ => 2
+  }
+}
+
+fn for_param_names(_ params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  for p in params {
+    p.0
+  }
+}
+
+fn for_reach_max(a: Int, b: Int) -> Int {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}
+
+/// What the value of `e` may be a part of, read from its syntax only, so an
+/// element counts as fresh only by positive evidence (Codex on #4100):
+/// 0 -- built in the body from literals, constructors and other fresh parts;
+/// 1 -- may also hold the function's parameters; 2 -- may hold anything
+/// else: a module-level or captured name, a call's result, a `let mut`
+/// (which a later assignment may point elsewhere), or a form not read here.
+/// `locals` carries the reach of each name the body binds before `e`; the
+/// last entry for a name wins, so an inner binding shadows an outer one and
+/// a parameter.
+fn for_element_reach(e: Expr, params: Array[String], locals: Array[(String, Int)]) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_, _) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    // The builtin operators return a scalar or a new string.
+    EBinOp(_, _, _, _) => 0,
+    EUnaryOp(_, _) => 0,
+    EIdent(n, _) => {
+      let mut found = -1
+      for l in locals {
+        if l.0 == n {
+          found = l.1
+        } else {
+          ()
+        }
+      }
+      if found >= 0 {
+        found
+      } else if n == "None" || n == "Option::None" {
+        0
+      } else if for_name_listed(names = params, name = n) {
+        1
+      } else {
+        2
+      }
+    },
+    ETuple(items) => for_elements_reach(es = items, params = params, locals = locals),
+    EArray(items) => for_elements_reach(es = items, params = params, locals = locals),
+    ERecord(_, fields, _) => for_elements_reach(es = for f in fields {
+      f.1
+    }, params = params, locals = locals),
+    EMap(entries) => for_elements_reach(es = for f in entries {
+      f.1
+    }, params = params, locals = locals),
+    EDot(inner, _, _, _) => for_element_reach(e = inner, params = params, locals = locals),
+    ECall(EIdent(ctor, _), args, _, _) => if for_is_wrapping_ctor(ctor) {
+      for_elements_reach(es = args, params = params, locals = locals)
+    } else {
+      2
+    },
+    // A written `let x: T = e` parses to `((__asc: T) -> __asc)(e)`.
+    ECall(callee, args, _, _) => match ascription_lambda_ann(callee) {
+      Some(_) => if Array::length(args) == 1 {
+        for_element_reach(e = Array::get(args, at = 0), params = params, locals = locals)
+      } else {
+        2
+      },
+      None => 2
+    },
+    EIf(_, a, b) => for_reach_max(a = for_element_reach(e = a, params = params, locals = locals), b = for_element_reach(e = b, params = params, locals = locals)),
+    EMatch(scrutinee, arms) => {
+      let sr = for_element_reach(e = scrutinee, params = params, locals = locals)
+      let mut out = 0
+      for arm in arms {
+        let (pat, body) = arm
+        let names: Array[String] = []
+        retention_pat_names_into(p = pat, out = names)
+        let inner: Array[(String, Int)] = Array::concat(locals, for n in names {
+          (n, sr)
+        })
+        out = for_reach_max(a = out, b = for_element_reach(e = body, params = params, locals = inner))
+      }
+      out
+    },
+    ELet(x, v, rest, _) => {
+      let vr = for_element_reach(e = v, params = params, locals = locals)
+      for_element_reach(e = rest, params = params, locals = for_locals_with(locals = locals, name = x, reach = vr))
+    },
+    ELetMut(x, _, rest, _) => for_element_reach(e = rest, params = params, locals = for_locals_with(locals = locals, name = x, reach = 2)),
+    ESeq(_, rest) => for_element_reach(e = rest, params = params, locals = locals),
+    _ => 2
+  }
+}
+
+fn for_no_locals() -> Array[(String, Int)] {
+  []
+}
+
+/// `locals` with `name` bound at `reach`, after every earlier entry.
+fn for_locals_with(locals: Array[(String, Int)], name: String, reach: Int) -> Array[(String, Int)] {
+  let out: Array[(String, Int)] = Array::concat(locals, [])
+  Array::push(out, value = (name, reach))
+  out
+}
+
+fn for_elements_reach(es: Array[Expr], params: Array[String], locals: Array[(String, Int)]) -> Int {
+  let mut out = 0
+  for e in es {
+    out = for_reach_max(a = out, b = for_element_reach(e = e, params = params, locals = locals))
+  }
+  out
+}
+
+/// A builtin constructor whose result holds exactly its arguments.
+fn for_is_wrapping_ctor(_ name: String) -> Bool {
+  name == "Some" || name == "Option::Some" || name == "Ok" || name == "Result::Ok" || name == "Err" || name == "Result::Err"
+}
+
+fn for_name_listed(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  for n in names {
+    if n == name {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #4093: the `next` the `for` desugar drives over what `iter_callee`
+/// returns -- `R::next` for the nominal head `R` of `iter_callee`'s declared
+/// result, the type `classify_sync_for_loop` reads from `C::iter`. None when
+/// `iter_callee` is unbound or its result has no nominal head; a head whose
+/// `next` has no readable declaration reaches everything
+/// (`for_next_reach`).
+fn for_iter_next_callee(iter_callee: String, scope: TypeEnv) -> Option[String] {
+  match env_lookup(env = scope, name = iter_callee) {
+    Some(t) => match for_binder_result_head(t) {
+      Some(head) => Some(String::concat(head, "::next")),
+      None => None
+    },
+    None => None
+  }
+}
+
+/// The nominal head of a function type's result, through a `forall`.
+fn for_binder_result_head(_ t: Type) -> Option[String] {
+  match t {
+    CtFn(_, ret, _) => match ret {
+      CtNamed(n, _) => if n != "" {
+        Some(n)
+      } else {
+        None
+      },
+      CtStruct(n) => if n != "" {
+        Some(n)
+      } else {
+        None
+      },
+      _ => None
+    },
+    CtForAll(_, _, body) => for_binder_result_head(body),
     _ => None
   }
 }
 
-/// `body` with each result `Some((e, rest))` replaced by `e` and each `None`
-/// by `()`, through `if`, `match`, `let` and sequencing; None at any other
-/// result.
-fn for_next_element_body(_ body: Expr) -> Option[Expr] {
+/// `body` with each result `Some((element, rest))` replaced by its component
+/// `at` (0 the element, 1 the continuation) and each `None` by `()`,
+/// through `if`, `match`, `let` and sequencing; None at any other result.
+fn for_next_component_body(body: Expr, at: Int) -> Option[Expr] {
   match body {
     ECall(EIdent(ctor, _), args, _, _) => if (ctor == "Some" || ctor == "Option::Some") && Array::length(args) == 1 {
       match Array::get(args, at = 0) {
         ETuple(items) => if Array::length(items) == 2 {
-          Some(Array::get(items, at = 0))
+          Some(Array::get(items, at = at))
         } else {
           None
         },
@@ -276,8 +511,8 @@ fn for_next_element_body(_ body: Expr) -> Option[Expr] {
     } else {
       None
     },
-    EIf(c, a, b) => match for_next_element_body(a) {
-      Some(ra) => match for_next_element_body(b) {
+    EIf(c, a, b) => match for_next_component_body(body = a, at = at) {
+      Some(ra) => match for_next_component_body(body = b, at = at) {
         Some(rb) => Some(EIf(c, ra, rb)),
         None => None
       },
@@ -288,7 +523,7 @@ fn for_next_element_body(_ body: Expr) -> Option[Expr] {
       let mut ok = true
       for arm in arms {
         let (pat, arm_body) = arm
-        match for_next_element_body(arm_body) {
+        match for_next_component_body(body = arm_body, at = at) {
           Some(r) => Array::push(out, value = (pat, r)),
           None => ok = false
         }
@@ -299,15 +534,15 @@ fn for_next_element_body(_ body: Expr) -> Option[Expr] {
         None
       }
     },
-    ELet(x, v, rest, off) => match for_next_element_body(rest) {
+    ELet(x, v, rest, off) => match for_next_component_body(body = rest, at = at) {
       Some(r) => Some(ELet(x, v, r, off)),
       None => None
     },
-    ELetMut(x, v, rest, off) => match for_next_element_body(rest) {
+    ELetMut(x, v, rest, off) => match for_next_component_body(body = rest, at = at) {
       Some(r) => Some(ELetMut(x, v, r, off)),
       None => None
     },
-    ESeq(a, rest) => match for_next_element_body(rest) {
+    ESeq(a, rest) => match for_next_component_body(body = rest, at = at) {
       Some(r) => Some(ESeq(a, r)),
       None => None
     },
@@ -315,24 +550,66 @@ fn for_next_element_body(_ body: Expr) -> Option[Expr] {
   }
 }
 
-fn for_body_has_return(_ body: Expr) -> Bool {
-  let stack: Array[Expr] = [body]
-  let mut found = false
-  while !found && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, at = n - 1)
-    Array::truncate(stack, length = n - 1)
-    match cur {
-      EReturn(_) => found = true,
-      _ => {
-        for child in expr_children(cur) {
-          Array::push(stack, value = child)
+/// Whether evaluating `body` only binds, branches, reads and constructs, so
+/// nothing it builds can be stored anywhere before it is returned (Codex on
+/// #4100: a `next` that pushes the array it then hands out into a
+/// module-level array has published it). Allowed: literals, names, field
+/// reads, tuples, arrays, records and maps, `Some` / `Ok` / `Err`, a
+/// written `let x: T = e` ascription, `let`, sequencing, `if`, `match`, and
+/// the builtin operators except `==` / `!=`, which may run a program's
+/// `equals`. Anything else -- a call, an assignment, a `let mut`, a loop, a
+/// handler, a lambda, an interpolation (which may run a program's
+/// `to_string`), a `return` -- makes the body not pure, and its result then
+/// reaches everything (`for_next_reach`, `for_result_reach`).
+fn for_body_is_pure(_ body: Expr) -> Bool {
+  match body {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_, _) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EIdent(_, _) => true,
+    EBinOp(op, a, b, _) => op != "==" && op != "!=" && for_body_is_pure(a) && for_body_is_pure(b),
+    EUnaryOp(_, a) => for_body_is_pure(a),
+    EDot(inner, _, _, _) => for_body_is_pure(inner),
+    ETuple(items) => for_bodies_are_pure(items),
+    EArray(items) => for_bodies_are_pure(items),
+    ERecord(_, fields, _) => for_bodies_are_pure(for f in fields {
+      f.1
+    }),
+    EMap(entries) => for_bodies_are_pure(for f in entries {
+      f.1
+    }),
+    ECall(callee, args, _, _) => {
+      let allowed = match callee {
+        EIdent(ctor, _) => for_is_wrapping_ctor(ctor),
+        _ => match ascription_lambda_ann(callee) {
+          Some(_) => Array::length(args) == 1,
+          None => false
         }
-        ()
       }
+      allowed && for_bodies_are_pure(args)
+    },
+    EIf(c, a, b) => for_body_is_pure(c) && for_body_is_pure(a) && for_body_is_pure(b),
+    EMatch(scrutinee, arms) => for_body_is_pure(scrutinee) && for_bodies_are_pure(for arm in arms {
+      arm.1
+    }),
+    ELet(_, v, rest, _) => for_body_is_pure(v) && for_body_is_pure(rest),
+    ESeq(a, rest) => for_body_is_pure(a) && for_body_is_pure(rest),
+    _ => false
+  }
+}
+
+fn for_bodies_are_pure(_ es: Array[Expr]) -> Bool {
+  let mut ok = true
+  for e in es {
+    if ok && !for_body_is_pure(e) {
+      ok = false
+    } else {
+      ()
     }
   }
-  found
+  ok
 }
 
 /// The protocol method(s) the `for` desugar may draw `head`'s elements
