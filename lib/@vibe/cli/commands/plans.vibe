@@ -1260,11 +1260,17 @@ fn refuse_gc_coverage() -> Unit with Exception + Env {
 /// plan carries the bindings on one line, tab-separated, so neither half may
 /// hold a tab or a newline.
 fn run_provide_binding(_ spec: String) -> String with Exception {
+  provide_binding(command = "run", spec = spec)
+}
+
+/// One `--provide` binding for `command` (`run` / `test`), refused with the
+/// spelling that works when the runner could not read it.
+fn provide_binding(command: String, spec: String) -> String with Exception {
   let at = String::index_of(spec, needle = "=")
   if at <= 0 || at == String::length(spec) - 1 {
-    throw("run: --provide takes <Effect>=<component.wasm>, got `\{spec}`")
+    throw("\{command}: --provide takes <Effect>=<component.wasm>, got `\{spec}`")
   } else if String::contains(spec, needle = "\t") || String::contains(spec, needle = "\n") {
-    throw("run: --provide `\{spec}` holds a tab or a newline")
+    throw("\{command}: --provide `\{spec}` holds a tab or a newline")
   } else {
     spec
   }
@@ -1639,10 +1645,18 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String, 
   let mut no_cache = false
   let mut jobs = 1
   let files: Array[String] = []
+  let provides: Array[String] = []
   let mut i = 1
   while i < Array::length(args) {
     let arg = Array::get(args, at = i)
-    if arg == "--update" {
+    if arg == "--provide" {
+      // ADR-0124 (#2656): bind an `extern effect`'s provider for every test
+      // binary this run starts, as `vibe run --provide` does for a program.
+      i = i + 1
+      Array::push(provides, value = provide_binding(command = "test", spec = need_value(args = args, index = i, command = "test", flag = arg)))
+    } else if String::starts_with(arg, prefix = "--provide=") {
+      Array::push(provides, value = provide_binding(command = "test", spec = arg[10: String::length(arg)]))
+    } else if arg == "--update" {
       update = true
       no_cache = true
       ()
@@ -1661,12 +1675,22 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String, 
     i = i + 1
   }
   if Array::length(files) == 0 {
-    throw("usage: vibe test [--no-cache] [--update] [--jobs N] <file_test.vibe | dir> [more...]")
+    throw("usage: vibe test [--no-cache] [--update] [--jobs N] [--provide <Effect>=<component.wasm>] <file_test.vibe | dir> [more...]")
   } else {
     let expanded = expand_user_test_inputs(files)
     let backend_kind = user_backend_kind("VIBE_TEST_BACKEND")
     let acc = StringBuilder::new()
-    StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-tests\n")
+    // With `--provide`, the plan is `run-tests-provide`: the bindings,
+    // tab-separated, on line 3 and every other line one further down. The
+    // plain `run-tests` layout is unchanged, because the committed seed's CLI
+    // writes it too.
+    if Array::length(provides) > 0 {
+      StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-tests-provide\n")
+      StringBuilder::push(acc, value = String::join(provides, sep = "\t"))
+      StringBuilder::push(acc, value = "\n")
+    } else {
+      StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-tests\n")
+    }
     if update {
       StringBuilder::push(acc, value = "1\n")
     } else {

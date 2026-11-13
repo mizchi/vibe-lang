@@ -558,25 +558,6 @@ esac
 if [ "$need_runner" = 1 ]; then
   [ -x "$RUNNER" ] || die "runner not found or not executable: $RUNNER"
 fi
-# ADR-0124 (#2656): append one `vibe test --provide <Effect>=<component>`
-# binding to the newline-separated list in $1 and print the result, or refuse
-# a binding the runner could not read (no `=`, an empty side, a tab or a
-# newline) with the spelling that works.
-test_provide_binding() {
-  local list="$1" spec="$2" eff="${2%%=*}" path="${2#*=}"
-  case "$spec" in
-    *=*) ;;
-    *) echo "vibe test: --provide takes <Effect>=<component.wasm>, got \`$spec\`" >&2; return 1 ;;
-  esac
-  if [ -z "$eff" ] || [ -z "$path" ]; then
-    echo "vibe test: --provide takes <Effect>=<component.wasm>, got \`$spec\`" >&2; return 1
-  fi
-  case "$spec" in
-    *"$(printf '\t')"*|*"
-"*) echo "vibe test: --provide \`$spec\` holds a tab or a newline" >&2; return 1 ;;
-  esac
-  if [ -n "$list" ]; then printf '%s\n%s\n' "$list" "$spec"; else printf '%s\n' "$spec"; fi
-}
 host_run_guest() {
   local wasm="$1" src="$2" trace="$3" brk="$4" mem="$5" msamp="$6" asite="$7" atop="$8" gprof="$9" gint="${10}"
   shift 10
@@ -925,6 +906,19 @@ execute_host_action() {
       else
         "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
       fi
+      ;;
+    run-tests-provide)
+      # ADR-0124 (#2656): `run-tests` with the `vibe test --provide` bindings
+      # (tab-separated) on line 3 and every other line one further down. The
+      # bindings reach every test binary through the environment, a nested
+      # `--update` re-run included.
+      local derived provide_status=0
+      derived="$(mktemp -t vibe-plan-XXXXXX)"
+      { sed -n '1p' "$plan"; echo run-tests; sed -n '4,$p' "$plan"; } > "$derived"
+      ( VIBE_PROVIDE="$(sed -n '3p' "$plan" | tr '\t' '\n')"; export VIBE_PROVIDE VIBE_PROVIDE_VERB=test
+        execute_host_action "$derived" ) || provide_status=$?
+      rm -f "$derived"
+      return "$provide_status"
       ;;
     run-tests)
       t_fail=0; t_pass=0; update="$(sed -n '3p' "$plan")"; no_cache="$(sed -n '4p' "$plan")"; jobs="$(sed -n '5p' "$plan")"
@@ -1943,14 +1937,15 @@ REPL_HELP
     # into a link back to an ancestor until it failed (Codex review of
     # #2858). The launcher expanded with find before the verbs moved; the
     # dispatcher sorts the whole list, so the report order is unchanged.
-    tflags=(); tfiles=(); tjobflag=(); tprev=""; tjobs=""; tupdate=0; tprovides=""
+    tflags=(); tfiles=(); tjobflag=(); tprev=""; tjobs=""; tupdate=0
     for targ in "$@"; do
       if [ "$tprev" = "--jobs" ]; then tjobs="$targ"; tjobflag=(--jobs "$targ"); tprev=""; continue; fi
-      if [ "$tprev" = "--provide" ]; then tprovides="$(test_provide_binding "$tprovides" "$targ")" || exit 2; tprev=""; continue; fi
+      # `--provide <Effect>=<component>` (ADR-0124) is the dispatcher's to parse;
+      # its value is a flag argument, not a test file to expand.
+      if [ "$tprev" = "--provide" ]; then tflags+=(--provide "$targ"); tprev=""; continue; fi
       case "$targ" in
         --jobs) tprev="$targ" ;;
         --provide) tprev="$targ" ;;
-        --provide=*) tprovides="$(test_provide_binding "$tprovides" "${targ#--provide=}")" || exit 2 ;;
         --update) tupdate=1; tflags+=("$targ") ;;
         -*) tflags+=("$targ") ;;
         *)
@@ -1963,21 +1958,14 @@ REPL_HELP
           fi ;;
       esac
     done
-    [ "$tprev" = "--provide" ] && die "vibe test: --provide takes <Effect>=<component.wasm>"
-    # ADR-0124 (#2656): `--provide <Effect>=<component>` binds the provider of
-    # an `extern effect` for every test binary this run starts, exactly as
-    # `vibe run --provide` does for a program -- a test mocks a host effect by
-    # binding a mock provider. The runner reads the bindings from the
-    # environment, so the `--jobs` shares inherit them too.
-    # The verb is exported either way, so the refusal for a missing provider
-    # names `vibe test --provide` rather than `vibe run`'s flag.
-    export VIBE_PROVIDE_VERB=test
-    if [ -n "$tprovides" ]; then export VIBE_PROVIDE="$tprovides"; fi
     # A trailing `--jobs` with no value is forwarded where the user wrote it,
     # after the files, so the dispatcher refuses it (`test: missing value
     # after --jobs`) instead of the run silently proceeding at the default job
     # count (Codex review of #2858).
     ttrail=(); if [ -n "$tprev" ]; then ttrail=("$tprev"); fi
+    # A test binary that needs an `extern effect` provider names `vibe test
+    # --provide` when none is bound (viberun's refusal reads the verb).
+    export VIBE_PROVIDE_VERB=test
     # `--jobs N` with several files: N dispatcher processes, each COMPILING
     # and running a contiguous share of the files, so compile-bound suites --
     # the part the option was introduced for -- get the concurrency asked for

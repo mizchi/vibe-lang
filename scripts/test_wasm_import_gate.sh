@@ -285,7 +285,7 @@ printf '%s\n' "$out" | grep -qF '`Greeter` (Greeter::greet): bind one with `vibe
 status=0
 out="$(vibe "$VIBERUN" test --provide Greeter "$FX/extern_greeter_test.vibe" 2>&1)" || status=$?
 [ "$status" != 0 ] || fail "[viberun] vibe test accepted --provide without <Effect>=<component.wasm>"
-printf '%s\n' "$out" | grep -qF 'vibe test: --provide takes <Effect>=<component.wasm>, got `Greeter`' \
+printf '%s\n' "$out" | grep -qF 'test: --provide takes <Effect>=<component.wasm>, got `Greeter`' \
   || { printf '%s\n' "$out" >&2; fail "[viberun] a malformed vibe test --provide is not refused with the spelling that works"; }
 # The node runner cannot instantiate the provider, and says so instead of
 # answering every operation with its fallback stub.
