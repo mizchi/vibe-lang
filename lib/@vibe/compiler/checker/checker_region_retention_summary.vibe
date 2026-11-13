@@ -20,7 +20,12 @@
 //#     function parameter, a closure a call produced), refused the same way;
 //#   - `i>r` -- it may reach the result, which a `TaskGroup::run` body's call
 //#     reads (Codex on #3473: a body returning a handle it spawned). A call's
-//#     result is otherwise taken to carry what its arguments carry.
+//#     result is otherwise taken to carry what its arguments carry;
+//#   - `g>r` -- the result may be storage no argument supplied, such as a
+//#     module-level array a getter returns (#4091), so a write into it is a
+//#     write into a location declared before every region. A function value
+//#     whose body cannot be traced publishes it too. Unlike the other rows,
+//#     it is published for a function whatever its parameters are.
 //#
 //# Every function the module publishes is summarized: one declared `export`,
 //# one an `export { .. }` names, and one bound as an alias of either (Codex
@@ -45,14 +50,18 @@ import @vibe/core {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  type_mentions_named
+  held_result_param_indices, type_mentions_named
 }
 
 import ./checker_region_retention_types.vibe {
   retention_type_hides_region
 }
 
-let retention_summary_prefix: String = "#retains:"
+import ./checker_region_call_result.vibe {
+  held_has_module_storage, region_module_storage_row, region_summary_prefix
+}
+
+let retention_summary_prefix: String = region_summary_prefix()
 
 /// The binding that carries `name`'s summary in a module's environment and
 /// in the interface it publishes. No source identifier can spell it.
@@ -418,6 +427,7 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
     env
   } else {
     let mut out = env
+    let summarized: Array[String] = []
     for cand in candidates {
       let (name, kind, lit, params) = cand
       let summary = if kind == 1 {
@@ -425,12 +435,61 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
       } else {
         retention_summary_opaque(params = params, defs = defs)
       }
+      let full = retention_summary_with_storage(summary = summary, kind = kind, lit = lit)
+      Array::push(summarized, value = name)
       // One that keeps nothing is bound too, as `""`, so whatever binding of
       // the name is nearest is this module's own answer.
-      out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(summary, [
+      out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(full, [
       ]))
     }
+    // #4091: a function no argument of which may carry a region still
+    // publishes whether its result is storage of its own (a getter).
+    for name in names {
+      let mut seen = false
+      for done in summarized {
+        seen = seen || done == name
+      }
+      let is_function = match env_lookup(env = env, name = name) {
+        Some(fty) => match retention_fn_param_types(fty) {
+          Some(_) => true,
+          None => false
+        },
+        None => false
+      }
+      if !seen && is_function {
+        let (kind, lit) = resolve(name)
+        let full = retention_summary_with_storage(summary = "", kind = kind, lit = lit)
+        if full != "" {
+          out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(full, [
+          ]))
+        }
+      }
+    }
     out
+  }
+}
+
+/// #4091: `summary` with the `g>r` row when the function's result may be
+/// storage none of its arguments supplied: a closure literal whose result
+/// reads one (`held_result_param_indices`), or a function value whose body
+/// cannot be traced (`kind` 2).
+fn retention_summary_with_storage(summary: String, kind: Int, lit: Expr) -> String {
+  let stores = if kind == 2 {
+    true
+  } else if kind == 1 {
+    match lit {
+      EFn(_, _, params, _, _, body) => held_has_module_storage(held_result_param_indices(body = body, params = params)),
+      _ => true
+    }
+  } else {
+    false
+  }
+  if !stores {
+    summary
+  } else if summary == "" {
+    region_module_storage_row()
+  } else {
+    String::concat(summary, String::concat(",", region_module_storage_row()))
   }
 }
 

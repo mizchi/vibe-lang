@@ -114,7 +114,13 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  hce_decl_facts, retention_alias_names, retention_arg_values, retention_decls, retention_is_function_type, retention_result_items
+  hce_decl_facts,
+  retention_alias_names,
+  retention_arg_values,
+  retention_decls,
+  retention_is_function_type,
+  retention_module_env_cell,
+  retention_result_items
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -151,6 +157,12 @@ import ./checker_region_retention_summary.vibe {
 export ./checker_region_retention_types.vibe {
   retention_type_hides_region
 }
+export ./checker_region_call_result.vibe {
+  retention_name_scope
+}
+import ./checker_region_call_result.vibe {
+  region_outer_content_marker, retention_name_scope
+}
 import ./checker_region_retention_types.vibe {
   retention_type_hides_region
 }
@@ -160,10 +172,6 @@ import ./checker_region_retention_types.vibe {
 /// Every `let`-bound closure literal of the module being checked, as
 /// `(literal, name, bound by let rec)`. A binding's marker holds its index.
 let retention_closures: Array[(Expr, String, Bool)] = []
-
-/// The environment of the top-level statement being checked: the scope a
-/// top-level function's body is re-checked in.
-let retention_module_env_cell: Array[TypeEnv] = []
 
 /// `(parameter type, regions, callee, carried)` for each parameter of the
 /// lambda a re-check is about to check, taken by `check_lambda_expr` on
@@ -718,7 +726,7 @@ fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String
 
 /// An optional (`x?`) parameter keeps its marker on the
 /// name; the body binds the bare name.
-fn retention_param_base(_ raw_name: String) -> String {
+export fn retention_param_base(_ raw_name: String) -> String {
   let len = String::length(raw_name)
   if len > 0 && String::byte_at(raw_name, at = len - 1) == 63 {
     String::substring(raw_name, start = 0, end = len - 1)
@@ -1872,69 +1880,6 @@ export fn retention_bind_let(env: TypeEnv, name: String, val: Expr, ty: Type, is
   }
 }
 
-/// 1 when `name` resolves to a binding made inside a body -- a function
-/// body (`__capture_boundary__`) or a top-level statement's value or test
-/// body (`#interp.top.fn`) lies behind it -- 2 when it resolves at module
-/// level, 0 when the chain has no binding of it.
-export fn retention_name_scope(env: TypeEnv, name: String) -> Int {
-  let mut cur = env
-  let mut found = false
-  let mut scope = 0
-  let mut done = false
-  while !done {
-    match cur {
-      EnvBind(n, _, rest) => {
-        if found && (String::equals(n, "__capture_boundary__") || String::equals(n, "#interp.top.fn")) {
-          scope = 1
-          done = true
-        } else if !found && String::equals(n, name) {
-          found = true
-          scope = 2
-        } else {
-          ()
-        }
-        cur = rest
-      },
-      EnvMutCell(n, _, rest) => {
-        if !found && String::equals(n, name) {
-          found = true
-          scope = 2
-        } else {
-          ()
-        }
-        cur = rest
-      },
-      EnvShowWrappers(_, _, rest) => {
-        cur = rest
-      },
-      EnvTraitDef(_, _, _, _, rest, _, _) => {
-        cur = rest
-      },
-      EnvTraitImpl(_, _, rest) => {
-        cur = rest
-      },
-      EnvTraitImplGen(_, _, _, _, rest) => {
-        cur = rest
-      },
-      EnvTypeDefs(_, _, rest) => {
-        cur = rest
-      },
-      // A name in an accelerator index is a module-level or imported one;
-      // the index is otherwise looked through (see `env_marker_before`).
-      EnvCached(index, _, rest) => if !found && env_name_index_find(index = index, name = name) >= 0 {
-        scope = 2
-        done = true
-      } else {
-        cur = rest
-      },
-      _ => {
-        done = true
-      }
-    }
-  }
-  scope
-}
-
 /// The scope the closure literal recorded as `text` was written in: what lies
 /// under the binding of `bound_name` that its marker sits in front of. An
 /// alias copies the marker, so the closure's own binding is found by the
@@ -2366,6 +2311,23 @@ fn retention_name_predates(env: TypeEnv, name: String) -> Array[String] {
         done = true
       }
     }
+  }
+  // #4091: a part of the binding may be outer storage too
+  // (`region_outer_content_marker`); a caller asks about a value read out of
+  // it, or hands it to a function that may write into such a part.
+  match env_marker_before(env = env, marker = region_outer_content_marker(name), name = name) {
+    Some(CtTuple(regions)) => {
+      for r in regions {
+        match r {
+          CtNamed(rname, _) => if !retention_string_has(items = out, wanted = rname) {
+            Array::push(out, value = rname)
+          },
+          _ => ()
+        }
+      }
+      ()
+    },
+    _ => ()
   }
   match env_marker_before(env = env, marker = String::concat("__region_outer_alias__", name), name = name) {
     Some(CtTuple(regions)) => {

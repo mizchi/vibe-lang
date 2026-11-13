@@ -1,0 +1,274 @@
+// lib/@vibe/compiler/checker -- where a call's result may live, for the
+// region retention checks (#4091).
+
+//# A write that stores a region's value is refused when its target outlives
+//# the region (`container_write_crosses_region`), and a target that is a
+//# call's result, or a binder holding one, is judged by
+//# `expression_aliases_outer_binding`. That test used to read a call's result
+//# through its ARGUMENTS only, so a getter that returns module storage
+//# (`fn get_sink() -> Array[..] { kept }`) answered "fresh": with no argument
+//# that predates the region, `Array::push(get_sink(), value = cell)` kept a
+//# region value in `kept` after the region closed.
+//#
+//# A call's result now counts as fresh only where that is established:
+//#
+//#   - a builtin or a constructor holds only its arguments;
+//#   - a function of this module is read from its declaration, and a result
+//#     that may hold storage no parameter supplied -- a module-level value,
+//#     a name the reading cannot account for, the result of a call it cannot
+//#     open -- is marked with `held_module_storage_index`, which every reader
+//#     of the parameter list treats as "predates every active region";
+//#   - a function imported from another module answers by the summary its
+//#     module published (`g>r`, `checker_region_retention_summary.vibe`); the
+//#     standard library publishes none and is trusted, as it is for what it
+//#     keeps;
+//#   - any other callee (a closure, a parameter, a module-level value that is
+//#     not a function literal) may hand back storage of its own, so its
+//#     result predates every active region wherever its type can hold a
+//#     location.
+//#
+//# A method call (`h.sink()`) is resolved to the function it calls where the
+//# receiver's type is known, and otherwise to every method of this module of
+//# that spelling.
+
+import @vibe/compiler/core {
+  Expr, Type, TypeEnv, env_lookup, env_name_index_find
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  lookup_builtin
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_decl_value, retention_decls, retention_module_env_cell
+}
+
+/// The entry `held_result_param_indices` adds when a function's result may
+/// hold storage that none of its parameters supplied. It is larger than any
+/// parameter index, so a reader that only maps indices to arguments skips it;
+/// a reader that judges the result must ask `held_has_module_storage`.
+export fn held_module_storage_index() -> Int {
+  1000000000
+}
+
+/// Whether a held-parameter list says the result may hold storage that
+/// outlives every region (`held_module_storage_index`).
+export fn held_has_module_storage(_ held: Array[Int]) -> Bool {
+  let mut found = false
+  for index in held {
+    if index == held_module_storage_index() {
+      found = true
+    }
+  }
+  found
+}
+
+/// How a name a function body reads, which is neither a parameter nor a
+/// tracked local, may reach its result: 0 for a function of the module
+/// (a value that is not storage), 1 for a module-level value (storage that
+/// outlives every region), 2 for a name this reading cannot account for --
+/// an imported value, or a binder of a form it does not track -- which may be
+/// either a parameter or outer storage. `shadowed` is whether a binder of the
+/// body spells the name, so it is not the declaration.
+export fn held_free_name_kind(name: String, shadowed: Bool) -> Int {
+  if shadowed {
+    2
+  } else {
+    match retention_decl_value(name) {
+      Some(EFn(_, _, _, _, _, _)) => 0,
+      Some(_) => 1,
+      None => 2
+    }
+  }
+}
+
+/// The marker a binding of a region body carries when a part of it -- an
+/// element, a field, a binder over it -- may be storage declared before the
+/// regions it lists (`checker_region_content_alias.vibe`).
+export fn region_outer_content_marker(_ name: String) -> String {
+  String::concat("__region_outer_content__", name)
+}
+
+/// The prefix of the binding that carries a function's retention summary
+/// (`retention_summary_marker`).
+export fn region_summary_prefix() -> String {
+  "#retains:"
+}
+
+/// The summary row saying a function's result may be storage no argument
+/// supplied.
+export fn region_module_storage_row() -> String {
+  "g>r"
+}
+
+/// Whether a call of `callee`, bound in `env` and with no function literal
+/// of this module to read, may hand back storage of its own: an imported
+/// function answers by the summary its module published; a module-level
+/// value that is not a function literal does, and so does a closure or a
+/// parameter bound inside a body (`retention_name_scope`). A builtin -- which
+/// a region body may bind afresh, with its region in the signature -- and any
+/// other module-level name (a standard-library import, which publishes no
+/// summary; a qualified name, which no local spells) are trusted.
+export fn region_callee_returns_own_storage(callee: String, env: TypeEnv) -> Bool {
+  match region_summary_storage(callee = callee, env = env) {
+    Some(stores) => stores,
+    None => match retention_decl_value(callee) {
+      Some(_) => true,
+      None => match lookup_builtin(callee) {
+        Some(_) => false,
+        None => !String::contains(callee, needle = "::") && retention_name_scope(env = env, name = callee) == 1
+      }
+    }
+  }
+}
+
+/// Whether the summary bound for `callee` in `env` has the `g>r` row; None
+/// when no summary is bound.
+fn region_summary_storage(callee: String, env: TypeEnv) -> Option[Bool] {
+  match env_lookup(env = env, name = String::concat(region_summary_prefix(), callee)) {
+    Some(CtNamed(summary, _)) => {
+      let mut found = false
+      for row in String::split(summary, sep = ",") {
+        found = found || row == region_module_storage_row()
+      }
+      Some(found)
+    },
+    _ => None
+  }
+}
+
+/// Whether a call of `callee` that no function literal of this module
+/// answers may hand back storage of its own, read where no environment is
+/// at hand (a declaration's body): a builtin does not; a name the body binds
+/// (`local`: a closure, a parameter) does; an imported function answers by
+/// its summary, looked up in the module's scope; a module-level value that
+/// is not a function literal does; any other name is trusted. A constructor
+/// is asked about by its caller first.
+export fn held_callee_untraced(callee: String, local: Bool) -> Bool {
+  match lookup_builtin(callee) {
+    Some(_) => false,
+    None => if local {
+      true
+    } else {
+      let summary = if Array::length(retention_module_env_cell) == 0 {
+        None
+      } else {
+        region_summary_storage(callee = callee, env = Array::get(retention_module_env_cell, at = 0))
+      }
+      match summary {
+        Some(stores) => stores,
+        None => match retention_decl_value(callee) {
+          Some(_) => true,
+          None => false
+        }
+      }
+    }
+  }
+}
+
+/// 1 when `name` resolves to a binding made inside a body -- a function
+/// body (`__capture_boundary__`) or a top-level statement's value or test
+/// body (`#interp.top.fn`) lies behind it -- 2 when it resolves at module
+/// level, 0 when the chain has no binding of it.
+export fn retention_name_scope(env: TypeEnv, name: String) -> Int {
+  let mut cur = env
+  let mut found = false
+  let mut scope = 0
+  let mut done = false
+  while !done {
+    match cur {
+      EnvBind(n, _, rest) => {
+        if found && (String::equals(n, "__capture_boundary__") || String::equals(n, "#interp.top.fn")) {
+          scope = 1
+          done = true
+        } else if !found && String::equals(n, name) {
+          found = true
+          scope = 2
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvMutCell(n, _, rest) => {
+        if !found && String::equals(n, name) {
+          found = true
+          scope = 2
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      // A name in an accelerator index is a module-level or imported one;
+      // the index is otherwise looked through (see `env_marker_before`).
+      EnvCached(index, _, rest) => if !found && env_name_index_find(index = index, name = name) >= 0 {
+        scope = 2
+        done = true
+      } else {
+        cur = rest
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  scope
+}
+
+/// The function a method call `recv.method(..)` runs, where the receiver is a
+/// name whose type's head is known (`Holder::sink`); "" otherwise.
+export fn region_method_callee(recv: Expr, method: String, env: TypeEnv) -> String {
+  let head = match recv {
+    EIdent(name, _) => match env_lookup(env = env, name = name) {
+      Some(t) => region_type_head(t),
+      None => ""
+    },
+    _ => ""
+  }
+  if head == "" {
+    ""
+  } else {
+    String::concat(head, String::concat("::", method))
+  }
+}
+
+fn region_type_head(_ t: Type) -> String {
+  match t {
+    CtNamed(n, _) => n,
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtString => "String",
+    CtBytes => "Bytes",
+    CtForAll(_, _, body) => region_type_head(body),
+    _ => ""
+  }
+}
+
+/// Every function of this module a method call spelled `method` may run when
+/// its receiver's type is not known: each declaration named `T::method`.
+export fn region_method_decls(_ method: String) -> Array[Expr] {
+  let suffix = String::concat("::", method)
+  let out: Array[Expr] = []
+  for d in retention_decls {
+    if String::ends_with(d.0, suffix = suffix) {
+      Array::push(out, value = d.1)
+    }
+  }
+  out
+}

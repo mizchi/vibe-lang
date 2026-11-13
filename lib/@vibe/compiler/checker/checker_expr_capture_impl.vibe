@@ -295,7 +295,11 @@ import ./checker_merge_capture_provenance.vibe {
 }
 
 import ./checker_region_binder_alias.vibe {
-  region_for_binder_bind, region_outer_alias_bind, region_outer_alias_mark, region_outer_alias_regions
+  region_for_binder_bind, region_outer_alias_bind, region_outer_alias_regions
+}
+
+import ./checker_region_content_alias.vibe {
+  region_content_let_mark, region_content_pattern_mark
 }
 
 import ./checker_region_retention.vibe {
@@ -428,7 +432,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           },
           _ => ()
         }
-        cenv = region_outer_alias_mark(env = cenv, name = name, regions = outer_regions)
+        // #4091: and with what its scope links it with, in any order.
+        cenv = region_content_let_mark(env = cenv, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = outer_regions, s = ns)
         // #3343: what a call of `name` reaches -- the closure literal, or the
         // callee an alias stands for -- so a call inside a region can check
         // the body for what it keeps.
@@ -470,6 +475,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           c1 = nc
         }
         note_scalar_local(name = name, value = val, body = body, off = let_off, ty = vt, defs = defs, env = cenv, mutable = true, lane = lane)
+        // #4091: a `let mut` is an alias of what its value, or anything its
+        // scope assigns or links to it, reads from before a region.
+        cenv = region_content_let_mark(env = cenv, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = region_outer_alias_regions(value = val, scope = mut_def_env, active = spine_region_active), s = ns)
         // #3343 (Codex on #3359): what the binding may carry -- what it
         // starts with and what is written into it anywhere in its scope --
         // for a later walk of this body or write of the binding.
@@ -1138,7 +1146,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Some(t) => env_bind(env = arm_env, name = spawn_safe_marker(t), ty = CtUnit),
             None => arm_env
           }
-          let arm_env = region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env)
+          let arm_env = region_content_pattern_mark(env = region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env), pat = pat, scope = body, s = si)
           // #3548: a pattern carries no offset, so what `check_pattern`
           // reports (a constructor bound with the wrong arity, ...) is
           // anchored at its arm -- the body, or the scrutinee when the body

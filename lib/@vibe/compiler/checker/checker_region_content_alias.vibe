@@ -1,0 +1,670 @@
+// lib/@vibe/compiler/checker -- a binding of a region body that comes to
+// hold storage declared before the region (#4091).
+
+//# A binder of a region body is marked an alias of an outer location when
+//# its VALUE reads one (`checker_region_binder_alias.vibe`, #4050). What a
+//# container holds can also change after it is made: in
+//#
+//#   let init: Array[Array[MutList[Int]]] = [[]]
+//#   Array::set(init, at = 0, value = sink)
+//#   Array::push(Array::get(init, at = 0), value = cell)
+//#
+//# `init` is fresh, but its element is `sink`, declared outside the region,
+//# so the push keeps `cell` in `sink` after the region closes. The check saw
+//# only `init`, and found it local.
+//#
+//# So a binding of a region body is also judged by what its scope stores in
+//# it, flow-insensitively, in any order. The scope is read once into two
+//# kinds of fact:
+//#
+//#   - a BINDING: a name and the value it is bound or assigned (`let`,
+//#     `let mut`, `=`, a `for` element and its iterable, a `match` arm's
+//#     binder and the component it pairs with, a callback's parameter and the
+//#     other arguments of the call it is passed to);
+//#   - a STORE: a target and a value written into it -- the receiver and the
+//#     retained argument of a builtin write (`Array::set`, `init[0] = ..`,
+//#     `Array::push`, a field write, a map or list write), and every argument
+//#     into every other for a call whose body is not read here (a function, a
+//#     closure, a method).
+//#
+//# A name of the scope holds outer storage when a value bound to it does, or
+//# a value stored into it -- or into a name bound from it, such as an element
+//# read out of it -- does. A value is outer storage when
+//# `expression_aliases_outer_binding` finds it so (a getter's result), when
+//# it may be a non-scalar name declared before an active region, or when it
+//# may be a name of the scope that holds outer storage. The answer is a
+//# fixed point over every name of the scope, and the binding is marked as if
+//# its value had been that storage, so a write of a region value into it, or
+//# into any part of it, is refused. A reading this coarse may refuse a
+//# container that a call merely handled next to outer storage; it cannot miss
+//# a store the order of the statements hides.
+
+import @vibe/compiler/core {
+  Expr, Pat, Subst, Type, TypeEnv, TypeExpr, env_bind, env_lookup, expr_children, subst_apply
+}
+
+import ./checker_region_call_result.vibe {
+  held_has_module_storage, region_callee_returns_own_storage, region_outer_content_marker
+}
+
+import @vibe/compiler/checker/effects {
+  collect_pat_binds_into
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  lookup_builtin
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  arg_is_region_token,
+  callee_is_ctor_name,
+  expression_aliases_outer_binding,
+  held_result_param_indices,
+  literal_item_is_inert,
+  type_can_carry_region
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  env_has_active_region
+}
+
+import ./checker_region_binder_alias.vibe {
+  region_outer_alias_mark
+}
+
+import ./checker_closure_capture_row.vibe {
+  type_mentions_active_region
+}
+
+import ./checker_region_retention.vibe {
+  retention_active_region_names, retention_arg_predates, retention_param_base
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_decl_value, retention_is_function_type, retention_result_items
+}
+
+import ./checker_retaining_write.vibe {
+  retaining_write_argument_mask
+}
+
+/// #4091: mark a `let` or `let mut` binding `name` of type `ty`, bound in
+/// `env`: an alias of outer storage for `known` -- the regions its value
+/// predates -- and the regions a value its scope assigns to it predates; and
+/// a holder of outer storage for the regions what its scope stores in it, or
+/// in a part of it, predates (`region_outer_content_mark`).
+export fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: Type, known: Array[String], s: Subst) -> TypeEnv {
+  if env_has_active_region(env) && type_can_carry_region(ty) {
+    let (same, holds) = region_content_outer_regions(name = name, scope = scope, env = env, s = s)
+    content_union(out = same, items = known)
+    region_outer_content_mark(env = region_outer_alias_mark(env = env, name = name, regions = same), name = name, regions = holds)
+  } else {
+    region_outer_alias_mark(env = env, name = name, regions = known)
+  }
+}
+
+/// #4091: mark each name `pat` binds, in an arm whose body is `scope`, as a
+/// holder of the outer storage that body binds or stores into it (`let (a,
+/// _) = ..` lowers to such an arm).
+export fn region_content_pattern_mark(env: TypeEnv, pat: Pat, scope: Expr, s: Subst) -> TypeEnv {
+  if env_has_active_region(env) {
+    let names: Array[String] = []
+    collect_pat_binds_into(pat = pat, acc = names)
+    let mut out = env
+    for n in names {
+      if n != "_" {
+        let (_, holds) = region_content_outer_regions(name = n, scope = scope, env = out, s = s)
+        out = region_outer_content_mark(env = out, name = n, regions = holds)
+      }
+    }
+    out
+  } else {
+    env
+  }
+}
+
+/// Mark `name` a holder of storage declared before `regions`: a part of it
+/// -- an element, a field, a binder over it -- is judged as a location
+/// declared before them, while a write into `name` itself is judged by its
+/// own binding. No regions, no mark.
+fn region_outer_content_mark(env: TypeEnv, name: String, regions: Array[String]) -> TypeEnv {
+  if Array::length(regions) > 0 {
+    env_bind(env = env, name = region_outer_content_marker(name), ty = CtTuple(for rname in regions {
+      CtNamed(rname, [])
+    }))
+  } else {
+    env
+  }
+}
+
+/// #4091: the active regions that a binding named `name`, whose scope is
+/// `scope`, may come to be or hold storage declared before, through what its
+/// scope binds to it or stores in it, in any order: first the regions a value
+/// bound or assigned to it predates (it IS that storage), then those whatever
+/// it or its parts may hold predates. `env` binds `name` and is the
+/// environment its scope starts in.
+export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String]) {
+  let facts = ContentFacts::{
+    bind_names: [],
+    bind_values: [],
+    store_targets: [],
+    store_values: [],
+    locals: [name]
+  }
+  content_facts_into(expr = scope, facts = facts, env = env)
+  let locals = facts.locals
+  // What each binding value and store may be, read once.
+  let bind_alias = for v in facts.bind_values {
+    content_alias_names(value = v, env = env)
+  }
+  let bind_fixed = for v in facts.bind_values {
+    content_fixed_regions(value = v, env = env, name = name, s = s)
+  }
+  let store_alias = for t in facts.store_targets {
+    content_alias_names(value = t, env = env)
+  }
+  let value_alias = for v in facts.store_values {
+    content_alias_names(value = v, env = env)
+  }
+  let value_fixed = for v in facts.store_values {
+    content_fixed_regions(value = v, env = env, name = name, s = s)
+  }
+  // The names bound from each local -- itself, an element read out of it, a
+  // binder over it -- whose stores land in it.
+  let derived = for y in locals {
+    let set: Array[String] = [y]
+    let mut grew = true
+    while grew {
+      grew = false
+      let mut b = 0
+      while b < Array::length(facts.bind_names) {
+        let x = Array::get(facts.bind_names, at = b)
+        if !content_listed(items = set, wanted = x) && content_any_listed(names = Array::get(bind_alias, at = b), set = set) {
+          Array::push(set, value = x)
+          grew = true
+        }
+        b = b + 1
+      }
+    }
+    set
+  }
+  let held: Array[Array[String]] = for _ in locals {
+    []
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut k = 0
+    while k < Array::length(locals) {
+      let y = Array::get(locals, at = k)
+      let out = Array::get(held, at = k)
+      let before = Array::length(out)
+      let mut b = 0
+      while b < Array::length(facts.bind_names) {
+        if Array::get(facts.bind_names, at = b) == y {
+          content_union(out = out, items = Array::get(bind_fixed, at = b))
+          content_local_regions_into(names = Array::get(bind_alias, at = b), locals = locals, held = held, out = out)
+        }
+        b = b + 1
+      }
+      let mut t = 0
+      while t < Array::length(facts.store_targets) {
+        if content_any_listed(names = Array::get(store_alias, at = t), set = Array::get(derived, at = k)) {
+          content_union(out = out, items = Array::get(value_fixed, at = t))
+          content_local_regions_into(names = Array::get(value_alias, at = t), locals = locals, held = held, out = out)
+        }
+        t = t + 1
+      }
+      if Array::length(out) > before {
+        changed = true
+      }
+      k = k + 1
+    }
+  }
+  let same: Array[String] = []
+  let mut b = 0
+  while b < Array::length(facts.bind_names) {
+    if Array::get(facts.bind_names, at = b) == name {
+      content_union(out = same, items = Array::get(bind_fixed, at = b))
+      content_local_regions_into(names = Array::get(bind_alias, at = b), locals = locals, held = held, out = same)
+    }
+    b = b + 1
+  }
+  (same, Array::get(held, at = 0))
+}
+
+/// What a scope binds and stores, read once (`content_facts_into`).
+struct ContentFacts {
+  bind_names: Array[String];
+  bind_values: Array[Expr];
+  store_targets: Array[Expr];
+  store_values: Array[Expr];
+  locals: Array[String]
+}
+
+fn content_union(out: Array[String], items: Array[String]) -> Unit {
+  for r in items {
+    if !content_listed(items = out, wanted = r) {
+      Array::push(out, value = r)
+    }
+  }
+  ()
+}
+
+/// The regions the locals among `names` hold so far.
+fn content_local_regions_into(names: Array[String], locals: Array[String], held: Array[Array[String]], out: Array[String]) -> Unit {
+  for n in names {
+    let mut k = 0
+    while k < Array::length(locals) {
+      if Array::get(locals, at = k) == n {
+        content_union(out = out, items = Array::get(held, at = k))
+      }
+      k = k + 1
+    }
+  }
+  ()
+}
+
+/// The regions `value` predates whatever the scope's locals hold: every
+/// active region when a call in it may return storage of its own
+/// (`content_own_storage`), and those of each name it may be that the
+/// environment binds outside the region. `name`, the binding being judged,
+/// is never its own outer homonym.
+fn content_fixed_regions(value: Expr, env: TypeEnv, name: String, s: Subst) -> Array[String] {
+  let out: Array[String] = []
+  if content_own_storage(value = value, env = env) {
+    content_union(out = out, items = retention_active_region_names(env))
+  }
+  for n in content_alias_names(value = value, env = env) {
+    if n != name {
+      content_outer_into(value = EIdent(n, -1), env = env, out = out, s = s)
+    }
+  }
+  out
+}
+
+/// Whether a call `value` may be, or hold, returns storage none of its
+/// arguments supplied: a function of the module whose result may hold a
+/// module-level value (`held_result_param_indices`), a callee
+/// `region_callee_returns_own_storage` does not trust, or a callee that is
+/// not a name. What its arguments are is asked of the names they
+/// may be (`content_alias_names`), so a region value handed to a builtin
+/// (`TaskGroup::spawn(g, ..)` of an enclosing group) is not taken for outer
+/// storage.
+fn content_own_storage(value: Expr, env: TypeEnv) -> Bool {
+  match value {
+    EIdent(_, _) => false,
+    EFn(_, _, _, _, _, _) => false,
+    EDot(obj, _, _, _) => content_own_storage(value = obj, env = env),
+    ECall(callee, args, _, _) => {
+      let mut own = match callee {
+        EIdent(cname, _) => if callee_is_ctor_name(cname) {
+          false
+        } else if !content_result_may_hold(name = cname, env = env) {
+          false
+        } else {
+          match retention_decl_value(cname) {
+            Some(EFn(_, _, params, _, _, body)) => held_has_module_storage(held_result_param_indices(body = body, params = params)),
+            Some(_) => true,
+            None => match lookup_builtin(cname) {
+              Some(_) => false,
+              // A name nothing binds is an intrinsic the checker types by
+              // its spelling (`MutList::empty`), read as a builtin is.
+              None => match env_lookup(env = env, name = cname) {
+                Some(_) => region_callee_returns_own_storage(callee = cname, env = env),
+                None => false
+              }
+            }
+          }
+        },
+        EFn(_, _, _, _, _, _) => false,
+        _ => expression_aliases_outer_binding(expr = value, env = env)
+      }
+      match callee {
+        EDot(obj, _, _, _) => {
+          own = own || content_own_storage(value = obj, env = env)
+        },
+        _ => ()
+      }
+      for a in args {
+        own = own || content_own_storage(value = a, env = env)
+      }
+      own
+    },
+    _ => {
+      let mut own = false
+      for item in retention_result_items(value) {
+        own = own || content_own_storage(value = item, env = env)
+      }
+      own
+    }
+  }
+}
+
+/// Add the regions `value` predates when it is outer storage: not a scalar,
+/// a value of an active region, or a function, and found outer by
+/// `expression_aliases_outer_binding`. A value that test finds outer with no
+/// narrower answer predates every active region.
+fn content_outer_into(value: Expr, env: TypeEnv, out: Array[String], s: Subst) -> Unit {
+  // A name the environment does not hold is a binder of the scope, judged
+  // through its own links; a function, or a value of an active region (its
+  // token, a task group), is not storage that outlives the region.
+  let skip = match value {
+    EIdent(n, _) => match env_lookup(env = env, name = n) {
+      // Read in the binding's substitution: a lambda's parameter (an
+      // enclosing task group's `g`) is typed by a variable until then.
+      Some(t) => {
+        let resolved = subst_apply(s = s, ty = t)
+        retention_is_function_type(resolved) || type_mentions_active_region(ty = resolved, env = env) || !type_can_carry_region(resolved)
+      },
+      None => true
+    },
+    _ => false
+  }
+  if !skip && !literal_item_is_inert(item = value, env = env) && !arg_is_region_token(arg = value, env = env) && expression_aliases_outer_binding(expr = value, env = env) {
+    let found = retention_arg_predates(arg = value, env = env)
+    let regions = if Array::length(found) == 0 {
+      retention_active_region_names(env)
+    } else {
+      found
+    }
+    for r in regions {
+      if !content_listed(items = out, wanted = r) {
+        Array::push(out, value = r)
+      }
+    }
+    ()
+  }
+}
+
+/// Every binding and store of `expr` into `facts`, and every name it binds
+/// into `facts.locals`.
+fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
+  match expr {
+    ELet(x, v, _, _) => content_bind(name = x, value = v, facts = facts),
+    ELetMut(x, v, _, _) => content_bind(name = x, value = v, facts = facts),
+    ELetRec(x, v, _) => content_bind(name = x, value = v, facts = facts),
+    EAssign(x, v, _, _) => content_bind(name = x, value = v, facts = facts),
+    EAssignOp(x, _, v, _, _) => content_bind(name = x, value = v, facts = facts),
+    EForIn(x, index, iter, _) => {
+      content_bind(name = x, value = iter, facts = facts)
+      match index {
+        Some(i) => content_local(name = i, facts = facts),
+        None => ()
+      }
+    },
+    EMatch(scrut, arms) => {
+      for arm in arms {
+        content_pattern_binds(pat = arm.0, value = scrut, facts = facts)
+      }
+      ()
+    },
+    EHandle(scrut, arms) => {
+      for arm in arms {
+        content_pattern_binds(pat = arm.0, value = scrut, facts = facts)
+      }
+      ()
+    },
+    ECall(callee, args, _, _) => content_call_facts(callee = callee, args = args, facts = facts, env = env),
+    EFn(_, _, ps, _, _, _) => {
+      for p in ps {
+        content_local(name = retention_param_base(p.0), facts = facts)
+      }
+      ()
+    },
+    _ => ()
+  }
+  for child in expr_children(expr) {
+    content_facts_into(expr = child, facts = facts, env = env)
+  }
+  ()
+}
+
+fn content_local(name: String, facts: ContentFacts) -> Unit {
+  if name != "_" && !content_listed(items = facts.locals, wanted = name) {
+    Array::push(facts.locals, value = name)
+  }
+}
+
+fn content_bind(name: String, value: Expr, facts: ContentFacts) -> Unit {
+  if name != "_" {
+    content_local(name = name, facts = facts)
+    Array::push(facts.bind_names, value = name)
+    Array::push(facts.bind_values, value = value)
+  }
+}
+
+fn content_store(target: Expr, value: Expr, facts: ContentFacts) -> Unit {
+  Array::push(facts.store_targets, value = target)
+  Array::push(facts.store_values, value = value)
+}
+
+/// What a call binds and stores. A constructor stores nothing; a builtin
+/// stores what its write retains (`retaining_write_argument_mask`, and the
+/// receiver writes that have an operation of their own); an immediately
+/// invoked closure binds each parameter to its argument; any other callee
+/// may store any argument in any other. A closure argument's parameters are
+/// bound to the call's other arguments, whose elements it is handed.
+fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env: TypeEnv) -> Unit {
+  let parts: Array[Expr] = []
+  match callee {
+    EDot(obj, _, _, _) => Array::push(parts, value = obj),
+    _ => ()
+  }
+  for a in args {
+    match a {
+      EFn(_, _, _, _, _, _) => (),
+      _ => Array::push(parts, value = a)
+    }
+  }
+  for a in args {
+    match a {
+      EFn(_, _, ps, _, _, _) => {
+        for p in ps {
+          for part in parts {
+            content_bind(name = retention_param_base(p.0), value = part, facts = facts)
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+  }
+  match callee {
+    EFn(_, _, ps, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(ps) && i < Array::length(args) {
+        content_bind(name = retention_param_base(Array::get(ps, at = i).0), value = Array::get(args, at = i), facts = facts)
+        i = i + 1
+      }
+    },
+    EIdent(name, _) => if callee_is_ctor_name(name) {
+      ()
+    } else if content_is_builtin(name = name, env = env) {
+      let mask = content_builtin_store_mask(name)
+      if Array::length(args) > 0 {
+        let mut i = 1
+        while i <= 2 && i < Array::length(args) {
+          if (i == 1 && (mask == 1 || mask == 3)) || (i == 2 && (mask == 2 || mask == 3)) {
+            content_store(target = Array::get(args, at = 0), value = Array::get(args, at = i), facts = facts)
+          }
+          i = i + 1
+        }
+      }
+    } else {
+      content_store_all(parts = parts, facts = facts)
+    },
+    _ => content_store_all(parts = parts, facts = facts)
+  }
+}
+
+fn content_store_all(parts: Array[Expr], facts: ContentFacts) -> Unit {
+  let mut i = 0
+  while i < Array::length(parts) {
+    let mut j = 0
+    while j < Array::length(parts) {
+      if i != j {
+        content_store(target = Array::get(parts, at = i), value = Array::get(parts, at = j), facts = facts)
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+}
+
+/// A builtin no declaration of the program spells: the call runs it. A
+/// region body may bind a builtin afresh, with its region in the signature,
+/// so the environment is not asked.
+fn content_is_builtin(name: String, env: TypeEnv) -> Bool {
+  match retention_decl_value(name) {
+    Some(_) => false,
+    None => match lookup_builtin(name) {
+      Some(_) => true,
+      None => false
+    }
+  }
+}
+
+/// Which of arguments 1 and 2 a builtin stores into argument 0, as the write
+/// check reads it: 1, 2, both (3) or neither (0).
+fn content_builtin_store_mask(_ name: String) -> Int {
+  let named = retaining_write_argument_mask(source_name = name, operation = 0)
+  if named != 0 {
+    named
+  } else if name == "Array::push" || name == "MutList::push" {
+    1
+  } else if name == "Array::set" || name == "MutList::set" {
+    2
+  } else {
+    0
+  }
+}
+
+/// The bindings a pattern makes with the value it matches. A tuple pattern
+/// against a tuple literal, and a constructor pattern against a call of that
+/// constructor, pair component with component, as the binder marks do
+/// (`region_outer_alias_bind`), so `let (_, a) = (outer, inner)` binds `a`
+/// to `inner` only.
+fn content_pattern_binds(pat: Pat, value: Expr, facts: ContentFacts) -> Unit {
+  let paired: Option[(Array[Pat], Array[Expr])] = match pat {
+    PTuple(ps) => match value {
+      ETuple(es) => if Array::length(ps) == Array::length(es) {
+        Some((ps, es))
+      } else {
+        None
+      },
+      _ => None
+    },
+    PCtor(pname, ps) => match value {
+      ECall(EIdent(callee, _), args, _, _) => if pname == callee && Array::length(ps) == Array::length(args) {
+        Some((ps, args))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+  match paired {
+    Some((ps, es)) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        content_pattern_binds(pat = Array::get(ps, at = i), value = Array::get(es, at = i), facts = facts)
+        i = i + 1
+      }
+    },
+    None => {
+      let names: Array[String] = []
+      collect_pat_binds_into(pat = pat, acc = names)
+      for n in names {
+        content_bind(name = n, value = value, facts = facts)
+      }
+      ()
+    }
+  }
+}
+
+/// The names whose storage `value` may be or hold: a name, the receiver of
+/// a field or method, a constructor's arguments, a call's arguments unless
+/// its declared result is a scalar (`TaskHandle::join(h)` of a
+/// `TaskHandle[Int]` holds no handle), and the parts
+/// `retention_result_items` lists. A closure holds nothing a write can
+/// reach, and an operator's result is fresh.
+fn content_alias_names(value: Expr, env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  content_alias_names_into(value = value, env = env, out = out)
+  out
+}
+
+fn content_alias_names_into(value: Expr, env: TypeEnv, out: Array[String]) -> Unit {
+  match value {
+    EIdent(n, _) => if n != "_" && !content_listed(items = out, wanted = n) {
+      Array::push(out, value = n)
+    },
+    EFn(_, _, _, _, _, _) => (),
+    EDot(obj, _, _, _) => content_alias_names_into(value = obj, env = env, out = out),
+    ECall(callee, args, _, _) => {
+      let holds = match callee {
+        EIdent(name, _) => callee_is_ctor_name(name) || content_result_may_hold(name = name, env = env),
+        _ => true
+      }
+      if holds {
+        match callee {
+          EDot(obj, _, _, _) => content_alias_names_into(value = obj, env = env, out = out),
+          _ => ()
+        }
+        for a in args {
+          content_alias_names_into(value = a, env = env, out = out)
+        }
+      }
+      ()
+    },
+    _ => {
+      for item in retention_result_items(value) {
+        content_alias_names_into(value = item, env = env, out = out)
+      }
+      ()
+    }
+  }
+}
+
+/// Whether a call of `name` may return a location: false only when its
+/// declared result -- the binding's type, or the builtin's -- is a scalar.
+fn content_result_may_hold(name: String, env: TypeEnv) -> Bool {
+  let ty = match env_lookup(env = env, name = name) {
+    Some(t) => Some(t),
+    None => lookup_builtin(name)
+  }
+  match ty {
+    Some(t) => content_fn_result_may_hold(t),
+    None => true
+  }
+}
+
+fn content_fn_result_may_hold(_ t: Type) -> Bool {
+  match t {
+    CtForAll(_, _, body) => content_fn_result_may_hold(body),
+    CtFn(_, ret, _) => type_can_carry_region(ret),
+    _ => true
+  }
+}
+
+fn content_listed(items: Array[String], wanted: String) -> Bool {
+  let mut found = false
+  for item in items {
+    if item == wanted {
+      found = true
+    }
+  }
+  found
+}
+
+fn content_any_listed(names: Array[String], set: Array[String]) -> Bool {
+  let mut found = false
+  for n in names {
+    if !found && content_listed(items = set, wanted = n) {
+      found = true
+    }
+  }
+  found
+}

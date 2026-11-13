@@ -22,6 +22,10 @@ import ./checker_merge_capture_provenance.vibe {
   arg_is_region_token, expression_aliases_outer_binding, held_result_param_indices, literal_item_is_inert
 }
 
+import ./checker_region_call_result.vibe {
+  held_has_module_storage
+}
+
 import ./checker_region_retention.vibe {
   retention_active_region_names, retention_arg_predates
 }
@@ -244,7 +248,16 @@ fn for_next_element_holds_self(callee: String) -> Option[Bool] {
   match retention_decl_value(callee) {
     Some(EFn(_, _, params, _, _, body)) => if Array::length(params) > 0 && !for_body_has_return(body) {
       match for_next_element_body(body) {
-        Some(element) => Some(Array::length(held_result_param_indices(body = element, params = params)) > 0),
+        // #4091: an element that may be module storage is read as the call
+        // itself, which counts it outer to every region.
+        Some(element) => {
+          let held = held_result_param_indices(body = element, params = params)
+          if held_has_module_storage(held) {
+            None
+          } else {
+            Some(Array::length(held) > 0)
+          }
+        },
         None => None
       }
     } else {
