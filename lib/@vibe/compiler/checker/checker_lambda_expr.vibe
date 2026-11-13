@@ -112,10 +112,6 @@ import @vibe/compiler/checker/traits {
   spawn_safe_marker
 }
 
-import @vibe/compiler/checker/effects {
-  row_items_top_level
-}
-
 import ./checker_escape.vibe {
   diag_report_into
 }
@@ -2108,7 +2104,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       } else {
         ()
       }
-      let (base_ret, s3) = match ret_ty {
+      let (base_ret, s3, c2) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr_shadowed(te = te, defs = defs, shadow = formal_shadow(te = te, env = env, own = tparams))
           let resolved_ret = resolve_tparams_in(ty = resolved, env = fn_env)
@@ -2140,7 +2136,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           let ns_ret = check_assignable(expected = resolved_ret, actual = int32_literal_adapt(e = body, expected = resolved_ret, actual = bt, s = s2, errors = errors, off = tail_expr_off(body)), s = s2, errors = errors, what = "return type mismatch", off = tail_expr_off(body))
           // #3341: a returned function value is used at the declared row.
           let ns = effect_inst_annotation_check(env = body_env, value = body, value_ty = bt, want_ty = resolved_ret, s = ns_ret, subject = "the returned function", slot = "the return type's row", defs = defs, errors = errors)
-          (merge_capture_provenance(expected = subst_apply(s = ns, ty = resolved_ret), actual = subst_apply(s = ns, ty = bt)), ns)
+          (merge_capture_provenance(expected = subst_apply(s = ns, ty = resolved_ret), actual = subst_apply(s = ns, ty = bt)), ns, c2)
         },
         // #4053: the tail of a lambda seeded with an expected result, checked
         // as an annotated return is (`return_seed`). Otherwise #4062: the
@@ -2149,9 +2145,9 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           Some(want) => {
             check_assignable_set_end(string_lit_end(body))
             let ns = check_assignable(expected = want, actual = int32_literal_adapt(e = body, expected = want, actual = bt, s = s2, errors = errors, off = tail_expr_off(body)), s = s2, errors = errors, what = "return type mismatch", off = tail_expr_off(body))
-            (want, ns)
+            (want, ns, c2)
           },
-          None => check_unwritten_result(body = body, result = unwritten_result, actual = bt, s = s2, errors = errors)
+          None => check_unwritten_result(body = body, result = unwritten_result, actual = bt, s = s2, c = c2, errors = errors)
         }
       }
       let mut final_ret = base_ret

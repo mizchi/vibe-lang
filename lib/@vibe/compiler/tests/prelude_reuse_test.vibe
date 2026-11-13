@@ -7,7 +7,15 @@
 // an appended copy of a statement under another name -- the two shapes the
 // record has to carry.
 import @vibe/compiler/codegen/wasi {
-  prelude_reuse_key_digest, prelude_reuse_record_of, prelude_reuse_record_parts, prelude_reuse_replay
+  prelude_reuse_arm,
+  prelude_reuse_key_digest,
+  prelude_reuse_outcome,
+  prelude_reuse_passes,
+  prelude_reuse_record_of,
+  prelude_reuse_record_parts,
+  prelude_reuse_replay,
+  prelude_reuse_take,
+  prelude_reuse_take_verified
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -92,7 +100,7 @@ test "a record replays onto the same statements at other positions" {
       return ()
     }
   }
-  let (_, _, _, kinds, refs, _) = prelude_reuse_record_parts(record)
+  let (_, _, _, _, _, _, _, kinds, refs, _) = prelude_reuse_record_parts(record)
   inspect(kinds, content = "[0, 1, 2]")
   inspect(refs, content = "[0, 1, 0]")
   let moved = parsed(moved_src)
@@ -183,3 +191,146 @@ test "a statement's digest tells apart integers that agree modulo a hash prime" 
   inspect(prelude_reuse_key_digest(Array::get(prelude_statement_keys(stmts = c, row_offsets = no_ints(), row_keys = no_keys()), at = 0)) == prelude_reuse_key_digest(Array::get(prelude_statement_keys(stmts = d, row_offsets = no_ints(), row_keys = no_keys()), at = 0)), content = "false")
 }
 
+// #4042 stage 2: an edit the passes cannot see past the edited statement.
+// The stand-in passes rewrite `f` and append a copy of it, so `f` is relevant
+// and so is `g`, which reaches it; `h` is neither.
+let edit_base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n\nfn h(n: Int) -> Int {\n  n * 2\n}\n"
+
+fn edit_passes(_ stmts: Array[Stmt]) -> Array[Stmt] {
+  let out: Array[Stmt] = []
+  let mut f_at = -1
+  let mut i = 0
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => if name == "f" {
+        f_at = i
+        Array::push(out, value = unannotated(stmt))
+      } else {
+        Array::push(out, value = stmt)
+      },
+      _ => Array::push(out, value = stmt)
+    }
+    i = i + 1
+  }
+  if f_at >= 0 {
+    Array::push(out, value = renamed(stmt = Array::get(stmts, at = f_at), name = "f_copy"))
+  } else ()
+  out
+}
+
+/// "replayed" for a replay that produced what the passes would, "wrong"
+/// for one that did not.
+fn replay_verdict(_ same: Bool) -> String {
+  if same {
+    "replayed"
+  } else {
+    "wrong"
+  }
+}
+
+/// "replayed" when the record of `edit_base` replays onto `src` exactly as
+/// the stand-in passes would produce it, "refused" when it does not replay,
+/// "wrong" when it replays something else.
+fn replays_onto(_ src: String) -> String with Exception {
+  let base = parsed(edit_base)
+  match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = edit_passes(base)) {
+    Some(record) => {
+      let edited = parsed(src)
+      match prelude_reuse_replay(record = record, inputs = edited, keys = prelude_statement_keys(stmts = edited, row_offsets = no_ints(), row_keys = no_keys())) {
+        Some(outs) => replay_verdict(outs == edit_passes(edited)),
+        None => "refused"
+      }
+    },
+    None => "unrecordable"
+  }
+}
+
+test "an edit of a statement nothing relevant reaches replays" {
+  inspect(replays_onto("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n\nfn h(n: Int) -> Int {\n  let m = n + 1\n  m * 3\n}\n"), content = "replayed")
+  // A function added beside it.
+  inspect(replays_onto("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n\nfn h(n: Int) -> Int {\n  k(n) * 2\n}\n\nfn k(n: Int) -> Int {\n  n - 1\n}\n"), content = "replayed")
+}
+
+test "an edit the passes could see past the edited statement does not replay" {
+  // `g` reaches `f`, which the passes rewrite.
+  inspect(replays_onto("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(3)\n}\n\nfn h(n: Int) -> Int {\n  n * 2\n}\n"), content = "refused")
+  // `h` starts calling `g`, and so reaches `f`.
+  inspect(replays_onto("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n\nfn h(n: Int) -> Int {\n  n * g()\n}\n"), content = "refused")
+  // A local spelled like a top-level name moves the binder census.
+  inspect(replays_onto("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n\nfn h(n: Int) -> Int {\n  let g = n\n  g * 2\n}\n"), content = "refused")
+  // A signature a caller reads.
+  inspect(replays_onto("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n\nfn h(n: Int, k: Int) -> Int {\n  n * k\n}\n"), content = "refused")
+}
+
+test "an unedited statement between two edits is produced as the record has it" {
+  // `f`, which the passes rewrite, sits between `a` and `h`, both edited.
+  let base = parsed("fn a(n: Int) -> Int {\n  n\n}\n\nfn f(x: Int) -> Int {\n  x + 1\n}\n\nfn h(n: Int) -> Int {\n  n * 2\n}\n")
+  let record = match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = edit_passes(base)) {
+    Some(r) => r,
+    None => {
+      assert(false)
+      return ()
+    }
+  }
+  let edited = parsed("fn a(n: Int) -> Int {\n  n + 7\n}\n\nfn f(x: Int) -> Int {\n  x + 1\n}\n\nfn h(n: Int) -> Int {\n  n * 3\n}\n")
+  match prelude_reuse_replay(record = record, inputs = edited, keys = prelude_statement_keys(stmts = edited, row_offsets = no_ints(), row_keys = no_keys())) {
+    Some(outs) => assert(outs == edit_passes(edited)),
+    None => assert(false)
+  }
+}
+
+/// Run the armed passes over `src`, with `run_passes` standing in for them,
+/// and return what they left in the statements.
+fn armed_run(src: String, run_passes: (Array[Stmt]) -> Array[Stmt]) -> Array[Stmt] with Exception {
+  let stmts = parsed(src)
+  let errs = prelude_reuse_passes(stmts = stmts, row_offsets = no_ints(), row_keys = no_keys(), header = "h", run = () -> {
+    let outs = run_passes(Array::slice(stmts, start = 0, end = Array::length(stmts)))
+    Array::truncate(stmts, length = 0)
+    for o in outs {
+      Array::push(stmts, value = o)
+    }
+    []
+  })
+  assert(Array::length(errs) == 0)
+  stmts
+}
+
+test "verify replays, runs the passes as well, and leaves both" {
+  prelude_reuse_arm(previous = None, verify = true)
+  let _ = armed_run(src = base_src, run_passes = (xs) -> passes(xs))
+  let record = prelude_reuse_take()
+  inspect(prelude_reuse_take_verified() is None, content = "true")
+  prelude_reuse_arm(previous = record, verify = true)
+  let produced = armed_run(src = moved_src, run_passes = (xs) -> passes(xs))
+  assert(String::starts_with(prelude_reuse_outcome(), prefix = "replayed"))
+  match prelude_reuse_take_verified() {
+    Some((replayed, fresh)) => {
+      assert(replayed == fresh)
+      assert(produced == fresh)
+    },
+    None => assert(false)
+  }
+  inspect(prelude_reuse_take() is Some(_), content = "true")
+}
+
+test "verify leaves a replay that differs from the passes beside their output" {
+  prelude_reuse_arm(previous = None, verify = true)
+  let _ = armed_run(src = base_src, run_passes = (xs) -> passes(xs))
+  let record = prelude_reuse_take()
+  // The passes now keep the annotation the record drops: the replay is stale.
+  prelude_reuse_arm(previous = record, verify = true)
+  let produced = armed_run(src = moved_src, run_passes = (xs) -> [
+    Array::get(xs, at = 0),
+    Array::get(xs, at = 1),
+    renamed(stmt = Array::get(xs, at = 0), name = "f_copy")
+  ])
+  match prelude_reuse_take_verified() {
+    Some((replayed, fresh)) => {
+      assert(replayed != fresh)
+      // The build is given the passes' output, not the replay.
+      assert(produced == fresh)
+    },
+    None => assert(false)
+  }
+  let _ = prelude_reuse_take()
+}

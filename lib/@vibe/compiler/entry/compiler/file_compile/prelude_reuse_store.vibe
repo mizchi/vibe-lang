@@ -16,7 +16,14 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/compiler/codegen/wasi {
-  PreludeReuseRecord, prelude_reuse_arm, prelude_reuse_record_new, prelude_reuse_record_parts, prelude_reuse_take
+  PreludeReuseRecord,
+  prelude_reuse_arm,
+  prelude_reuse_identity,
+  prelude_reuse_outcome,
+  prelude_reuse_record_new,
+  prelude_reuse_record_parts,
+  prelude_reuse_take,
+  prelude_reuse_take_verified
 }
 
 import @vibe/compiler/core {
@@ -31,23 +38,28 @@ import @vibe/compiler/core {
 // One slot per entry path, replaced by each store, as the body cache keeps
 // one. Unset or `off` does neither, and the compile is exactly as without
 // the feature. A record that does not decode is treated as absent.
+//
+// `verify` (#4043) arms and stores the same way, but a build that replays
+// also runs the passes, produces their output, and fails when the replay
+// differs from it in any statement, offsets included.
 
-/// `VIBE_PRELUDE_REUSE`: `on` or `off` (also when unset).
+/// `VIBE_PRELUDE_REUSE`: `on`, `verify`, or `off` (also when unset).
 export fn prelude_reuse_mode() -> String with Env + Exception {
   let raw = Env::get("VIBE_PRELUDE_REUSE")
   if raw == "" || raw == "off" {
     "off"
-  } else if raw == "on" {
+  } else if raw == "on" || raw == "verify" {
     raw
   } else {
-    throw(String::concat("VIBE_PRELUDE_REUSE must be on or off, got: ", raw))
+    throw(String::concat("VIBE_PRELUDE_REUSE must be on, verify or off, got: ", raw))
   }
 }
 
 /// `compile`, armed with this entry's stored record when the mode is on, and
 /// storing the record it made.
 export fn prelude_reuse_around(entry_path: String, entry_name: String, checked_error_row: Bool, compile: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
-  if prelude_reuse_mode() != "on" {
+  let mode = prelude_reuse_mode()
+  if mode == "off" {
     compile()
   } else {
     let slot = compact_string_fingerprint(entry_path)
@@ -55,18 +67,87 @@ export fn prelude_reuse_around(entry_path: String, entry_name: String, checked_e
       Some(bytes) => prelude_reuse_decode(bytes),
       None => None
     }
-    prelude_reuse_arm(previous = previous)
+    prelude_reuse_arm(previous = previous, verify = mode == "verify")
     let out = compile()
     match prelude_reuse_take() {
       Some(made) => store_persistent_artifact(kind = "prelude-reuse", entry_name = entry_name, fingerprint = slot, bytes = prelude_reuse_encode(made), checked_error_row = checked_error_row),
       None => ()
     }
+    let differs = match prelude_reuse_take_verified() {
+      Some((replayed, fresh)) => prelude_reuse_divergence(replayed = replayed, fresh = fresh),
+      None => ""
+    }
+    let verdict = if mode != "verify" || !String::starts_with(prelude_reuse_outcome(), prefix = "replayed") {
+      ""
+    } else if differs == "" {
+      "; verified"
+    } else {
+      "; VERIFY FAILED: " + differs
+    }
+    // `VIBE_PRELUDE_REUSE_TRACE=<file>`: append whether the build replayed,
+    // and why not, one line per compile.
+    let trace = Env::get("VIBE_PRELUDE_REUSE_TRACE")
+    if trace != "" {
+      let before = if Fs::exists(trace) {
+        Fs::read_file(trace)
+      } else {
+        ""
+      }
+      Fs::write_file(trace, contents = before + "prelude-reuse: " + prelude_reuse_outcome() + verdict + "\n")
+    } else ()
+    if differs != "" {
+      throw("VIBE_PRELUDE_REUSE=verify: the replayed prelude differs from the effect passes' output: " + differs + ". Build with VIBE_PRELUDE_REUSE=off, and report the edit that led here")
+    } else ()
     out
   }
 }
 
+/// Where a replay's statements first differ from the passes' own, or "" when
+/// they are the same statements, compared through their stored encoding
+/// (which keeps offsets).
+fn prelude_reuse_divergence(replayed: Array[Stmt], fresh: Array[Stmt]) -> String {
+  let n = Array::length(replayed)
+  let m = Array::length(fresh)
+  let mut found = ""
+  let mut i = 0
+  while found == "" && i < n && i < m {
+    let a = Bytes::new()
+    ast_binary_write_stmt(buf = a, st = Array::get(replayed, at = i))
+    let b = Bytes::new()
+    ast_binary_write_stmt(buf = b, st = Array::get(fresh, at = i))
+    if a != b {
+      found = "statement " + Int::to_string(i) + " is `" + prelude_reuse_identity(Array::get(replayed, at = i)) + "` replayed, `" + prelude_reuse_identity(Array::get(fresh, at = i)) + "` from the passes"
+    } else ()
+    i = i + 1
+  }
+  if found == "" && n != m {
+    "the replay made " + Int::to_string(n) + " statements and the passes " + Int::to_string(m)
+  } else {
+    found
+  }
+}
+
 fn prelude_reuse_magic() -> String {
-  "vibe-prelude-reuse-v2"
+  "vibe-prelude-reuse-v3"
+}
+
+fn prelude_reuse_write_strings(buf: Bytes, items: Array[String]) -> Unit {
+  ast_binary_write_varint(buf = buf, v = Array::length(items))
+  for item in items {
+    ast_binary_write_string(buf = buf, s = item)
+  }
+  ()
+}
+
+fn prelude_reuse_read_strings(_ r: AstBinaryReader) -> Array[String] with Exception {
+  let n = ast_binary_read_varint_checked(r)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, value = ast_binary_read_string_checked(r))
+    i = i + 1
+  }
+  out
 }
 
 fn prelude_reuse_write_stmts(buf: Bytes, items: Array[Stmt]) -> Unit {
@@ -87,15 +168,24 @@ fn prelude_reuse_write_ints(buf: Bytes, items: Array[Int]) -> Unit {
 
 /// A record as bytes.
 export fn prelude_reuse_encode(_ record: PreludeReuseRecord) -> Bytes {
-  let (header, keys, plain, kinds, refs, outs) = prelude_reuse_record_parts(record)
+  let (header, keys, plain, names, sigs, quiet, avoid, kinds, refs, outs) = prelude_reuse_record_parts(record)
   let buf = Bytes::new()
   ast_binary_write_string(buf = buf, s = prelude_reuse_magic())
   ast_binary_write_string(buf = buf, s = header)
-  ast_binary_write_varint(buf = buf, v = Array::length(keys))
-  for key in keys {
-    ast_binary_write_string(buf = buf, s = key)
-  }
+  prelude_reuse_write_strings(buf = buf, items = keys)
   prelude_reuse_write_stmts(buf = buf, items = plain)
+  prelude_reuse_write_strings(buf = buf, items = names)
+  prelude_reuse_write_strings(buf = buf, items = sigs)
+  let bits: Array[Int] = []
+  for b in quiet {
+    Array::push(bits, value = if b {
+      1
+    } else {
+      0
+    })
+  }
+  prelude_reuse_write_ints(buf = buf, items = bits)
+  prelude_reuse_write_strings(buf = buf, items = avoid)
   prelude_reuse_write_ints(buf = buf, items = kinds)
   prelude_reuse_write_ints(buf = buf, items = refs)
   prelude_reuse_write_stmts(buf = buf, items = outs)
@@ -133,19 +223,20 @@ export fn prelude_reuse_decode(_ bytes: Bytes) -> Option[PreludeReuseRecord] {
       None
     } else {
       let header = ast_binary_read_string_checked(r)
-      let n = ast_binary_read_varint_checked(r)
-      let keys: Array[String] = []
-      let mut i = 0
-      while i < n {
-        Array::push(keys, value = ast_binary_read_string_checked(r))
-        i = i + 1
-      }
+      let keys = prelude_reuse_read_strings(r)
       let plain = prelude_reuse_read_stmts(r)
+      let names = prelude_reuse_read_strings(r)
+      let sigs = prelude_reuse_read_strings(r)
+      let quiet: Array[Bool] = []
+      for b in prelude_reuse_read_ints(r) {
+        Array::push(quiet, value = b == 1)
+      }
+      let avoid = prelude_reuse_read_strings(r)
       let kinds = prelude_reuse_read_ints(r)
       let refs = prelude_reuse_read_ints(r)
       let outs = prelude_reuse_read_stmts(r)
       if ast_binary_reader_remaining(r) == 0 && Array::length(kinds) == Array::length(refs) && Array::length(kinds) == Array::length(outs) {
-        Some(prelude_reuse_record_new(header = header, keys = keys, plain = plain, kinds = kinds, refs = refs, outs = outs))
+        Some(prelude_reuse_record_new(header = header, keys = keys, plain = plain, names = names, sigs = sigs, quiet = quiet, avoid = avoid, kinds = kinds, refs = refs, outs = outs))
       } else {
         None
       }

@@ -362,7 +362,10 @@ compilation check that.
 ### The real compile path, against the Lean model
 
 `VIBE_SCHEDULER_TRACE=<path>` (`set_scheduler_trace_path`) makes the serial
-walk record what it planned and what it did:
+walk record what it planned and what it did. The trace exists only in a
+compiler built with the `telemetry` cfg flag, which the generation's stage2 is
+by default (#2498); a build without it, such as the compile-only artifact,
+refuses the variable by name rather than writing no trace:
 
 ```text
 project<TAB><path><TAB><rank>[<TAB><dep>...]   Project.dependencies / .rank

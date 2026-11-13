@@ -154,3 +154,50 @@ test "push into a fresh array does not change its original elements" {
   } with { Ask::Get() => resume(5) }
   inspect(last_kept(), content = "44")
 }
+
+// #4088: the resolved `Array` builtins below store into none of their
+// arguments and answer fresh outer storage, so a container they were handed
+// or that they answered keeps its own fact. An element read out of their
+// result is still the source's element
+// (fixtures/typecheck/handle_bound_closure_container_{reverse,concat,map}_element_push_reject.vibe).
+test "concat stores nothing one argument holds into the other" {
+  handle {
+    let plain = () -> 45
+    let g = () -> perform Ask::Get() + 1
+    let arr = [plain]
+    let other = [plain]
+    Array::push(arr, value = g)
+    let _ = Array::concat(arr, other)
+    let _ = keep_arr(xs = other)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "45")
+}
+
+test "push into a reversed copy leaves the source array unchanged" {
+  handle {
+    let plain = () -> 46
+    let arr = [plain]
+    let copy = Array::reverse(arr)
+    let g = () -> perform Ask::Get() + 1
+    Array::push(copy, value = g)
+    let _ = keep_arr(xs = arr)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "46")
+}
+
+test "push into a concat result leaves both arguments unchanged" {
+  handle {
+    let plain = () -> 47
+    let arr = [plain]
+    let other = [plain]
+    let both = Array::concat(arr, other)
+    let g = () -> perform Ask::Get() + 1
+    Array::push(both, value = g)
+    let _ = keep_arr(xs = arr)
+    let _ = keep_arr(xs = other)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "47")
+}

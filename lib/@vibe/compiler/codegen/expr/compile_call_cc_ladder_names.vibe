@@ -105,6 +105,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_f64_reinterpret_i64,
   emit_f64_sub,
   emit_i32_add,
+  emit_i32_and,
   emit_i32_const,
   emit_i32_load,
   emit_i32_shr_u,
@@ -404,6 +405,10 @@ fn cc_ladder_names() -> Array[String] {
       "Map::set",
       "Map::size",
       "Map::values",
+      "MapBuilder::__scalar_freeze",
+      "MapBuilder::__scalar_get",
+      "MapBuilder::__scalar_has_key",
+      "MapBuilder::__scalar_set",
       "MapBuilder::freeze",
       "MapBuilder::get",
       "MapBuilder::has_key",
@@ -1859,6 +1864,41 @@ export fn cc_map_mark_scalar(buf: Bytes, map_l: Int) -> Unit {
   emit_i32_wrap_i64(buf)
   emit_i32_const(buf = buf, value = map_scalar_index_marker)
   emit_i32_store(buf = buf, align = 2, offset = 4)
+}
+
+/// #2334: a MapBuilder handle ([count i32 @0][cap i32 @4][storage @8]) is
+/// marked scalar-keyed by this bit of its capacity word. A capacity never
+/// reaches it: storage is allocated as `cap * 16` bytes in a 32-bit memory.
+export let mapbuilder_scalar_cap_marker: Int = 1073741824
+
+/// #2334: trap when the untagged builder at `mb_l` is scalar-keyed. Every
+/// String-keyed builder operation runs this first, as `cc_map_trap_if_scalar`
+/// does for a map.
+export fn cc_mapbuilder_trap_if_scalar(buf: Bytes, mb_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = mb_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  emit_i32_const(buf = buf, value = mapbuilder_scalar_cap_marker)
+  emit_i32_and(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf = buf, byte = 0)
+  emit_end(buf)
+}
+
+/// #2334: mark the untagged builder at `mb_l` scalar-keyed, and leave the
+/// capacity alone in `cap_l` (which holds the capacity word as loaded).
+export fn cc_mapbuilder_mark_scalar_cap(buf: Bytes, mb_l: Int, cap_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = mb_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = cap_l)
+  emit_i64_const(buf = buf, value = mapbuilder_scalar_cap_marker)
+  emit_i64_or(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf = buf, align = 2, offset = 4)
+  emit_local_get(buf = buf, idx = cap_l)
+  emit_i64_const(buf = buf, value = mapbuilder_scalar_cap_marker - 1)
+  emit_i64_and(buf)
+  emit_local_set(buf = buf, idx = cap_l)
 }
 
 fn cc_map_find_pos(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, idx_l: Int, pos_l: Int, ip_l: Int, eq_fi: Int, ctx: CompileCtx) -> Unit {

@@ -1,0 +1,487 @@
+//# Which edited statements a prelude-reuse replay may take as they are (#4042)
+//
+// A replay keeps every statement the passes rewrote as the record has it, so
+// it is only right when an edit changed nothing those statements' outputs
+// read. The passes read the program through the questions #4041 named; this
+// file answers, conservatively, "can this statement's edit move any of
+// them?" Two facts are kept per build:
+//
+// - which statements are RELEVANT: the passes rewrote or dropped them, or
+//   they hold effect syntax (`handle`, `perform`, `resume`, an effect
+//   definition, a row naming a user effect or a row variable, a declaration
+//   whose types carry a row);
+// - what to AVOID: every name from which a relevant statement is reachable
+//   (the relevant names included), and every name a relevant statement binds
+//   to a local lambda (the evidence pass counts those spellings program-wide
+//   when it decides which local lambdas are pure).
+//
+// An edited statement is QUIET when, in its old form and its new one, it is
+// an ordinary `let` / `let mut` / test / bench / expression statement that
+// holds no effect syntax, references nothing to avoid (and nothing opaque),
+// binds no local name that is a top-level name, a generated (`__`) name or a
+// name to avoid, and binds no local alias of a top-level function. A quiet
+// statement reaches no relevant statement, so no relevant statement's
+// liveness, call graph or binder census can move with it, and the passes
+// leave it as it is. Its signature -- flags, parameters, declared result and
+// row -- must also be unchanged, since a relevant caller reads a callee's row
+// and parameter types.
+//
+// This is the conservative syntactic check #3999 measured (19 of 26 recent
+// commits admitted, none wrongly), with reachability taken transitively
+// rather than one call deep.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, dce_statement_refs, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  edp_statement_binder_log
+}
+
+import @vibe/core {
+  struct MutMap, struct MutSet
+}
+
+/// The names the check consults, from the current program's statements.
+export struct PreludeReuseScope {
+  top: MutSet[String];
+  fns: MutSet[String];
+  effects: MutSet[String]
+}
+
+// review-lint: allow-program-walk (builds the program's top-level, function and effect names)
+/// The top-level names, the top-level function names and the declared effect
+/// and effect-set names of `stmts`.
+export fn prelude_reuse_scope(_ stmts: Array[Stmt]) -> PreludeReuseScope {
+  let scope = PreludeReuseScope::{
+    top: MutSet::new_string(),
+    fns: MutSet::new_string(),
+    effects: MutSet::new_string()
+  }
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, value) => {
+        MutSet::insert(scope.top, x = name)
+        match value {
+          EFn(_, _, _, _, _, _) => MutSet::insert(scope.fns, x = name),
+          _ => ()
+        }
+      },
+      SLetMut(name, _, _) => MutSet::insert(scope.top, x = name),
+      SExternLet(name, _) => MutSet::insert(scope.top, x = name),
+      SEffectDef(_, name, _, _, _) => MutSet::insert(scope.effects, x = name),
+      SEffectSet(_, name, _) => MutSet::insert(scope.effects, x = name),
+      _ => ()
+    }
+  }
+  scope
+}
+
+/// Whether a row (`with ...`) names a user effect or a row variable: any of
+/// its words that is a declared effect, or that starts lowercase.
+fn prelude_reuse_row_effectful(row: String, effects: MutSet[String]) -> Bool {
+  let mut hit = false
+  let mut word = StringBuilder::new()
+  let mut i = 0
+  let n = String::length(row)
+  while i <= n {
+    let c = if i < n {
+      String::byte_at(row, at = i)
+    } else {
+      32
+    }
+    let part = c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c == 95
+    if part {
+      StringBuilder::push(word, value = String::from_byte(c))
+    } else {
+      let w = StringBuilder::freeze(word)
+      if String::length(w) > 0 {
+        let first = String::byte_at(w, at = 0)
+        hit = hit || MutSet::has(effects, x = w) || first >= 97 && first <= 122
+      }
+      word = StringBuilder::new()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Whether a type carries an effectful row (`prelude_reuse_row_effectful`).
+fn prelude_reuse_type_effectful(ty: TypeExpr, effects: MutSet[String]) -> Bool {
+  match ty {
+    TyName(_) => false,
+    TyUnit => false,
+    TyApp(_, args) => {
+      let mut hit = false
+      for a in args {
+        hit = hit || prelude_reuse_type_effectful(ty = a, effects = effects)
+      }
+      hit
+    },
+    TyTuple(items) => {
+      let mut hit = false
+      for a in items {
+        hit = hit || prelude_reuse_type_effectful(ty = a, effects = effects)
+      }
+      hit
+    },
+    TyFn(params, ret, row) => {
+      let mut hit = match row {
+        Some(r) => prelude_reuse_row_effectful(row = r, effects = effects),
+        None => false
+      }
+      for p in params {
+        hit = hit || prelude_reuse_type_effectful(ty = p, effects = effects)
+      }
+      hit || prelude_reuse_type_effectful(ty = ret, effects = effects)
+    }
+  }
+}
+
+fn prelude_reuse_opt_type_effectful(ty: Option[TypeExpr], effects: MutSet[String]) -> Bool {
+  match ty {
+    Some(t) => prelude_reuse_type_effectful(ty = t, effects = effects),
+    None => false
+  }
+}
+
+/// Whether a type carries any row at all.
+fn prelude_reuse_type_has_row(_ ty: TypeExpr) -> Bool {
+  match ty {
+    TyName(_) => false,
+    TyUnit => false,
+    TyApp(_, args) => {
+      let mut hit = false
+      for a in args {
+        hit = hit || prelude_reuse_type_has_row(a)
+      }
+      hit
+    },
+    TyTuple(items) => {
+      let mut hit = false
+      for a in items {
+        hit = hit || prelude_reuse_type_has_row(a)
+      }
+      hit
+    },
+    TyFn(params, ret, row) => {
+      let mut hit = match row {
+        Some(r) => String::length(r) > 0,
+        None => false
+      }
+      for p in params {
+        hit = hit || prelude_reuse_type_has_row(p)
+      }
+      hit || prelude_reuse_type_has_row(ret)
+    }
+  }
+}
+
+/// Effect syntax in `expr` (see the file comment), or a local alias of a
+/// top-level function (`let x = f`): either keeps a statement from being
+/// quiet. `effect` counts only the first; both are false for a quiet body.
+fn prelude_reuse_expr_flags(expr: Expr, scope: PreludeReuseScope, out: Array[Bool]) -> Unit {
+  match expr {
+    EHandle(_, _) => Array::set(out, at = 0, value = true),
+    EIdent(name, _) => if name == "perform" || name == "resume" {
+      Array::set(out, at = 0, value = true)
+    } else (),
+    EFn(_, _, params, ret, eff, _) => {
+      let mut hit = match eff {
+        Some(r) => prelude_reuse_row_effectful(row = r, effects = scope.effects),
+        None => false
+      }
+      for p in params {
+        hit = hit || prelude_reuse_opt_type_effectful(ty = p.1, effects = scope.effects)
+      }
+      if hit || prelude_reuse_opt_type_effectful(ty = ret, effects = scope.effects) {
+        Array::set(out, at = 0, value = true)
+      } else ()
+    },
+    ERecord(_, _, targs) => {
+      for t in targs {
+        if prelude_reuse_type_effectful(ty = t, effects = scope.effects) {
+          Array::set(out, at = 0, value = true)
+        } else ()
+      }
+      ()
+    },
+    ELet(_, EIdent(target, _), _, _) => if MutSet::has(scope.fns, x = target) {
+      Array::set(out, at = 1, value = true)
+    } else (),
+    ELetMut(_, EIdent(target, _), _, _) => if MutSet::has(scope.fns, x = target) {
+      Array::set(out, at = 1, value = true)
+    } else (),
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut child = mark
+  while child < top {
+    prelude_reuse_expr_flags(expr = expr_child_at(child), scope = scope, out = out)
+    child = child + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Effect syntax anywhere in `stmt`: the expression flags of its body, its
+/// annotation's rows, or a declaration whose types carry a row.
+export fn prelude_reuse_effectful(stmt: Stmt, scope: PreludeReuseScope) -> Bool {
+  match prelude_reuse_body(stmt) {
+    Some((ann, body)) => {
+      let flags = [false, false]
+      prelude_reuse_expr_flags(expr = body, scope = scope, out = flags)
+      Array::get(flags, at = 0) || prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
+    },
+    None => match stmt {
+      SStruct(_, _, fields, _, _, _) => {
+        let mut hit = false
+        for f in fields {
+          hit = hit || prelude_reuse_type_has_row(f.1)
+        }
+        hit
+      },
+      STypeAlias(_, _, _, body) => prelude_reuse_type_has_row(body),
+      SExternLet(_, ty) => prelude_reuse_type_has_row(ty),
+      // Everything else that is not a plain binding -- an effect, a trait or
+      // an impl, a module, a contract clause -- counts as effect syntax.
+      SEnum(_, _, _, _, _) => false,
+      SSuberror(_, _, _) => false,
+      _ => !prelude_reuse_checker_marker(stmt)
+    }
+  }
+}
+
+/// Whether `stmt` is one the passes never read: a marker only the checker
+/// reads, or an import, re-export or impl header, which the merge and the
+/// checker have already resolved by the time the passes run.
+fn prelude_reuse_checker_marker(_ stmt: Stmt) -> Bool {
+  match stmt {
+    SPositionalParams(_) => true,
+    STestEffectRows(_) => true,
+    SQualifiedPatternRefs(_) => true,
+    SImport(_, _) => true,
+    SReExport(_, _) => true,
+    SReExportSourceBoundary(_, _) => true,
+    SImpl(_, _, _, _) => true,
+    SResource(_, _) => true,
+    _ => false
+  }
+}
+
+/// The annotation and body of a plain binding statement, the only forms a
+/// quiet statement takes.
+fn prelude_reuse_body(_ stmt: Stmt) -> Option[(Option[TypeExpr], Expr)] {
+  match stmt {
+    SLet(_, _, _, ann, body) => Some((ann, body)),
+    SLetMut(_, ann, body) => Some((ann, body)),
+    STest(_, body) => Some((None, body)),
+    SBench(_, body) => Some((None, body)),
+    SExpr(body) => Some((None, body)),
+    _ => None
+  }
+}
+
+/// The names `stmt` references by spelling, and whether any reference is
+/// opaque (`dce_statement_refs`).
+fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
+  let (def_refs, def_opaque, root_refs, root_opaque) = dce_statement_refs(stmt)
+  let all: Array[String] = []
+  for r in def_refs {
+    Array::push(all, value = r)
+  }
+  for r in root_refs {
+    Array::push(all, value = r)
+  }
+  (all, def_opaque || root_opaque)
+}
+
+/// Whether `stmt` is quiet against `avoid` (see the file comment).
+export fn prelude_reuse_quiet(stmt: Stmt, scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
+  match prelude_reuse_body(stmt) {
+    // A marker only the checker reads (positional parameters, a test's
+    // declared row, qualified pattern references): the passes skip it, so
+    // no edit of it reaches them.
+    None => prelude_reuse_checker_marker(stmt),
+    Some((ann, body)) => {
+      let flags = [false, false]
+      prelude_reuse_expr_flags(expr = body, scope = scope, out = flags)
+      let (refs, opaque) = prelude_reuse_refs(stmt)
+      let mut ok = !Array::get(flags, at = 0) && !Array::get(flags, at = 1) && !opaque && !prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
+      for r in refs {
+        ok = ok && !MutSet::has(avoid, x = r)
+      }
+      for b in edp_statement_binder_log(stmt) {
+        ok = ok && !MutSet::has(scope.top, x = b) && !String::starts_with(b, prefix = "__") && !MutSet::has(avoid, x = b)
+      }
+      // Its own name: a statement some relevant statement reaches is not
+      // quiet whatever its body holds.
+      match stmt {
+        SLet(_, _, name, _, _) => ok && !MutSet::has(avoid, x = name),
+        SLetMut(name, _, _) => ok && !MutSet::has(avoid, x = name),
+        _ => ok
+      }
+    }
+  }
+}
+
+/// A type as text, for a signature.
+fn prelude_reuse_type_text(_ ty: TypeExpr) -> String {
+  match ty {
+    TyName(n) => n,
+    TyUnit => "()",
+    TyApp(n, args) => {
+      let parts: Array[String] = []
+      for a in args {
+        Array::push(parts, value = prelude_reuse_type_text(a))
+      }
+      n + "[" + String::join(parts, sep = ",") + "]"
+    },
+    TyTuple(items) => {
+      let parts: Array[String] = []
+      for a in items {
+        Array::push(parts, value = prelude_reuse_type_text(a))
+      }
+      "(" + String::join(parts, sep = ",") + ")"
+    },
+    TyFn(params, ret, row) => {
+      let parts: Array[String] = []
+      for a in params {
+        Array::push(parts, value = prelude_reuse_type_text(a))
+      }
+      "fn(" + String::join(parts, sep = ",") + ")" + prelude_reuse_type_text(ret) + "!" + match row {
+        Some(r) => r,
+        None => "-"
+      }
+    }
+  }
+}
+
+fn prelude_reuse_opt_type_text(_ ty: Option[TypeExpr]) -> String {
+  match ty {
+    Some(t) => prelude_reuse_type_text(t),
+    None => "-"
+  }
+}
+
+/// What a caller of `stmt` can read of it without its body: for a binding,
+/// its flags and annotation, and for a function its type parameters, its
+/// parameters with their types, its declared result and its row.
+export fn prelude_reuse_signature(_ stmt: Stmt) -> String {
+  match stmt {
+    SLet(exported, is_rec, name, ann, value) => {
+      let head = "let " + name + (if exported {
+        " pub"
+      } else {
+        ""
+      }) + (if is_rec {
+        " rec"
+      } else {
+        ""
+      }) + " : " + prelude_reuse_opt_type_text(ann)
+      match value {
+        EFn(tparams, bounds, params, ret, eff, _) => {
+          let parts: Array[String] = []
+          for p in params {
+            Array::push(parts, value = p.0 + ":" + prelude_reuse_opt_type_text(p.1))
+          }
+          let bparts: Array[String] = []
+          for b in bounds {
+            Array::push(bparts, value = b.0 + ":" + String::join(b.1, sep = "+"))
+          }
+          head + " fn[" + String::join(tparams, sep = ",") + "|" + String::join(bparts, sep = ",") + "](" + String::join(parts, sep = ",") + ") " + prelude_reuse_opt_type_text(ret) + " ! " + match eff {
+            Some(r) => r,
+            None => "-"
+          }
+        },
+        _ => head + " value"
+      }
+    },
+    SLetMut(name, ann, _) => "mut " + name + " : " + prelude_reuse_opt_type_text(ann),
+    STest(name, _) => "test " + name,
+    SBench(name, _) => "bench " + name,
+    SExpr(_) => "expr",
+    _ => "decl"
+  }
+}
+
+// review-lint: allow-program-walk (builds the names a quiet statement must avoid)
+/// Every name `expr` binds to a lambda (`let h = (x) -> ...`): a spelling the
+/// evidence pass counts program-wide when it decides which local lambdas are
+/// pure.
+fn prelude_reuse_lambda_binders(expr: Expr, out: MutSet[String]) -> Unit {
+  match expr {
+    ELet(name, EFn(_, _, _, _, _, _), _, _) => MutSet::insert(out, x = name),
+    ELetMut(name, EFn(_, _, _, _, _, _), _, _) => MutSet::insert(out, x = name),
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut child = mark
+  while child < top {
+    prelude_reuse_lambda_binders(expr = expr_child_at(child), out = out)
+    child = child + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// The names a quiet statement must avoid, given which statements are
+/// relevant: every name from which a relevant statement is reachable, and
+/// every name a relevant statement binds to a lambda.
+export fn prelude_reuse_avoid(stmts: Array[Stmt], relevant: Array[Bool]) -> MutSet[String] {
+  let avoid = MutSet::new_string()
+  // name -> the statements that reference it
+  let users: MutMap[String, Array[Int]] = MutMap::new_string()
+  let names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, at = i)
+    Array::push(names, value = match stmt {
+      SLet(_, _, name, _, _) => name,
+      SLetMut(name, _, _) => name,
+      _ => ""
+    })
+    let (refs, _) = prelude_reuse_refs(stmt)
+    for r in refs {
+      match MutMap::get(users, k = r) {
+        Some(at) => Array::push(at, value = i),
+        None => MutMap::set(users, k = r, v = [i])
+      }
+    }
+    i = i + 1
+  }
+  let reached: Array[Bool] = []
+  let queue: Array[Int] = []
+  let mut k = 0
+  while k < Array::length(stmts) {
+    let rel = k < Array::length(relevant) && Array::get(relevant, at = k)
+    Array::push(reached, value = rel)
+    if rel {
+      Array::push(queue, value = k)
+      match prelude_reuse_body(Array::get(stmts, at = k)) {
+        Some((_, body)) => prelude_reuse_lambda_binders(expr = body, out = avoid),
+        None => ()
+      }
+    } else ()
+    k = k + 1
+  }
+  let mut head = 0
+  while head < Array::length(queue) {
+    let at = Array::get(queue, at = head)
+    head = head + 1
+    let name = Array::get(names, at = at)
+    if name != "" {
+      MutSet::insert(avoid, x = name)
+      match MutMap::get(users, k = name) {
+        Some(callers) => for c in callers {
+          if !Array::get(reached, at = c) {
+            Array::set(reached, at = c, value = true)
+            Array::push(queue, value = c)
+          } else ()
+        },
+        None => ()
+      }
+    } else ()
+  }
+  avoid
+}

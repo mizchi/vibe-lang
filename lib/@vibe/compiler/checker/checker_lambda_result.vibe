@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  fresh_var,
   subst_apply,
   subst_bind_value,
   unify
@@ -24,7 +25,7 @@ import ./checker_merge_capture_provenance.vibe {
 }
 
 import ./checker_int32.vibe {
-  int32_literal_adapt, int32_literal_can_adapt, int32_tail
+  int32_literal_adapt, int32_literal_can_adapt, int32_literal_value, int32_tail
 }
 
 import ./checker_int32_rows.vibe {
@@ -125,7 +126,7 @@ export fn check_return_value(e: Expr, et: Type, env: TypeEnv, s: Subst, errors: 
       let unwritten = unwritten_result_id(env)
       if skip_railway_none {
         s
-      } else if unwritten >= 0 && int32_literal_can_adapt(e = e, actual = ate) {
+      } else if unwritten >= 0 && int32_literal_can_adapt(e = int32_tail(e), actual = ate) {
         Array::push(deferred_returns, value = (unwritten, e, ate))
         s
       } else {
@@ -178,6 +179,74 @@ fn take_deferred_returns(_ result: Type) -> Array[(Expr, Type)] {
   out
 }
 
+/// Build a result constraint while leaving adaptable Int literals open.
+fn return_literal_constraint(e: Expr, actual: Type, holes: Array[Type], c: Int) -> (Type, Int) {
+  match e {
+    EIf(_, then_e, else_e) => {
+      let (a, c1) = return_literal_constraint(e = int32_tail(then_e), actual = actual, holes = holes, c = c)
+      let (b, c2) = return_literal_constraint(e = int32_tail(else_e), actual = actual, holes = holes, c = c1)
+      match unify(a = a, b = b, s = SubstEmpty) {
+        Some(s) => (subst_apply(s = s, ty = a), c2),
+        None => (actual, c2)
+      }
+    },
+    _ => match actual {
+      CtInt => if int32_literal_value(e) is Some(_) {
+        return_literal_hole(holes = holes, c = c)
+      } else {
+        (actual, c)
+      },
+      CtArray(CtInt) => if int32_literal_can_adapt(e = e, actual = actual) {
+        let (elem, c1) = return_literal_hole(holes = holes, c = c)
+        (CtArray(elem), c1)
+      } else {
+        (actual, c)
+      },
+      CtTuple(types) => match e {
+        ETuple(items) => if Array::length(items) == Array::length(types) {
+          let out: Array[Type] = []
+          let mut next = c
+          let mut i = 0
+          while i < Array::length(items) {
+            let (part, c1) = return_literal_constraint(e = Array::get(items, at = i), actual = Array::get(types, at = i), holes = holes, c = next)
+            Array::push(out, value = part)
+            next = c1
+            i = i + 1
+          }
+          (CtTuple(out), next)
+        } else {
+          (actual, c)
+        },
+        _ => (actual, c)
+      },
+      CtOption(inner) => match e {
+        ECall(EIdent("Some", _), args, _, _) => if Array::length(args) == 1 {
+          let (part, c1) = return_literal_constraint(e = Array::get(args, at = 0), actual = inner, holes = holes, c = c)
+          (CtOption(part), c1)
+        } else {
+          (actual, c)
+        },
+        _ => (actual, c)
+      },
+      _ => (actual, c)
+    }
+  }
+}
+
+fn return_literal_hole(holes: Array[Type], c: Int) -> (Type, Int) {
+  let (ty, next) = fresh_var(c)
+  Array::push(holes, value = ty)
+  (ty, next)
+}
+
+fn constrain_return_literal(e: Expr, actual: Type, result: Type, holes: Array[Type], s: Subst, c: Int) -> (Subst, Int) {
+  let (constraint, c1) = return_literal_constraint(e = e, actual = subst_apply(s = s, ty = actual), holes = holes, c = c)
+  match unify(a = result, b = constraint, s = s) {
+    Some(ns) => (ns, c1),
+    None => (s, c1)
+  }
+}
+
 /// #4062: the result type of a function or lambda that writes none. Its
 /// `__return__` is the fresh variable `result`, which the explicit `return`s
 /// in the body bound (`check_return_value`); the body's own value `actual` is
@@ -188,7 +257,7 @@ fn take_deferred_returns(_ result: Type) -> Array[(Expr, Type)] {
 /// `CtUnknown` and a `return` was checked against nothing:
 /// `(k) -> { if k == 0 { return "oops" }; k }` passed for `(Int) -> Int` and
 /// handed its caller a string as an `Int`.
-export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subst, errors: Array[String]) -> (Type, Subst) {
+export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subst, c: Int, errors: Array[String]) -> (Type, Subst, Int) {
   let deferred = take_deferred_returns(result)
   let returned = match subst_apply(s = s, ty = result) {
     CtVar(_) => false,
@@ -197,9 +266,37 @@ export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subs
   // `result` is a variable only for a body with a `return` (`body_has_return`).
   if !(result is CtVar(_)) || (!returned && Array::length(deferred) == 0) {
     // No `return` reached the result: it is the body's value, as it always was.
-    (subst_apply(s = s, ty = actual), s)
+    (subst_apply(s = s, ty = actual), s, c)
   } else {
-    let s_tail = match int32_tail(body) {
+    let tail = int32_tail(body)
+    let mut inferred = s
+    let mut next = c
+    if Array::length(deferred) > 0 {
+      let holes: Array[Type] = []
+      if !(tail is EReturn(_)) {
+        let (ns, nc) = constrain_return_literal(e = tail, actual = actual, result = result, holes = holes, s = inferred, c = next)
+        inferred = ns
+        next = nc
+      } else {
+        ()
+      }
+      for d in deferred {
+        let (e, t) = d
+        let (ns, nc) = constrain_return_literal(e = int32_tail(e), actual = t, result = result, holes = holes, s = inferred, c = next)
+        inferred = ns
+        next = nc
+      }
+      for hole in holes {
+        match subst_apply(s = inferred, ty = hole) {
+          CtVar(id) => inferred = subst_bind_value(id = id, ty = CtInt, s = inferred),
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    let s = inferred
+    let s_tail = match tail {
       // A body that ends in `return e` was checked there.
       EReturn(_) => s,
       _ => {
@@ -216,31 +313,18 @@ export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subs
           Some(ns) => ns,
           None => {
             check_assignable_set_end(string_lit_end(body))
-            check_assignable(expected = subst_apply(s = s, ty = result), actual = int32_literal_adapt(e = body, expected = result, actual = actual, s = s, errors = errors, off = tail_expr_off(body)), s = s, errors = errors, what = what, off = tail_expr_off(body))
+            check_assignable(expected = subst_apply(s = s, ty = result), actual = int32_literal_adapt(e = tail, expected = result, actual = subst_apply(s = s, ty = actual), s = s, errors = errors, off = tail_expr_off(body)), s = s, errors = errors, what = what, off = tail_expr_off(body))
           }
         }
       }
     }
-    // Only deferred values were returned: the result is the first one's
-    // type, its literals `Int`s.
-    let mut out = match subst_apply(s = s_tail, ty = result) {
-      CtVar(_) => if Array::length(deferred) > 0 {
-        let (_, first) = Array::get(deferred, at = 0)
-        match unify(a = result, b = first, s = s_tail) {
-          Some(bound) => bound,
-          None => s_tail
-        }
-      } else {
-        s_tail
-      },
-      _ => s_tail
-    }
+    let mut out = s_tail
     for d in deferred {
       let (e, t) = d
       let want = subst_apply(s = out, ty = result)
       check_assignable_set_end(string_lit_end(e))
-      out = check_assignable(expected = want, actual = int32_literal_adapt(e = e, expected = want, actual = subst_apply(s = out, ty = t), s = out, errors = errors, off = railway_expr_off(e)), s = out, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
+      out = check_assignable(expected = want, actual = int32_literal_adapt(e = int32_tail(e), expected = want, actual = subst_apply(s = out, ty = t), s = out, errors = errors, off = railway_expr_off(e)), s = out, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
     }
-    (subst_apply(s = out, ty = result), out)
+    (subst_apply(s = out, ty = result), out, next)
   }
 }

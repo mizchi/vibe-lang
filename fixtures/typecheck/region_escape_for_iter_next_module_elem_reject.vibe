@@ -1,0 +1,49 @@
+// Codex on #4100: through `C::iter`, an element of the returned iterator's
+// `next` that is a module-level array outlives every region, so the write
+// is refused (the first #4093 fix accepted it and printed `kept=true`).
+trait Iterator[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+trait Iterable[T] {
+  iter(Self) -> Gen
+}
+
+let kept: Array[MutList[Int]] = []
+
+struct Bag {
+  n: Int
+}
+
+struct Gen {
+  left: Int
+}
+
+impl Iterator for Gen {
+  next(self) -> Option[(T, Gen)] {
+    if self.left > 0 {
+      Some((kept, Gen::{ left: self.left - 1 }))
+    } else {
+      None
+    }
+  }
+}
+
+impl Iterable for Bag {
+  iter(self) -> Gen {
+    Gen::{ left: self.n }
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let bag = Bag::{ n: 1 }
+  let v = region r {
+    let cell = MutList::empty(r)
+    MutList::push(cell, 3)
+    for a in bag {
+      Array::push(a, value = cell)
+    }
+    1
+  }
+  println("v=\{v} kept=\{Array::length(kept) > 0}")
+}
