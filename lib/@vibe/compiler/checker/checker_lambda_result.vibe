@@ -243,7 +243,23 @@ fn constrain_return_literal(e: Expr, actual: Type, result: Type, holes: Array[Ty
   let (constraint, c1) = return_literal_constraint(e = e, actual = subst_apply(s = s, ty = actual), holes = holes, c = c)
   match unify(a = result, b = constraint, s = s) {
     Some(ns) => (ns, c1),
-    None => (s, c1)
+    None => match result {
+      CtVar(id) => {
+        let anchor = subst_apply(s = s, ty = result)
+        let later = subst_apply(s = s, ty = constraint)
+        let joined = match widen_unwritten_result(id = id, anchor = anchor, later = later, s = s) {
+          Some(ns) => ns,
+          // The result already has the wider row. Keep the component
+          // substitutions from assigning the narrower return to it.
+          None => match branch_join_widens(anchor = later, later = anchor, s = s) {
+            Some(ns) => ns,
+            None => s
+          }
+        }
+        (joined, c1)
+      },
+      _ => (s, c1)
+    }
   }
 }
 

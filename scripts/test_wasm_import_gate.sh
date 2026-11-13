@@ -46,7 +46,15 @@
 #      signature is refused at link time; and an extern effect imported from
 #      another module runs the same way (extern_greeter_*.vibex), and a
 #      `test` block binds one with `vibe test --provide`
-#      (extern_greeter_test.vibe).
+#      (extern_greeter_test.vibe); under the optional grade `allows Greeter?`
+#      (#4082), `perform? Greeter::greet(..)` answers `Granted` through a
+#      bound provider and `NotGranted` without one, and the artifact built
+#      without one imports nothing from `vibe:effect:`
+#      (extern_greeter_optional_main.vibex), and `vibe run --trace` /
+#      `--break` answer `Granted` the same way
+#      (extern_greeter_optional_debug_main.vibex), as does a test through
+#      `vibe test --provide`, which without one answers `NotGranted` and runs
+#      (extern_greeter_optional_{,provided_}test.vibe).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -261,6 +269,31 @@ status=0
 out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_import_main.vibex" 2>"$WORK/err")" || status=$?
 [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] extern_greeter_import_main exited $status"; }
 [ "$out" = "hi, import" ] || fail "[viberun] extern_greeter_import_main printed $(printf '%q' "$out"), want hi, import"
+# The optional grade (#4082): a bound provider is the grant, so the call
+# reaches it; with none bound `perform?` answers `NotGranted`, the operation
+# is not imported at all, and the program runs instead of being refused.
+status=0
+out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_optional_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] extern_greeter_optional_main exited $status with a provider bound"; }
+[ "$out" = "granted: hi, vibe" ] || fail "[viberun] extern_greeter_optional_main printed $(printf '%q' "$out") with a provider bound, want granted: hi, vibe"
+got="$(foreign_imports "$WORK/build/run/extern_greeter_optional_main.wasm" "vibe:effect:./Greeter")"
+[ "$got" = "greet#string->string" ] || fail "[viberun] the granted optional extern effect imports '$got', want 'greet#string->string'"
+status=0
+out="$(vibe "$VIBERUN" run "$FX/extern_greeter_optional_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] extern_greeter_optional_main exited $status with no provider bound"; }
+[ "$out" = "not granted" ] || fail "[viberun] extern_greeter_optional_main printed $(printf '%q' "$out") with no provider bound, want not granted"
+got="$(foreign_imports "$WORK/build/run/extern_greeter_optional_main.wasm" "vibe:effect:./Greeter")"
+[ -z "$got" ] || fail "[viberun] the optional extern effect with no provider bound still imports '$got'"
+# The instrumented builds take the same grants (#4082): `--trace` and
+# `--break` (also the route of `--alloc-site`) answer `Granted` through the
+# bound provider, as the plain run does.
+for DEBUG_FLAG in --trace "--break main"; do
+  status=0
+  # shellcheck disable=SC2086 # the flag and its value are two words
+  out="$(vibe "$VIBERUN" run $DEBUG_FLAG --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_optional_debug_main.vibex" 2>"$WORK/err" </dev/null)" || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] extern_greeter_optional_debug_main exited $status under $DEBUG_FLAG"; }
+  [ "$out" = "granted: hi, debug" ] || fail "[viberun] extern_greeter_optional_debug_main printed $(printf '%q' "$out") under $DEBUG_FLAG with a provider bound, want granted: hi, debug"
+done
 # With no provider bound, nothing of the program runs: the refusal comes
 # before `main` and names the effect, the operation and the flag.
 status=0
@@ -287,6 +320,18 @@ out="$(vibe "$VIBERUN" test --provide Greeter "$FX/extern_greeter_test.vibe" 2>&
 [ "$status" != 0 ] || fail "[viberun] vibe test accepted --provide without <Effect>=<component.wasm>"
 printf '%s\n' "$out" | grep -qF 'test: --provide takes <Effect>=<component.wasm>, got `Greeter`' \
   || { printf '%s\n' "$out" >&2; fail "[viberun] a malformed vibe test --provide is not refused with the spelling that works"; }
+# The optional grade in a test (#4082): a test build grants the standard
+# providers ambiently but an extern effect only through `--provide`, so a
+# test reaching `perform? Greeter::greet(..)` answers `NotGranted` and runs
+# with none bound, and reaches the provider with one.
+status=0
+out="$(vibe "$VIBERUN" test "$FX/extern_greeter_optional_test.vibe" 2>&1)" || status=$?
+[ "$status" = 0 ] || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_test failed with no provider bound"; }
+printf '%s\n' "$out" | grep -qF '1 passed, 0 failed' || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_test did not pass its test block"; }
+status=0
+out="$(vibe "$VIBERUN" test --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_optional_provided_test.vibe" 2>&1)" || status=$?
+[ "$status" = 0 ] || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_provided_test failed with a provider bound"; }
+printf '%s\n' "$out" | grep -qF '1 passed, 0 failed' || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_provided_test did not pass its test block"; }
 # A trailing `--provide` with no value is refused on the parallel path too
 # (`--jobs 2` with two files splits into shares, which must not drop it).
 status=0
@@ -315,4 +360,4 @@ out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/e
 grep -qF "'greet' is now (string->string) but the program was compiled against (s64->s64)" "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "[viberun] the provider-signature refusal does not say why"; }
 
-echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal; extern effect: provider, missing-provider refusal, vibe test --provide, node refusal, signature refusal)"
+echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal; extern effect: provider, optional grade (plain, --trace, --break), missing-provider refusal, vibe test --provide, node refusal, signature refusal)"
