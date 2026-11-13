@@ -43,7 +43,7 @@ fn all_distinct(_ names: Array[String]) -> Bool {
 }
 
 test "extern effects differing in case or by a prefix bind apart" {
-  let names = bound_names("extern effect MyAPI {\n  greet(String) -> String\n}\n\nextern effect MyApi {\n  greet(String) -> String\n}\n\nextern effect Kv {\n  op_x(String) -> String\n}\n\nextern effect KvOp {\n  x(String) -> String\n}\n")
+  let names = bound_names("extern effect MyAPI {\n  greet(String) -> String\n}\n\nextern effect MyApi {\n  greet(String) -> String\n}\n\nextern effect Kv {\n  op_x(String) -> String\n}\n\nextern effect KvOp {\n  x(String) -> String\n}\n\nfn uses(s: String) -> String with MyAPI + MyApi + Kv + KvOp {\n  MyAPI::greet(MyApi::greet(Kv::op_x(KvOp::x(s))))\n}\n")
   assert(all_distinct(names))
   for wanted in ["MyAPI::greet", "MyApi::greet", "Kv::op_x", "KvOp::x"] {
     let mut found = false
@@ -54,4 +54,20 @@ test "extern effects differing in case or by a prefix bind apart" {
     }
     assert(found)
   }
+}
+
+fn has_name(names: Array[String], wanted: String) -> Bool {
+  let mut found = false
+  for name in names {
+    if name == wanted {
+      found = true
+    }
+  }
+  found
+}
+
+test "#4082: an extern operation nothing calls gets no binding" {
+  let names = bound_names("extern effect Kv {\n  get(String) -> String\n  put(String, String) -> Unit\n}\n\nfn read(k: String) -> String with Kv {\n  Kv::get(k)\n}\n")
+  assert(has_name(names = names, wanted = "Kv::get"))
+  assert(!has_name(names = names, wanted = "Kv::put"))
 }

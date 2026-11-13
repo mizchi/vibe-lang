@@ -93,6 +93,12 @@ expect_fail "a different not-granted optional answer" "extern_greeter_optional_m
 fresh; mutate extern_greeter_optional_debug_main.vibex 'println("granted: \{s}")' 'println("grantedx \{s}")'
 expect_fail "a different instrumented-build optional answer" "extern_greeter_optional_debug_main printed grantedx"
 
+# 6g. The optional grade in a test is checked by its answer, both ways.
+fresh; mutate extern_greeter_optional_test.vibe 'content = "nobody"' 'content = "nobody!"'
+expect_fail "an optional test expecting another unbound answer" "extern_greeter_optional_test failed with no provider bound"
+fresh; mutate extern_greeter_optional_provided_test.vibe 'content = "hi, test"' 'content = "hi, tests"'
+expect_fail "an optional test expecting another provider answer" "extern_greeter_optional_provided_test failed with a provider bound"
+
 # 6d. A test that reads another answer than the provider gives fails, so the
 #     `vibe test --provide` row checks the test ran against the provider.
 fresh; mutate extern_greeter_test.vibe 'content = "hi, test"' 'content = "hi, tests"'
@@ -112,4 +118,4 @@ expect_fail "a different narrow-width answer" "narrow_import_test failed"
 fresh; mutate trap_component_u8_range.vibex "inc8(300)" "inc8(200)"
 expect_fail "a u8 refusal that does not fire" "a u8 argument outside 0 .. 255 was accepted"
 
-echo "[wasm-import-gate-test] ok (14 cases)"
+echo "[wasm-import-gate-test] ok (16 cases)"

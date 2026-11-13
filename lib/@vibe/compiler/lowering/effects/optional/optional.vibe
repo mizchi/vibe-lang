@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  EffectOwner, Expr, Pat, Stmt, expr_any_node, lookup_registry_builtin, program_declares_extern_effect
+  EffectOwner, Expr, Pat, Stmt, expr_any_node, lookup_registry_builtin, program_declares_extern_effect, program_extern_effect_names
 }
 
 import @vibe/core {
@@ -147,19 +147,49 @@ fn opq_contains_source_test_like(_ stmts: Array[Stmt]) -> Bool {
 }
 
 /// Resolve authority once for the whole compiled artifact. A `__no_entry__`
-/// artifact containing test-like blocks has ambient full authority, including
-/// every top-level helper those blocks can reach. Other non-interactive
-/// artifacts keep the caller's fail-closed resolution table. The GC source
-/// pipeline passes `generated_test_artifact = true` from the actual STest /
-/// SBench lowering result; user-controlled `__test_` names carry no authority.
+/// artifact containing test-like blocks has ambient full authority over the
+/// standard providers, including every top-level helper those blocks can
+/// reach. An `extern effect` is the exception (#4082): its grant is a bound
+/// provider, so a test artifact grants it only through the caller's table --
+/// the rows `vibe test --provide` adds -- and answers `NotGranted` otherwise,
+/// rather than importing an operation no runner can link. Other
+/// non-interactive artifacts keep the caller's fail-closed resolution table.
+/// The GC source pipeline passes `generated_test_artifact = true` from the
+/// actual STest / SBench lowering result; user-controlled `__test_` names
+/// carry no authority.
 export fn optional_perform_artifact_resolution(stmts: Array[Stmt], entry_name: String, generated_test_artifact: Bool, resolution: Array[(String, String)]) -> Array[(String, String)] {
   let source_test_artifact = entry_name == "__no_entry__" && opq_contains_source_test_like(stmts)
   let gc_lowered_test_artifact = entry_name == "_start" && generated_test_artifact
   if source_test_artifact || gc_lowered_test_artifact {
-    [("*", "Granted")]
+    // `opq_resolution` reads the last matching row, so the caller's grants
+    // come after the extern effects' denials.
+    let out: Array[(String, String)] = [("*", "Granted")]
+    for effect in opq_extern_effect_names(stmts) {
+      Array::push(out, value = (effect, "NotGranted"))
+    }
+    for row in resolution {
+      Array::push(out, value = row)
+    }
+    out
   } else {
     resolution
   }
+}
+
+/// Every `extern effect` of the program: the declarations still in `stmts`
+/// (the whole-program route resolves before `bind_extern_effects`) and the
+/// ones that pass has already bound (the split route).
+fn opq_extern_effect_names(_ stmts: Array[Stmt]) -> Array[String] {
+  let names: Array[String] = []
+  opq_collect_source_value_names(stmts = stmts, names = names)
+  let out = program_extern_effect_names()
+  let marker = opq_extern_effect_entry("")
+  for name in names {
+    if String::starts_with(name, prefix = marker) {
+      Array::push(out, value = String::substring(name, start = String::length(marker), end = String::length(name)))
+    }
+  }
+  out
 }
 
 fn opq_expr_array(items: Array[Expr], resolution: Array[(String, String)], source_names: Array[String]) -> Array[Expr] with Exception {

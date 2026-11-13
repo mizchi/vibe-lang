@@ -235,6 +235,8 @@ fn extern_lowered_binding(resolution: Array[(String, String)], bound: Bool) -> E
     set_program_extern_effects([])
   }
   lower_optional_performs(stmts = stmts, resolution = resolution)
+  // Leave no record behind for a later compile in this instance.
+  set_program_extern_effects([])
   let mut found: Option[Expr] = None
   for stmt in stmts {
     match stmt {
@@ -277,4 +279,32 @@ test "#4082: a bound provider grants an extern effect's optional operation" allo
   assert(extern_granted(extern_lowered_binding(resolution = [
     ("Greeter", "Granted")
   ], bound = true)))
+}
+
+/// The `try_greet` helper's value after a TEST artifact's resolution and the
+/// optional lowering, with `provided` as the launcher's rows.
+fn extern_test_helper_value(_ provided: Array[(String, String)]) -> Expr with Exception {
+  set_program_extern_effects([])
+  let stmts = parse_program(lex("extern effect Greeter {\n  greet(String) -> String\n}\n\nfn try_greet() -> Int with Greeter? {\n  let result = perform? Greeter::greet(\"x\")\n  0\n}\n\ntest \"t\" allows Greeter? {\n  let _ = try_greet()\n}\n"))
+  let resolution = optional_perform_artifact_resolution(stmts = stmts, entry_name = "__no_entry__", generated_test_artifact = false, resolution = provided)
+  lower_optional_performs(stmts = stmts, resolution = resolution)
+  let mut found: Option[Expr] = None
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, "try_greet", _, EFn(_, _, _, _, _, ELet("result", value, _, _))) => found = Some(value),
+      _ => ()
+    }
+  }
+  match found {
+    Some(value) => value,
+    None => throw("expected the parsed try_greet binding")
+  }
+}
+
+test "#4082: a test artifact's ambient grant leaves out extern effects" allows Exception {
+  assert(extern_not_granted(extern_test_helper_value([])))
+}
+
+test "#4082: a test artifact grants an extern effect a provider is bound for" allows Exception {
+  assert(extern_granted(extern_test_helper_value([("Greeter", "Granted")])))
 }

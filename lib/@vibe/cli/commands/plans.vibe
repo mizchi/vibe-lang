@@ -1716,6 +1716,9 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String, 
   } else {
     let expanded = expand_user_test_inputs(files)
     let backend_kind = user_backend_kind("VIBE_TEST_BACKEND")
+    // #4082: a test build grants the standard providers ambiently, and an
+    // `extern effect` only through the provider `--provide` binds.
+    let test_grants = optional_grants_with_providers(grants = no_grants(), provides = provides)
     let acc = StringBuilder::new()
     // With `--provide`, the plan is `run-tests-provide`: the bindings,
     // tab-separated, on line 3 and every other line one further down. The
@@ -1782,14 +1785,14 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String, 
         // `no functions found to compile`, where scripts/vibe_test.sh and the
         // RC default report it `ok ... (no tests found)` (#948).
         let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
-          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta, exports_stripped = false, checked_error_row = checked_error_row)
+          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta, exports_stripped = false, checked_error_row = checked_error_row, grants = test_grants)
         } else {
           if Fs::exists(meta) {
             Fs::remove(meta)
           } else {
             ()
           }
-          compile_user_wasm(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants(), checked_error_row = checked_error_row)
+          compile_user_wasm(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = test_grants, checked_error_row = checked_error_row)
         }
         reject_unstable_closure_surface()
         write_wasm(output_path = out, bytes = bytes)

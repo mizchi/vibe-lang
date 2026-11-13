@@ -52,7 +52,9 @@
 #      without one imports nothing from `vibe:effect:`
 #      (extern_greeter_optional_main.vibex), and `vibe run --trace` /
 #      `--break` answer `Granted` the same way
-#      (extern_greeter_optional_debug_main.vibex).
+#      (extern_greeter_optional_debug_main.vibex), as does a test through
+#      `vibe test --provide`, which without one answers `NotGranted` and runs
+#      (extern_greeter_optional_{,provided_}test.vibe).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -318,6 +320,18 @@ out="$(vibe "$VIBERUN" test --provide Greeter "$FX/extern_greeter_test.vibe" 2>&
 [ "$status" != 0 ] || fail "[viberun] vibe test accepted --provide without <Effect>=<component.wasm>"
 printf '%s\n' "$out" | grep -qF 'test: --provide takes <Effect>=<component.wasm>, got `Greeter`' \
   || { printf '%s\n' "$out" >&2; fail "[viberun] a malformed vibe test --provide is not refused with the spelling that works"; }
+# The optional grade in a test (#4082): a test build grants the standard
+# providers ambiently but an extern effect only through `--provide`, so a
+# test reaching `perform? Greeter::greet(..)` answers `NotGranted` and runs
+# with none bound, and reaches the provider with one.
+status=0
+out="$(vibe "$VIBERUN" test "$FX/extern_greeter_optional_test.vibe" 2>&1)" || status=$?
+[ "$status" = 0 ] || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_test failed with no provider bound"; }
+printf '%s\n' "$out" | grep -qF '1 passed, 0 failed' || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_test did not pass its test block"; }
+status=0
+out="$(vibe "$VIBERUN" test --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_optional_provided_test.vibe" 2>&1)" || status=$?
+[ "$status" = 0 ] || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_provided_test failed with a provider bound"; }
+printf '%s\n' "$out" | grep -qF '1 passed, 0 failed' || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_optional_provided_test did not pass its test block"; }
 # A trailing `--provide` with no value is refused on the parallel path too
 # (`--jobs 2` with two files splits into shares, which must not drop it).
 status=0
