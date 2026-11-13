@@ -43,6 +43,23 @@ async function refuseUnrelatedTrace(trace, kind) {
   }
 }
 
+// A compile error the image reported itself: it already framed it as the
+// serial `vibe build` does (`error: ` per diagnostic, located), so the
+// frontend prints it as it is instead of wrapping it as a crash (#2826).
+function compileDiagnostic(text) {
+  const e = new Error(text);
+  e.diagnostic = text.endsWith("\n") ? text : `${text}\n`;
+  return e;
+}
+
+// How each frontend reports a failure: a compile diagnostic as the image
+// framed it, anything else as a failure of the named build route.
+export function reportFailure(route, e) {
+  if (e.diagnostic) process.stderr.write(e.diagnostic);
+  else console.error(`build --jobs ${route}: ${e.message}`);
+  process.exitCode = 1;
+}
+
 function run(runner, image, cwd, env, returningFunctions = false) {
   return new Promise((yes, no) => {
     const child = spawn(runner, returningFunctions ? ["--function-phases", image] : [image], { cwd, detached: true,
@@ -62,7 +79,8 @@ function run(runner, image, cwd, env, returningFunctions = false) {
     child.on("error", e => { cleanup(); no(e); });
     child.on("close", (code, signal) => {
       cleanup();
-      if (code !== 0) no(new Error(`lowering ${image} exited ${code ?? signal}: ${stderr}`));
+      if (code === 1 && stderr.startsWith("error: ")) no(compileDiagnostic(stderr));
+      else if (code !== 0) no(new Error(`lowering ${image} exited ${code ?? signal}: ${stderr}`));
       else yes(stdout.trim());
     });
   });
@@ -172,5 +190,5 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [compiler, input, output, entry, count, root, artifacts, runner] = process.argv.slice(2);
   buildTaskGroupLowering({ compiler, input, output, entry, jobs: Number(count), root, artifacts, runner })
-    .catch(e => { console.error(`build --jobs lowering: ${e.message}`); process.exitCode = 1; });
+    .catch(e => reportFailure("lowering", e));
 }
