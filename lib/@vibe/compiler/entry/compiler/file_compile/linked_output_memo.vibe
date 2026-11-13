@@ -333,20 +333,20 @@ fn lom_push_text(buf: Bytes, text: String) -> Unit {
 }
 
 /// The module stored for exactly this identity, if there is one.
-export fn linked_output_memo_lookup(lane: String, entry_path: String, entry_name: String, identity: String) -> Option[Bytes] with Env + Exception + Fs {
-  match load_persistent_artifact(kind = "linked-output-memo", entry_name = entry_name, fingerprint = lom_slot(lane = lane, entry_path = entry_path)) {
+export fn linked_output_memo_lookup(lane: String, entry_path: String, entry_name: String, identity: String, checked_error_row: Bool) -> Option[Bytes] with Env + Exception + Fs {
+  match load_persistent_artifact(kind = "linked-output-memo", entry_name = entry_name, fingerprint = lom_slot(lane = lane, entry_path = entry_path), checked_error_row = checked_error_row) {
     Some(stored) => lom_decode(stored = stored, identity = identity),
     None => None
   }
 }
 
 /// Replace this root's slot with `wasm` under `identity`.
-export fn linked_output_memo_store(lane: String, entry_path: String, entry_name: String, identity: String, wasm: Bytes) -> Unit with Env + Exception + Fs {
+export fn linked_output_memo_store(lane: String, entry_path: String, entry_name: String, identity: String, wasm: Bytes, checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   let buf = Bytes::new()
   lom_push_text(buf = buf, text = String::concat(__to_string(String::length(identity)), "\n"))
   lom_push_text(buf = buf, text = identity)
   Bytes::append(buf, bytes = wasm)
-  store_persistent_artifact(kind = "linked-output-memo", entry_name = entry_name, fingerprint = lom_slot(lane = lane, entry_path = entry_path), bytes = buf)
+  store_persistent_artifact(kind = "linked-output-memo", entry_name = entry_name, fingerprint = lom_slot(lane = lane, entry_path = entry_path), bytes = buf, checked_error_row = checked_error_row)
 }
 
 /// An observation hook, never an input: the node runner prints every
@@ -363,13 +363,13 @@ fn lom_mark(_ event: String) -> Unit with Env {
 /// throws when a stored module for the same identity differs from the fresh
 /// one -- that would mean the identity is missing an input -- after replacing
 /// the slot with the fresh module, so a later `on` build cannot replay it.
-export fn linked_output_memo_run(mode: String, lane: String, entry_path: String, entry_name: String, identity: String, compile: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
+export fn linked_output_memo_run(mode: String, lane: String, entry_path: String, entry_name: String, identity: String, compile: () -> Bytes with Env + Exception + Fs, checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
   if mode == "off" {
     compile()
   } else {
     // `on` replays what the identity licenses; `verify` checks the licence.
     let replay = mode == "on"
-    let stored = linked_output_memo_lookup(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity)
+    let stored = linked_output_memo_lookup(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity, checked_error_row = checked_error_row)
     match stored {
       Some(bytes) => if replay {
         lom_mark("linked_output_memo_hit")
@@ -381,13 +381,13 @@ export fn linked_output_memo_run(mode: String, lane: String, entry_path: String,
         } else {
           // Replace the slot before refusing: the next build defaults to
           // `on`, and must not replay the module this run just proved wrong.
-          linked_output_memo_store(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity, wasm = fresh)
+          linked_output_memo_store(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity, wasm = fresh, checked_error_row = checked_error_row)
           throw(String::concat("linked-output memo verify: the stored module for ", String::concat(entry_path, " differed from a fresh compile with the same input identity, so the identity is missing an input. The slot now holds the fresh module; set VIBE_LINKED_OUTPUT_MEMO=off to compile without the memo, and report this")))
         }
       },
       None => {
         let fresh = compile()
-        linked_output_memo_store(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity, wasm = fresh)
+        linked_output_memo_store(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity, wasm = fresh, checked_error_row = checked_error_row)
         fresh
       }
     }

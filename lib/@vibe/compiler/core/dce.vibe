@@ -84,7 +84,9 @@ struct DceGraph {
   def_opaque: Array[Bool];
   mut opaque_now: Bool;
   mut opaque_live: Bool;
-  stmt_ids: Array[Int]
+  stmt_ids: Array[Int];
+  // The spelling of each symbol ID, for `dce_statement_refs`.
+  names: Array[String]
 }
 
 fn dce_graph_new(_ capacity: Int) -> DceGraph {
@@ -103,7 +105,8 @@ fn dce_graph_new(_ capacity: Int) -> DceGraph {
     // pushes exactly once per statement, on BOTH arms of the `stmt_name`
     // match (an unnamed statement pushes -1). So this is an exact
     // reservation, not an estimate, and it cannot under-reserve and grow.
-    stmt_ids: Array::with_capacity(capacity)
+    stmt_ids: Array::with_capacity(capacity),
+    names: array_empty()
   }
 }
 
@@ -113,6 +116,7 @@ fn dce_symbol_id(graph: DceGraph, name: String) -> Int {
     None => {
       let id = Array::length(graph.heads)
       MutMap::set(graph.symbols, k = name, v = id)
+      Array::push(graph.names, value = name)
       Array::push(graph.heads, value = -1)
       Array::push(graph.marks, value = 0)
       Array::push(graph.live, value = false)
@@ -566,6 +570,12 @@ fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String]) -> DceGra
     }
     sj = sj + 1
   }
+  dce_graph_reach(graph = graph, queue = queue)
+  graph
+}
+
+/// Follow every definition of each queued symbol, marking what it reaches.
+fn dce_graph_reach(graph: DceGraph, queue: Array[Int]) -> Unit {
   let mut qi = 0
   while qi < Array::length(queue) {
     let id = Array::get(queue, at = qi)
@@ -584,6 +594,91 @@ fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String]) -> DceGra
       di = Array::get(graph.def_next, at = di)
     }
   }
+}
+
+let dce_scratch_graph: Array[DceGraph] = []
+
+/// One statement's share of the reachability graph, by spelling: the
+/// references of its definition (when it names one, `stmt_name`) and whether
+/// that definition is opaque, then the structural references it roots (a
+/// test, bench, expression or pattern `let`) and whether those are. This is
+/// exactly what dce_reachable_graph collects for the statement -- the same
+/// walks, from an empty scope -- so it is a function of the statement alone,
+/// and `dce_keep_flags_from_refs` builds the same graph from it.
+export fn dce_statement_refs(_ stmt: Stmt) -> (Array[String], Bool, Array[String], Bool) {
+  if Array::length(dce_scratch_graph) == 0 {
+    Array::push(dce_scratch_graph, value = dce_graph_new(0))
+  } else ()
+  let graph = Array::get(dce_scratch_graph, at = 0)
+  let bound = array_empty()
+  let (def_names, def_opaque) = match stmt_name(stmt) {
+    Some(_) => {
+      graph.opaque_now = false
+      let ids = dce_definition_refs(graph = graph, stmt = stmt, bound = bound)
+      (dce_ids_names(graph = graph, ids = ids), graph.opaque_now)
+    },
+    None => (array_empty(), false)
+  }
+  graph.opaque_now = false
+  let structural = match stmt {
+    STest(_, expr) => collect_refs(graph = graph, expr = expr, bound = bound),
+    SBench(_, expr) => collect_refs(graph = graph, expr = expr, bound = bound),
+    SExpr(expr) => collect_refs(graph = graph, expr = expr, bound = bound),
+    SLetPat(_, expr) => collect_refs(graph = graph, expr = expr, bound = bound),
+    _ => array_empty()
+  }
+  (def_names, def_opaque, dce_ids_names(graph = graph, ids = structural), graph.opaque_now)
+}
+
+fn dce_ids_names(graph: DceGraph, ids: Array[Int]) -> Array[String] {
+  let out: Array[String] = Array::with_capacity(Array::length(ids))
+  for id in ids {
+    Array::push(out, value = Array::get(graph.names, at = id))
+  }
+  out
+}
+
+/// dce_reachable_graph of `stmts`, from each statement's dce_statement_refs.
+fn dce_reachable_graph_from_refs(stmts: Array[Stmt], entry_names: Array[String], refs: Array[(Array[String], Bool, Array[String], Bool)]) -> DceGraph {
+  let graph = dce_graph_new(Array::length(stmts))
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match stmt_name(Array::get(stmts, at = i)) {
+      Some(name) => {
+        let id = dce_symbol_id(graph = graph, name = name)
+        Array::push(graph.stmt_ids, value = id)
+        let di = Array::length(graph.def_refs)
+        Array::push(graph.def_next, value = Array::get(graph.heads, at = id))
+        Array::set(graph.heads, at = id, value = di)
+        let (def_names, def_opaque, _, _) = Array::get(refs, at = i)
+        dce_refs_begin(graph)
+        let out = array_empty()
+        for nm in def_names {
+          dce_refs_push_once(graph = graph, out = out, name = nm)
+        }
+        Array::push(graph.def_refs, value = out)
+        Array::push(graph.def_opaque, value = def_opaque)
+      },
+      None => Array::push(graph.stmt_ids, value = -1)
+    }
+    i = i + 1
+  }
+  let queue: Array[Int] = []
+  for nm in entry_names {
+    enqueue_reachable(graph = graph, queue = queue, id = dce_symbol_id(graph = graph, name = nm))
+  }
+  let mut sj = 0
+  while sj < Array::length(stmts) {
+    let (_, _, structural, structural_opaque) = Array::get(refs, at = sj)
+    for nm in structural {
+      enqueue_reachable(graph = graph, queue = queue, id = dce_symbol_id(graph = graph, name = nm))
+    }
+    if structural_opaque {
+      graph.opaque_live = true
+    }
+    sj = sj + 1
+  }
+  dce_graph_reach(graph = graph, queue = queue)
   graph
 }
 
@@ -837,7 +932,33 @@ export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry
       }
       rn = rn + 1
     }
-    let graph = dce_reachable_graph(stmts = reach_stmts, entry_names = roots)
+    dce_flags_of_graph(stmts = stmts, graph = dce_reachable_graph(stmts = reach_stmts, entry_names = roots))
+  }
+}
+
+/// dce_keep_flags of `stmts`, from `refs`, each statement's
+/// dce_statement_refs: the same graph, so the same flags, without walking
+/// the statements again.
+export fn dce_keep_flags_from_refs(stmts: Array[Stmt], entry_names: Array[String], refs: Array[(Array[String], Bool, Array[String], Bool)]) -> Array[Bool] {
+  if Array::length(stmts) == 0 {
+    array_empty()
+  } else {
+    // dce_keep_flags_via with `reach_stmts` the statements themselves: every
+    // spelling is one of theirs, so only the impl methods join the roots.
+    let roots = array_empty()
+    for nm in entry_names {
+      Array::push(roots, value = nm)
+    }
+    for nm in dce_impl_method_roots(stmts) {
+      Array::push(roots, value = nm)
+    }
+    dce_flags_of_graph(stmts = stmts, graph = dce_reachable_graph_from_refs(stmts = stmts, entry_names = roots, refs = refs))
+  }
+}
+
+fn dce_flags_of_graph(stmts: Array[Stmt], graph: DceGraph) -> Array[Bool] {
+  let flags = array_empty()
+  {
     let mut preserve_all = graph.opaque_live
     let mut m = 0
     while m < Array::length(stmts) {

@@ -337,7 +337,7 @@ test "a target with an optional parameter keeps the callback indirect" {
 let callback_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn use1(ctx: Ctx) -> Int {\n  ctx.n + 1\n}\n\nfn walk(ctx: Ctx, k: Int) -> Int {\n  if k > 0 {\n    step(ctx = ctx, k = k - 1, cb = walk) + use1(ctx = ctx)\n  } else {\n    0\n  }\n}\n\nfn step(ctx: Ctx, k: Int, cb: (Ctx, Int) -> Int) -> Int {\n  cb(ctx, k) + cb(ctx, k)\n}\n\nexport fn main() -> Int {\n  let cx = Ctx::{ n: 1, xs: [1, 2] }\n  walk(ctx = cx, k = 3)\n}\n"
 
 test "rc-plan takes no dup of a context only a known callback reads" {
-  let plan = rc_plan_source(source = callback_prelude, fn_filter = "")
+  let plan = rc_plan_source(source = callback_prelude, fn_filter = "", checked_error_row = false)
   assert(!String::contains(plan, needle = "step ctx dup"))
   assert(!String::contains(plan, needle = "walk ctx dup"))
   // `walk` is still passed as a value, so it keeps an owning thunk for that.
@@ -349,7 +349,7 @@ test "rc-plan takes no dup of a context only a known callback reads" {
 let two_callback_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn use1(ctx: Ctx) -> Int {\n  ctx.n + 1\n}\n\nfn use2(ctx: Ctx, k: Int) -> Int {\n  ctx.n + k\n}\n\nfn walk(ctx: Ctx, k: Int) -> Int {\n  if k > 0 {\n    step(ctx = ctx, k = k - 1, cb = walk) + use1(ctx = ctx)\n  } else {\n    0\n  }\n}\n\nfn step(ctx: Ctx, k: Int, cb: (Ctx, Int) -> Int) -> Int {\n  cb(ctx, k) + cb(ctx, k)\n}\n\nexport fn main() -> Int {\n  let cx = Ctx::{ n: 1, xs: [1, 2] }\n  walk(ctx = cx, k = 3) + step(ctx = cx, k = 1, cb = use2)\n}\n"
 
 test "rc-plan keeps the dup when the callback can be either of two functions" {
-  let plan = rc_plan_source(source = two_callback_prelude, fn_filter = "")
+  let plan = rc_plan_source(source = two_callback_prelude, fn_filter = "", checked_error_row = false)
   assert(String::contains(plan, needle = "step ctx dup"))
 }
 

@@ -69,3 +69,84 @@ test "a recursive callback that stores its element outside is refused" {
   let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let rec walk = (c) -> {\n      Array::push(sink, value = c)\n      let _ = Array::map([c], f = (d) -> walk(d))\n      0\n    }\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n"
   assert(String::contains(check_source_report(src), needle = "region escapes its scope: a container write stores a value that captures this region"))
 }
+
+// #4049: a callback that is not a closure literal was not checked again at
+// all, and `Array::fold`'s accumulator was checked as a local. Measured on
+// the #4047 branch, each of these checked clean and the region value outlived
+// its region; the same call in a loop body was refused.
+
+let stash_helper = "let kept: Array[MutList[Int]] = []\nfn stash(c: MutList[Int]) -> Int {\n  Array::push(kept, value = c)\n  0\n}\n"
+
+test "a top-level function handed by name is refused by its body" {
+  let src = String::concat(stash_helper, "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = stash)\n    0\n  }\n}\n")
+  inspect(check_source_report(src), content = "region escapes its scope: this call to `stash` stores a value that captures this region into an outer binding")
+}
+
+test "a let alias of a top-level function and a filter by name are refused too" {
+  let src = String::concat(stash_helper, "fn keeps(c: MutList[Int]) -> Bool {\n  Array::push(kept, value = c)\n  true\n}\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let s = stash\n    let _ = Array::map(cells, f = s)\n    let _ = Array::filter(cells, f = keeps)\n    0\n  }\n}\n")
+  let report = check_source_report(src)
+  assert(String::contains(report, needle = "this call to `s` stores a value that captures this region"))
+  assert(String::contains(report, needle = "this call to `keeps` stores a value that captures this region"))
+}
+
+test "a function parameter handed to a callback builtin inside the region is refused" {
+  let src = "fn build(cb: (MutList[Int]) -> Int) -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, f = cb)\n    0\n  }\n}\n"
+  inspect(check_source_report(src), content = "region escapes its scope: this call passes a value that captures this region to `cb`, a function whose body the checker cannot see, so it may keep the value after the region ends")
+}
+
+test "a push into the fold accumulator is a write of the binding it started as" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::fold(cells, init = sink, f = (acc, c) -> {\n      Array::push(acc, value = c)\n      acc\n    })\n    0\n  }\n}\n"
+  inspect(check_source_report(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+}
+
+test "a captured region value pushed into the fold accumulator is refused even over plain elements" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cell = MutList::empty(r)\n    let _ = Array::fold([1, 2], init = sink, f = (acc, x) -> {\n      Array::push(acc, value = cell)\n      acc\n    })\n    0\n  }\n}\n"
+  inspect(check_source_report(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+}
+
+test "a named callback that keeps nothing and a fold over plain values are fine" {
+  let src = "fn size(c: MutList[Int]) -> Int {\n  MutList::length(c)\n}\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = size)\n    Array::fold([1, 2], init = Array::get(got, at = 0), f = (acc, x) -> acc + x)\n  }\n}\n"
+  assert(check_source_ok(src))
+}
+
+test "a recursive top-level function handed by name is re-checked once per shape" {
+  let walk = "fn walk(c: MutList[Int]) -> Int {\n  let _ = Array::map([c], f = walk)\n  MutList::length(c)\n}\n"
+  let src = String::concat(walk, "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n")
+  assert(check_source_ok(src))
+  let keeps = "let kept: Array[MutList[Int]] = []\nfn walk(c: MutList[Int]) -> Int {\n  Array::push(kept, value = c)\n  let _ = Array::map([c], f = walk)\n  0\n}\n"
+  let refused = String::concat(keeps, "fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let got = Array::map(cells, f = walk)\n    Array::length(got)\n  }\n}\n")
+  assert(String::contains(check_source_report(refused), needle = "this call to `walk` stores a value that captures this region"))
+}
+
+// #4050: an element callback's parameter is an element of the receiver, so
+// over a container declared outside the region it is an alias of that
+// container, as `Array::get(boxes, at = 0)` is.
+let outer_boxes = "  let outer: Array[MutList[Int]] = []\n  let boxes = [outer]\n"
+
+test "a region value written into an element of an outer container by a callback is refused" {
+  let map_src = String::concat("fn build() -> Int {\n", String::concat(outer_boxes, "  region r {\n    let cell = MutList::empty(r)\n    let _ = Array::map(boxes, f = (a) -> {\n      Array::push(a, value = cell)\n      0\n    })\n    0\n  }\n}\n"))
+  inspect(check_source_report(map_src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+  let fold_src = String::concat("fn build() -> Int {\n", String::concat(outer_boxes, "  region r {\n    let cell = MutList::empty(r)\n    Array::fold(boxes, init = 0, f = (acc, a) -> {\n      Array::push(a, value = cell)\n      acc\n    })\n  }\n}\n"))
+  inspect(check_source_report(fold_src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+}
+
+test "a callback that only reads an outer container's elements, or fills an inner one, is fine" {
+  let src = "fn build() -> Int {\n  let outer: Array[Int] = []\n  let boxes = [outer]\n  region r {\n    let cell = MutList::empty(r)\n    let sizes = Array::map(boxes, f = (a) -> {\n      Array::push(a, value = MutList::length(cell))\n      Array::length(a)\n    })\n    let inner: Array[MutList[Int]] = []\n    let _ = Array::map([inner], f = (b) -> {\n      Array::push(b, value = cell)\n      0\n    })\n    Array::get(sizes, at = 0)\n  }\n}\n"
+  assert(check_source_ok(src))
+}
+
+// Codex on #4057: a fold accumulator, or an element of an outer container,
+// counts as an alias of an outer binding only where its type can hold a
+// region value. A `let mut` callback over scalars is not refused as
+// untraceable: nothing of the region can cross it.
+test "a mutable callback over scalars is not refused for its accumulator or outer elements" {
+  let fold_src = "fn build() -> Int {\n  region r {\n    let cell = MutList::empty(r)\n    let mut add = (a: Int, b: Int) -> a + b\n    add = (a: Int, b: Int) -> a + b + 0\n    Array::fold([1, 2], init = MutList::length(cell), f = add)\n  }\n}\n"
+  assert(check_source_ok(fold_src))
+  let map_src = "fn build() -> Int {\n  let pre: Array[Int] = [1, 2]\n  region r {\n    let cell = MutList::empty(r)\n    let mut inc = (x: Int) -> x + 1\n    inc = (x: Int) -> x + 2\n    let got = Array::map(pre, f = inc)\n    Array::get(got, at = 1) + MutList::length(cell)\n  }\n}\n"
+  assert(check_source_ok(map_src))
+}
+
+test "a mutable callback over an accumulator that can hold region values is still refused" {
+  let src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let mut keep = (acc: Array[MutList[Int]], c: MutList[Int]) -> acc\n    keep = (acc: Array[MutList[Int]], c: MutList[Int]) -> acc\n    let _ = Array::fold(cells, init = sink, f = keep)\n    0\n  }\n}\n"
+  assert(String::contains(check_source_report(src), needle = "bind `keep` to the closure with `let`"))
+}

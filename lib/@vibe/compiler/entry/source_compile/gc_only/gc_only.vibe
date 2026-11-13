@@ -183,7 +183,7 @@ fn gc_top_level_declares(stmts: Array[Stmt], name: String) -> Bool {
 /// compiled `export { NotDeclaredAnywhere }` while every FS lane refused), and
 /// a compiler-GENERATED statement graph must not be validated because merging
 /// renames its declarations while the export list keeps its written spelling.
-fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_offset_spaces: Bool, validate_exports: Bool, exports_stripped: Bool) -> Bytes with Exception {
+fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_offset_spaces: Bool, validate_exports: Bool, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {
   expand_interp_only(stmts)
   // #683: lower test/bench blocks BEFORE the check so the synthesized
   // `__test_*` lets and the no-entry `_start` runner are type-checked like
@@ -207,7 +207,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // rewriting both is correct).
   let previous_test_names = swap_lowered_test_block_names(lowered_test_names)
   let observed = handle {
-    check_program_scalar_lowering_observation(stmts)
+    check_program_scalar_lowering_observation(stmts, checked_error_row = checked_error_row)
   } with { Exception::Throw(message) => {
     swap_lowered_test_block_names(previous_test_names)
     throw(message)
@@ -307,7 +307,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   gc_prune_unreachable_functions(mod_bytes = emitted, entry_name = effective_entry)
 }
 
-fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_generated: Bool, exports_stripped: Bool) -> Bytes with Exception {
+fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_generated: Bool, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {
   gc_merged_offset_space_reset()
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
@@ -316,20 +316,20 @@ fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_gener
   } else {
     ()
   }
-  compile_stmts_gc_only_impl(stmts = stmts, entry_name = entry_name, merged_offset_spaces = false, validate_exports = !trusted_generated, exports_stripped = exports_stripped)
+  compile_stmts_gc_only_impl(stmts = stmts, entry_name = entry_name, merged_offset_spaces = false, validate_exports = !trusted_generated, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
 }
 
-export fn compile_source_gc_only(source: String, entry_name: String, exports_stripped: Bool) -> Bytes with Exception {
-  compile_source_gc_only_impl(source = source, entry_name = entry_name, trusted_generated = false, exports_stripped = exports_stripped)
+export fn compile_source_gc_only(source: String, entry_name: String, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {
+  compile_source_gc_only_impl(source = source, entry_name = entry_name, trusted_generated = false, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
 }
 
-export fn compile_generated_source_gc_only(source: String, entry_name: String, exports_stripped: Bool) -> Bytes with Exception {
-  compile_source_gc_only_impl(source = source, entry_name = entry_name, trusted_generated = true, exports_stripped = exports_stripped)
+export fn compile_generated_source_gc_only(source: String, entry_name: String, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {
+  compile_source_gc_only_impl(source = source, entry_name = entry_name, trusted_generated = true, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
 }
 
 /// Compile an import-resolved, compiler-generated statement graph without a
 /// source round trip. Module merging may use internal identifier spellings
 /// that are valid in the AST but deliberately not accepted by the user lexer.
-export fn compile_generated_stmts_gc_only(stmts: Array[Stmt], entry_name: String, exports_stripped: Bool) -> Bytes with Exception {
-  compile_stmts_gc_only_impl(stmts = stmts, entry_name = entry_name, merged_offset_spaces = true, validate_exports = false, exports_stripped = exports_stripped)
+export fn compile_generated_stmts_gc_only(stmts: Array[Stmt], entry_name: String, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {
+  compile_stmts_gc_only_impl(stmts = stmts, entry_name = entry_name, merged_offset_spaces = true, validate_exports = false, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
 }

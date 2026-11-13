@@ -1,0 +1,98 @@
+//# The slot stamp's pre-checks, bounded by statement facts (#4040)
+//
+// edp_stamp_slot_rows asks three pre-checks of every statement. The
+// statement facts (edp_slot_facts_stmt) say where each could hit, and
+// edp_stamp_prechecks_hit asks a pre-check only there. These statements --
+// one per way a pre-check hits, and ones none of them hits -- pin that the
+// bounded answer is the pre-checks' own.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_expr_builds_row_field,
+  edp_expr_passes_literal_arg,
+  edp_expr_passes_value_to_slot,
+  edp_name_set,
+  edp_note_program_aliases,
+  edp_note_row_field_structs,
+  edp_slot_facts_stmt,
+  edp_stamp_prechecks_hit
+}
+
+fn call(name: String, args: Array[Expr]) -> Expr {
+  ECall(EIdent(name, -1), args, -1, [])
+}
+
+fn lam(_ body: Expr) -> Expr {
+  EFn([], [], [("x", None)], None, None, body)
+}
+
+fn top(name: String, body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [], None, None, body))
+}
+
+fn body_of(_ stmt: Stmt) -> Expr {
+  match stmt {
+    SLet(_, _, _, _, e) => e,
+    SExpr(e) => e,
+    _ => EInt(0)
+  }
+}
+
+/// "agree:<answer>" when the bounded answer is the pre-checks' own.
+fn bounded(stmts: Array[Stmt], i: Int, pure_names: MutSet[String], slot_callees: MutSet[String]) -> String {
+  let stmt = Array::get(stmts, at = i)
+  let e = body_of(stmt)
+  let exact = edp_expr_passes_literal_arg(e = e, pure_names = pure_names, stmts = stmts) || edp_expr_passes_value_to_slot(e = e, slot_callees = slot_callees) || edp_expr_builds_row_field(e)
+  let from_facts = edp_stamp_prechecks_hit(e = e, facts = edp_slot_facts_stmt(stmt), pure_names = pure_names, slot_callees = slot_callees, stmts = stmts)
+  if exact == from_facts {
+    String::concat("agree:", if exact {
+      "hit"
+    } else {
+      "miss"
+    })
+  } else {
+    "DISAGREE"
+  }
+}
+
+test "the bounded pre-checks answer what the pre-checks answer" {
+  let row_ty: TypeExpr = TyFn([], TyName("Int"), Some("Ask"))
+  let stmts = [
+    // 0: a row-free lambda passed to a call.
+    top(name = "a", body = call(name = "run", args = [lam(EInt(1))])),
+    // 1: a row-free top-level function passed by name.
+    top(name = "b", body = call(name = "run", args = [EIdent("pure_fn", -1)])),
+    // 2: a name that is no row-free function: no pre-check hits.
+    top(name = "c", body = call(name = "run", args = [EIdent("other", -1)])),
+    // 3: a value passed to a slot callee.
+    top(name = "d", body = call(name = "slotted", args = [EIdent("h", -1)])),
+    // 4: a `let`-bound lambda.
+    top(name = "e", body = ELet("f", lam(EInt(0)), call(name = "f", args = [
+      EInt(1)
+    ]), -1)),
+    // 5: a lambda returning a closure at a declared row.
+    SLet(false, false, "g", None, EFn([], [], [], Some(row_ty), None, EInt(0))),
+    // 6: arithmetic only.
+    top(name = "k", body = EBinOp("+", EInt(1), EInt(2), -1)),
+    SExpr(EInt(0))
+  ]
+  edp_note_program_aliases(stmts)
+  edp_note_row_field_structs(stmts)
+  let pure_names = edp_name_set(["pure_fn"])
+  let slot_callees = edp_name_set(["slotted"])
+  let answers: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(answers, value = bounded(stmts = stmts, i = i, pure_names = pure_names, slot_callees = slot_callees))
+    i = i + 1
+  }
+  inspect(String::join(answers, sep = " "), content = "agree:hit agree:hit agree:miss agree:hit agree:hit agree:hit agree:miss agree:miss")
+  // With no slot callee, the value passed at 3 no longer reaches one.
+  inspect(bounded(stmts = stmts, i = 3, pure_names = pure_names, slot_callees = edp_name_set([
+  ])), content = "agree:miss")
+}

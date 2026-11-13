@@ -39,7 +39,7 @@ import @vibe/compiler/normalize {
 fn checked_placement_rows(_ source: String) -> Array[Int] with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
-  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = EnvEmpty)
+  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = EnvEmpty, checked_error_row = false)
   match rows {
     Some(found) => found,
     None => call_placement_checked_rows()
@@ -163,7 +163,7 @@ test "recursive group generalization retains call placement headers" {
 
 fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> String with Env + Fs + Exception {
   let path = "/tmp/vibe_call_placement_cache_guard.vibe"
-  set_checked_module_cache_mode("on")
+  set_checked_module_cache_mode("on", checked_error_row = false)
   let artifacts: Array[CheckedModuleArtifact] = []
   let job = CheckJob::{
     path,
@@ -171,7 +171,8 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
     deps: [],
     dep_fps: [],
     dep_envs: [],
-    ships_owned_heads: false
+    ships_owned_heads: false,
+    checked_error_row: false
   }
   let _ = engine_check_module_impl(job = job, observe_typing_artifact = false, program_transport = None, artifact_output = Some((Bytes::from_array([
     7
@@ -197,11 +198,11 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
   } else {
     ()
   }
-  commit_checked_module_artifact(path = path, source = source, artifact = artifact, fresh = false)
+  commit_checked_module_artifact(path = path, source = source, artifact = artifact, fresh = false, checked_error_row = false)
   module_typed_lowering_memo_reset()
   module_typed_lowering_memo_put(path = path, fingerprint = "placement-cache-guard", offsets = rows, eq_offs = artifact.eq_offsets, eq_keys = artifact.eq_keys)
   module_typed_lowering_bind_source(path = path, fingerprint = "placement-cache-guard", source = source)
-  let parsed = parse_program_with_path(path = path, source = source)
+  let parsed = parse_program_with_path(path = path, source = source, checked_error_row = false)
   assert(checked_module_cache_stats().2 > 0)
   let message = handle {
     desugar_trait_dicts_with_typed_eq(stmts = parsed, typed_eq_offsets = [], typed_eq_keys = [
@@ -220,7 +221,7 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
     assert(found)
     ""
   } with { Exception::Throw(message) => message }
-  set_checked_module_cache_mode("off")
+  set_checked_module_cache_mode("off", checked_error_row = false)
   message
 }
 
@@ -256,7 +257,7 @@ test "qualified optional placement does not infer a receiver from arity" {
     let source = "fn main() -> Int { " + call + " }"
     let (tokens, starts, _) = lex_with_offsets(source)
     let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
-    let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = env)
+    let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = env, checked_error_row = false)
     match rows {
       Some(_) => (),
       None => assert(false)
@@ -277,7 +278,7 @@ test "lowering consumes an imported placement without a syntactic header" {
   let source = "fn main() -> Int { f(y = 3, x = 10) }"
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
-  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = env)
+  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = env, checked_error_row = false)
   match rows {
     Some(found) => assert(lowering_message(source = source, rows = found, expand_inspect = false) == ""),
     None => assert(false)
