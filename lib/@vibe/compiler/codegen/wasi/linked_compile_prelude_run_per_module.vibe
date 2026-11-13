@@ -38,7 +38,7 @@ import ./prelude_module_batch.vibe {
 
 import @vibe/compiler/normalize {
   ModuleTraitFacts,
-  bind_extern_effects_owned,
+  bind_extern_effects_live,
   collect_explicit_derived_op_names,
   collect_trivial_wrapper_names,
   desugar_handled_host_calls,
@@ -59,6 +59,7 @@ import @vibe/compiler/normalize {
   eq_mint_deferred_into,
   eq_synthesis_requests_list,
   eq_typed_refusals_list,
+  extern_operations_referenced,
   unbox_tuple_loop_params
 }
 
@@ -559,6 +560,34 @@ export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, 
   effect_lowering_prelude_split_grants(stmts = stmts, entry_name = entry_name, linked_imports = linked_imports, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, split = split, render = render, grants = array_empty(), exports_stripped = false)
 }
 
+/// #4082: the `extern effect` operations the program still calls once its
+/// `perform?`s are resolved against `grants`, as this prelude resolves them
+/// below. The resolution runs on a copy: the split run lowers `perform?`
+/// per module, and this only asks which calls survive it.
+fn lc_extern_operations_live(stmts: Array[Stmt], entry_name: String, grants: Array[(String, String)]) -> Array[String] with Exception {
+  let referenced = extern_operations_referenced(stmts)
+  if Array::length(referenced) == 0 {
+    referenced
+  } else {
+    let copy = lc_copy_stmts_deep(stmts)
+    lower_optional_performs(stmts = copy, resolution = optional_perform_artifact_resolution(stmts = copy, entry_name = entry_name, generated_test_artifact = false, resolution = grants))
+    extern_operations_referenced(copy)
+  }
+}
+
+/// A copy the optional lowering may rewrite in place: it sets statements of
+/// the array it is handed and of every `module` body.
+fn lc_copy_stmts_deep(_ stmts: Array[Stmt]) -> Array[Stmt] {
+  let out: Array[Stmt] = []
+  for stmt in stmts {
+    match stmt {
+      SModule(exported, name, body) => Array::push(out, value = SModule(exported, name, lc_copy_stmts_deep(body))),
+      other => Array::push(out, value = other)
+    }
+  }
+  out
+}
+
 /// The split prelude past the whole-program zero-allocation check, which its
 /// caller has already run.
 fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)], exports_stripped: Bool) -> Array[String] with Exception {
@@ -567,7 +596,9 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
     // `extern effect`, and a module's run does not reach it, so it happens
     // here, on the whole program, before the partition. Each binding keeps
     // its declaration's module in `stmt_file_id`.
-    bind_extern_effects_owned(stmts = stmts, owners = split.stmt_file_id)
+    // #4082: only the operations still called once `perform?` is resolved
+    // are bound; one whose every call answers `NotGranted` is not imported.
+    bind_extern_effects_live(stmts = stmts, owners = split.stmt_file_id, live = lc_extern_operations_live(stmts = stmts, entry_name = entry_name, grants = grants))
     let link = prelude_link_state_new()
     // THE WHOLE-PROGRAM FACTS, taken here -- before the program is partitioned
     // and while it is still the program (#2647 Codex round 3). Each one is a

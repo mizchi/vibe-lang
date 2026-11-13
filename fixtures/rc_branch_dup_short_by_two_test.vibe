@@ -1,28 +1,36 @@
-// RC leak guard: a path that skips two or more of a branch's consumes
-// releases every dup it holds, not one.
+// RC leak guard: a path drop releases every dup the path still holds.
 //
 // A plain `let`'s or a parameter's planned dups are taken at its declaration
 // (a parameter's at function entry), on every path. pe_dup_merge budgets a
-// branch's larger arm, marks that arm's occurrences, and gives the binding a
-// guarded path drop for the paths that ran none of them (#1980). That drop
-// released ONE reference, so `if c { sink(v) + sink(v) } else { 0 }`
-// leaked one dup on every call that took the `else`: the path held two.
+// branch's larger arm and gives the binding a path drop for the references
+// a path holds but will not consume (#1980). That drop first released ONE
+// reference, so `if c { sink(v) + sink(v) } else { 0 }` leaked one dup on
+// every call that took the `else`. It then released `M - S`, `M` the larger
+// arm's consumes and `S` the most a smaller arm has, on every path that ran
+// none of the larger arm's marks -- a boolean flag, set by any mark. That
+// still leaked on a `match` whose arms consume 2, 1 and 0 (the `0` path held
+// two), on `if` / `else if` / `else` of the same, and on two merges in
+// sequence that each consume on one arm (a path through one consume ran a
+// mark and released nothing, holding the other merge's dup).
 //
-// The drop now releases `M - S` references, `M` the larger arm's consumes
-// and `S` the most a smaller arm has, the least over the binding's merges:
-// what every path that ran no mark still holds.
+// Every occurrence a dup was planned for is a mark now, the flag counts the
+// marks a path ran, and the drop is one row per dup row the marks track: a
+// path releases exactly what it did not consume.
 //
-// Measured at N=20000 on the compiler before this change:
+// Measured at N=20000, each shape alone, on the compiler before the change
+// that fixed it (one release, then `M - S` on an unmarked path):
 //
 //   | shape                                          |      before |   after |
 //   |------------------------------------------------|------------:|--------:|
 //   | `let`, two consumes against none               |   880,020 B |   112 B |
 //   | parameter, two consumes against none           |   880,020 B |   112 B |
-//   | this fixture, with its controls                | 6,162,004 B | 1,564 B |
+//   | `match` arms consuming 2, 1 and 0, `let`       |   586,716 B |   112 B |
+//   | the same, a parameter                          |   586,716 B |   112 B |
+//   | `if` / `else if` / `else`, 2, 1 and 0          | 1,173,324 B |   112 B |
+//   | two merges in sequence, one consume each       | 1,466,628 B |   112 B |
 //
-// `match` arms that take 2, 1 and 0 still leak on the `0` arm: its path
-// drop releases `2 - 1`. `kept_two_one_none` runs that shape outside the
-// bounded loop.
+// This fixture, with its controls, measures 5,281,828 B under `M - S` and
+// 1,828 B with the counted flag.
 //
 // The controls keep the consumed values in an array past the call, so a
 // release on a path still holding the value would free it under the array:
@@ -86,6 +94,67 @@ fn match_two(_ i: Int) -> Int {
   (a + Array::get(v, at = 2) - (i + 2)) * 0
 }
 
+fn match_two_one_none(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = match i % 3 {
+    0 => sink(v) + sink(v) - 2 * i,
+    1 => sink(v) - i,
+    _ => 0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+fn param_two_one_none(_ v: Array[Int], _ i: Int) -> Int {
+  let a = match i % 3 {
+    0 => sink(v) + sink(v) - 2 * i,
+    1 => sink(v) - i,
+    _ => 0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+fn elif_two_one_none(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 3 == 0 {
+    sink(v) + sink(v) - 2 * i
+  } else if i % 3 == 1 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// Two merges in sequence, each consuming on one arm.
+fn seq_two(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  let b = if i % 3 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + b + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+fn param_seq_two(_ v: Array[Int], _ i: Int) -> Int {
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  let b = if i % 3 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + b + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
 // The consumes sit in an inner merge; the outer one marks them too.
 fn nested_two(_ i: Int) -> Int {
   let v = mka(i)
@@ -125,6 +194,21 @@ fn kept_let_two(ks: Array[Array[Int]], i: Int) -> Int {
   Array::get(v, at = 2) - (i + 2)
 }
 
+fn kept_seq_two(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  if i % 2 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  if i % 3 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  Array::get(v, at = 2) - (i + 2)
+}
+
 // `v` is `mka(i + 10)`.
 fn kept_param_two(ks: Array[Array[Int]], v: Array[Int], i: Int) -> Int {
   if i % 2 == 0 {
@@ -154,22 +238,25 @@ fn main() -> Int {
   let mut i = 0
   while i < 20000 {
     acc = acc + let_two(i) + param_two(mka(i), i) + let_three_one(i) + match_two(i) + nested_two(i) + lambda_two(i)
+    acc = acc + match_two_one_none(i) + param_two_one_none(mka(i), i) + elif_two_one_none(i) + seq_two(i) + param_seq_two(mka(i), i)
     i = i + 1
   }
   let ks: Array[Array[Int]] = []
   let mut j = 0
   while j < 6 {
-    acc = acc + kept_let_two(ks = ks, i = j) + kept_param_two(ks = ks, v = mka(j + 10), i = j) + kept_two_one_none(ks = ks, i = j + 20)
+    acc = acc + kept_let_two(ks = ks, i = j) + kept_param_two(ks = ks, v = mka(j + 10), i = j) + kept_two_one_none(ks = ks, i = j + 20) + kept_seq_two(ks = ks, i = j + 30)
     j = j + 1
   }
   // Kept: two of each even call -- 0, 2, 4 (kept_let_two) and 10, 12, 14
-  // (kept_param_two) -- and of kept_two_one_none two of 21 and 24 and one
-  // of 22 and 25. 18 arrays, first elements summing to 12 + 72 + 137.
+  // (kept_param_two) -- of kept_two_one_none two of 21 and 24 and one of 22
+  // and 25, and of kept_seq_two one of each even call and one of each
+  // multiple of 3: two of 30, one of 32, 33 and 34. 23 arrays, first
+  // elements summing to 12 + 72 + 137 + 159.
   let mut s = 0
   let mut m = 0
   while m < Array::length(ks) {
     s = s + Array::get(Array::get(ks, at = m), at = 0)
     m = m + 1
   }
-  acc + s - 221 + Array::length(ks) - 18
+  acc + s - 380 + Array::length(ks) - 23
 }

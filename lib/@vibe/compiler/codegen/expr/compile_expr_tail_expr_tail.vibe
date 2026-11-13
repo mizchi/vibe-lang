@@ -35,6 +35,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_load,
   emit_i64_store,
   emit_rc_dup_guarded,
+  emit_rc_path_drop,
   expr_tag,
   find_local_slot,
   get_efn_body,
@@ -493,9 +494,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // #2389 per-path release: a branch merge planned this binding's scope-end
     // drop away because SOME branch spends its initial reference, so the
     // branches that do not spend it never release the value. Give the drop
-    // back, guarded by a flag local the plan's marked occurrences set (see
-    // compile_expr's EIdent case) -- 0 at the scope end means this path still
-    // holds the reference. Disjoint from the reuse fusion above by
+    // back, guarded by a flag local the plan's marked occurrences count in
+    // (see compile_expr's EIdent case) -- 0 at the scope end means this path
+    // still holds the reference. Disjoint from the reuse fusion above by
     // construction: a path-drop binding has no planned PaDrop, which that
     // fusion requires.
     //
@@ -621,17 +622,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     if path_drop {
       Array::truncate(ctx.rc_path_flag_names, length = Array::length(ctx.rc_path_flag_names) - 1)
       Array::truncate(ctx.rc_path_flag_locals, length = Array::length(ctx.rc_path_flag_locals) - 1)
-      emit_local_get(buf = buf, idx = path_flag_l)
-      emit_i64_eqz(buf)
-      emit_if_void(buf)
-      // One plan row per reference the path still holds (#1980).
-      let mut pdk = array_count_str(arr = ctx.rc_path_drop_names, s = name)
-      while pdk > 0 {
-        emit_local_get(buf = buf, idx = local_idx)
-        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
-        pdk = pdk - 1
-      }
-      emit_end(buf)
+      // One plan row per reference the binding's marks track, less the
+      // marks this path ran (#1980).
+      emit_rc_path_drop(buf = buf, flag = path_flag_l, local_idx = local_idx, count = array_count_str(arr = ctx.rc_path_drop_names, s = name), drop_fn_idx = ctx.rc_drop_func_idx)
     } else {
       ()
     }

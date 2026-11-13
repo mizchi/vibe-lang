@@ -283,9 +283,11 @@ export fn unstable_opt_in() -> Bool with Env {
 
 fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)], checked_error_row: Bool) -> Bytes with Exception + Fs + Env {
   if kind == "trace" {
-    compile_file_fs_mode_trace(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
+    // #4082: the instrumented builds carry the launcher grants too, so a
+    // `--trace` / `--break` run answers `perform?` as the plain run does.
+    compile_file_fs_mode_trace(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row, grants = grants)
   } else if kind == "break" {
-    compile_file_fs_mode_break(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
+    compile_file_fs_mode_break(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row, grants = grants)
   } else if kind == "coverage" {
     compile_file_fs_mode_coverage(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
   } else if kind == "gc" {
@@ -1064,6 +1066,41 @@ fn optional_grants_from_flags(allows: Array[String], denies: Array[String]) -> A
   out
 }
 
+/// ADR-0124 decision 2 (#4082): a provider bound with `--provide
+/// <Effect>=<component.wasm>` is the grant of the `extern effect` it names,
+/// so `allows Effect?` resolves `Granted` and `perform? Effect::op(..)` calls
+/// the provider. An effect no `--provide` names stays `NotGranted`, and its
+/// operation is never imported, so the run needs no provider for it. A
+/// `--provide` spelled like a standard provider grants nothing: those are
+/// granted by `--allow-*` alone, so a `--deny-fs` cannot be undone this way.
+fn optional_grants_with_providers(grants: Array[(String, String)], provides: Array[String]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  for g in grants {
+    Array::push(out, value = g)
+  }
+  let standard = standard_host_provider_names()
+  for spec in provides {
+    let at = String::index_of(spec, needle = "=")
+    let effect = if at > 0 {
+      String::substring(spec, start = 0, end = at)
+    } else {
+      ""
+    }
+    let mut is_standard = false
+    for p in standard {
+      if p == effect {
+        is_standard = true
+      }
+    }
+    if effect != "" && !is_standard {
+      Array::push(out, value = (effect, "Granted"))
+    } else {
+      ()
+    }
+  }
+  out
+}
+
 fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Array[String] {
   let base = if Array::length(allows) > 0 {
     allows
@@ -1440,7 +1477,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String, c
     } else {
       ()
     }
-    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_from_flags(allows = allows, denies = denies), checked_error_row = checked_error_row)
+    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_with_providers(grants = optional_grants_from_flags(allows = allows, denies = denies), provides = provides), checked_error_row = checked_error_row)
     write_user_run_executable(output_path = out, bytes = bytes, kind = kind)
     write_user_funcmap(input_path = src, output_path = out)
     let acc = StringBuilder::new()
@@ -1680,6 +1717,9 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String, 
   } else {
     let expanded = expand_user_test_inputs(files)
     let backend_kind = user_backend_kind("VIBE_TEST_BACKEND")
+    // #4082: a test build grants the standard providers ambiently, and an
+    // `extern effect` only through the provider `--provide` binds.
+    let test_grants = optional_grants_with_providers(grants = no_grants(), provides = provides)
     let acc = StringBuilder::new()
     // With `--provide`, the plan is `run-tests-provide`: the bindings,
     // tab-separated, on line 3 and every other line one further down. The
@@ -1746,14 +1786,14 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String, 
         // `no functions found to compile`, where scripts/vibe_test.sh and the
         // RC default report it `ok ... (no tests found)` (#948).
         let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
-          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta, exports_stripped = false, checked_error_row = checked_error_row)
+          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta, exports_stripped = false, checked_error_row = checked_error_row, grants = test_grants)
         } else {
           if Fs::exists(meta) {
             Fs::remove(meta)
           } else {
             ()
           }
-          compile_user_wasm(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants(), checked_error_row = checked_error_row)
+          compile_user_wasm(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = test_grants, checked_error_row = checked_error_row)
         }
         reject_unstable_closure_surface()
         write_wasm(output_path = out, bytes = bytes)

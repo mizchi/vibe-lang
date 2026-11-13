@@ -5,10 +5,17 @@ import @vibe/compiler/codegen/common_analysis {
   collect_free_vars_expr, collect_free_vars_indexed, collect_free_vars_indexed_self, collect_free_vars_used_builtins
 }
 
+/// How many more heap bytes scanning `name()` takes than scanning `name`.
+/// Each scan allocates a scratch array (`collect_free_vars_expr`'s `encl`) and
+/// frees it on the RC lane, so the first scan grows the heap by its size and
+/// a later one reuses the block. One scan before measuring puts both
+/// measured scans in that state; a temporary identifier node for the callee
+/// would still have to grow the heap.
 fn call_scan_extra_bytes(name: String, bound: Array[String], globals: Array[String]) -> Int with Profiler {
   let ident = EIdent(name, -1)
   let call = ECall(ident, [], -1, [])
   let out: Array[String] = []
+  let _ = collect_free_vars_expr(expr = ident, bound = bound, fn_names = globals, out = out)
   let start = Profiler::heap_bytes()
   let _ = collect_free_vars_expr(expr = ident, bound = bound, fn_names = globals, out = out)
   let ident_bytes = Profiler::heap_bytes() - start
