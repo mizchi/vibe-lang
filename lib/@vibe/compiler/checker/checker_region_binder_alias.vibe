@@ -15,7 +15,7 @@
 //# so it may hold an `r1` value but not an `r2` one.
 
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeEnv, env_bind, env_lookup
+  Expr, Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -141,6 +141,79 @@ fn binder_alias_bind_pairs(env: TypeEnv, ps: Array[Pat], es: Array[Expr], scope:
     i = i + 1
   }
   out
+}
+
+/// #4050 (Codex on #4061): `for name in iterable` -- the loop's element is
+/// what the iteration hands out, not `iterable` itself. An `Array` hands out
+/// its stored elements, so the binder reads `iterable`. A declared type
+/// iterated through its own protocol hands out what `C::next(iterable)`,
+/// `C::iter(iterable)` or `C::iter_get(iterable, i)` returns (the calls
+/// `for` lowers to), so the binder is judged as each of those calls the
+/// type binds would be, and is marked with the regions any of them
+/// predates. A method whose body returns a fresh value marks nothing: an
+/// indexed iterator built before the region may hand out a new array to
+/// write into. A method returning a stored part of `iterable`, or one whose
+/// body is not readable here, answers what `iterable` does.
+export fn region_for_binder_bind(env: TypeEnv, name: String, iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  let active = match env_lookup(env = scope, name = "#active_region") {
+    Some(CtNamed(_, _)) => true,
+    _ => false
+  }
+  if active {
+    let sources = for_binder_sources(iterable = iterable, iter_ty = iter_ty, scope = scope, defs = defs)
+    let regions: Array[String] = []
+    for src in sources {
+      for r in region_outer_alias_regions(value = src, scope = scope, active = true) {
+        if !binder_region_listed(names = regions, rname = r) {
+          Array::push(regions, value = r)
+        } else {
+          ()
+        }
+      }
+      ()
+    }
+    region_outer_alias_mark(env = env, name = name, regions = regions)
+  } else {
+    env
+  }
+}
+
+/// The expressions a `for` element over `iterable` is read from: the
+/// protocol calls a declared type binds, else `iterable` itself.
+fn for_binder_sources(iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> Array[Expr] {
+  let head = match iter_ty {
+    CtStruct(nm) => nm,
+    CtNamed(nm, _) => nm,
+    _ => ""
+  }
+  let declared = head != "" && match find_typedef(defs = defs, name = head) {
+    Some(_) => true,
+    None => false
+  }
+  if declared {
+    let calls: Array[Expr] = []
+    for method in ["next", "iter", "iter_get"] {
+      let callee = String::concat(head, String::concat("::", method))
+      match env_lookup(env = scope, name = callee) {
+        Some(_) => {
+          let args = if method == "iter_get" {
+            [iterable, EInt(0)]
+          } else {
+            [iterable]
+          }
+          Array::push(calls, value = ECall(EIdent(callee, -1), args, -1, []))
+        },
+        None => ()
+      }
+    }
+    if Array::length(calls) > 0 {
+      calls
+    } else {
+      [iterable]
+    }
+  } else {
+    [iterable]
+  }
 }
 
 /// The regions `value`'s location predates; a constructor or builtin call
