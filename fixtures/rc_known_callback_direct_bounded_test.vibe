@@ -1,0 +1,77 @@
+// #2827: a function-typed parameter that every call binds to the same
+// function is called as that function directly on the RC lanes.
+//
+// An indirect call owns its arguments, so `step` below, which hands `ctx` to
+// its callback `cb`, owned `ctx`, and so did `walk`, which hands `ctx` to
+// `step`. That is the compiler's own shape: `compile_expr` passes itself down
+// as `ce` to `compile_match` and `compile_call`, which cannot import it back.
+// Each owned `ctx` took its dups at entry, and the arm that runs none of its
+// uses gave back fewer than it took. Every call of `step` and `relay` binds
+// `cb` to `walk`, so `direct_known_fn_params` rewrites `cb(..)` to
+// `walk(..)`, and `ctx` is borrowed on the whole cycle. `pick` is handed two
+// different callbacks, so its call stays indirect.
+//
+// `main` sums `round(i)` over 2000 rounds: 109964.
+
+struct Ctx {
+  n: Int;
+  xs: Array[Int]
+}
+
+fn mk(_ i: Int) -> Ctx {
+  Ctx::{ n: i % 7, xs: [i, i + 1, i + 2] }
+}
+
+fn use1(ctx: Ctx) -> Int {
+  ctx.n + Array::length(ctx.xs)
+}
+
+fn use2(ctx: Ctx, k: Int) -> Int {
+  ctx.n + k
+}
+
+fn walk(ctx: Ctx, k: Int) -> Int {
+  if k > 0 {
+    step(ctx = ctx, k = k - 1, cb = walk) + relay(ctx = ctx, k = k - 1, cb = walk) + step(ctx = ctx, k = 0, cb = walk) + use1(ctx = ctx)
+  } else {
+    0
+  }
+}
+
+fn step(ctx: Ctx, k: Int, cb: (Ctx, Int) -> Int) -> Int {
+  if k % 2 == 1 {
+    cb(ctx, k) + cb(ctx, k - 1) + cb(ctx, 0)
+  } else {
+    use1(ctx = ctx)
+  }
+}
+
+// Forwards its callback: `step`'s `cb` is whatever `relay`'s is.
+fn relay(ctx: Ctx, k: Int, cb: (Ctx, Int) -> Int) -> Int {
+  if k > 1 {
+    step(ctx = ctx, k = k - 1, cb = cb) + cb(ctx, 0)
+  } else {
+    0
+  }
+}
+
+fn pick(ctx: Ctx, k: Int, cb: (Ctx, Int) -> Int) -> Int {
+  cb(ctx, k) + use1(ctx = ctx)
+}
+
+fn round(_ i: Int) -> Int {
+  let c = mk(i)
+  let a = walk(ctx = c, k = i % 4)
+  let b = pick(ctx = c, k = 1, cb = walk) + pick(ctx = c, k = i % 3, cb = use2)
+  a + b
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

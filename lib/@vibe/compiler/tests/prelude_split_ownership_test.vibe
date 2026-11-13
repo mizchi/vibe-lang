@@ -14,9 +14,11 @@ import @vibe/compiler/perceus {
 // Borrow inference (`compute_borrow_param_user_fns`, ADR-0092) and the
 // view-result set (`compute_may_return_view_fns`) are interprocedural, and
 // both can be disqualified from a CALL SITE in another module: a position
-// passed a temporary (`ca_collect_nonident_args`), a function used as a
-// value, an escape through a callee. A union of per-module answers cannot see
-// that, so it qualifies what the program disqualified (#2575). The split lane
+// passed a temporary (`ca_collect_nonident_args`), an escape through a
+// callee. A union of per-module answers cannot see that, so it qualifies what
+// the program disqualified (#2575). A function used as a value no longer
+// disqualifies its direct calls: since #2827 its value uses go through an
+// owning thunk, which the split lane must generate too. The split lane
 // avoids it by construction: `effect_lowering_prelude_split_checked` installs
 // the LINKED program into `stmts` (codegen/wasi/linked_compile_prelude_run_per_module.vibe),
 // and the analyses and the Perceus pin run after that on the whole program
@@ -213,15 +215,21 @@ test "a temporary passed to the group from another module makes the whole group 
   ]), content = "temp: modules=2 rc=[bytes=same tables=same whole=5 split=5] shadow=[bytes=same tables=same whole=5 split=5] masks= views= borrow_returns=")
 }
 
-test "a group member used as a value in another module makes the whole group owned" {
+test "a group member used as a value in another module keeps the group borrowed" {
   // An indirect call cannot follow a borrow mask, so `pong` taken as a value
-  // in `main` owns its parameters, and `ping` with it.
-  // Caught by: the conservative and the optimistic union of borrow masks.
+  // in `main` is called through its owning thunk `pong$owned` (#2827), and
+  // the group keeps its borrowed masks for every direct call. The thunk is
+  // generated on the linked program, so the split lane must produce it too:
+  // the bytes and tables agree with the whole program's, and the shadow
+  // modules run without a use-after-free or double-free trap.
+  // Before #2827 the value use disqualified the whole group (`masks=`); the
+  // union mutations listed in the header were measured on that shape and
+  // have not been re-measured on this one.
   let main = import_of(tag = "valued", dep = "leaf", names = "ping, pong") + build_decl() + "fn apply(f: (Array[Int], Int) -> Int, xs: Array[Int]) -> Int {\n  f(xs, 2)\n}\n\nfn main() -> Int {\n  let xs = build(n = 3)\n  let a = ping(xs = xs, n = 3)\n  let b = apply(f = pong, xs = xs)\n  a + b + Array::length(xs)\n}\n"
   inspect(both_lanes(tag = "valued", files = [
     ("main", main),
     ("leaf", ping_pong_leaf())
-  ]), content = "valued: modules=2 rc=[bytes=same tables=same whole=5 split=5] shadow=[bytes=same tables=same whole=5 split=5] masks= views= borrow_returns=")
+  ]), content = "valued: modules=2 rc=[bytes=same tables=same whole=5 split=5] shadow=[bytes=same tables=same whole=5 split=5] masks=ping:1,pong:1 views= borrow_returns=")
 }
 
 test "an escape through a callee in a third module makes the whole group owned" {

@@ -577,10 +577,17 @@ export fn cc_retain_view_tails_unlogged(e: Expr, local_names: Array[String], ctx
   cc_retain_view_tails_logged(e = e, local_names = local_names, ctx = ctx, log_loop = false)
 }
 
+/// #2827: the leaf tests run in this body, one leaf at a time in `rs_map`'s
+/// visit order, and not in an `rs_map` callback. A callback would capture
+/// `ctx`, and borrow inference counts a capture as a consume, which made
+/// `ctx` owned here and through every caller up to `compile_expr`.
 fn cc_retain_view_tails_logged(e: Expr, local_names: Array[String], ctx: CompileCtx, log_loop: Bool) -> Expr {
   if rs_has_tail(e) {
-    rs_map(e = e, shadow = array_empty(), leaf = (x: Expr, shadow: Array[String]) -> Expr {
-      if cc_tail_is_view(x = x, shadow = shadow, local_names = local_names, ctx = ctx) {
+    let wrap: Array[Bool] = array_empty()
+    for lf in cc_rs_leaves(e = e, shadow = array_empty()) {
+      let x = lf.0
+      let view = cc_tail_is_view(x = x, shadow = lf.1, local_names = local_names, ctx = ctx)
+      if view {
         match x {
           EIdent(n, _) => if log_loop && cc_is_loop_borrowed_ident(e = x, ctx = ctx) {
             Array::push(ctx.loop_consumed_names, value = n)
@@ -589,14 +596,45 @@ fn cc_retain_view_tails_logged(e: Expr, local_names: Array[String], ctx: Compile
           },
           _ => ()
         }
-        ECall(EIdent("__loop_tail_retain", -1), [x], -1, [])
       } else {
-        x
+        ()
       }
-    }, bind = rs_keep_bind)
+      Array::push(wrap, value = view)
+    }
+    cc_rs_retain_leaves(e = e, wrap = wrap)
   } else {
     e
   }
+}
+
+/// The result-path leaves of `e` (`rs_map`), in its visit order, each with
+/// the names bound between `e`'s root and that leaf (on top of `shadow`).
+/// `rs_map` never enters a leaf, so the walk does not depend on what its
+/// callback returns, and `cc_rs_retain_leaves` meets the same leaves in the
+/// same order.
+fn cc_rs_leaves(e: Expr, shadow: Array[String]) -> Array[(Expr, Array[String])] {
+  let out: Array[(Expr, Array[String])] = array_empty()
+  let _ = rs_map(e = e, shadow = shadow, leaf = (x: Expr, sh: Array[String]) -> Expr {
+    Array::push(out, value = (x, sh))
+    x
+  }, bind = rs_keep_bind)
+  out
+}
+
+/// `e` with its `i`-th result-path leaf (`cc_rs_leaves` order) wrapped in a
+/// `__loop_tail_retain` call where `wrap[i]` holds.
+fn cc_rs_retain_leaves(e: Expr, wrap: Array[Bool]) -> Expr {
+  let at = [0]
+  rs_map(e = e, shadow = array_empty(), leaf = (x: Expr, sh: Array[String]) -> Expr {
+    let _ = sh
+    let i = Array::get(at, at = 0)
+    Array::set(at, at = 0, value = i + 1)
+    if Array::get(wrap, at = i) {
+      ECall(EIdent("__loop_tail_retain", -1), [x], -1, [])
+    } else {
+      x
+    }
+  }, bind = rs_keep_bind)
 }
 
 /// #3919: is every result-path leaf (`rs_map`) of the compound `for`
@@ -706,18 +744,19 @@ fn cc_iter_leaf_owned(x: Expr, shadow: Array[String], local_names: Array[String]
 }
 
 /// A `loop` on the result path: its `break` payloads are the leaves
-/// (`rs_map`). A name bound inside them is not followed to its binder.
+/// (`rs_map`). A name bound inside them is not followed to its binder. Every
+/// leaf is tested, in visit order, here rather than in an `rs_map` callback
+/// that would capture `ctx` (#2827, `cc_retain_view_tails_logged`).
 fn cc_iter_leaves_owned(e: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
-  let ok = [true]
-  let _ = rs_map(e = e, shadow = shadow, leaf = (x: Expr, sh: Array[String]) -> Expr {
-    if !cc_iter_leaf_owned(x = x, shadow = sh, local_names = local_names, ctx = ctx) {
-      Array::set(ok, at = 0, value = false)
+  let mut ok = true
+  for lf in cc_rs_leaves(e = e, shadow = shadow) {
+    if !cc_iter_leaf_owned(x = lf.0, shadow = lf.1, local_names = local_names, ctx = ctx) {
+      ok = false
     } else {
       ()
     }
-    x
-  }, bind = rs_keep_bind)
-  Array::get(ok, at = 0)
+  }
+  ok
 }
 
 /// The leaf test of `cc_retain_view_tails`. `shadow` holds the names bound
