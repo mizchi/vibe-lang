@@ -48,6 +48,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_map_scalar_hash,
   emit_rc_dup_guarded,
   emit_str_ref_slot,
   emit_unbox_float,
@@ -65,6 +66,8 @@ import @vibe/compiler/codegen/common_base {
   get_elet_val,
   is_efn,
   is_eident,
+  map_scalar_index_count_flag,
+  map_scalar_slot_bit,
   resolve_func
 }
 
@@ -1840,10 +1843,6 @@ export fn cc_map_emit_key_eq(buf: Bytes, eq_fi: Int) -> Unit {
   }
 }
 
-/// #2334: the index slot (i32 at +4) of a scalar-keyed map holds this marker
-/// instead of an index pointer: its keys are never hashed. 0 means no index.
-let map_scalar_index_marker: Int = 1
-
 /// #2334: trap when the untagged map at `map_l` is scalar-keyed. Every
 /// String-keyed operation runs this first: a call the checker filed no
 /// scalar row for would otherwise hash an `Int` key as a String pointer.
@@ -1851,18 +1850,26 @@ export fn cc_map_trap_if_scalar(buf: Bytes, map_l: Int) -> Unit {
   emit_local_get(buf = buf, idx = map_l)
   emit_i32_wrap_i64(buf)
   emit_i32_load(buf = buf, align = 2, offset = 4)
-  emit_i32_const(buf = buf, value = map_scalar_index_marker)
-  emit_i32_eq(buf)
+  emit_i32_const(buf = buf, value = map_scalar_slot_bit)
+  emit_i32_and(buf)
   emit_if_void(buf)
   bytebuf_push(buf = buf, byte = 0)
   emit_end(buf)
 }
 
-/// #2334: mark the untagged result map at `map_l` scalar-keyed.
+/// #2334: mark the untagged result map at `map_l` scalar-keyed, keeping the
+/// index pointer its slot may already hold (`map_scalar_slot_bit`).
 export fn cc_map_mark_scalar(buf: Bytes, map_l: Int) -> Unit {
   emit_local_get(buf = buf, idx = map_l)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf = buf, value = map_scalar_index_marker)
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  // `(slot & ~bit) + bit`: an index pointer is 8-aligned, so this is `slot | bit`.
+  emit_i32_const(buf = buf, value = 0 - 2)
+  emit_i32_and(buf)
+  emit_i32_const(buf = buf, value = map_scalar_slot_bit)
+  emit_i32_add(buf)
   emit_i32_store(buf = buf, align = 2, offset = 4)
 }
 
@@ -1909,8 +1916,17 @@ fn cc_map_find_pos(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, idx_l: Int, p
   emit_local_set(buf = buf, idx = ip_l)
   emit_i64_const(buf = buf, value = -1)
   emit_local_set(buf = buf, idx = pos_l)
-  // #2334: a scalar-keyed map (eq_fi < 0) has no index: always scan.
-  if eq_fi >= 0 && ctx.map_probe_func_idx >= 0 {
+  // #2334: a scalar-keyed map (eq_fi < 0) carries `map_scalar_slot_bit` in
+  // its slot; `ip_l` keeps the bare index pointer (0 without an index), which
+  // is what the index maintenance below frees and rebuilds. The probe helper
+  // reads the bit itself.
+  if eq_fi < 0 {
+    emit_local_get(buf = buf, idx = ip_l)
+    emit_i64_const(buf = buf, value = 0 - 2)
+    emit_i64_and(buf)
+    emit_local_set(buf = buf, idx = ip_l)
+  } else ()
+  if ctx.map_probe_func_idx >= 0 {
     emit_local_get(buf = buf, idx = ip_l)
     emit_i64_eqz(buf)
     emit_if_void(buf)
@@ -1957,18 +1973,28 @@ fn cc_map_scan_pos(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, idx_l: Int, p
 
 /// Build a side index for the map's CURRENT count (already stored) and
 /// attach it. `tmp_l` is scratch.
-fn cc_map_rebuild_index(buf: Bytes, map_l: Int, tmp_l: Int, ctx: CompileCtx) -> Unit {
+fn cc_map_rebuild_index(buf: Bytes, map_l: Int, tmp_l: Int, scalar: Bool, ctx: CompileCtx) -> Unit {
   emit_local_get(buf = buf, idx = map_l)
   emit_local_get(buf = buf, idx = map_l)
   emit_i32_wrap_i64(buf)
   emit_i32_load(buf = buf, align = 2, offset = 0)
   emit_i64_extend_i32_u(buf)
+  if scalar {
+    // #2334: the build helper hashes a flagged count's keys as scalars.
+    emit_i64_const(buf = buf, value = map_scalar_index_count_flag)
+    emit_i64_or(buf)
+  } else ()
   emit_call(buf = buf, func_idx = ctx.map_build_index_func_idx)
   emit_local_set(buf = buf, idx = tmp_l)
   emit_local_get(buf = buf, idx = map_l)
   emit_i32_wrap_i64(buf)
   emit_local_get(buf = buf, idx = tmp_l)
   emit_i32_wrap_i64(buf)
+  if scalar {
+    // An index pointer is 8-aligned: adding the bit sets it.
+    emit_i32_const(buf = buf, value = map_scalar_slot_bit)
+    emit_i32_add(buf)
+  } else ()
   emit_i32_store(buf = buf, align = 2, offset = 4)
 }
 
@@ -1985,7 +2011,7 @@ fn cc_map_free_index(buf: Bytes, ip_l: Int, ctx: CompileCtx) -> Unit {
 /// map had): no index yet -> build one once the map holds 8 entries; an
 /// index -> insert while it stays at or under half load (the load
 /// __rt_map_cap_for sizes for), else release it and rebuild.
-fn cc_map_index_after_append(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, ip_l: Int, tmp_l: Int, ctx: CompileCtx) -> Unit {
+fn cc_map_index_after_append(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, ip_l: Int, tmp_l: Int, scalar: Bool, ctx: CompileCtx) -> Unit {
   if ctx.map_build_index_func_idx >= 0 {
     emit_local_get(buf = buf, idx = ip_l)
     emit_i64_eqz(buf)
@@ -1996,7 +2022,7 @@ fn cc_map_index_after_append(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, ip_
     emit_i64_const(buf = buf, value = 8)
     emit_i64_ge_s(buf)
     emit_if_void(buf)
-    cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, ctx = ctx)
+    cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, scalar = scalar, ctx = ctx)
     emit_end(buf)
     emit_else(buf)
     if ctx.map_index_insert_func_idx >= 0 && ctx.map_hash_func_idx >= 0 {
@@ -2013,8 +2039,13 @@ fn cc_map_index_after_append(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, ip_
       emit_i64_le_s(buf)
       emit_if_void(buf)
       emit_local_get(buf = buf, idx = ip_l)
-      emit_local_get(buf = buf, idx = key_l)
-      emit_call(buf = buf, func_idx = ctx.map_hash_func_idx)
+      if scalar {
+        // #2334: the hash the build and probe helpers use.
+        emit_map_scalar_hash(buf = buf, key_l = key_l, tmp_l = tmp_l)
+      } else {
+        emit_local_get(buf = buf, idx = key_l)
+        emit_call(buf = buf, func_idx = ctx.map_hash_func_idx)
+      }
       emit_local_get(buf = buf, idx = ip_l)
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf = buf, align = 3, offset = 0)
@@ -2023,11 +2054,11 @@ fn cc_map_index_after_append(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, ip_
       emit_call(buf = buf, func_idx = ctx.map_index_insert_func_idx)
       emit_else(buf)
       cc_map_free_index(buf = buf, ip_l = ip_l, ctx = ctx)
-      cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, ctx = ctx)
+      cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, scalar = scalar, ctx = ctx)
       emit_end(buf)
     } else {
       cc_map_free_index(buf = buf, ip_l = ip_l, ctx = ctx)
-      cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, ctx = ctx)
+      cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, scalar = scalar, ctx = ctx)
     }
     emit_end(buf)
   } else {
@@ -2082,11 +2113,8 @@ export fn cc_map_set_in_place(buf: Bytes, map_l: Int, key_l: Int, val_l: Int, cn
   cc_map_store_count_plus(buf = buf, map_l = map_l, cnt_l = cnt_l, delta = 1)
   emit_local_get(buf = buf, idx = map_l)
   emit_local_set(buf = buf, idx = new_l)
-  if eq_fi >= 0 {
-    cc_map_index_after_append(buf = buf, map_l = map_l, key_l = key_l, cnt_l = cnt_l, ip_l = ip_l, tmp_l = tmp_l, ctx = ctx)
-  } else {
-    ()
-  }
+  // #2334: a scalar-keyed map (eq_fi < 0) keeps its index the same way.
+  cc_map_index_after_append(buf = buf, map_l = map_l, key_l = key_l, cnt_l = cnt_l, ip_l = ip_l, tmp_l = tmp_l, scalar = eq_fi < 0, ctx = ctx)
   emit_else(buf)
   // grow: a block of max(4, 2 * count) entries; the entries MOVE (no
   // retains), the old block's count is zeroed and it is released with its
@@ -2131,11 +2159,8 @@ export fn cc_map_set_in_place(buf: Bytes, map_l: Int, key_l: Int, val_l: Int, cn
   cc_map_store_count_plus(buf = buf, map_l = new_l, cnt_l = cnt_l, delta = 1)
   emit_i64_const(buf = buf, value = 0)
   emit_local_set(buf = buf, idx = ip_l)
-  if eq_fi >= 0 {
-    cc_map_index_after_append(buf = buf, map_l = new_l, key_l = key_l, cnt_l = cnt_l, ip_l = ip_l, tmp_l = tmp_l, ctx = ctx)
-  } else {
-    ()
-  }
+  // #2334: a scalar-keyed map (eq_fi < 0) keeps its index the same way.
+  cc_map_index_after_append(buf = buf, map_l = new_l, key_l = key_l, cnt_l = cnt_l, ip_l = ip_l, tmp_l = tmp_l, scalar = eq_fi < 0, ctx = ctx)
   emit_local_get(buf = buf, idx = map_l)
   emit_i32_wrap_i64(buf)
   emit_i32_const(buf = buf, value = 0)
@@ -2180,7 +2205,9 @@ export fn cc_map_delete_in_place(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int,
   emit_i32_mul(buf)
   emit_memory_copy(buf)
   cc_map_store_count_plus(buf = buf, map_l = map_l, cnt_l = cnt_l, delta = -1)
-  if eq_fi >= 0 && ctx.map_build_index_func_idx >= 0 {
+  // #2334: a scalar-keyed map's index is kept the same way; below 8
+  // entries its slot goes back to the bare marker bit.
+  if ctx.map_build_index_func_idx >= 0 {
     emit_local_get(buf = buf, idx = ip_l)
     emit_i64_eqz(buf)
     emit_i32_eqz(buf)
@@ -2192,11 +2219,15 @@ export fn cc_map_delete_in_place(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int,
     emit_i64_const(buf = buf, value = 8)
     emit_i64_ge_s(buf)
     emit_if_void(buf)
-    cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, ctx = ctx)
+    cc_map_rebuild_index(buf = buf, map_l = map_l, tmp_l = tmp_l, scalar = eq_fi < 0, ctx = ctx)
     emit_else(buf)
     emit_local_get(buf = buf, idx = map_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 0)
+    emit_i32_const(buf = buf, value = if eq_fi < 0 {
+      map_scalar_slot_bit
+    } else {
+      0
+    })
     emit_i32_store(buf = buf, align = 2, offset = 4)
     emit_end(buf)
     emit_end(buf)

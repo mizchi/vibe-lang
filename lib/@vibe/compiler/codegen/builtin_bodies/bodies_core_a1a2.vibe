@@ -38,6 +38,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_heap_memory_grow_check,
   emit_heap_memory_grow_check_locals,
   emit_i32_add,
+  emit_i32_and,
   emit_i32_const,
   emit_i32_load,
   emit_i32_load8_u,
@@ -782,12 +783,15 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
     // double-free guard the grown array buffer gets above. (ptr = local 5.)
     emit_local_get(buf = b, idx = 1)
     emit_i32_load(buf = b, align = 2, offset = 4)
+    // #2334: a scalar-keyed map's slot carries a marker bit beside its index
+    // pointer (`map_scalar_slot_bit`), or the bit alone with no index. Clear
+    // it; what remains is 0 or the index pointer to release.
+    emit_i32_const(buf = b, value = 0 - 2)
+    emit_i32_and(b)
     emit_local_set(buf = b, idx = 5)
-    // #2334: 1 marks a scalar-keyed map, which has no index: only a slot
-    // above it holds an index pointer to release.
     emit_local_get(buf = b, idx = 5)
-    emit_i32_const(buf = b, value = 1)
-    emit_i32_gt_u(b)
+    emit_i32_const(buf = b, value = 0)
+    emit_i32_ne(b)
     emit_if_void(b)
     if rc_shadow {
       emit_local_get(buf = b, idx = 5)

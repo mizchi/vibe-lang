@@ -39,6 +39,8 @@ import @vibe/compiler/codegen/common_base {
   emit_str_ref_slot,
   func_table_index_of,
   map_get_miss_message,
+  map_scalar_index_count_flag,
+  map_scalar_slot_bit,
   resolve_func,
   str_table_index_of,
   str_table_slot_or_neg
@@ -309,7 +311,9 @@ fn cc_map_set_copy_path(buf: Bytes, ctx: CompileCtx, map_l: Int, key_l: Int, val
   // O(1)-average side index when it's worth it (count>=8). idx_l/found_l
   // are dead after the copy loop above -- reused here as scratch (final
   // count, then the built index pointer) so this needs no new locals.
-  if !scalar_key && ctx.map_build_index_func_idx >= 0 {
+  // #2334: a scalar-keyed map gets the index too, built with the scalar
+  // hash; its slot then holds the pointer with `map_scalar_slot_bit`.
+  if ctx.map_build_index_func_idx >= 0 {
     emit_local_get(buf = buf, idx = new_l)
     emit_i32_wrap_i64(buf)
     emit_i32_load(buf = buf, align = 2, offset = 0)
@@ -321,12 +325,20 @@ fn cc_map_set_copy_path(buf: Bytes, ctx: CompileCtx, map_l: Int, key_l: Int, val
     emit_if_void(buf)
     emit_local_get(buf = buf, idx = new_l)
     emit_local_get(buf = buf, idx = idx_l)
+    if scalar_key {
+      emit_i64_const(buf = buf, value = map_scalar_index_count_flag)
+      emit_i64_or(buf)
+    } else ()
     emit_call(buf = buf, func_idx = ctx.map_build_index_func_idx)
     emit_local_set(buf = buf, idx = found_l)
     emit_local_get(buf = buf, idx = new_l)
     emit_i32_wrap_i64(buf)
     emit_local_get(buf = buf, idx = found_l)
     emit_i32_wrap_i64(buf)
+    if scalar_key {
+      emit_i32_const(buf = buf, value = map_scalar_slot_bit)
+      emit_i32_add(buf)
+    } else ()
     emit_i32_store(buf = buf, align = 2, offset = 4)
     emit_end(buf)
   } else {
@@ -1475,7 +1487,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     } else {
       ()
     }
-    if !scalar_key && ctx.map_probe_func_idx >= 0 {
+    if ctx.map_probe_func_idx >= 0 {
       let idxptr_local = nl + 4
       Array::push(local_names, value = "__map_idxptr")
       emit_local_get(buf = buf, idx = map_local)
@@ -1483,6 +1495,13 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_i32_load(buf = buf, align = 2, offset = 4)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf = buf, idx = idxptr_local)
+      if scalar_key {
+        // #2334: drop the scalar-key bit; the probe helper reads it itself.
+        emit_local_get(buf = buf, idx = idxptr_local)
+        emit_i64_const(buf = buf, value = 0 - 2)
+        emit_i64_and(buf)
+        emit_local_set(buf = buf, idx = idxptr_local)
+      } else ()
       emit_local_get(buf = buf, idx = idxptr_local)
       emit_i64_eqz(buf)
       emit_if_i64(buf)
@@ -1546,12 +1565,19 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     } else {
       ()
     }
-    if !scalar_key && ctx.map_probe_func_idx >= 0 {
+    if ctx.map_probe_func_idx >= 0 {
       emit_local_get(buf = buf, idx = map_l)
       emit_i32_wrap_i64(buf)
       emit_i32_load(buf = buf, align = 2, offset = 4)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf = buf, idx = idxptr_l)
+      if scalar_key {
+        // #2334: drop the scalar-key bit; the probe helper reads it itself.
+        emit_local_get(buf = buf, idx = idxptr_l)
+        emit_i64_const(buf = buf, value = 0 - 2)
+        emit_i64_and(buf)
+        emit_local_set(buf = buf, idx = idxptr_l)
+      } else ()
       emit_local_get(buf = buf, idx = idxptr_l)
       emit_i64_eqz(buf)
       emit_if_i64(buf)

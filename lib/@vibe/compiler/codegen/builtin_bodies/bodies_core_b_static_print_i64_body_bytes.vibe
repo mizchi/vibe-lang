@@ -9,7 +9,15 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/codegen/common_base {
-  emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_sub, emit_i64_load, emit_i64_store
+  emit_i32_ge_u,
+  emit_i32_gt_u,
+  emit_i32_mul,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_map_scalar_hash,
+  map_scalar_index_count_flag,
+  map_scalar_slot_bit
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -37,6 +45,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_and,
   emit_i64_const,
   emit_i64_eq,
+  emit_i64_eqz,
   emit_i64_extend_i32_s,
   emit_i64_ge_s,
   emit_i64_gt_s,
@@ -1325,7 +1334,9 @@ export fn gen_map_index_insert_body() -> Bytes {
 /// same pointer __rt_map_index_insert/__rt_map_probe_index expect).
 /// local0=base, local1=count (params). Extra i64: local2=capacity,
 /// local3=bytes_needed (slots only, excludes the 8-byte header),
-/// local4=idx_ptr, local5=i, local6=key, local7=h, local8=mask. meta=(0,7).
+/// local4=idx_ptr, local5=i, local6=key, local7=h, local8=mask,
+/// local9=scalar (#2334: the count's `map_scalar_index_count_flag`).
+/// meta=(0,8).
 ///
 /// #2683: on the RC lane (`rc_alloc_idx >= 0`) the table is an RC leaf block
 /// (class 0, rc 1) allocated through rc_alloc, so the Map's class-6 rc_drop
@@ -1343,6 +1354,17 @@ export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_
   let key_l = 6
   let h_l = 7
   let mask_l = 8
+  let scalar_l = 9
+  // #2334: a count carrying `map_scalar_index_count_flag` builds a
+  // scalar-keyed map's index: its keys hash with `emit_map_scalar_hash`.
+  emit_local_get(buf = b, idx = count_l)
+  emit_i64_const(buf = b, value = map_scalar_index_count_flag)
+  emit_i64_and(b)
+  emit_local_set(buf = b, idx = scalar_l)
+  emit_local_get(buf = b, idx = count_l)
+  emit_i64_const(buf = b, value = map_scalar_index_count_flag - 1)
+  emit_i64_and(b)
+  emit_local_set(buf = b, idx = count_l)
   emit_local_get(buf = b, idx = count_l)
   emit_call(buf = b, func_idx = cap_fn_idx)
   emit_local_set(buf = b, idx = cap_l)
@@ -1419,9 +1441,16 @@ export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_
   emit_i32_add(b)
   emit_i64_load(buf = b, align = 3, offset = 8)
   emit_local_set(buf = b, idx = key_l)
+  emit_local_get(buf = b, idx = scalar_l)
+  emit_i64_eqz(b)
+  emit_if_void(b)
   emit_local_get(buf = b, idx = key_l)
   emit_call(buf = b, func_idx = hash_fn_idx)
   emit_local_set(buf = b, idx = h_l)
+  emit_else(b)
+  emit_map_scalar_hash(buf = b, key_l = key_l, tmp_l = h_l)
+  emit_local_set(buf = b, idx = h_l)
+  emit_end(b)
   emit_local_get(buf = b, idx = idxptr_l)
   emit_local_get(buf = b, idx = h_l)
   emit_local_get(buf = b, idx = mask_l)
@@ -1451,7 +1480,8 @@ export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_
 /// fallback's arg list), local2=key (params). Extra i32: local3=slot_addr.
 /// Extra i64: local4=mask, local5=index_ptr, local6=h, local7=slot,
 /// local8=i (probe count, bounded by mask+1), local9=cur_entry_idx,
-/// local10=cur_psl, local11=cand_key. meta=(1,8).
+/// local10=cur_psl, local11=cand_key, local12=scalar (#2334: the slot's
+/// `map_scalar_slot_bit`). meta=(1,9).
 export fn gen_map_probe_index_body(hash_fn_idx: Int, eq_fn_idx: Int) -> Bytes {
   let b = bytebuf_new()
   let base_l = 0
@@ -1463,20 +1493,39 @@ export fn gen_map_probe_index_body(hash_fn_idx: Int, eq_fn_idx: Int) -> Bytes {
   let slot_l = 7
   let i_l = 8
   let cur_entry_l = 9
-  let cur_psl_l = 10
   let cand_key_l = 11
+  let scalar_l = 12
+  let cur_psl_l = 10
+  // #2334: a scalar-keyed map's slot carries `map_scalar_slot_bit` beside
+  // its index pointer. Its keys hash with `emit_map_scalar_hash` and compare
+  // as exact i64 values; a String-keyed map's slot never has the bit.
   emit_local_get(buf = b, idx = base_l)
   emit_i32_wrap_i64(b)
   emit_i32_load(buf = b, align = 2, offset = 4)
   emit_i64_extend_i32_u(b)
   emit_local_set(buf = b, idx = idxptr_l)
   emit_local_get(buf = b, idx = idxptr_l)
+  emit_i64_const(buf = b, value = map_scalar_slot_bit)
+  emit_i64_and(b)
+  emit_local_set(buf = b, idx = scalar_l)
+  emit_local_get(buf = b, idx = idxptr_l)
+  emit_i64_const(buf = b, value = 0 - 2)
+  emit_i64_and(b)
+  emit_local_set(buf = b, idx = idxptr_l)
+  emit_local_get(buf = b, idx = idxptr_l)
   emit_i32_wrap_i64(b)
   emit_i64_load(buf = b, align = 3, offset = 0)
   emit_local_set(buf = b, idx = mask_l)
+  emit_local_get(buf = b, idx = scalar_l)
+  emit_i32_wrap_i64(b)
+  emit_if_void(b)
+  emit_map_scalar_hash(buf = b, key_l = key_l, tmp_l = h_l)
+  emit_local_set(buf = b, idx = h_l)
+  emit_else(b)
   emit_local_get(buf = b, idx = key_l)
   emit_call(buf = b, func_idx = hash_fn_idx)
   emit_local_set(buf = b, idx = h_l)
+  emit_end(b)
   emit_local_get(buf = b, idx = h_l)
   emit_local_get(buf = b, idx = mask_l)
   emit_i64_and(b)
@@ -1524,6 +1573,17 @@ export fn gen_map_probe_index_body(hash_fn_idx: Int, eq_fn_idx: Int) -> Bytes {
   emit_i32_add(b)
   emit_i64_load(buf = b, align = 3, offset = 8)
   emit_local_set(buf = b, idx = cand_key_l)
+  emit_local_get(buf = b, idx = scalar_l)
+  emit_i32_wrap_i64(b)
+  emit_if_void(b)
+  emit_local_get(buf = b, idx = cand_key_l)
+  emit_local_get(buf = b, idx = key_l)
+  emit_i64_eq(b)
+  emit_if_void(b)
+  emit_local_get(buf = b, idx = cur_entry_l)
+  emit_return(b)
+  emit_end(b)
+  emit_else(b)
   emit_local_get(buf = b, idx = cand_key_l)
   emit_local_get(buf = b, idx = key_l)
   emit_call(buf = b, func_idx = eq_fn_idx)
@@ -1531,6 +1591,7 @@ export fn gen_map_probe_index_body(hash_fn_idx: Int, eq_fn_idx: Int) -> Bytes {
   emit_if_void(b)
   emit_local_get(buf = b, idx = cur_entry_l)
   emit_return(b)
+  emit_end(b)
   emit_end(b)
   emit_local_get(buf = b, idx = i_l)
   emit_i64_const(buf = b, value = 1)
