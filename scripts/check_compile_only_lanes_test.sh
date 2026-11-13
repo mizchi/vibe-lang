@@ -22,6 +22,12 @@
 #                    fail.
 #                    It also writes the scheduler trace, so
 #                    --scheduler-trace-only must fail.
+#   4c. stale     -- the compile-only artifact rebuilt from its own flat
+#                    module source with the scheduler-trace refusal moved
+#                    back in front of the shared stale-sidecar cleanup
+#                    (the defect fixed after #4105's review): a stale
+#                    VIBE_INCREMENTAL_TELEMETRY_OUT sidecar survives the
+#                    refusal, so --scheduler-trace-only must fail.
 #   5. control    -- the real compile-only artifact passes.
 #
 # Fixture: a fresh named compile-only artifact built with the selected compiler
@@ -181,6 +187,38 @@ expect_fail accepted_tool "VIBE_EMIT_WIT=1 was ACCEPTED" --artifact "$STAGE2" --
 # the sidecar the compile-only artifact must refuse.
 expect_fail telemetry "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --telemetry-only
 expect_fail scheduler_trace "VIBE_SCHEDULER_TRACE was ACCEPTED" --artifact "$STAGE2" --entry cli_main --scheduler-trace-only
+
+# 4c. stale: refuse VIBE_SCHEDULER_TRACE before the stale-sidecar cleanup.
+# The mutation is applied to the flat module source the fixture was built
+# from, then compiled exactly as scripts/build_compile_only.sh compiles it.
+check_stale_refusal() {
+  local SRC="$TMP/vibe_compile_only.names.module_source.vibe"
+  local MUT="$TMP/stale_refusal.module_source.vibe" OUT="$TMP/stale_refusal.wasm"
+  [ -s "$SRC" ] || { echo "check_compile_only_lanes_test: FAIL (stale): no module source at $SRC" >&2; exit 1; }
+  node - "$SRC" "$MUT" <<'NODE'
+const fs = require("fs");
+const [src, out] = process.argv.slice(2);
+const text = fs.readFileSync(src, "utf8");
+const anchor = '{ let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT");';
+const refusal = text.match(/scheduler_trace_refusal_exp_[A-Za-z0-9_]+/);
+if (text.split(anchor).length !== 2 || !refusal) {
+  console.error("check_compile_only_lanes_test: FAIL (stale): the mutation anchor is not unique in the module source");
+  process.exit(1);
+}
+const early = `{ if (Env::get("VIBE_SCHEDULER_TRACE") != "") { throw(${refusal[0]}()) } else { () }; let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT");`;
+fs.writeFileSync(out, text.replace(anchor, early));
+NODE
+  cmp -s "$SRC" "$MUT" && { echo "check_compile_only_lanes_test: FAIL (stale): the mutation did not change the module source" >&2; exit 1; }
+  _selector_order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
+  env $(printf '%s\n' $_selector_order | sed 's/^/-u /' | tr '\n' ' ') \
+    VIBE_RC=0 VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    VIBE_WASM_PRE_GROW_PAGES=0 VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE=1 VIBE_SKIP_RUN_INIT=1 \
+    VIBE_NODE_WASM_FLAGS="--experimental-wasm-exnref --stack-size=131072" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$MUT" "$OUT" cli_main_compile_only >"$TMP/stale.build.log" 2>&1 || true
+  [ -s "$OUT" ] || { echo "check_compile_only_lanes_test: FAIL (stale): the mutated artifact did not compile" >&2; cat "$OUT.diag" >&2 2>/dev/null; tail -5 "$TMP/stale.build.log" >&2; exit 1; }
+  expect_fail stale "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --scheduler-trace-only
+}
+check_stale_refusal
 
 # 5. control.
 if ! bash "$GATE" --artifact "$ART" --entry cli_main_compile_only >"$TMP/control.log" 2>&1; then

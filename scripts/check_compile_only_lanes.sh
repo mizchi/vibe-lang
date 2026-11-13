@@ -291,12 +291,22 @@ refuse_telemetry() {
 # The scheduler trace rides a compile, not a check: the walk it records is the
 # FS compile lane's import-DAG walk. The generation's stage2 writes it even for
 # this one-module probe (a `project` and a `step` row).
+#
+# The refusal must come AFTER the CLI's shared stale-sidecar cleanup: a sibling
+# observation requested on the same run (here VIBE_INCREMENTAL_TELEMETRY_OUT,
+# which a compile accepts) whose file is left over from an earlier run would
+# otherwise survive the refused invocation and read as its result. So the
+# probe plants a stale sibling sidecar and requires it gone.
 refuse_scheduler_trace() {
-  local trace="$WORK/scheduler.trace"
+  local trace="$WORK/scheduler.trace" stale="$WORK/stale_incremental_telemetry.json"
   rm -f "$trace"
-  compile_probe refuse_scheduler_trace VIBE_SCHEDULER_TRACE="$trace"
+  printf 'stale sidecar from an earlier run\n' >"$stale"
+  compile_probe refuse_scheduler_trace VIBE_SCHEDULER_TRACE="$trace" VIBE_INCREMENTAL_TELEMETRY_OUT="$stale"
   if [ -e "$trace" ]; then
     fail "VIBE_SCHEDULER_TRACE was ACCEPTED by $ARTIFACT (invoke $ENTRY): it wrote '$(head -c 160 "$trace")'"
+  fi
+  if grep -qF "stale sidecar from an earlier run" "$stale" 2>/dev/null; then
+    fail "VIBE_SCHEDULER_TRACE was refused before the stale-sidecar cleanup by $ARTIFACT (invoke $ENTRY): the earlier run's VIBE_INCREMENTAL_TELEMETRY_OUT sidecar survived the refused invocation"
   fi
   if [ -s "$PROBE_OUT" ]; then
     fail "VIBE_SCHEDULER_TRACE was ignored by $ARTIFACT: it compiled the probe without the trace it was asked for"
