@@ -91,6 +91,8 @@ export ./module_source.vibe {
 
 export ./typecheck_fs.vibe {
   collect_all_diagnostics,
+  collect_all_diagnostics_for_path_with_error_row,
+  collect_all_diagnostics_with_error_row,
   module_plan_manifest_fs,
   module_plan_manifest_fs_configured,
   module_plan_manifest_fs_with_config,
@@ -124,7 +126,7 @@ struct DependencySources {
 }
 
 enum TypeDbState {
-  TypeDbState(RippleDb, Array[(String, TypeEnv)], DependencySources, Array[StringTriple], Array[StringTriple], Array[StringTriple], Int, Int, Int, Int, String)
+  TypeDbState(RippleDb, Array[(String, TypeEnv)], DependencySources, Array[StringTriple], Array[StringTriple], Array[StringTriple], Int, Int, Int, Int, String, Bool)
 }
 
 export enum TypeDb {
@@ -163,12 +165,13 @@ fn empty_stmt_array() -> Array[Stmt] {
   array_empty()
 }
 
-export fn db_new() -> TypeDb {
+/// Retain this invocation's immutable Exception-row policy with its DB.
+export fn db_new(checked_error_row: Bool) -> TypeDb {
   let deps = DependencySources::{
     entries: empty_string_pairs(),
     source_revision: 0
   }
-  wrap_db(TypeDbState(ripple_new(), empty_env_cache(), deps, empty_string_triples(), empty_string_triples(), empty_string_triples(), 0, 0, 0, 0, ""))
+  wrap_db(TypeDbState(ripple_new(), empty_env_cache(), deps, empty_string_triples(), empty_string_triples(), empty_string_triples(), 0, 0, 0, 0, "", checked_error_row))
 }
 
 fn lookup_source_cache(cache: Array[StringTriple], path: String, fingerprint: String) -> Option[String] {
@@ -233,8 +236,8 @@ fn append_source_cache_entries(cache: Array[StringTriple], entries: Array[String
 
 export fn db_set_source(db: TypeDb, path: String, source: String) -> TypeDb {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) =>
-    wrap_db(TypeDbState(ripple_set_source(db = rdb, path = path, source = source), env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity))
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row) =>
+    wrap_db(TypeDbState(ripple_set_source(db = rdb, path = path, source = source), env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row))
   }
 }
 
@@ -257,7 +260,7 @@ fn lookup_env_cache(cache: Array[(String, TypeEnv)], path: String) -> Option[Typ
 
 export fn db_check_env(db: TypeDb, path: String) -> Option[TypeEnv] {
   match unwrap_db(db) {
-    TypeDbState(_, cache, _, _, _, _, _, _, _, _, _) => lookup_env_cache(cache = cache, path = path)
+    TypeDbState(_, cache, _, _, _, _, _, _, _, _, _, checked_error_row) => lookup_env_cache(cache = cache, path = path)
   }
 }
 
@@ -281,31 +284,31 @@ fn compact_string_fingerprint(_ source: String) -> String {
 
 export fn db_typecheck_count(_ db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(rdb, _, _, _, _, _, _, _, _, _, _) => ripple_eval_count(rdb)
+    TypeDbState(rdb, _, _, _, _, _, _, _, _, _, _, checked_error_row) => ripple_eval_count(rdb)
   }
 }
 
 export fn db_parse_count(_ db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, _, parse_count, _, _, _, _) => parse_count
+    TypeDbState(_, _, _, _, _, _, parse_count, _, _, _, _, checked_error_row) => parse_count
   }
 }
 
 export fn db_merge_count(_ db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, _, _, merge_count, _, _, _) => merge_count
+    TypeDbState(_, _, _, _, _, _, _, merge_count, _, _, _, checked_error_row) => merge_count
   }
 }
 
 export fn db_module_source_count(_ db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, _, _, _, module_source_count, _, _) => module_source_count
+    TypeDbState(_, _, _, _, _, _, _, _, module_source_count, _, _, checked_error_row) => module_source_count
   }
 }
 
 export fn db_codegen_count(_ db: TypeDb) -> Int {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, _, _, _, _, codegen_count, _) => codegen_count
+    TypeDbState(_, _, _, _, _, _, _, _, _, codegen_count, _, checked_error_row) => codegen_count
   }
 }
 
@@ -327,15 +330,15 @@ export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Env + Exception 
 /// Check virtual sources with one flag snapshot for planning and checking.
 export fn db_typecheck_with_config(db: TypeDb, path: String, cfg: TargetCfg) -> TypeDb with Env + Exception {
   match unwrap_db(db_for_target_cfg(db = db, cfg = cfg)) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) => {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row) => {
       let revision = ripple_source_revision(rdb)
       let entries = dependency_sources_for_walk(cache = dep_source_cache, source_revision = revision)
-      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_memory_with_config(rdb = rdb, env_cache = env_cache, dep_sources = entries, parse_count = parse_count, path = path, cfg = cfg)
+      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_memory_with_config(rdb = rdb, env_cache = env_cache, dep_sources = entries, parse_count = parse_count, path = path, cfg = cfg, checked_error_row = checked_error_row)
       let next_cache = DependencySources::{
         entries: next_entries,
         source_revision: revision
       }
-      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count, cfg_identity))
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row))
     }
   }
 }
@@ -347,26 +350,26 @@ export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Env + Excepti
 /// Typecheck with one flag snapshot shared by planning, checking and caches.
 export fn db_typecheck_fs_with_config(db: TypeDb, path: String, cfg: TargetCfg) -> TypeDb with Env + Exception + Fs {
   match unwrap_db(db_for_target_cfg(db = db, cfg = cfg)) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) => {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row) => {
       let revision = ripple_source_revision(rdb)
       let entries = dependency_sources_for_walk(cache = dep_source_cache, source_revision = revision)
-      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = entries, parse_count = parse_count, path = path, cfg = cfg)
+      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = entries, parse_count = parse_count, path = path, cfg = cfg, checked_error_row = checked_error_row)
       // Keep the entry revision: this FS walk may have loaded new sources
       // after reusing other headers. Those stamps need revalidation next time.
       let next_cache = DependencySources::{
         entries: next_entries,
         source_revision: revision
       }
-      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count, cfg_identity))
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row))
     }
   }
 }
 
 /// Capture invocation flags before any filesystem provider can run.
-export fn check_file_fs_configured(_ entry_path: String) -> Unit with Config + Env + Exception + Fs {
+export fn check_file_fs_configured(_ entry_path: String, checked_error_row: Bool) -> Unit with Config + Env + Exception + Fs {
   let cfg = target_cfg_capture()
-  let sources = collect_all_sources_fs_with_config(entry_path, cfg = cfg)
-  let mut db = db_new()
+  let sources = collect_all_sources_fs_with_config(entry_path, cfg = cfg, checked_error_row = checked_error_row)
+  let mut db = db_new(checked_error_row = checked_error_row)
   for entry in sources {
     db = db_set_source(db = db, path = entry.0, source = entry.1)
   }
@@ -375,9 +378,9 @@ export fn check_file_fs_configured(_ entry_path: String) -> Unit with Config + E
 
 /// Capture flags once and check virtual files without filesystem authority.
 /// The entry must be supplied; empty source text is a valid input.
-export fn check_sources_memory_configured(_ entry_path: String, sources: Array[(String, String)]) -> Unit with Config + Env + Exception {
+export fn check_sources_memory_configured(_ entry_path: String, sources: Array[(String, String)], checked_error_row: Bool) -> Unit with Config + Env + Exception {
   let cfg = target_cfg_capture()
-  let mut db = db_new()
+  let mut db = db_new(checked_error_row = checked_error_row)
   let mut has_entry = false
   for entry in sources {
     db = db_set_source(db = db, path = entry.0, source = entry.1)
@@ -395,7 +398,7 @@ export fn check_sources_memory_configured(_ entry_path: String, sources: Array[(
 /// the process memo. A stale/wrong target DB or publication is refused.
 export fn db_checked_lowering_inputs(db: TypeDb, cfg: TargetCfg) -> CheckedLoweringInputs with Exception {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, _, _, _, _, _, _, _, _, identity) => {
+    TypeDbState(rdb, env_cache, _, _, _, _, _, _, _, _, identity, checked_error_row) => {
       if identity != target_cfg_identity(cfg) {
         throw("check the DB with the selected target flags before capturing lowering")
       }
@@ -412,7 +415,7 @@ export fn db_checked_lowering_inputs(db: TypeDb, cfg: TargetCfg) -> CheckedLower
         }
         Array::push(requests, value = (path, source, fingerprint))
       }
-      capture_checked_lowering_inputs(requests = requests, cfg_identity = identity)
+      capture_checked_lowering_inputs(requests = requests, cfg_identity = identity, checked_error_row = db_error_row_checked(db))
     }
   }
 }
@@ -420,7 +423,7 @@ export fn db_checked_lowering_inputs(db: TypeDb, cfg: TargetCfg) -> CheckedLower
 export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Env + Exception {
   let checked = db_typecheck(db = db, path = path)
   match unwrap_db(checked) {
-    TypeDbState(rdb, _, _, _, _, _, _, _, _, _, _) =>
+    TypeDbState(rdb, _, _, _, _, _, _, _, _, _, _, checked_error_row) =>
     match ripple_get_source(db = rdb, path = path) {
       None => throw(String::concat("missing:", path)),
       Some(source) =>
@@ -463,7 +466,7 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String], cfg: TargetCfg) -> Array[String] with Env + Exception {
+fn append_import_alias_collision_defs_for_invocation(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String], cfg: TargetCfg, checked_error_row: Bool) -> Array[String] with Env + Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -474,7 +477,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
       let resolved = resolve_import_path(base_dir = base_dir, raw_path = raw_path)
       match lookup_source_by_path(sources = sources, target_path = resolved) {
         Some(source) => {
-          let source_stmts = namespace_private_value_stmts_after_renames(path = resolved, stmts = engine_parse_program_with_path_with_config(path = resolved, source = source, cfg = cfg), export_renames = export_plan_renames_for(plan = plan, path = resolved))
+          let source_stmts = namespace_private_value_stmts_after_renames(path = resolved, stmts = engine_parse_program_with_path_with_config(path = resolved, source = source, cfg = cfg, checked_error_row = checked_error_row), export_renames = export_plan_renames_for(plan = plan, path = resolved))
           let mut j = 0
           let mut done = false
           while j < Array::length(source_stmts) && !done {
@@ -499,14 +502,14 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
 
 /// #716: parse every source once and expose (paths, stmts) for the export-
 /// rename plan; the merge itself reuses the parsed statements.
-fn parse_merge_sources(_ sources: Array[(String, String)], cfg: TargetCfg) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
+fn parse_merge_sources(_ sources: Array[(String, String)], cfg: TargetCfg, checked_error_row: Bool) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let mut si = 0
   while si < Array::length(sources) {
     let (path, source) = Array::get(sources, at = si)
     Array::push(file_paths, value = path)
-    let stmts = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg)
+    let stmts = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg, checked_error_row = checked_error_row)
     reject_user_iterator_serialized_boundaries(stmts)
     Array::push(file_stmts, value = stmts)
     si = si + 1
@@ -519,7 +522,7 @@ fn parse_merge_sources(_ sources: Array[(String, String)], cfg: TargetCfg) -> (A
 /// impl-overlap check. `collision_sources` spans the whole program so a
 /// collision-def import that crosses a group boundary still resolves. The
 /// caller runs the check once the WHOLE program is in `merged` (#3544, #3551).
-fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit], entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)], cfg: TargetCfg) -> Unit with Env + Exception {
+fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit], entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)], cfg: TargetCfg, checked_error_row: Bool) -> Unit with Env + Exception {
   // #2205: no reset here -- db_grouped_merged_source calls this once per
   // cache-missing GROUP, and a per-call reset would discard the mappings of
   // every earlier group (Codex round 4 on #2213). The whole-merge entry
@@ -559,7 +562,7 @@ fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit]
       // collision local with no value to clone (a type, a constructor) keeps
       // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
       // also arrived through a re-export of the same module.
-      let skipped_locals = append_import_alias_collision_defs_from_sources(merged = merged, current_path = path, stmts = stmts, sources = collision_sources, plan = plan, excluded_locals = import_value_rename_locals(import_renames), cfg = cfg)
+      let skipped_locals = append_import_alias_collision_defs_for_invocation(merged = merged, current_path = path, stmts = stmts, sources = collision_sources, plan = plan, excluded_locals = import_value_rename_locals(import_renames), cfg = cfg, checked_error_row = checked_error_row)
       append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = namespaced_stmts, skipped_locals = skipped_locals, extra_renames = import_renames)
     } else {
       append_non_import_stmts_without_alias_rewrite(merged = merged, stmts = namespaced_stmts)
@@ -570,10 +573,10 @@ fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit]
   }
 }
 
-fn build_merged_source(entry_path: String, sources: Array[(String, String)], cfg: TargetCfg) -> String with Env + Exception {
+fn build_merged_source(entry_path: String, sources: Array[(String, String)], cfg: TargetCfg, checked_error_row: Bool) -> String with Env + Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
-  let (file_paths, file_stmts) = parse_merge_sources(sources, cfg = cfg)
+  let (file_paths, file_stmts) = parse_merge_sources(sources, cfg = cfg, checked_error_row = checked_error_row)
   let plan_entry = if entry_path == "" {
     if Array::length(file_paths) > 0 {
       Array::get(file_paths, at = Array::length(file_paths) - 1)
@@ -586,7 +589,7 @@ fn build_merged_source(entry_path: String, sources: Array[(String, String)], cfg
   let plan = build_export_rename_plan(paths = file_paths, stmts_list = file_stmts, entry_path = plan_entry)
   let merged = empty_stmt_array()
   let units: Array[LinkedUnit] = []
-  append_merged_sources_with_plan(merged = merged, units = units, entry_path = entry_path, sources = sources, file_paths = file_paths, file_stmts = file_stmts, plan = plan, collision_sources = sources, cfg = cfg)
+  append_merged_sources_with_plan(merged = merged, units = units, entry_path = entry_path, sources = sources, file_paths = file_paths, file_stmts = file_stmts, plan = plan, collision_sources = sources, cfg = cfg, checked_error_row = checked_error_row)
   // #3544: two modules' impls of one method name would collapse to one here.
   refuse_linked_impl_overlaps(merged = merged, units = units)
   print_program(merged)
@@ -617,15 +620,15 @@ export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(Stri
 export fn db_merged_source_with_config(db: TypeDb, _entry_path: String, sources: Array[(String, String)], cfg: TargetCfg) -> (String, String, TypeDb) with Env + Exception {
   let db = db_for_target_cfg(db = db, cfg = cfg)
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) => {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row) => {
       let merge_fingerprint = build_merge_fingerprint(entry_path = _entry_path, sources = sources, cfg = cfg)
       let merge_cache_key = "merged"
       match lookup_source_cache(cache = merged_cache, path = merge_cache_key, fingerprint = merge_fingerprint) {
         Some(merged_source) => (merged_source, merge_fingerprint, db),
         None => {
-          let merged_source = build_merged_source(entry_path = _entry_path, sources = sources, cfg = cfg)
+          let merged_source = build_merged_source(entry_path = _entry_path, sources = sources, cfg = cfg, checked_error_row = db_error_row_checked(db))
           let next_merged_cache = upsert_source_cache(cache = merged_cache, path = merge_cache_key, fingerprint = merge_fingerprint, source = merged_source)
-          (merged_source, merge_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, merge_count + 1, module_source_count, codegen_count, cfg_identity)))
+          (merged_source, merge_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, merge_count + 1, module_source_count, codegen_count, cfg_identity, checked_error_row)))
         }
       }
     }
@@ -640,7 +643,7 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
 export fn db_grouped_merged_source_with_config(db: TypeDb, groups: Array[(String, Array[(String, String)])], cfg: TargetCfg) -> (String, String, TypeDb) with Env + Exception {
   let db = db_for_target_cfg(db = db, cfg = cfg)
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) => {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row) => {
       // Keep per-group results in side buffers, then append cache misses
       // once. Rebuilding the full cache on every group miss is O(N^2) for
       // the ~150-group compiler manifest.
@@ -669,7 +672,7 @@ export fn db_grouped_merged_source_with_config(db: TypeDb, groups: Array[(String
         }
         fgi = fgi + 1
       }
-      let (flat_paths, flat_stmts) = parse_merge_sources(flat_sources, cfg = cfg)
+      let (flat_paths, flat_stmts) = parse_merge_sources(flat_sources, cfg = cfg, checked_error_row = db_error_row_checked(db))
       let plan_entry = if Array::length(flat_paths) > 0 {
         Array::get(flat_paths, at = Array::length(flat_paths) - 1)
       } else {
@@ -716,7 +719,7 @@ export fn db_grouped_merged_source_with_config(db: TypeDb, groups: Array[(String
               // The merge records the rename metadata the replay below would.
               let group_paths = Array::slice(flat_paths, start = group_start, end = group_start + Array::length(sources))
               let group_stmts = Array::slice(flat_stmts, start = group_start, end = group_start + Array::length(sources))
-              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources, cfg = cfg)
+              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources, cfg = cfg, checked_error_row = db_error_row_checked(db))
               Array::push(linked_groups, value = StringTriple(cache_key, fingerprint, ""))
             } else {
               // #2205: the cached TEXT already contains the mangled names, but
@@ -752,7 +755,7 @@ export fn db_grouped_merged_source_with_config(db: TypeDb, groups: Array[(String
               // desugar_trait_dict.vibe, ...) were missing their `_exp_`
               // defs while callers referenced them.
               let group_start_stmt = Array::length(program)
-              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources, cfg = cfg)
+              append_merged_sources_with_plan(merged = program, units = units, entry_path = plan_entry, sources = sources, file_paths = group_paths, file_stmts = group_stmts, plan = plan, collision_sources = flat_sources, cfg = cfg, checked_error_row = db_error_row_checked(db))
               let source = print_program(Array::slice(program, start = group_start_stmt, end = Array::length(program)))
               Array::push(new_group_cache_entries, value = StringTriple(cache_key, fingerprint, source))
               merge_count_acc = merge_count_acc + 1
@@ -771,11 +774,11 @@ export fn db_grouped_merged_source_with_config(db: TypeDb, groups: Array[(String
       let next_merge_count = merge_count_acc
       match lookup_source_cache(cache = next_merged_cache, path = grouped_cache_key, fingerprint = grouped_fingerprint) {
         Some(source) =>
-        (source, grouped_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, next_merge_count, module_source_count, codegen_count, cfg_identity))),
+        (source, grouped_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, next_merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row))),
         None => {
           let source = join_group_sources(group_sources)
           let final_merged_cache = upsert_source_cache(cache = next_merged_cache, path = grouped_cache_key, fingerprint = grouped_fingerprint, source = source)
-          (source, grouped_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, final_merged_cache, module_source_cache, artifact_cache, parse_count, next_merge_count + 1, module_source_count, codegen_count, cfg_identity)))
+          (source, grouped_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, final_merged_cache, module_source_cache, artifact_cache, parse_count, next_merge_count + 1, module_source_count, codegen_count, cfg_identity, checked_error_row)))
         }
       }
     }
@@ -807,22 +810,22 @@ fn build_module_source(_ source: String) -> String with Exception {
 
 export fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with Exception {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) => {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row) => {
       let module_cache_key = "module-source"
       match lookup_source_cache(cache = module_source_cache, path = module_cache_key, fingerprint = fingerprint) {
         Some(module_source) => (module_source, db),
         None => {
           let module_source = build_module_source(source)
           let next_module_source_cache = upsert_source_cache(cache = module_source_cache, path = module_cache_key, fingerprint = fingerprint, source = module_source)
-          (module_source, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, next_module_source_cache, artifact_cache, parse_count, merge_count, module_source_count + 1, codegen_count, cfg_identity)))
+          (module_source, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, next_module_source_cache, artifact_cache, parse_count, merge_count, module_source_count + 1, codegen_count, cfg_identity, checked_error_row)))
         }
       }
     }
   }
 }
 
-fn artifact_cache_key(kind: String, entry_name: String) -> String {
-  String::concat(typing_semantics_seed(), String::concat("|", String::concat(kind, String::concat("|", entry_name))))
+fn artifact_cache_key(kind: String, entry_name: String, checked_error_row: Bool) -> String {
+  String::concat(typing_semantics_seed(checked_error_row = checked_error_row), String::concat("|", String::concat(kind, String::concat("|", entry_name))))
 }
 
 fn bytes_to_hex_digit(_ n: Int) -> String {
@@ -892,8 +895,8 @@ fn hex_to_bytes(_ hex: String) -> Bytes with Exception {
 
 export fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with Exception {
   match unwrap_db(db) {
-    TypeDbState(_, _, _, _, _, artifact_cache, _, _, _, _, _) =>
-    match lookup_source_cache(cache = artifact_cache, path = artifact_cache_key(kind = kind, entry_name = entry_name), fingerprint = fingerprint) {
+    TypeDbState(_, _, _, _, _, artifact_cache, _, _, _, _, _, checked_error_row) =>
+    match lookup_source_cache(cache = artifact_cache, path = artifact_cache_key(kind = kind, entry_name = entry_name, checked_error_row = checked_error_row), fingerprint = fingerprint) {
       Some(hex) => Some(hex_to_bytes(hex)),
       None => None
     }
@@ -902,8 +905,8 @@ export fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: 
 
 export fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> TypeDb {
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity) =>
-    wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, upsert_source_cache(cache = artifact_cache, path = artifact_cache_key(kind = kind, entry_name = entry_name), fingerprint = fingerprint, source = bytes_to_hex(bytes)), parse_count, merge_count, module_source_count, codegen_count + 1, cfg_identity))
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row) =>
+    wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, upsert_source_cache(cache = artifact_cache, path = artifact_cache_key(kind = kind, entry_name = entry_name, checked_error_row = checked_error_row), fingerprint = fingerprint, source = bytes_to_hex(bytes)), parse_count, merge_count, module_source_count, codegen_count + 1, cfg_identity, checked_error_row))
   }
 }
 
@@ -912,7 +915,7 @@ export fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name:
 fn db_for_target_cfg(db: TypeDb, cfg: TargetCfg) -> TypeDb {
   let identity = target_cfg_identity(cfg)
   match unwrap_db(db) {
-    TypeDbState(rdb, env_cache, dep_sources, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, previous) => {
+    TypeDbState(rdb, env_cache, dep_sources, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count, previous, checked_error_row) => {
       if previous == identity {
         db
       } else {
@@ -920,7 +923,32 @@ fn db_for_target_cfg(db: TypeDb, cfg: TargetCfg) -> TypeDb {
           entries: empty_string_pairs(),
           source_revision: ripple_source_revision(rdb)
         }
-        wrap_db(TypeDbState(ripple_without_results(rdb), empty_env_cache(), deps, empty_string_triples(), empty_string_triples(), empty_string_triples(), parse_count, merge_count, module_source_count, codegen_count, identity))
+        wrap_db(TypeDbState(ripple_without_results(rdb), empty_env_cache(), deps, empty_string_triples(), empty_string_triples(), empty_string_triples(), parse_count, merge_count, module_source_count, codegen_count, identity, checked_error_row))
+      }
+    }
+  }
+}
+
+/// The checking policy belongs to this DB, never to process setter order.
+export fn db_error_row_checked(_ db: TypeDb) -> Bool {
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, _, _, _, _, _, _, checked_error_row) => checked_error_row
+  }
+}
+
+/// A policy switch invalidates derived products, preserving source inputs and
+/// cumulative work counters. Retaining the same policy preserves warm reuse.
+export fn db_with_error_row_policy(db: TypeDb, checked_error_row: Bool) -> TypeDb {
+  match unwrap_db(db) {
+    TypeDbState(rdb, _, _, _, _, _, parse_count, merge_count, module_source_count, codegen_count, cfg_identity, previous) => {
+      if previous == checked_error_row {
+        db
+      } else {
+        let deps = DependencySources::{
+          entries: empty_string_pairs(),
+          source_revision: ripple_source_revision(rdb)
+        }
+        wrap_db(TypeDbState(ripple_without_results(rdb), empty_env_cache(), deps, empty_string_triples(), empty_string_triples(), empty_string_triples(), parse_count, merge_count, module_source_count, codegen_count, cfg_identity, checked_error_row))
       }
     }
   }

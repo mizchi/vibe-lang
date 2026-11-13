@@ -3,7 +3,7 @@ import @vibe/compiler/runtime {
 }
 
 test "memory walk counts survive a warm check and dependency edit" {
-  let db = db_set_source(db = db_set_source(db = db_new(), path = "counter/dep.vibe", source = "export let value = 1"), path = "counter/main.vibe", source = "import ./dep.vibe { value }\nlet answer = value")
+  let db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = "counter/dep.vibe", source = "export let value = 1"), path = "counter/main.vibe", source = "import ./dep.vibe { value }\nlet answer = value")
   let cold = db_typecheck(db = db, path = "counter/main.vibe")
   inspect(db_parse_count(cold), content = "4")
   inspect(db_typecheck_count(cold), content = "2")
@@ -32,9 +32,9 @@ test "memory directory imports and reexports use the production fingerprint" {
   let dep_text = "export let value = 1\n"
   let facade_text = "export ./dep.vibe { value }\n"
   let root_text = "import ./pkg { value }\nexport let answer = value\n"
-  let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = dep, source = dep_text), path = facade, source = facade_text), path = root, source = root_text)
+  let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = dep, source = dep_text), path = facade, source = facade_text), path = root, source = root_text)
   let (_, fingerprint, checked) = db_program_source(db = db, path = root)
-  let seed = typing_semantics_seed()
+  let seed = typing_semantics_seed(checked_error_row = false)
   let dep_fp = engine_typecheck_fs_build_fingerprint(path = dep, source = dep_text, dep_fps = [
   ], semantics_seed = seed)
   let facade_fp = engine_typecheck_fs_build_fingerprint(path = facade, source = facade_text, dep_fps = [
@@ -52,7 +52,7 @@ test "memory directory imports and reexports use the production fingerprint" {
 }
 
 test "memory import cycle is refused before checking any module" {
-  let db = db_set_source(db = db_set_source(db = db_new(), path = "cycle/a.vibe", source = "import ./b.vibe { y }\nexport let x = 1"), path = "cycle/b.vibe", source = "import ./a.vibe { x }\nexport let y = 2")
+  let db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = "cycle/a.vibe", source = "import ./b.vibe { y }\nexport let x = 1"), path = "cycle/b.vibe", source = "import ./a.vibe { x }\nexport let y = 2")
   let message = handle {
     db_typecheck(db = db, path = "cycle/a.vibe")
     "accepted"
@@ -71,7 +71,7 @@ test "failed import edit preserves the source dependency cache witness for retry
   let new_dep = "retry_cache/new.vibe"
   let old_source = "import ./old.vibe { value }\nexport fn read() -> Int { value }\n"
   let new_source = "import ./new.vibe { value }\nexport fn read() -> Int { value }\n"
-  let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = "export let value = 1"), path = new_dep, source = "export let value = \"wrong\""), path = root, source = old_source)
+  let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = old_dep, source = "export let value = 1"), path = new_dep, source = "export let value = \"wrong\""), path = root, source = old_source)
   let cold = db_typecheck(db = db, path = root)
   let edited = db_set_source(db = cold, path = root, source = new_source)
   let failed = handle {
@@ -85,7 +85,7 @@ test "failed import edit preserves the source dependency cache witness for retry
   let warm = db_typecheck(db = checked, path = root)
   assert(db_parse_count(warm) == count)
   let (_, fp, _) = db_program_source(db = warm, path = root)
-  let seed = typing_semantics_seed()
+  let seed = typing_semantics_seed(checked_error_row = false)
   let dependency_fp = engine_typecheck_fs_build_fingerprint(path = new_dep, source = "export let value = 2", dep_fps = [
   ], semantics_seed = seed)
   let expected = engine_typecheck_fs_build_fingerprint(path = root, source = new_source, dep_fps = [
@@ -112,11 +112,11 @@ test "adding a higher priority import candidate invalidates a warm memory plan" 
   let root_text = "import ./pkg { value }\nexport fn read() -> Int { value }\n"
   let old_text = "export let value = 1\n"
   let new_text = "export let value = \"wrong\"\n"
-  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = root)
+  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = old_dep, source = old_text), path = root, source = root_text), path = root)
   let warm = db_typecheck(db = cold, path = root)
   assert(db_parse_count(warm) == db_parse_count(cold))
   let edited = db_set_source(db = warm, path = new_dep, source = new_text)
-  let fresh = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = new_dep, source = new_text)
+  let fresh = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = old_dep, source = old_text), path = root, source = root_text), path = new_dep, source = new_text)
   let expected = memory_resolution_error(db = fresh, root = root)
   assert(expected != "accepted")
   inspect(memory_resolution_error(db = edited, root = root) == expected, content = "true")
@@ -131,10 +131,10 @@ test "new candidates replan transitive imports and publish their canonical finge
   let facade_text = "export ./pkg { value }\n"
   let old_text = "export let value = 1\n"
   let new_text = "export let value = \"changed\"\n"
-  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = facade, source = facade_text), path = root, source = root_text), path = root)
+  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = old_dep, source = old_text), path = facade, source = facade_text), path = root, source = root_text), path = root)
   let checked = db_typecheck(db = db_set_source(db = cold, path = new_dep, source = new_text), path = root)
   let (_, fp, _) = db_program_source(db = checked, path = root)
-  let seed = typing_semantics_seed()
+  let seed = typing_semantics_seed(checked_error_row = false)
   let dep_fp = engine_typecheck_fs_build_fingerprint(path = new_dep, source = new_text, dep_fps = [
   ], semantics_seed = seed)
   let facade_fp = engine_typecheck_fs_build_fingerprint(path = facade, source = facade_text, dep_fps = [
@@ -165,7 +165,7 @@ fn memory_resolution_from_fs(_ failed_walk: Bool) -> Unit with Console + Env + E
   } else {
     "export let value = \"wrong\"\n"
   }
-  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = root)
+  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = old_dep, source = old_text), path = root, source = root_text), path = root)
   Fs::mkdir_p(dir)
   Fs::write_file(new_dep, contents = new_text)
   let loaded = if failed_walk {
@@ -183,7 +183,7 @@ fn memory_resolution_from_fs(_ failed_walk: Bool) -> Unit with Console + Env + E
     assert(db_check_env(db = next, path = new_dep) is Some(_))
     next
   }
-  let fresh = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = new_dep, source = new_text)
+  let fresh = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = old_dep, source = old_text), path = root, source = root_text), path = new_dep, source = new_text)
   let expected = memory_resolution_error(db = fresh, root = root)
   assert(expected != "accepted")
   inspect(memory_resolution_error(db = loaded, root = root) == expected, content = "true")

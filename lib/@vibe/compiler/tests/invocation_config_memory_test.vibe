@@ -54,7 +54,7 @@ fn memory_cfg_inputs(_ root: String) -> Array[(String, String)] {
 }
 
 fn memory_cfg_db(_ sources: Array[(String, String)]) -> TypeDb {
-  let mut db = db_new()
+  let mut db = db_new(checked_error_row = false)
   for entry in sources {
     db = db_set_source(db = db, path = entry.0, source = entry.1)
   }
@@ -168,7 +168,7 @@ test "one Config read owns the complete virtual check across nested checks" {
   set_persistent_cache_cfg_flags("poison")
   handle {
     handle {
-      check_sources_memory_configured("memory_cfg_outer/main.vibe", sources = inputs)
+      check_sources_memory_configured("memory_cfg_outer/main.vibe", sources = inputs, checked_error_row = false)
     } with { Config::CfgFlags() => {
       Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
       let inner = memory_cfg_run(db = memory_cfg_db(inner_inputs), path = "memory_cfg_inner/main.vibe", flags = "beta")
@@ -205,7 +205,8 @@ test "the configured raw checker preserves diagnostic bytes and scoped fingerpri
     deps: [],
     dep_fps: [],
     dep_envs: [],
-    ships_owned_heads: false
+    ships_owned_heads: false,
+    checked_error_row: false
   }
   set_cfg_ambient_flags(["alpha"])
   set_persistent_cache_cfg_flags("alpha")
@@ -218,7 +219,7 @@ test "the configured raw checker preserves diagnostic bytes and scoped fingerpri
     assert_eq(actual, expected)
     match CheckJob::check_with_raw_diagnostics_with_config(job, interfaces = engine_dependency_interface_set_new(), cfg = target_cfg_from_csv("beta")) {
       Checked(_, fingerprint, _, _, _, _, _) => assert_eq(fingerprint, engine_typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = [
-      ], semantics_seed = typing_semantics_seed(), cfg = target_cfg_from_csv("beta"))),
+      ], semantics_seed = typing_semantics_seed(checked_error_row = false), cfg = target_cfg_from_csv("beta"))),
       _ => throw("beta must check the valid Bool result")
     }
     memory_cfg_reset()
@@ -235,7 +236,7 @@ test "the configured virtual check rejects a missing entry and accepts empty sou
     let message = handle {
       handle {
         check_sources_memory_configured("memory_cfg_absent/entry.vibe", sources = [
-        ])
+        ], checked_error_row = false)
       } with { Config::CfgFlags() => resume("alpha") }
       ""
     } with { Exception::Throw(message) => message }
@@ -245,7 +246,7 @@ test "the configured virtual check rejects a missing entry and accepts empty sou
     handle {
       check_sources_memory_configured(empty_path, sources = [
         ("memory_cfg_empty/entry_\{suffix}.vibe", "")
-      ])
+      ], checked_error_row = false)
     } with { Config::CfgFlags() => resume("alpha") }
     memory_cfg_reset()
   } with { Exception::Throw(message) => {

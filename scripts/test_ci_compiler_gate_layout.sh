@@ -131,6 +131,18 @@ except ImportError:
 with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
 
+# Pin the scheduling contract: updates share a PR group, while every non-PR
+# run keeps its own group. Only superseded PR runs may be cancelled.
+concurrency = doc.get("concurrency") or {}
+expected_group = "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+if not isinstance(concurrency, dict) or concurrency.get("group") != expected_group:
+    sys.exit("[ci-compiler-gate-layout] CI concurrency must group by PR and isolate non-PR runs")
+if concurrency.get("cancel-in-progress") != "${{ github.event_name == 'pull_request' }}":
+    sys.exit("[ci-compiler-gate-layout] CI concurrency must cancel superseded PR runs only")
+required_if = str((doc.get("jobs") or {}).get("ci-required", {}).get("if", "")).strip()
+if required_if not in ("!cancelled()", "${{ !cancelled() }}"):
+    sys.exit("[ci-compiler-gate-layout] ci-required must run after failures but stop on cancellation")
+
 for job_id, job in (doc.get("jobs") or {}).items():
     if not isinstance(job, dict):
         continue
