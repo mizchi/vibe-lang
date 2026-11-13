@@ -431,11 +431,11 @@ test "an outer binding in a for iterable keeps its drop (#3879)" {
   // `compile_forin_loop` makes the enclosing locals loop-borrowed before it
   // compiles the iterable, so `[d]` retains `d` there; the plan now counts
   // that item as a borrow too.
-  inspect(validate(carried_iterable), content = "run x -: not checked: loop binder (a for element or a loop parameter)")
+  inspect(validate(carried_iterable), content = "")
 }
 
 test "the pre-#3879 for-iterable plan leaks the outer binding" {
-  inspect(edited(body = carried_iterable, edit = pre_3879), content = "run d -: owned value not consumed\nrun x -: not checked: loop binder (a for element or a loop parameter)")
+  inspect(edited(body = carried_iterable, edit = pre_3879), content = "run d -: owned value not consumed")
 }
 
 test "a parameter retained in a loop with no planned drop is not checked" {
@@ -474,14 +474,14 @@ let tail_iterable = "let run: (Bool) -> Int = (c) -> {\n  let d = [A([1])]\n  le
 
 test "a for iterable's branch leaf naming an outer binding is a borrow (#3919)" {
   inspect(plan(tail_iterable), content = "run x drop 1\nrun __seq0 drop 1\nrun __seq1 drop 1\nrun d drop 1")
-  inspect(validate(tail_iterable), content = "run x -: not checked: loop binder (a for element or a loop parameter)")
+  inspect(validate(tail_iterable), content = "")
 }
 
 test "a deleted drop of an iterable-tail borrow leaks" {
   // The leaf consumes nothing, so the drop is the only release of `d`'s own
   // reference. (Before #3919 the plan split `d` instead -- a consume mark on
   // the leaf and a path drop -- which leaks once codegen retains the leaf.)
-  inspect(edited(body = tail_iterable, edit = pre_3879), content = "run d -: owned value not consumed\nrun x -: not checked: loop binder (a for element or a loop parameter)")
+  inspect(edited(body = tail_iterable, edit = pre_3879), content = "run d -: owned value not consumed")
 }
 
 // #3933 review: only the iterable's RESULT leaves are retained. A name in a
@@ -493,7 +493,7 @@ let iter_statement = "let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let
 
 test "a statement inside a for iterable is not a result leaf (#3933)" {
   inspect(plan(iter_statement), content = "run x drop 1\nrun __seq0 drop 1\nrun __seq1 drop 1\nrun d consume_mark:288 1\nrun d path_drop 1")
-  inspect(validate(iter_statement), content = "run d -: not checked: loop: consumed through a branch or block value\nrun x -: not checked: loop binder (a for element or a loop parameter)")
+  inspect(validate(iter_statement), content = "run d -: not checked: loop: consumed through a branch or block value")
 }
 
 test "a plan made to balance only by miscounting an iterable statement is not accepted (#3933)" {
@@ -505,5 +505,63 @@ test "a plan made to balance only by miscounting an iterable statement is not ac
       pa_is_consume_mark(a) && a.name == "d"
     })
   })
-  inspect(out, content = "run d -: not checked: loop: consumed through a branch or block value\nrun x -: not checked: loop binder (a for element or a loop parameter)")
+  inspect(out, content = "run d -: not checked: loop: consumed through a branch or block value")
+}
+
+//# For elements
+
+// A `for` element is a view into the iterable that codegen binds each
+// iteration and registers loop-borrowed (#715), so an owning occurrence at
+// a call argument, an aggregate item or a collected body value retains it
+// there. It holds nothing, and its plan rows are never realized.
+let elem_branch = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1]), A([2])]\n  let mut k = 0\n  for x in ds {\n    k = k + if c {\n      keep(x)\n    } else {\n      len(x)\n    }\n  }\n  k\n}"
+
+let elem_collect = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1]), A([2])]\n  let ys = for x in ds {\n    x\n  }\n  Array::length(ys)\n}"
+
+let elem_branch_value = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1]), A([2])]\n  let mut k = 0\n  for x in ds {\n    k = k + keep(if c {\n      x\n    } else {\n      A([0])\n    })\n  }\n  k\n}"
+
+let elem_alias = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1]), A([2])]\n  let mut k = 0\n  for x in ds {\n    let y = x\n    k = k + keep(y)\n  }\n  k\n}"
+
+let elem_capture = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1]), A([2])]\n  let mut k = 0\n  for x in ds {\n    let f = () -> keep(x)\n    k = k + f()\n  }\n  k\n}"
+
+let elem_shared = "let run: (Bool) -> Int = (c) -> {\n  let ds = [A([1]), A([2])]\n  let mut k = 0\n  for x in ds {\n    k = k + keep(x)\n  }\n  for x in ds {\n    k = k + len(x)\n  }\n  k\n}"
+
+test "a for element consumed at a call argument on one branch is checked" {
+  inspect(tagged(tag = "branch", out = validate(elem_branch)), content = "branch: clean")
+  inspect(tagged(tag = "collect", out = validate(elem_collect)), content = "collect: clean")
+}
+
+test "a for element's plan rows are not what releases it" {
+  // Codegen gives a `for` element no scope-end drop, so the ledger does not
+  // count the planner's row: deleting it or doubling it changes nothing.
+  let deleted = edited(body = elem_branch, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_drop(a) && a.name == "x"
+    })
+  })
+  inspect(tagged(tag = "deleted", out = deleted), content = "deleted: clean")
+  let doubled = edited(body = elem_branch, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    twice_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_drop(a) && a.name == "x"
+    })
+  })
+  inspect(tagged(tag = "doubled", out = doubled), content = "doubled: clean")
+}
+
+test "a for element consumed through a branch value is not checked" {
+  inspect(validate(elem_branch_value), content = "run x -: not checked: loop: consumed through a branch or block value")
+}
+
+test "a for element moved into a let alias is not checked" {
+  inspect(tagged(tag = "alias", out = validate(elem_alias)), content = "alias: run x -: not checked: loop element: moved into a let alias")
+}
+
+test "a for element captured by a closure is not checked" {
+  inspect(tagged(tag = "capture", out = validate(elem_capture)), content = "capture: run x -: not checked: closure capture\nrun * -: not checked: lambda body")
+}
+
+test "two for elements of one name are each checked" {
+  // The RC lane renames the second binder apart (`__shadow_1_x`), so neither
+  // shares a name with another binding.
+  inspect(tagged(tag = "shared", out = validate(elem_shared)), content = "shared: clean")
 }
