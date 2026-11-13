@@ -1889,6 +1889,32 @@ The cold heap rises by 14 MB, because the walk keeps the texts it has written or
 Cold wall moved within noise: reuse on minus reuse off went from +0.79 s to
 −0.19 s, and single samples spread over about 1 s on this host.
 
+**One publication per module slot (#2825).** The remaining +35 MB per edit was
+the previous witnesses and target records themselves: nothing deleted them. A
+publication now retires the previous one of its slot. A slot is every input-key
+piece except the source and the dependency envs: the owner path, target flags,
+typing semantics and resolution authority. So a `vibe test` of another file,
+which lowers other test blocks, keeps its own slot. A small record per slot
+(`selfhost_typing_dependency_env_reuse_latest_v1`, tag `TDRE10L1`) names the
+target fingerprint and alias digest it published last. The next publication
+handles the old records in this order:
+
+1. The old alias is repointed at the new target if the key is unchanged (a
+   reuse hit leaves the alias naming the target it was found through).
+   Otherwise it is deleted.
+2. The old witness and target record are deleted.
+
+Deleting only turns a later lookup into a miss, since every reader checks that
+the records it reaches exist and bind each other. An edit reverted later is
+checked again rather than reused. Dependency env texts are shared between
+witnesses and are kept.
+
+On the CLI closure (740 modules), the cache directory after a cold build and
+three edits went from 58 / 95 / 131 / 168 MB to 61 / 61 / 62 / 62 MB. The
+witness count stays at 740. Edited-warm wall time is unchanged within noise.
+`compile_typing_env_reuse_oracle.mjs` pins it: each body edit must leave as
+many witnesses and targets as the cold build wrote.
+
 Reuse on minus reuse off, measured after #3808:
 
 | corpus | case | heap | wall (advisory, one round) |

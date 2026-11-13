@@ -49,6 +49,7 @@ import @vibe/compiler/cache {
   persistent_type_env_cache_path_in_namespace,
   persistent_typing_dependency_env_reuse_eligibility_path,
   persistent_typing_dependency_env_reuse_eligibility_path_in_namespace,
+  persistent_typing_dependency_env_reuse_latest_path_in_namespace,
   persistent_typing_dependency_env_reuse_sidecar_path,
   persistent_typing_dependency_env_reuse_sidecar_path_in_namespace,
   persistent_typing_dependency_env_reuse_text_path_in_namespace
@@ -683,6 +684,7 @@ export fn store_persistent_type_env_in_namespace(fingerprint: String, env: TypeE
 // does not parse and misses.
 let typing_dependency_env_reuse_alias_v11_tag: String = "TDRE11A"
 let typing_dependency_env_reuse_witness_v10_tag: String = "TDRE10W"
+let typing_dependency_env_reuse_latest_v1_tag: String = "TDRE10L1"
 
 /// One `<byte length>:<text>` segment, pushed into a builder as its pieces
 /// (#2945). The TDRE10 texts embed a module's verbatim source and its
@@ -869,7 +871,10 @@ export struct TypingReuseKey {
   pieces: Array[String];
   piece_digests: Array[String];
   by_ref: Array[Bool];
-  digest: String
+  digest: String;
+  /// #2825: the publication slot -- every piece but the source and the
+  /// dependency envs. Two keys of one slot are two versions of one module.
+  slot: String
 }
 
 fn push_typing_reuse_key_piece(key: TypingReuseKey, digest: StringBuilder, piece: String, piece_digest: String, by_ref: Bool) -> Unit {
@@ -900,7 +905,8 @@ fn typing_dependency_transport_input_key_memo_for_cfg_identity(path: String, sou
     pieces: [],
     piece_digests: [],
     by_ref: [],
-    digest: ""
+    digest: "",
+    slot: ""
   }
   let digest = StringBuilder::new()
   if cfg_identity != "" {
@@ -922,11 +928,17 @@ fn typing_dependency_transport_input_key_memo_for_cfg_identity(path: String, sou
     push_typing_reuse_key_piece(key = key, digest = digest, piece = env_text, piece_digest = env_digest, by_ref = true)
     i = i + 1
   }
+  let slot = StringBuilder::new()
+  push_typing_reuse_segment(out = slot, text = cfg_identity)
+  push_typing_reuse_segment(out = slot, text = owner)
+  push_typing_reuse_segment(out = slot, text = semantics_seed)
+  push_typing_reuse_segment(out = slot, text = resolution_seed)
   TypingReuseKey::{
     pieces: key.pieces,
     piece_digests: key.piece_digests,
     by_ref: key.by_ref,
-    digest: StringBuilder::freeze(digest)
+    digest: StringBuilder::freeze(digest),
+    slot: compact_string_fingerprint(StringBuilder::freeze(slot))
   }
 }
 
@@ -1388,6 +1400,99 @@ export fn write_typing_dependency_env_reuse_sidecar(input_key: TypingReuseKey, t
 /// Use the caller's captured cache namespace.
 export fn write_typing_dependency_env_reuse_sidecar_in_namespace(input_key: TypingReuseKey, target_fingerprint: String, namespace: String) -> Unit with Env + Fs {
   Fs::write_file(typing_reuse_sidecar_path_in_namespace(input_key, namespace = namespace), contents = typing_dependency_reuse_alias_text(target_fingerprint))
+}
+
+fn typing_dependency_reuse_latest_text(fingerprint: String, alias_digest: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, value = typing_dependency_env_reuse_latest_v1_tag)
+  push_typing_reuse_segment(out = out, text = fingerprint)
+  push_typing_reuse_segment(out = out, text = alias_digest)
+  StringBuilder::freeze(out)
+}
+
+fn parse_typing_dependency_reuse_latest(_ text: String) -> Option[(String, String)] {
+  let tag = typing_dependency_env_reuse_latest_v1_tag
+  if !String::starts_with(text, prefix = tag) {
+    None
+  } else {
+    match parse_typing_reuse_segment(text = text, pos = String::length(tag)) {
+      Some((fingerprint, after)) =>
+      match parse_typing_reuse_segment(text = text, pos = after) {
+        Some((alias_digest, end)) =>
+        if end == String::length(text) && String::length(fingerprint) > 0 && String::length(alias_digest) > 0 {
+          Some((fingerprint, alias_digest))
+        } else {
+          None
+        },
+        None => None
+      },
+      None => None
+    }
+  }
+}
+
+fn typing_reuse_read_quietly(_ path: String) -> Option[String] with Fs {
+  if !Fs::exists(path) {
+    None
+  } else {
+    handle {
+      Some(Fs::read_file(path))
+    } with { Exception::Throw(_) => None }
+  }
+}
+
+fn typing_reuse_remove_quietly(_ path: String) -> Unit with Fs {
+  handle {
+    if Fs::exists(path) {
+      Fs::remove_file(path)
+    } else ()
+  } with { Exception::Throw(_) => () }
+}
+
+/// #2825: keep one TDRE10 publication per module slot. Run after the slot
+/// published `fingerprint` under `input_key` (target, witness and, on a fresh
+/// check, alias). The slot's previous publication is retired: its alias is
+/// pointed at the new target when the key is unchanged (a reuse hit leaves
+/// the alias naming the target it was found through) and deleted otherwise,
+/// then its witness and target record are deleted.
+///
+/// Deleting only ever turns a later lookup into a miss: every reader checks
+/// that the alias, witness and record it reaches exist and bind each other
+/// exactly. An edit reverted later is checked again rather than reused.
+export fn retire_previous_typing_dependency_env_reuse_in_namespace(input_key: TypingReuseKey, fingerprint: String, namespace: String) -> Unit with Env + Fs {
+  let latest_path = persistent_typing_dependency_env_reuse_latest_path_in_namespace(input_key.slot, namespace = namespace)
+  let previous = match typing_reuse_read_quietly(latest_path) {
+    Some(text) => parse_typing_dependency_reuse_latest(text),
+    None => None
+  }
+  let current = (fingerprint, input_key.digest)
+  if previous == Some(current) {
+    ()
+  } else {
+    match previous {
+      Some((old_fingerprint, old_alias_digest)) => if old_fingerprint == fingerprint {
+        ()
+      } else {
+        // The alias first, so no alias is left naming a deleted witness.
+        let alias_path = persistent_typing_dependency_env_reuse_sidecar_path_in_namespace(old_alias_digest, namespace = namespace)
+        let alias_names_old = match typing_reuse_read_quietly(alias_path) {
+          Some(text) => parse_typing_dependency_reuse_alias(text) == Some(old_fingerprint),
+          None => false
+        }
+        if alias_names_old {
+          if old_alias_digest == input_key.digest {
+            Fs::write_file(alias_path, contents = typing_dependency_reuse_alias_text(fingerprint))
+          } else {
+            typing_reuse_remove_quietly(alias_path)
+          }
+        } else ()
+        typing_reuse_remove_quietly(persistent_typing_dependency_env_reuse_eligibility_path_in_namespace(old_fingerprint, namespace = namespace))
+        typing_reuse_remove_quietly(persistent_type_env_cache_path_in_namespace(old_fingerprint, namespace = namespace))
+      },
+      None => ()
+    }
+    Fs::write_file(latest_path, contents = typing_dependency_reuse_latest_text(fingerprint = fingerprint, alias_digest = input_key.digest))
+  }
 }
 
 export fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Env + Fs {
