@@ -918,34 +918,37 @@ export fn stmt_type_rows(_ stmt: Stmt) -> (String, Array[String]) {
 
 /// ADR-0088: the labels of `labels` that carry the Optional grade on
 /// something that is not a host capability. Grades on `Exception`, `Async`
-/// and user effects are refused; the entry-admission and handler checks
-/// then see the plain label.
+/// and program-handled effects are refused; the entry-admission and handler
+/// checks then see the plain label. An `extern effect` is host-provided, so
+/// its grade is admitted (ADR-0124 decision 2, #4082): a provider bound at
+/// launch is the grant, and `perform? Kv::get(..)` answers `NotGranted`
+/// without one.
 export fn optional_grade_errors(fn_name: String, labels: Array[String]) -> Array[EffectError] {
   let errors = array_empty()
   let mut i = 0
   while i < Array::length(labels) {
     let label = Array::get(labels, at = i)
-    if authority_is_optional(label) && !is_instantiate_authority(label) {
-      // An `extern effect` IS host-provided; what is missing is the optional
-      // grade for one (#4082), and the refusal says so.
-      let base = row_label_base(effect_name_of_op(strip_authority_grade(label)))
-      let mut extern_effect = false
-      for host in entry_host_provided_effects {
-        if host == base {
-          extern_effect = true
-        }
-      }
-      if extern_effect {
-        Array::push(errors, value = EEOptionalGradeExternEffect(fn_name, label))
-      } else {
-        Array::push(errors, value = EEOptionalGradeNotCapability(fn_name, label))
-      }
+    if authority_is_optional(label) && !is_instantiate_authority(label) && !label_names_extern_effect(label) {
+      Array::push(errors, value = EEOptionalGradeNotCapability(fn_name, label))
     } else {
       ()
     }
     i = i + 1
   }
   errors
+}
+
+/// ADR-0124 (#4082): whether a row label (grade included) names an `extern
+/// effect` or one of its operations.
+fn label_names_extern_effect(_ label: String) -> Bool {
+  let base = row_label_base(effect_name_of_op(strip_authority_grade(label)))
+  let mut found = false
+  for host in entry_host_provided_effects {
+    if host == base {
+      found = true
+    }
+  }
+  found
 }
 
 /// #761: a `test {}` / `bench {}` block is a program entry point — it runs under
