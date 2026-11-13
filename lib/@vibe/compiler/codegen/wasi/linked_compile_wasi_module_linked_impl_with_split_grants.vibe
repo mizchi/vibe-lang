@@ -48,6 +48,7 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  borrow_owned_value_thunks,
   compute_borrow_param_user_fns,
   compute_float_returning_names,
   compute_may_return_view_fns,
@@ -459,6 +460,12 @@ export fn lc_prepare_module_with_cache_policy(stmts: Array[Stmt], entry_name_in:
   // PR #2708 review: the String length-view runtime prelude (WHATWG
   // replacement decoding), appended under the same rules.
   append_string_views_runtime(stmts)
+  // #2827: a function used as a value keeps the borrowed ABI for its direct
+  // calls; its value uses move to an owning thunk. Before the passthrough and
+  // owning-return rewrites, so the thunk is classified like any callback.
+  if enable_rc {
+    let _ = borrow_owned_value_thunks(stmts = stmts, exclude = lc_analysis_exclude(entry_name))
+  } else ()
   // Named and anonymous callbacks share the owning return ABI. Rewrite named
   // bodies before the analyses so direct calls receive that same contract.
   // Read direct parameter passthroughs before cl_own_return_stmts can wrap

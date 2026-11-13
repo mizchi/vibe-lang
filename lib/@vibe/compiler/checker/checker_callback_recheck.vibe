@@ -37,7 +37,7 @@
 //# is always checked again inside a region.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, TypeDef, TypeEnv, TypeExpr, call_arg_value, call_arg_values, env_mut_escape, subst_apply, type_to_string
+  Expr, Subst, Type, TypeDef, TypeEnv, TypeExpr, call_arg_value, call_arg_values, env_bind, env_mut_escape, subst_apply, type_to_string
 }
 
 import @vibe/core {
@@ -46,6 +46,14 @@ import @vibe/core {
 
 import @vibe/compiler/checker/diagnostics {
   off_marker
+}
+
+import @vibe/compiler/checker/traits {
+  env_marker_before
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  ascription_lambda_ann
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -173,7 +181,8 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, leads: Array[Expr],
           }
           Array::push(outer, value = match from {
             Some(e) => if transports {
-              callback_input_predates(arg = e, env = env)
+              // A leading argument seeds a writable accumulator.
+              callback_input_predates(arg = e, env = env, follow_bindings = oi < pidx)
             } else {
               array_empty()
             },
@@ -414,24 +423,46 @@ fn callback_any(_ sets: Array[Array[String]]) -> Bool {
 /// An input to an element callback may be returned by a call whose arguments
 /// do not reveal the returned storage. Preserve the conservative region set
 /// unless the location can be read from the input.
-fn callback_input_predates(arg: Expr, env: TypeEnv) -> Array[String] {
-  if callback_input_location_known(arg) {
+fn callback_input_predates(arg: Expr, env: TypeEnv, follow_bindings: Bool) -> Array[String] {
+  if callback_input_location_known(arg, env = env, follow_bindings = follow_bindings) {
     retention_arg_predates(arg = arg, env = env)
   } else {
     callback_region_names(env)
   }
 }
 
-fn callback_input_location_known(_ e: Expr) -> Bool {
+/// Preserve unknown storage through a local binding and subsequent aliases.
+export fn callback_bind_input_storage(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr) -> TypeEnv {
+  if callback_input_location_known(val, env = def_env, follow_bindings = true) {
+    env
+  } else {
+    env_bind(env = env, name = callback_input_storage_key(name), ty = CtUnit)
+  }
+}
+
+fn callback_input_storage_key(_ name: String) -> String {
+  String::concat("#callback_input_storage_unknown:", name)
+}
+
+fn callback_input_location_known(_ e: Expr, env: TypeEnv, follow_bindings: Bool) -> Bool {
   match e {
-    ECall(EIdent("__index", _), args, _, _) => if Array::length(args) > 0 {
-      callback_input_location_known(Array::get(args, at = 0))
+    EIdent(name, _) => if follow_bindings {
+      env_mut_escape(env = env, name = name) is None && env_marker_before(env = env, marker = callback_input_storage_key(name), name = name) is None
+    } else {
+      true
+    },
+    ECall(EIdent(wrapper, _), args, _, _) => if (wrapper == "__index" || wrapper == "$source_span") && Array::length(args) > 0 {
+      callback_input_location_known(Array::get(args, at = 0), env = env, follow_bindings = follow_bindings)
     } else {
       false
     },
-    ECall(_, _, _, _) => false,
+    ECall(callee, args, _, _) => if Array::length(args) == 1 && ascription_lambda_ann(callee) is Some(_) {
+      callback_input_location_known(Array::get(args, at = 0), env = env, follow_bindings = follow_bindings)
+    } else {
+      false
+    },
     ELet(_, _, _, _)|ELetMut(_, _, _, _)|ELetRec(_, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _)|EMatch(_, _)|ELoop(_, _)|EForIn(_, _, _, _)|EHandle(_, _) => false,
-    _ => Array::all(retention_result_items(e), f = callback_input_location_known)
+    _ => Array::all(retention_result_items(e), f = (item) -> callback_input_location_known(item, env = env, follow_bindings = follow_bindings))
   }
 }
 

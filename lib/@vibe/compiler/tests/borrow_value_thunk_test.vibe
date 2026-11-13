@@ -1,0 +1,235 @@
+//# Imports
+
+// #2827: a function used as a value keeps the borrowed ABI for its direct
+// calls; its value uses are pointed at an owning thunk.
+//
+// ADR-0092's borrow inference zeroes the mask of a function named in a value
+// position, because an indirect call cannot read a mask. That made every
+// direct call consume as well -- the compiler's `compile_expr`, passed around
+// as the `ce` callback, took a dup of `ctx` per recursive call.
+// `borrow_owned_value_thunks` appends `f$owned`, which forwards its owned
+// parameters to `f` and releases them after the call, and renames every value
+// occurrence of `f`. These tests pin which functions it takes, what the
+// rename touches, and the classification the RC queries then report.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  borrow_owned_value_thunks, compute_borrow_param_user_fns
+}
+
+import @vibe/compiler/query {
+  rc_classify_source, rc_plan_source
+}
+
+//# Helpers
+
+fn ty(_ n: String) -> Option[TypeExpr] {
+  Some(TyName(n))
+}
+
+fn fn_typed(name: String, params: Array[(String, Option[TypeExpr])], body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], params, None, None, body))
+}
+
+fn id(_ n: String) -> Expr {
+  EIdent(n, -1)
+}
+
+fn call(f: String, args: Array[Expr]) -> Expr {
+  ECall(id(f), args, -1, [])
+}
+
+/// `reader(ctx: Ctx, k: Int) = ctx.n + k`: borrows `ctx`.
+fn reader(_ name: String) -> Stmt {
+  fn_typed(name = name, params = [("ctx", ty("Ctx")), ("k", ty("Int"))], body = EBinOp("+", EDot(id("ctx"), "n", -1, -1), id("k"), -1))
+}
+
+/// `user() = apply(<f>, mk())`: names `f` as a value.
+fn user(_ f: String) -> Stmt {
+  fn_typed(name = "user", params = [], body = call(f = "apply", args = [
+    id(f),
+    call(f = "mk", args = [])
+  ]))
+}
+
+fn joined(_ xs: Array[String]) -> String {
+  let mut out = ""
+  for x in xs {
+    out = if out == "" {
+      x
+    } else {
+      out + "," + x
+    }
+  }
+  if out == "" {
+    "(none)"
+  } else {
+    out
+  }
+}
+
+/// `<case>: <renamed functions>`, so every expectation is a distinct literal.
+fn thunked(case: String, stmts: Array[Stmt]) -> String {
+  case + ": " + joined(borrow_owned_value_thunks(stmts = stmts, exclude = [
+    "main"
+  ]))
+}
+
+fn mask_for(stmts: Array[Stmt], name: String) -> Int {
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns(stmts = stmts, exclude = [], out_masks = masks)
+  let mut found = 0
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(names, at = i) == name {
+      found = Array::get(masks, at = i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The callee name and first argument of the body of the function `name`.
+fn body_call_of(stmts: Array[Stmt], name: String) -> String {
+  let mut found = "(absent)"
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, ECall(EIdent(callee, _), args, _, _))) => if n == name {
+        let first = if Array::length(args) > 0 {
+          match Array::get(args, at = 0) {
+            EIdent(a, _) => a,
+            _ => "(expr)"
+          }
+        } else {
+          "(no args)"
+        }
+        found = callee + "(" + first + ")"
+      } else (),
+      _ => ()
+    }
+  }
+  found
+}
+
+fn classify_line(out: String, name: String) -> String {
+  let prefix = String::concat(name, " ")
+  let mut found = ""
+  for line in String::split(out, sep = "\n") {
+    if String::starts_with(line, prefix = prefix) {
+      found = line
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+//# Which functions get a thunk
+
+test "a borrowing function used as a value gets a thunk and keeps its mask" {
+  let stmts = [reader("three"), user("three")]
+  inspect(mask_for(stmts = stmts, name = "three"), content = "0")
+  inspect(thunked(case = "reader", stmts = stmts), content = "reader: three")
+  // The value use now names the thunk, and the thunk calls `three` directly.
+  inspect(body_call_of(stmts = stmts, name = "user"), content = "apply(three$owned)")
+  inspect(body_call_of(stmts = stmts, name = "three$owned"), content = "three(ctx)")
+  // Named only as a callee now, `three` borrows `ctx`. `k` stays owned: an
+  // operator operand counts as a use, which costs nothing for an `Int`.
+  inspect(mask_for(stmts = stmts, name = "three"), content = "1")
+}
+
+test "a function that is never a value is left alone" {
+  let direct = fn_typed(name = "user", params = [], body = call(f = "three", args = [
+    call(f = "mk", args = []),
+    EInt(1)
+  ]))
+  inspect(thunked(case = "direct", stmts = [reader("three"), direct]), content = "direct: (none)")
+}
+
+test "a function that consumes its heap parameter gets no thunk" {
+  let consumer = fn_typed(name = "eat", params = [("ctx", ty("Ctx"))], body = id("ctx"))
+  inspect(thunked(case = "consumer", stmts = [consumer, user("eat")]), content = "consumer: (none)")
+}
+
+test "a function that borrows only scalars gets no thunk" {
+  let scalar = fn_typed(name = "add", params = [
+    ("a", ty("Int")),
+    ("b", ty("Bool"))
+  ], body = id("a"))
+  inspect(thunked(case = "scalar", stmts = [scalar, user("add")]), content = "scalar: (none)")
+}
+
+test "an optional parameter keeps the function out" {
+  let opt = fn_typed(name = "three", params = [
+    ("ctx", ty("Ctx")),
+    ("k?", ty("Int"))
+  ], body = EDot(id("ctx"), "n", -1, -1))
+  inspect(thunked(case = "optional", stmts = [opt, user("three")]), content = "optional: (none)")
+}
+
+test "a binder that spells the name anywhere keeps the function out" {
+  // `other(three: Ctx) = three.n`: a rename that tracks no scope would
+  // rewrite this parameter's use, so the function is not taken.
+  let other = fn_typed(name = "other", params = [("three", ty("Ctx"))], body = EDot(id("three"), "n", -1, -1))
+  inspect(thunked(case = "binder", stmts = [
+    reader("three"),
+    user("three"),
+    other
+  ]), content = "binder: (none)")
+}
+
+test "a callee that keeps the parameter two calls down keeps the function out" {
+  // `three -> mid -> keep`, and `keep` returns `ctx`. The trial reads the
+  // whole callee closure, so `three` stays owned and gets no thunk.
+  let three = fn_typed(name = "three", params = [("ctx", ty("Ctx"))], body = call(f = "mid", args = [
+    id("ctx")
+  ]))
+  let mid = fn_typed(name = "mid", params = [("ctx", ty("Ctx"))], body = call(f = "keep", args = [
+    id("ctx")
+  ]))
+  let keep = fn_typed(name = "keep", params = [("ctx", ty("Ctx"))], body = id("ctx"))
+  inspect(thunked(case = "deep consume", stmts = [
+    three,
+    mid,
+    keep,
+    user("three")
+  ]), content = "deep consume: (none)")
+}
+
+test "a callee that only reads the parameter two calls down lets the function in" {
+  let three = fn_typed(name = "three", params = [("ctx", ty("Ctx"))], body = call(f = "mid", args = [
+    id("ctx")
+  ]))
+  let mid = fn_typed(name = "mid", params = [("ctx", ty("Ctx"))], body = call(f = "leaf", args = [
+    id("ctx")
+  ]))
+  let leaf = fn_typed(name = "leaf", params = [("ctx", ty("Ctx"))], body = EDot(id("ctx"), "n", -1, -1))
+  inspect(thunked(case = "deep read", stmts = [three, mid, leaf, user("three")]), content = "deep read: three")
+}
+
+test "an excluded entry keeps the function out" {
+  inspect(thunked(case = "excluded", stmts = [reader("main"), user("main")]), content = "excluded: (none)")
+}
+
+//# The `vibe rc-classify` / `vibe rc-plan` surface
+
+let value_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn use1(ctx: Ctx) -> Int {\n  ctx.n + 1\n}\n\nfn three(ctx: Ctx, c: Bool) -> Int {\n  if c {\n    three(ctx = ctx, c = false) + use1(ctx = ctx) + three(ctx = ctx, c = false) + three(ctx = ctx, c = false)\n  } else {\n    0\n  }\n}\n\nfn apply(f: (Ctx, Bool) -> Int, ctx: Ctx) -> Int {\n  f(ctx, true)\n}\n\nexport fn main() -> Int {\n  let cx = Ctx::{ n: 1, xs: [1, 2] }\n  three(ctx = cx, c = true) + apply(f = three, ctx = cx)\n}\n"
+
+test "rc-classify reports a function used as a value as borrow_param" {
+  let out = rc_classify_source(value_prelude, checked_error_row = false)
+  inspect(classify_line(out = out, name = "three"), content = "three borrow_param")
+}
+
+test "rc-plan takes no dup of the parameter a function used as a value only reads" {
+  // Before: `three ctx dup 3` and a path drop, which left two references
+  // behind on the `false` arm. The thunk owns its parameter and drops it.
+  let plan = rc_plan_source(source = value_prelude, fn_filter = "", checked_error_row = false)
+  assert(!String::contains(plan, needle = "three ctx dup"))
+  assert(!String::contains(plan, needle = "three ctx path_drop"))
+  assert(String::contains(plan, needle = "three$owned ctx drop 1"))
+}
