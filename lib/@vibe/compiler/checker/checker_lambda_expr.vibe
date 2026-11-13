@@ -13,7 +13,7 @@ import ./checker_deferred_method_call.vibe {
 }
 
 import ./checker_lambda_result.vibe {
-  check_unwritten_result, unwritten_result_key
+  body_has_return, check_unwritten_result, unwritten_result_key
 }
 
 import ./checker_retaining_write.vibe {
@@ -2123,10 +2123,15 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // is checked against it (`() -> Int { return "x" }` was accepted). Every
       // function rebinds it, so `return` targets the nearest one (#964: a
       // `return Ok(1)` in an unannotated lambda inside a `-> Option[Int]` fn
-      // is the lambda's). Unwritten, it is a fresh variable, not `CtUnknown`
-      // (#4062): each `return` meets the others and the body's value
-      // (`check_unwritten_result`), and a caller's expected type reaches them.
-      let (unwritten_result, result_c) = fresh_var(c1)
+      // is the lambda's). Unwritten in a body with a `return`, it is a fresh
+      // variable, not `CtUnknown` (#4062): each `return` meets the others and
+      // the body's value (`check_unwritten_result`), and a caller's expected
+      // type reaches them.
+      let (unwritten_result, result_c) = if (ret_ty is None) && body_has_return(body) {
+        fresh_var(c1)
+      } else {
+        (CtUnknown, c1)
+      }
       let annotated_body_env = match ret_ty {
         Some(rte) => {
           // #2125: see the parameter arm above.

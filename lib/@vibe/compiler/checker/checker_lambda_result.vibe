@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import ./checker_int32.vibe {
-  int32_literal_adapt, int32_literal_value, int32_tail
+  int32_literal_adapt, int32_literal_can_adapt, int32_tail
 }
 
 import ./checker_int32_rows.vibe {
@@ -34,10 +34,39 @@ export fn unwritten_result_key() -> String {
   "#return.unwritten"
 }
 
-fn in_unwritten_result(_ env: TypeEnv) -> Bool {
+/// Whether the body `e` of a function holds an explicit `return` of its own
+/// (a nested function's are not counted). Only such a function gets a
+/// result variable: one with no `return` is typed exactly as before, down to
+/// the numbering of its type variables.
+export fn body_has_return(_ e: Expr) -> Bool {
+  match e {
+    EReturn(_) => true,
+    EFn(_, _, _, _, _, _) => false,
+    _ => {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while !found && i < top {
+        found = body_has_return(expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+/// The `return`s whose check `check_return_value` left to
+/// `check_unwritten_result`: the id of the function's result variable, the
+/// returned expression and its checked type. Each function takes only the
+/// rows under its own variable, so a nested function's stay its own.
+let deferred_returns: Array[(Int, Expr, Type)] = []
+
+fn unwritten_result_id(_ env: TypeEnv) -> Int {
   match env_lookup(env = env, name = unwritten_result_key()) {
-    Some(CtVar(_)) => true,
-    _ => false
+    Some(CtVar(id)) => id,
+    _ => 0 - 1
   }
 }
 
@@ -47,10 +76,12 @@ fn in_unwritten_result(_ env: TypeEnv) -> Bool {
 /// #4062: in a function with no written result type that result is a
 /// variable, so the check's substitution is kept: the first `return` binds
 /// it and every other one, and the body's value, must agree
-/// (`check_unwritten_result`). An integer literal is left to that final
-/// check, because its type is the one the rest of the function settles on
-/// (`return 0` beside an `Int32` tail is an `Int32`). Under a written result
-/// type the substitution is dropped, as it always was.
+/// (`check_unwritten_result`). A value whose integer literals could still
+/// take a sized type (`0`, `Some(0)`, `[1, 2]`, `(0, "a")`, an `if` of such)
+/// is left to that final check, because its type is the one the rest of the
+/// function settles on (`return Some(0)` beside a `Some(k)` tail of an
+/// `Int32` is an `Option[Int32]`). Under a written result type the
+/// substitution is dropped, as it always was.
 export fn check_return_value(e: Expr, et: Type, env: TypeEnv, s: Subst, errors: Array[String]) -> Subst {
   match env_lookup(env = env, name = "__return__") {
     Some(rt) => {
@@ -63,15 +94,18 @@ export fn check_return_value(e: Expr, et: Type, env: TypeEnv, s: Subst, errors: 
         Some(_) => railway_is_ident(e = e, want = "None"),
         None => false
       }
-      let unwritten = in_unwritten_result(env)
-      if skip_railway_none || (unwritten && (int32_literal_value(e) is Some(_))) {
+      let unwritten = unwritten_result_id(env)
+      if skip_railway_none {
+        s
+      } else if unwritten >= 0 && int32_literal_can_adapt(e = e, actual = ate) {
+        Array::push(deferred_returns, value = (unwritten, e, ate))
         s
       } else {
         // Explicit `return e`: anchor on `e` itself, so this spelling locates
         // the same way the implicit tail-expression return does.
         check_assignable_set_end(string_lit_end(e))
         let ns = check_assignable(expected = rte, actual = int32_assigned_type(e = e, expected = rte, actual = ate, s = s, errors = errors, off = railway_expr_off(e)), s = s, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
-        if unwritten {
+        if unwritten >= 0 {
           ns
         } else {
           s
@@ -82,22 +116,49 @@ export fn check_return_value(e: Expr, et: Type, env: TypeEnv, s: Subst, errors: 
   }
 }
 
+/// Take the deferred `return`s of the function whose result variable is
+/// `result`, in the order they were checked.
+fn take_deferred_returns(_ result: Type) -> Array[(Expr, Type)] {
+  let out: Array[(Expr, Type)] = []
+  match result {
+    CtVar(id) => {
+      let kept: Array[(Int, Expr, Type)] = []
+      for row in deferred_returns {
+        let (rid, e, t) = row
+        if rid == id {
+          Array::push(out, value = (e, t))
+        } else {
+          Array::push(kept, value = row)
+        }
+      }
+      Array::truncate(deferred_returns, length = 0)
+      for row in kept {
+        Array::push(deferred_returns, value = row)
+      }
+    },
+    _ => ()
+  }
+  out
+}
+
 /// #4062: the result type of a function or lambda that writes none. Its
 /// `__return__` is the fresh variable `result`, which the explicit `return`s
 /// in the body bound (`check_return_value`); the body's own value `actual` is
-/// checked against it here, then every integer-literal `return`. A body with
-/// no `return` keeps its value's type, untouched. Before,
-/// `__return__` was `CtUnknown` and a `return` was checked against nothing:
+/// checked against it here, then every deferred `return`, adapted and
+/// range-checked against the type the function settled on. A body with no
+/// `return` (whose `result` is not a variable) keeps its value's type,
+/// untouched. Before, `__return__` was
+/// `CtUnknown` and a `return` was checked against nothing:
 /// `(k) -> { if k == 0 { return "oops" }; k }` passed for `(Int) -> Int` and
 /// handed its caller a string as an `Int`.
 export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subst, errors: Array[String]) -> (Type, Subst) {
-  let literals: Array[Expr] = []
-  collect_literal_returns(e = body, out = literals)
+  let deferred = take_deferred_returns(result)
   let returned = match subst_apply(s = s, ty = result) {
     CtVar(_) => false,
     _ => true
   }
-  if !returned && Array::length(literals) == 0 {
+  // `result` is a variable only for a body with a `return` (`body_has_return`).
+  if !(result is CtVar(_)) || (!returned && Array::length(deferred) == 0) {
     // No `return` reached the result: it is the body's value, as it always was.
     (subst_apply(s = s, ty = actual), s)
   } else {
@@ -114,10 +175,12 @@ export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subs
         check_assignable(expected = result, actual = int32_literal_adapt(e = body, expected = result, actual = actual, s = s, errors = errors, off = tail_expr_off(body)), s = s, errors = errors, what = what, off = tail_expr_off(body))
       }
     }
-    // Only integer literals were returned: the result is an `Int`.
+    // Only deferred values were returned: the result is the first one's
+    // type, its literals `Int`s.
     let mut out = match subst_apply(s = s_tail, ty = result) {
-      CtVar(_) => if Array::length(literals) > 0 {
-        match unify(a = result, b = CtInt, s = s_tail) {
+      CtVar(_) => if Array::length(deferred) > 0 {
+        let (_, first) = Array::get(deferred, at = 0)
+        match unify(a = result, b = first, s = s_tail) {
           Some(bound) => bound,
           None => s_tail
         }
@@ -126,33 +189,12 @@ export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subs
       },
       _ => s_tail
     }
-    for lit in literals {
+    for d in deferred {
+      let (e, t) = d
       let want = subst_apply(s = out, ty = result)
-      out = check_assignable(expected = want, actual = int32_literal_adapt(e = lit, expected = want, actual = CtInt, s = out, errors = errors, off = railway_expr_off(lit)), s = out, errors = errors, what = "return type mismatch", off = railway_expr_off(lit))
+      check_assignable_set_end(string_lit_end(e))
+      out = check_assignable(expected = want, actual = int32_literal_adapt(e = e, expected = want, actual = subst_apply(s = out, ty = t), s = out, errors = errors, off = railway_expr_off(e)), s = out, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
     }
     (subst_apply(s = out, ty = result), out)
-  }
-}
-
-/// The integer-literal values of the explicit `return`s that belong to the
-/// function whose body `e` is: a nested function's are its own.
-fn collect_literal_returns(e: Expr, out: Array[Expr]) -> Unit {
-  match e {
-    EReturn(v) => if int32_literal_value(v) is Some(_) {
-      Array::push(out, value = v)
-    } else {
-      collect_literal_returns(e = v, out = out)
-    },
-    EFn(_, _, _, _, _, _) => (),
-    _ => {
-      let mark = expr_children_push(e)
-      let top = expr_children_top()
-      let mut i = mark
-      while i < top {
-        collect_literal_returns(e = expr_child_at(i), out = out)
-        i = i + 1
-      }
-      expr_children_pop(mark)
-    }
   }
 }

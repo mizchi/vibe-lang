@@ -5,7 +5,8 @@
 //# `return` whose type unifies with the tail (`[]` beside `["a"]`, `None`
 //# beside `Some(..)`), a nested lambda's own `return`, a lambda generalized by
 //# `let` and used at two types, an integer-literal `return` beside an `Int32`
-//# tail, and a bare `return` in a lambda that returns `Unit`. The shapes that
+//# tail (also inside `Some(..)`, an array, a tuple or an `if`), and a bare
+//# `return` in a lambda that returns `Unit`. The shapes that
 //# disagree are the `err_type_lambda_return_*` typecheck fixtures.
 
 fn ap(f: (Int) -> Int, x: Int) -> Int {
@@ -127,6 +128,54 @@ test "an integer-literal return beside an Int32 tail is an Int32" {
   let one: Int32 = 1
   inspect(Int32::to_int(f(z)), content = "0")
   inspect(Int32::to_int(f(one)), content = "-2147483648")
+}
+
+test "a returned value holding integer literals takes the sized type of the rest" {
+  let some = (k: Int32) -> {
+    if k == 0 {
+      return Some(0)
+    }
+    Some(k)
+  }
+  let z: Int32 = 0
+  let big: UInt32 = 4294967295
+  let one: Int32 = 1
+  let got = (o: Option[Int32]) -> match o {
+    Some(v) => Int32::to_int(v),
+    None => 0 - 1
+  }
+  inspect(got(some(z)), content = "0")
+  inspect(got(some(one)), content = "1")
+  let arr = (k: UInt32) -> {
+    if k == 0 {
+      return [1, 4294967295]
+    }
+    [k]
+  }
+  let zero: UInt32 = 0
+  inspect(UInt32::to_int(Array::get(arr(zero), at = 1)), content = "4294967295")
+  inspect(UInt32::to_int(Array::get(arr(big), at = 0)), content = "4294967295")
+  let pair = (k: Int32) -> {
+    if k == 0 {
+      return (0, "zero")
+    }
+    (k, "other")
+  }
+  let (n, label) = pair(z)
+  inspect(Int32::to_int(n), content = "0")
+  inspect(label, content = "zero")
+  let cond = (k: Int32, b: Bool) -> {
+    if k == 0 {
+      return if b {
+        -2147483648
+      } else {
+        2147483647
+      }
+    }
+    k
+  }
+  inspect(Int32::to_int(cond(z, true)), content = "-2147483648")
+  inspect(Int32::to_int(cond(z, false)), content = "2147483647")
 }
 
 test "a bare return in a lambda that returns Unit" {
