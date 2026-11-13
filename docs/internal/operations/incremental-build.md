@@ -3527,6 +3527,11 @@ VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT=<sidecar.json>
 VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE=<unique-non-empty-run-id>
 ```
 
+The trace exists only in a compiler built with the `telemetry` cfg flag, which
+the generation's stage2 is by default (#2498). A build without it -- the
+compile-only artifact -- refuses `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT` by
+name on every lane and leaves the destination untouched.
+
 The sidecar is schema version 6 and is written **only after a successful
 check**. It includes the nonce, canonical module path, direct dependencies,
 `compact_string_fingerprint` of each module's **ingested source**, distinct
@@ -3924,6 +3929,12 @@ exception and exist precisely because a build does parser work the walk never
 sees. A sidecar exists only for a compile that finished: a throw anywhere above
 removes it. Measured on the compiler's own closure, a cold build reports
 `modules_planned: 219`, which is `vibe deps` (218) plus the entry.
+
+The sidecar, its encoder and the destination guard below exist only in a
+compiler built with the `telemetry` cfg flag, which the generation's stage2 is
+by default (#2498). A build without it -- the compile-only artifact -- refuses
+`VIBE_INCREMENTAL_TELEMETRY_OUT` by name and never touches the destination,
+on the check lane and the compile lane alike.
 
 **The destination is not a free-form path.** It names a file the CLI DELETES
 before the compile -- so a sidecar left by an earlier run cannot be read as
