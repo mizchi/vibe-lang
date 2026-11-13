@@ -58,7 +58,7 @@ import ./checker_region_retention_types.vibe {
 }
 
 import ./checker_region_call_result.vibe {
-  held_has_module_storage, region_module_storage_row, region_summary_prefix
+  held_has_module_storage, region_module_storage_row, region_path_is_standard_library, region_summary_prefix
 }
 
 let retention_summary_prefix: String = region_summary_prefix()
@@ -136,7 +136,7 @@ export fn retention_summary_region() -> String {
 /// Whether a module at `path` belongs to the standard library, whose
 /// functions are neither summarized nor read through a summary.
 export fn retention_summary_skips_path(_ path: String) -> Bool {
-  String::starts_with(path, prefix = "@vibe/") || String::starts_with(path, prefix = "lib/@vibe/") || String::contains(path, needle = "/lib/@vibe/") || String::contains(path, needle = "/store/@vibe/")
+  region_path_is_standard_library(path)
 }
 
 /// Whether the module being checked is summarized: set by the lanes that
@@ -400,12 +400,18 @@ fn retention_summary_names(_ stmts: Array[Stmt]) -> Array[String] {
 /// overrides, key)` is `retention_summarize`'s re-check of that literal.
 export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String])], String) -> (Int, Bool)) -> TypeEnv {
   let candidates: Array[(String, Int, Expr, Array[Type])] = []
-  let names = if Array::length(stmts) > retention_summary_budget() {
-    array_empty()
+  // #4091: every published function is bound a summary, so an importer that
+  // finds none knows the module published none. Past the budget no argument
+  // is re-checked, but the result's `g>r` row, read from the body alone, is
+  // still published.
+  let names = retention_summary_names(stmts)
+  let within_budget = Array::length(stmts) <= retention_summary_budget()
+  let candidate_names = if within_budget {
+    names
   } else {
-    retention_summary_names(stmts)
+    array_empty()
   }
-  for name in names {
+  for name in candidate_names {
     match env_lookup(env = env, name = name) {
       Some(fty) => match retention_fn_param_types(fty) {
         Some(params) => if retention_summary_candidate(params = params, defs = defs) {
@@ -442,8 +448,8 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
       out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(full, [
       ]))
     }
-    // #4091: a function no argument of which may carry a region still
-    // publishes whether its result is storage of its own (a getter).
+    // #4091: every other function still publishes whether its result is
+    // storage of its own (a getter), `""` when it is not.
     for name in names {
       let mut seen = false
       for done in summarized {
@@ -458,9 +464,8 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
       }
       if !seen && is_function {
         let (kind, lit) = resolve(name)
-        let full = retention_summary_with_storage(summary = "", kind = kind, lit = lit)
-        if full != "" {
-          out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(full, [
+        if kind > 0 {
+          out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(retention_summary_with_storage(summary = "", kind = kind, lit = lit), [
           ]))
         }
       }

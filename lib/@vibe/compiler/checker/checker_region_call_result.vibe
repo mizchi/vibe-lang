@@ -32,7 +32,7 @@
 //# that spelling.
 
 import @vibe/compiler/core {
-  Expr, Type, TypeEnv, env_lookup, env_name_index_find
+  BindingOrigin, Expr, Type, TypeEnv, env_lookup, env_lookup_binding, env_name_index_find
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -40,7 +40,7 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_decl_value, retention_decls, retention_module_env_cell
+  retention_decl_value, retention_module_env_cell
 }
 
 /// The entry `held_result_param_indices` adds when a function's result may
@@ -70,9 +70,15 @@ export fn held_has_module_storage(_ held: Array[Int]) -> Bool {
 /// an imported value, or a binder of a form it does not track -- which may be
 /// either a parameter or outer storage. `shadowed` is whether a binder of the
 /// body spells the name, so it is not the declaration.
+///
+/// A module-level or imported SCALAR is copied, not stored, so it answers 0
+/// too: its type is read from the module's scope, or from the declaration's
+/// literal value; a name neither answers is not taken for a scalar.
 export fn held_free_name_kind(name: String, shadowed: Bool) -> Int {
   if shadowed {
     2
+  } else if region_module_name_is_scalar(name) {
+    0
   } else {
     match retention_decl_value(name) {
       Some(EFn(_, _, _, _, _, _)) => 0,
@@ -80,6 +86,121 @@ export fn held_free_name_kind(name: String, shadowed: Bool) -> Int {
       None => 2
     }
   }
+}
+
+fn region_module_name_is_scalar(_ name: String) -> Bool {
+  let from_scope = if Array::length(retention_module_env_cell) == 0 {
+    None
+  } else {
+    env_lookup(env = Array::get(retention_module_env_cell, at = 0), name = name)
+  }
+  match from_scope {
+    Some(t) => region_type_is_scalar(t),
+    None => match retention_decl_value(name) {
+      Some(value) => region_literal_is_scalar(value),
+      None => false
+    }
+  }
+}
+
+/// A scalar literal, through the ascription an annotated `let` wraps it in
+/// (`((__asc: Int) -> { __asc })(7)`).
+fn region_literal_is_scalar(_ value: Expr) -> Bool {
+  match value {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EString(_, _) => true,
+    ECall(EFn(_, _, _, _, _, _), args, _, _) => Array::length(args) == 1 && region_literal_is_scalar(Array::get(args, at = 0)),
+    _ => false
+  }
+}
+
+/// A type whose value is copied and holds no location: a number, a boolean,
+/// a character, a string or bytes, unit.
+export fn region_type_is_scalar(_ t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtInt32 => true,
+    CtUInt32 => true,
+    CtDouble => true,
+    CtFloat => true,
+    CtBool => true,
+    CtChar => true,
+    CtString => true,
+    CtBytes => true,
+    CtUnit => true,
+    _ => false
+  }
+}
+
+/// Whether a module at `path` belongs to the standard library (`@vibe/..`),
+/// which publishes no retention summary and is trusted for what it keeps
+/// and returns. The one test both the publishing module and its importers
+/// ask (`retention_summary_skips_path`).
+export fn region_path_is_standard_library(_ path: String) -> Bool {
+  String::starts_with(path, prefix = "@vibe/") || String::starts_with(path, prefix = "lib/@vibe/") || String::contains(path, needle = "/lib/@vibe/") || String::contains(path, needle = "/store/@vibe/")
+}
+
+/// The module an imported binding of `name` comes from, as its binding
+/// records it; None for a binding that records none.
+fn region_import_path(env: TypeEnv, name: String) -> Option[String] {
+  match env_lookup_binding(env = env, name = name) {
+    Some(binding) => region_origin_path(binding.origin),
+    None => None
+  }
+}
+
+fn region_origin_path(_ origin: BindingOrigin) -> Option[String] {
+  match origin {
+    BindingOriginModuleExport(path, _) => Some(path),
+    BindingOriginModuleFunctionHeader(path, _, _, _) => Some(path),
+    BindingOriginReExportFunctionHeader(path, _, _, _) => Some(path),
+    BindingOriginReExportSurface(path, _) => Some(path),
+    _ => None
+  }
+}
+
+/// #4091: what a call of an imported function with no summary bound may
+/// return. Every function of a module checked for publication is bound a
+/// summary, so none means the module published none: the standard library
+/// (trusted, as for what it keeps), or a module past the summary budget,
+/// whose result may be its own storage.
+fn region_unsummarized_import_stores(env: TypeEnv, name: String) -> Option[Bool] {
+  match region_import_path(env = env, name = name) {
+    Some(path) => Some(path != "" && !region_path_is_standard_library(path)),
+    None => None
+  }
+}
+
+/// Method calls the checker resolved, as (call offset, the function the call
+/// runs): `h.sink()` is `Holder::sink(h)`, whatever the receiver's spelling.
+/// Read back by the region checks, which see only the syntax. Cleared with
+/// the module's other retention tables.
+export let region_method_calls: Array[(Int, String)] = []
+
+/// Record that the method call at `call_off` runs `qualified`.
+export fn region_note_method_call(call_off: Int, qualified: String) -> Unit {
+  if call_off >= 0 {
+    Array::push(region_method_calls, value = (call_off, qualified))
+  }
+}
+
+/// The function the method call at `call_off` runs, as the checker resolved
+/// it; "" when it has not been resolved (yet).
+export fn region_method_call_at(_ call_off: Int) -> String {
+  let mut out = ""
+  if call_off >= 0 {
+    let mut i = Array::length(region_method_calls) - 1
+    while i >= 0 && out == "" {
+      let (off, qualified) = Array::get(region_method_calls, at = i)
+      if off == call_off {
+        out = qualified
+      }
+      i = i - 1
+    }
+  }
+  out
 }
 
 /// The marker a binding of a region body carries when a part of it -- an
@@ -109,6 +230,9 @@ export fn region_module_storage_row() -> String {
 /// a region body may bind afresh, with its region in the signature -- and any
 /// other module-level name (a standard-library import, which publishes no
 /// summary; a qualified name, which no local spells) are trusted.
+///
+/// An import with no summary is judged by where it comes from
+/// (`region_unsummarized_import_stores`).
 export fn region_callee_returns_own_storage(callee: String, env: TypeEnv) -> Bool {
   match region_summary_storage(callee = callee, env = env) {
     Some(stores) => stores,
@@ -116,7 +240,10 @@ export fn region_callee_returns_own_storage(callee: String, env: TypeEnv) -> Boo
       Some(_) => true,
       None => match lookup_builtin(callee) {
         Some(_) => false,
-        None => !String::contains(callee, needle = "::") && retention_name_scope(env = env, name = callee) == 1
+        None => match region_unsummarized_import_stores(env = env, name = callee) {
+          Some(stores) => stores,
+          None => !String::contains(callee, needle = "::") && retention_name_scope(env = env, name = callee) == 1
+        }
       }
     }
   }
@@ -159,7 +286,14 @@ export fn held_callee_untraced(callee: String, local: Bool) -> Bool {
         Some(stores) => stores,
         None => match retention_decl_value(callee) {
           Some(_) => true,
-          None => false
+          None => if Array::length(retention_module_env_cell) == 0 {
+            false
+          } else {
+            match region_unsummarized_import_stores(env = Array::get(retention_module_env_cell, at = 0), name = callee) {
+              Some(stores) => stores,
+              None => false
+            }
+          }
         }
       }
     }
@@ -258,17 +392,4 @@ fn region_type_head(_ t: Type) -> String {
     CtForAll(_, _, body) => region_type_head(body),
     _ => ""
   }
-}
-
-/// Every function of this module a method call spelled `method` may run when
-/// its receiver's type is not known: each declaration named `T::method`.
-export fn region_method_decls(_ method: String) -> Array[Expr] {
-  let suffix = String::concat("::", method)
-  let out: Array[Expr] = []
-  for d in retention_decls {
-    if String::ends_with(d.0, suffix = suffix) {
-      Array::push(out, value = d.1)
-    }
-  }
-  out
 }

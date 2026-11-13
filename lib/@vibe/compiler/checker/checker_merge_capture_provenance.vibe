@@ -71,8 +71,8 @@ import ./checker_region_call_result.vibe {
   held_has_module_storage,
   held_module_storage_index,
   region_callee_returns_own_storage,
+  region_method_call_at,
   region_method_callee,
-  region_method_decls,
   region_outer_content_marker
 }
 
@@ -893,7 +893,7 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
     // #4091: a method call (`h.sink()`) runs the function its receiver's
     // type names, read as that call; with the receiver's type unknown, every
     // method of the module of that spelling is read.
-    ECall(EDot(recv, method, _, _), args, _, _) => method_call_aliases_outer(recv = recv, method = method, args = args, env = env),
+    ECall(EDot(recv, method, _, _), args, call_off, _) => method_call_aliases_outer(recv = recv, method = method, args = args, call_off = call_off, env = env),
     // #4091: any other callee (`(if flag { get1 } else { get2 })()`) is not
     // read, so its result may be storage of its own, as an unread named
     // callee's is.
@@ -950,43 +950,33 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
 }
 
 /// #4091: whether a method call's result aliases a binding declared before
-/// an active region. The receiver is the call's first argument.
-fn method_call_aliases_outer(recv: Expr, method: String, args: Array[Expr], env: TypeEnv) -> Bool {
+/// an active region, read as a call of the function it runs, the receiver
+/// first: the one the checker resolved for this call
+/// (`region_method_call_at`), else the one the receiver's declared type
+/// names. A call neither resolves -- a receiver whose type is not a name, a
+/// call not checked yet -- may run any function, and its result is taken for
+/// outer storage. So is one that resolves to no binding and no builtin (a
+/// closure field).
+fn method_call_aliases_outer(recv: Expr, method: String, args: Array[Expr], call_off: Int, env: TypeEnv) -> Bool {
   let all_args = [recv]
   for a in args {
     Array::push(all_args, value = a)
   }
-  let full = region_method_callee(recv = recv, method = method, env = env)
-  if full != "" {
-    let known = match env_lookup(env = env, name = full) {
-      Some(_) => true,
-      None => match lookup_builtin(full) {
-        Some(_) => true,
-        None => false
-      }
-    }
-    // A name the receiver's type does not bind -- a closure field, a method
-    // this module cannot see -- may hand back anything.
-    !known || expression_aliases_outer_binding(expr = ECall(EIdent(full, -1), all_args, -1, [
-    ]), env = env)
+  let noted = region_method_call_at(call_off)
+  let full = if noted != "" {
+    noted
   } else {
-    let decls = region_method_decls(method)
-    let mut found = false
-    for a in all_args {
-      found = found || (!literal_item_is_inert(item = a, env = env) && !arg_is_region_token(arg = a, env = env) && expression_aliases_outer_binding(expr = a, env = env))
-    }
-    for d in decls {
-      match d {
-        EFn(_, _, params, _, _, body) => {
-          found = found || held_has_module_storage(held_result_param_indices(body = body, params = params))
-        },
-        _ => {
-          found = true
-        }
-      }
-    }
-    found
+    region_method_callee(recv = recv, method = method, env = env)
   }
+  let known = full != "" && match env_lookup(env = env, name = full) {
+    Some(_) => true,
+    None => match lookup_builtin(full) {
+      Some(_) => true,
+      None => false
+    }
+  }
+  !known || expression_aliases_outer_binding(expr = ECall(EIdent(full, -1), all_args, -1, [
+  ]), env = env)
 }
 
 /// #3488 (Codex on #3492): whether a literal's field or element is a scalar
@@ -1352,25 +1342,17 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
           // other callee not read here may hand back storage of its own.
           _ => {
             match callee {
-              EDot(recv, method, _, _) => {
-                collect_result_params(body = recv, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
-                for d in region_method_decls(method) {
-                  let stores = match d {
-                    EFn(_, _, decl_params, _, _, decl_body) => if checker_string_array_has(items = held_result_stack, wanted = method) {
-                      false
-                    } else {
-                      Array::push(held_result_stack, value = method)
-                      let held = held_result_param_indices(body = decl_body, params = decl_params)
-                      Array::truncate(held_result_stack, length = Array::length(held_result_stack) - 1)
-                      held_has_module_storage(held)
-                    },
-                    _ => true
-                  }
-                  if stores {
-                    push_unique_dependency_index(out = found, index = held_module_storage_index())
-                  }
+              EDot(recv, _, _, _) => {
+                let noted = match body {
+                  ECall(_, _, call_off, _) => region_method_call_at(call_off),
+                  _ => ""
                 }
-                ()
+                if noted == "" {
+                  push_unique_dependency_index(out = found, index = held_module_storage_index())
+                } else {
+                  collect_held_call_args(callee = noted, args = [recv], params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
+                }
+                collect_result_params(body = recv, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
               },
               _ => push_unique_dependency_index(out = found, index = held_module_storage_index())
             }
