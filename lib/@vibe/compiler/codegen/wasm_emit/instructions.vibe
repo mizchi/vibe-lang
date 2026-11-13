@@ -197,13 +197,24 @@ export fn emit_if_i64(_ buf: Bytes) -> Unit {
 /// fixed base type index, so this is a static property rather than a bound to
 /// check at every call -- but it is checked, because getting it wrong emits a
 /// module that decodes as some unrelated value type instead of failing.
+///
+/// At a slot width (#3941) the index is a signed LEB128 of that width instead,
+/// like every other type index in a body, so a `reloc_kind_blocktype` site is
+/// rebuilt at the width it was written at. A padded s33 carries the sign in
+/// its LAST byte, so the six-bit bound does not apply to it; the bound is
+/// still enforced, so the minimal and padded builds accept the same indices.
 export fn emit_if_type_index(buf: Bytes, type_idx: Int) -> Unit with Exception {
   if type_idx < 0 || type_idx >= 64 {
     throw("blocktype type index \{type_idx} needs a multi-byte s33 encoding (only 0..63 supported)")
   } else {
     ()
   }
-  bytebuf_push2(buf = buf, b1 = op_if, b2 = type_idx)
+  if reloc_slot_width() == 0 {
+    bytebuf_push2(buf = buf, b1 = op_if, b2 = type_idx)
+  } else {
+    bytebuf_push(buf = buf, byte = op_if)
+    leb128_encode_s_slot(buf = buf, value = type_idx)
+  }
 }
 
 /// `(func (result (ref null <ref_type_idx>)))` -- the func type an `if` (or any
