@@ -294,6 +294,14 @@ out="$(vibe "$VIBERUN" test --jobs 2 "$FX/extern_greeter_test.vibe" "$FX/extern_
 [ "$status" != 0 ] || fail "[viberun] vibe test --jobs 2 accepted a trailing --provide with no value"
 printf '%s\n' "$out" | grep -qF 'test: missing value after --provide' \
   || { printf '%s\n' "$out" >&2; fail "[viberun] a trailing --provide is not refused by name"; }
+# The wasm-gc backend does not compile an extern effect's operations yet
+# (#4082); the refusal names the operation and the effect, not the generated
+# stub that carries it.
+status=0
+out="$(VIBE_BACKEND=gc vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_main.vibex" 2>&1)" || status=$?
+[ "$status" != 0 ] || fail "[viberun] an extern effect compiled on the wasm-gc backend (printed $(printf '%q' "$out"))"
+printf '%s\n' "$out" | grep -qF 'it calls `Greeter::greet`, an operation of `extern effect Greeter`, which the wasm-gc backend does not compile yet (#4082)' \
+  || { printf '%s\n' "$out" >&2; fail "[viberun] the wasm-gc extern-effect refusal does not name the operation"; }
 # The node runner cannot instantiate the provider, and says so instead of
 # answering every operation with its fallback stub.
 status=0
