@@ -1,0 +1,37 @@
+// #4064: a closure that performs what a `handle` answers must not outlive
+// that handle when it is stored into a container the body declares and the
+// container (or what is read back out of it) reaches a function that keeps
+// it. The store did not mark the container, so `vibe check` was clean and
+// calling the kept closure after the handle trapped
+// (`indirect call type mismatch`). fixtures/handle_bound_closure_container_test.vibe
+// holds the container shapes that stay accepted.
+effect Ask {
+  Get() -> Int
+}
+
+let saved: Array[() -> Int] = []
+
+fn keep(f: () -> Int) -> Int {
+  Array::push(saved, value = f)
+  0
+}
+
+fn keep_arr(xs: Array[() -> Int]) -> Int {
+  Array::push(saved, value = Array::get(xs, at = 0))
+  0
+}
+
+fn main() -> Unit allows Console {
+  let plain = () -> 7
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let arr: Array[() -> Int] = []
+    Array::push(arr, value = g)
+    for x in arr {
+      let _ = keep(f = x)
+    }
+    ()
+  } with { Ask::Get() => resume(5) }
+  let k = Array::get(saved, at = 0)
+  println("g=\{k()} \{plain()}")
+}

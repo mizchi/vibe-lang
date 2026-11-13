@@ -1,0 +1,96 @@
+// #4064: a value stored into a container the handled body declares
+// (`Array::push`, `Array::set`, `xs[i] = ..`, a getter's element, a field,
+// a closure or helper that pushes) is held by that container and by every
+// binding of the body it was taken from, so a handle-bound closure stored
+// there and kept through it is refused
+// (fixtures/typecheck/handle_bound_closure_container_*_reject.vibe). These
+// are the container shapes that stay accepted: a container of closures that
+// perform nothing the handle answers, kept and called after the handle; a
+// container of what a handle-bound closure computes; a container holding
+// one that is only read inside the handle; and a container beside it that
+// only ever holds plain closures.
+effect Ask {
+  Get() -> Int
+}
+
+let saved: Array[() -> Int] = []
+
+let ints: Array[Int] = []
+
+fn keep_arr(xs: Array[() -> Int]) -> Int {
+  Array::push(saved, value = Array::get(xs, at = 0))
+  0
+}
+
+fn keep_ints(ns: Array[Int]) -> Int {
+  Array::push(ints, value = Array::get(ns, at = 0))
+  0
+}
+
+fn last_kept() -> Int {
+  let k = Array::get(saved, at = Array::length(saved) - 1)
+  k()
+}
+
+fn plain_pushed_kept() -> Int {
+  let plain = () -> 31
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let _ = g()
+    let arr: Array[() -> Int] = []
+    Array::push(arr, value = plain)
+    let _ = keep_arr(xs = arr)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn results_pushed_kept() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 27
+    let ns: Array[Int] = []
+    Array::push(ns, value = g())
+    let _ = keep_ints(ns = ns)
+    ()
+  } with { Ask::Get() => resume(5) }
+  Array::get(ints, at = Array::length(ints) - 1)
+}
+
+fn pushed_read_inside() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 28
+    let arr: Array[() -> Int] = []
+    Array::push(arr, value = g)
+    Array::length(arr) + g()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn beside_plain_container_kept() -> Int {
+  let plain = () -> 34
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let arr: Array[() -> Int] = []
+    let other: Array[() -> Int] = []
+    Array::push(arr, value = g)
+    Array::push(other, value = plain)
+    let _ = keep_arr(xs = other)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+test "a container of closures that perform nothing the handle answers may be kept" {
+  inspect(plain_pushed_kept(), content = "31")
+}
+
+test "a container of what a handle-bound closure computes may be kept" {
+  inspect(results_pushed_kept(), content = "32")
+}
+
+test "a container holding a handle-bound closure may be read inside the handle" {
+  inspect(pushed_read_inside(), content = "34")
+}
+
+test "a container beside one holding a handle-bound closure keeps its own fact" {
+  inspect(beside_plain_container_kept(), content = "34")
+}

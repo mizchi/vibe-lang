@@ -139,6 +139,20 @@ import ./checker_throw_kind_of_type.vibe {
   railway_expr_off
 }
 
+import ./checker_handle_closure_escape_callees.vibe {
+  hce_calls_only_builtin,
+  hce_container_builtin,
+  hce_fn_params,
+  hce_is_ctor,
+  hce_is_effect_op,
+  hce_is_paren,
+  hce_keep_route,
+  hce_names_anywhere,
+  hce_only_called,
+  hce_param_takes_row,
+  hce_store_getter
+}
+
 import ./checker_handle_closure_escape_holds.vibe {
   hce_add, hce_has, hce_holds_fn, hce_holds_fn_without, hce_row_label, hce_row_labels, hce_spells_fn_without, hce_stores_fn
 }
@@ -175,7 +189,7 @@ struct HceWalk {
   /// effect base of the handle-bound value it holds ("" for a plain value)
   /// and the declarations a local alias of a function stands for (#3596;
   /// comma-joined, "" for any other binding), and the binding's identity in
-  /// `assigned` (`hce_declare`; -1 for a binding nothing assigns).
+  /// `assigned` and `links` (`hce_declare`).
   scope: Array[(String, String, String, Int)];
   /// Every counted perform, in walk order: its offset and effect base.
   performs: Array[(Int, String)];
@@ -218,7 +232,12 @@ struct HceWalk {
   /// walk of the same body repeats, so a binding of the same spelling in
   /// another scope -- shadowing it, or beside it -- has a fact of its own.
   assigned: Array[(Int, String)];
-  /// The identity the next `let` or `loop` parameter the walk binds takes.
+  /// #4064: by declaration, the bindings of the body each binding was
+  /// taken from (`let a2 = arr`, `for row in rows`, `Box::{ fs: arr }`),
+  /// whose storage it may share: a value stored into it is stored into them
+  /// too (`hce_store`). Kept from one walk to the next, as `assigned` is.
+  links: Array[(Int, Int)];
+  /// The identity the next binding the walk binds takes.
   mut next_decl: Int;
   /// Whether this walk added to `assigned`.
   mut grew: Bool;
@@ -480,7 +499,8 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
     let body_names: Array[String] = array_empty()
     hce_collect_let_names(e = body, out = body_names)
     let assigned: Array[(Int, String)] = array_empty()
-    let st = hce_walk_body(body = body, labels = labels, find_routes = false, sites_from = sites_from, body_names = body_names, assigned = assigned, env = env, defs = defs, s = s)
+    let links: Array[(Int, Int)] = array_empty()
+    let st = hce_walk_body(body = body, labels = labels, find_routes = false, sites_from = sites_from, body_names = body_names, assigned = assigned, links = links, env = env, defs = defs, s = s)
     let mut reach = 0
     let mut pick = 0 - 1
     let mut pi = 0
@@ -498,7 +518,7 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
       let (what, off, label, _) = Array::get(st.producers, at = pick)
       // A route the body spells is named first: a body ending in `return h`
       // has an open type of its own, which the value route would also read.
-      let routes = hce_walk_body(body = body, labels = labels, find_routes = true, sites_from = sites_from, body_names = body_names, assigned = assigned, env = env, defs = defs, s = s)
+      let routes = hce_walk_body(body = body, labels = labels, find_routes = true, sites_from = sites_from, body_names = body_names, assigned = assigned, links = links, env = env, defs = defs, s = s)
       let mut route = ""
       let mut roff = 0 - 1
       for r in routes.routes {
@@ -541,17 +561,17 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
 /// in a loop, or in a closure called later -- so each walk binds those
 /// bindings with every handle-bound value the walks before found assigned
 /// to them; `assigned` only grows, so the walks end.
-fn hce_walk_body(body: Expr, labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)], env: TypeEnv, defs: Array[TypeDef], s: Subst) -> HceWalk {
-  let mut st = hce_new(labels = labels, find_routes = find_routes, sites_from = sites_from, body_names = body_names, assigned = assigned)
+fn hce_walk_body(body: Expr, labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)], links: Array[(Int, Int)], env: TypeEnv, defs: Array[TypeDef], s: Subst) -> HceWalk {
+  let mut st = hce_new(labels = labels, find_routes = find_routes, sites_from = sites_from, body_names = body_names, assigned = assigned, links = links)
   hce_walk(e = body, st = st, env = env, defs = defs, s = s)
   while st.grew {
-    st = hce_new(labels = labels, find_routes = find_routes, sites_from = sites_from, body_names = body_names, assigned = assigned)
+    st = hce_new(labels = labels, find_routes = find_routes, sites_from = sites_from, body_names = body_names, assigned = assigned, links = links)
     hce_walk(e = body, st = st, env = env, defs = defs, s = s)
   }
   st
 }
 
-fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)]) -> HceWalk {
+fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)], links: Array[(Int, Int)]) -> HceWalk {
   HceWalk::{
     labels: labels,
     scope: array_empty(),
@@ -568,6 +588,7 @@ fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names
     body_names: body_names,
     loops: array_empty(),
     assigned: assigned,
+    links: links,
     next_decl: 0,
     grew: false,
     arg_marks: array_empty()
@@ -774,7 +795,7 @@ fn hce_local_label(st: HceWalk, name: String) -> String {
 }
 
 fn hce_bind(st: HceWalk, name: String, label: String) -> Unit {
-  Array::push(st.scope, value = (hce_param_base(name), label, "", 0 - 1))
+  hce_declare(st = st, name = hce_param_base(name), label = label, decls = "")
 }
 
 /// #4051: bind `name`, holding `label`, as a declaration later walks find
@@ -1164,11 +1185,13 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
     // from then on (`let mut x = plain; x = g; keep(f = x)`).
     EAssign(name, val, rest, off) => {
       hce_assign(st = st, name = name, held = hce_walk_source(e = val, st = st, env = env, defs = defs, s = s))
+      hce_link_name(st = st, name = name, e = val)
       hce_note_outer_write(st = st, name = name, off = off, env = env, defs = defs, s = s)
       hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
     },
     EAssignOp(name, _, val, rest, off) => {
       hce_assign(st = st, name = name, held = hce_walk_source(e = val, st = st, env = env, defs = defs, s = s))
+      hce_link_name(st = st, name = name, e = val)
       hce_note_outer_write(st = st, name = name, off = off, env = env, defs = defs, s = s)
       hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
     },
@@ -1200,6 +1223,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       let parts: Array[(String, Bool)] = array_empty()
       let held = hce_match_parts(e = scrutinee, parts = parts, st = st, env = env, defs = defs, s = s)
       let fresh = Array::length(st.producers) > producers_before
+      let srcs = hce_source_ids(st = st, e = scrutinee)
       for arm in marms {
         let (pat, abody) = arm
         let mark = Array::length(st.scope)
@@ -1208,6 +1232,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         } else {
           hce_bind_pat_from(st = st, pat = pat, src = scrutinee, held = held, known = parts, env = env, defs = defs, s = s)
         }
+        hce_link_from(st = st, from = mark, srcs = srcs)
         hce_walk(e = abody, st = st, env = env, defs = defs, s = s)
         Array::truncate(st.scope, length = mark)
       }
@@ -1217,6 +1242,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       let held = hce_walk_source(e = iter, st = st, env = env, defs = defs, s = s)
       let mark = Array::length(st.scope)
       hce_bind(st = st, name = name, label = held)
+      hce_link_from(st = st, from = mark, srcs = hce_source_ids(st = st, e = iter))
       match index_name {
         Some(n) => hce_bind(st = st, name = n, label = ""),
         None => ()
@@ -1235,8 +1261,10 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       let names: Array[String] = array_empty()
       let mut pi = 0
       for p in lparams {
-        let (pname, _) = p
+        let (pname, init) = p
+        let srcs = hce_source_ids(st = st, e = init)
         hce_declare(st = st, name = pname, label = Array::get(held, at = pi), decls = "")
+        hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = srcs)
         Array::push(names, value = pname)
         pi = pi + 1
       }
@@ -1253,6 +1281,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         let held = hce_walk_source(e = call_arg_value(a), st = st, env = env, defs = defs, s = s)
         if depth > 0 && ci < Array::length(Array::get(st.loops, at = depth - 1)) {
           hce_assign(st = st, name = Array::get(Array::get(st.loops, at = depth - 1), at = ci), held = held)
+          hce_link_name(st = st, name = Array::get(Array::get(st.loops, at = depth - 1), at = ci), e = call_arg_value(a))
         } else {
           ()
         }
@@ -1281,12 +1310,14 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       hce_walk(e = callee, st = st, env = env, defs = defs, s = s)
       let arg_reach = hce_arg_reach(callee = callee, st = st, env = env, defs = defs, s = s)
       let marks: Array[Int] = array_empty()
+      let arg_held: Array[String] = array_empty()
       let mut ai = 0
       for arg in args {
         let producers_before = Array::length(st.producers)
         Array::push(marks, value = producers_before)
         st.pos = hce_beside_local(reach = arg_reach, args = args, ai = ai, st = st, env = env)
         hce_walk(e = arg, st = st, env = env, defs = defs, s = s)
+        Array::push(arg_held, value = hce_arg_bound_label(arg = arg, producers_before = producers_before, st = st, env = env, defs = defs, s = s))
         // A closure handed to a parameter whose row names its effect (or a
         // row variable) takes that row there, and so does every closure
         // written inside it: whoever calls them passes the handler.
@@ -1331,6 +1362,11 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         ai = ai + 1
       }
       Array::push(marks, value = Array::length(st.producers))
+      // #4064: what an argument holds may be stored into another one rooted
+      // at a binding of the body (`Array::push(arr, value = g)`); that
+      // binding holds it from here on, so `keep_arr(xs = arr)` and `for x in
+      // arr { keep(f = x) }` are keep routes as `keep(f = g)` is.
+      hce_note_stores(callee = callee, args = args, held = arg_held, st = st, env = env, defs = defs)
       st.arg_marks = marks
       ()
     },
@@ -1441,11 +1477,9 @@ fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env:
   } else {
     ""
   }
-  if mutable {
-    hce_declare(st = st, name = name, label = bound, decls = decls)
-  } else {
-    Array::push(st.scope, value = (name, bound, decls, 0 - 1))
-  }
+  let srcs = hce_source_ids(st = st, e = val)
+  hce_declare(st = st, name = name, label = bound, decls = decls)
+  hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = srcs)
   hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
   Array::truncate(st.scope, length = mark)
 }
@@ -1484,33 +1518,283 @@ fn hce_assign(st: HceWalk, name: String, held: String) -> Unit {
   if held != "" && i >= 0 {
     let (n, label, decls, id) = Array::get(st.scope, at = i)
     Array::set(st.scope, at = i, value = (n, hce_set_union(a = label, b = held), decls, id))
-    if id >= 0 {
-      let mut ai = 0
-      let mut hit = false
-      while ai < Array::length(st.assigned) {
-        let (aid, alabel) = Array::get(st.assigned, at = ai)
-        if aid == id {
-          hit = true
-          let wider = hce_set_union(a = alabel, b = held)
-          if wider != alabel {
-            Array::set(st.assigned, at = ai, value = (aid, wider))
-            st.grew = true
-          } else {
-            ()
-          }
+    hce_note_assigned(st = st, id = id, held = held)
+  } else {
+    ()
+  }
+}
+
+/// Record that declaration `id` holds `held` (see `HceWalk.assigned`).
+fn hce_note_assigned(st: HceWalk, id: Int, held: String) -> Unit {
+  if id >= 0 && held != "" {
+    let mut ai = 0
+    let mut hit = false
+    while ai < Array::length(st.assigned) {
+      let (aid, alabel) = Array::get(st.assigned, at = ai)
+      if aid == id {
+        hit = true
+        let wider = hce_set_union(a = alabel, b = held)
+        if wider != alabel {
+          Array::set(st.assigned, at = ai, value = (aid, wider))
+          st.grew = true
         } else {
           ()
         }
-        ai = ai + 1
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+    if !hit {
+      Array::push(st.assigned, value = (id, held))
+      st.grew = true
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// #4064: the declarations of the body's bindings `e` names, wherever in it
+/// (see `HceWalk.links`).
+fn hce_source_ids(st: HceWalk, e: Expr) -> Array[Int] {
+  let out: Array[Int] = array_empty()
+  hce_source_ids_into(st = st, e = e, out = out)
+  out
+}
+
+fn hce_source_ids_into(st: HceWalk, e: Expr, out: Array[Int]) -> Unit {
+  match e {
+    EIdent(name, _) => {
+      let i = hce_scope_index(st = st, name = name)
+      if i >= 0 {
+        let (_, _, _, id) = Array::get(st.scope, at = i)
+        if id >= 0 && !hce_has_int(items = out, n = id) {
+          Array::push(out, value = id)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut i = mark
+      while i < top {
+        hce_source_ids_into(st = st, e = expr_child_at(i), out = out)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+fn hce_has_int(items: Array[Int], n: Int) -> Bool {
+  let mut found = false
+  for x in items {
+    if x == n {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #4064: every binding at scope index `from` or later was taken from the
+/// declarations `srcs`.
+fn hce_link_from(st: HceWalk, from: Int, srcs: Array[Int]) -> Unit {
+  let mut i = if from < 0 {
+    0
+  } else {
+    from
+  }
+  while i < Array::length(st.scope) {
+    hce_link_one(st = st, i = i, srcs = srcs)
+    i = i + 1
+  }
+}
+
+/// #4064: the binding at scope index `i` was taken from the declarations
+/// `srcs` (see `HceWalk.links`).
+fn hce_link_one(st: HceWalk, i: Int, srcs: Array[Int]) -> Unit {
+  let (_, _, _, id) = Array::get(st.scope, at = i)
+  for src in srcs {
+    if id >= 0 && src >= 0 && src != id {
+      let mut hit = false
+      for l in st.links {
+        let (a, b) = l
+        if a == id && b == src {
+          hit = true
+        } else {
+          ()
+        }
       }
       if !hit {
-        Array::push(st.assigned, value = (id, held))
-        st.grew = true
+        Array::push(st.links, value = (id, src))
       } else {
         ()
       }
     } else {
       ()
+    }
+  }
+  ()
+}
+
+/// #4064: the body's binding `name` was assigned `e` and now shares the
+/// storage of the bindings `e` names.
+fn hce_link_name(st: HceWalk, name: String, e: Expr) -> Unit {
+  let i = hce_scope_index(st = st, name = name)
+  if i >= 0 {
+    let srcs = hce_source_ids(st = st, e = e)
+    let (_, _, _, id) = Array::get(st.scope, at = i)
+    let mut k = 0
+    while k < Array::length(srcs) {
+      if Array::get(srcs, at = k) == id {
+        Array::set(srcs, at = k, value = 0 - 1)
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    hce_link_one(st = st, i = i, srcs = srcs)
+  } else {
+    ()
+  }
+}
+
+/// #4064: a call stored `held` into the body's binding `name` (through
+/// `Array::push`, `Array::set`, `xs[i] = ..`, a field, a helper): it holds
+/// it from here on, and so does every binding of the body it was taken
+/// from, whose storage it may share (`HceWalk.links`).
+fn hce_store(st: HceWalk, name: String, held: String) -> Unit {
+  let i = hce_scope_index(st = st, name = name)
+  if held != "" && i >= 0 {
+    hce_store_at(st = st, i = i, held = held, seen = array_empty())
+  } else {
+    ()
+  }
+}
+
+fn hce_store_at(st: HceWalk, i: Int, held: String, seen: Array[Int]) -> Unit {
+  let (n, label, decls, id) = Array::get(st.scope, at = i)
+  Array::set(st.scope, at = i, value = (n, hce_set_union(a = label, b = held), decls, id))
+  if id >= 0 && !hce_has_int(items = seen, n = id) {
+    Array::push(seen, value = id)
+    hce_note_assigned(st = st, id = id, held = held)
+    let srcs: Array[Int] = array_empty()
+    for l in st.links {
+      let (a, b) = l
+      if a == id {
+        Array::push(srcs, value = b)
+      } else {
+        ()
+      }
+    }
+    for src in srcs {
+      let mut k = Array::length(st.scope) - 1
+      let mut at = 0 - 1
+      while k >= 0 && at < 0 {
+        let (_, _, _, kid) = Array::get(st.scope, at = k)
+        if kid == src {
+          at = k
+        } else {
+          ()
+        }
+        k = k - 1
+      }
+      if at >= 0 {
+        hce_store_at(st = st, i = at, held = held, seen = seen)
+      } else {
+        // Out of scope here; later walks bind it holding `held`.
+        hce_note_assigned(st = st, id = src, held = held)
+      }
+    }
+    ()
+  } else {
+    ()
+  }
+}
+
+/// #4064: the binding of the body a value stored into `e` lands in: `e`
+/// itself, a field of it, or an element a getter reads out of it
+/// (`Array::get(rows, at = 0)`, `rows[0]`).
+fn hce_store_root(e: Expr, st: HceWalk, env: TypeEnv) -> Option[String] {
+  match e {
+    EIdent(name, _) => if hce_scope_index(st = st, name = name) >= 0 {
+      Some(name)
+    } else {
+      None
+    },
+    EDot(base, _, _, _) => hce_store_root(e = base, st = st, env = env),
+    ELabeledArg(_, _, inner) => hce_store_root(e = inner, st = st, env = env),
+    ECall(callee, cargs, _, _) => if hce_is_paren(e) {
+      hce_store_root(e = Array::get(cargs, at = 0), st = st, env = env)
+    } else {
+      match callee {
+        EIdent(cname, coff) => if Array::length(cargs) > 0 && hce_store_getter(env = env, name = cname, noff = coff) {
+          hce_store_root(e = Array::get(cargs, at = 0), st = st, env = env)
+        } else {
+          None
+        },
+        _ => None
+      }
+    },
+    _ => None
+  }
+}
+
+/// #4064: a call may store what one argument holds into another argument
+/// rooted at a binding of the body (`Array::push(arr, value = g)`,
+/// `MutMap::set`, `xs[i] = g`, `fill(xs = arr, f = g)`), and what a
+/// handle-bound local callee holds (a closure that captured `g`) into any
+/// of them. A constructor, an effect operation and a builtin that only
+/// calls its function store nothing. `held` is what each argument holds.
+fn hce_note_stores(callee: Expr, args: Array[Expr], held: Array[String], st: HceWalk, env: TypeEnv, defs: Array[TypeDef]) -> Unit {
+  let (stores, by_callee) = match callee {
+    EIdent(name, noff) => if hce_scope_index(st = st, name = name) >= 0 {
+      (true, hce_local_label(st = st, name = name))
+    } else {
+      (!(hce_is_ctor(name = name, defs = defs) || hce_is_effect_op(name = name, defs = defs) || hce_calls_only_builtin(env = env, name = name, noff = noff)), "")
+    },
+    _ => (true, "")
+  }
+  let mut all = by_callee
+  for h in held {
+    all = hce_set_union(a = all, b = h)
+  }
+  if stores && all != "" {
+    let mut j = 0
+    while j < Array::length(args) {
+      match hce_store_root(e = Array::get(args, at = j), st = st, env = env) {
+        Some(root) => {
+          let mut into = by_callee
+          let mut i = 0
+          while i < Array::length(held) {
+            if i != j {
+              into = hce_set_union(a = into, b = Array::get(held, at = i))
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          hce_store(st = st, name = root, held = into)
+        },
+        None => ()
+      }
+      j = j + 1
+    }
+    // A method call stores into its receiver.
+    match callee {
+      EDot(base, _, _, _) => match hce_store_root(e = base, st = st, env = env) {
+        Some(root) => hce_store(st = st, name = root, held = all),
+        None => ()
+      },
+      _ => ()
     }
   } else {
     ()
@@ -1534,14 +1818,6 @@ fn hce_assigned(st: HceWalk, id: Int) -> String {
 /// The reach marking a `let` initializer (see `HceWalk.pos`).
 fn hce_let_reach() -> Int {
   3
-}
-
-/// Is `e` a parenthesized expression (`$source_span(inner, ..)`)?
-fn hce_is_paren(_ e: Expr) -> Bool {
-  match e {
-    ECall(EIdent(wrapper, _), wargs, _, _) => wrapper == "$source_span" && Array::length(wargs) > 0,
-    _ => false
-  }
 }
 
 /// Where the uses of `name` in `e` can take its value: 0 when every use
@@ -1963,7 +2239,7 @@ fn hce_literal_makes_bound(name: String, label: String, f: Expr, env: TypeEnv, d
     EFn(_, _, params, _, _, fbody) => {
       let names: Array[String] = array_empty()
       hce_collect_let_names(e = fbody, out = names)
-      let st = hce_new(labels = [label], find_routes = false, sites_from = 0, body_names = names, assigned = array_empty())
+      let st = hce_new(labels = [label], find_routes = false, sites_from = 0, body_names = names, assigned = array_empty(), links = array_empty())
       // #3594: read for a row variable (`label` is `e`), a parameter
       // whose function type's row is `e` performs it when called.
       let declared = if label_is_effect_var(label) {
@@ -2651,206 +2927,6 @@ fn hce_drop_row_taken(st: HceWalk, from: Int, pt: Type) -> Unit {
     Array::push(st.producers, value = p)
   }
   ()
-}
-
-/// Is `pt` a function type whose row names `label` or a row variable?
-fn hce_param_takes_row(pt: Type, label: String) -> Bool {
-  match pt {
-    CtForAll(_, _, inner) => hce_param_takes_row(pt = inner, label = label),
-    CtFn(_, _, Some(row)) => {
-      let mut found = false
-      for raw in String::split(row, sep = ",") {
-        let l = String::trim(raw)
-        if String::length(l) > 0 && !String::starts_with(l, prefix = "#") {
-          if label_is_effect_var(l) || canonical_exception_effect_name(row_label_base(effect_name_of_op(l))) == label {
-            found = true
-          } else {
-            ()
-          }
-        } else {
-          ()
-        }
-      }
-      found
-    },
-    _ => false
-  }
-}
-
-/// The route a call that may keep its argument names.
-fn hce_keep_route(_ callee: Expr) -> String {
-  let spelling = call_callee_spelling(callee)
-  if spelling == "perform" {
-    "handing it to an effect operation, whose handler may keep it past the handle,"
-  } else if spelling == "" {
-    "handing it to a function that may keep it past the handle,"
-  } else {
-    String::concat("handing it to `", String::concat(spelling, "`, which may keep it past the handle,"))
-  }
-}
-
-/// A constructor, read from the declarations: `Some` / `Ok` / `Err`, or a
-/// variant of a declared enum (`Wrap`, `W::Wrap`) -- unless this module
-/// declares a function of that spelling. The spelling's case decides nothing:
-/// `fn Keep(f: () -> Int)` is an ordinary function.
-fn hce_is_ctor(name: String, defs: Array[TypeDef]) -> Bool {
-  match retention_decl_value(name) {
-    Some(_) => false,
-    None => if name == "Some" || name == "Ok" || name == "Err" {
-      true
-    } else {
-      let at = String::last_index_of(name, needle = "::")
-      let (qual, variant) = if at >= 0 {
-        (name[0: at], name[at + 2: String::length(name)])
-      } else {
-        ("", name)
-      }
-      let mut found = false
-      for d in defs {
-        match d {
-          TDEnum(ename, _, variants) => if !found && (qual == "" || qual == ename) {
-            for v in variants {
-              let (vname, _) = v
-              if vname == variant || vname == name {
-                found = true
-              } else {
-                ()
-              }
-            }
-          } else {
-            ()
-          },
-          _ => ()
-        }
-      }
-      found
-    }
-  }
-}
-
-/// An operation of a declared effect (`Store::Put`): it is only ever the
-/// operand of `perform`, which is the call judged as handing the value to
-/// a handler.
-fn hce_is_effect_op(name: String, defs: Array[TypeDef]) -> Bool {
-  let at = String::last_index_of(name, needle = "::")
-  if at < 0 {
-    false
-  } else {
-    let qual = name[0: at]
-    let op = name[at + 2: String::length(name)]
-    let mut found = false
-    for d in defs {
-      match d {
-        TDEffect(ename, ops, _, _, _) => if !found && ename == qual {
-          for o in ops {
-            let (oname, _, _) = o
-            if oname == op {
-              found = true
-            } else {
-              ()
-            }
-          }
-        } else {
-          ()
-        },
-        _ => ()
-      }
-    }
-    found
-  }
-}
-
-/// A builtin of a container namespace (`Array::push`, `MutMap::set`): it
-/// keeps a value only in its own arguments, which the write routes and
-/// `hce_beside_local` judge.
-fn hce_container_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
-  (String::starts_with(name, prefix = "Array::") || String::starts_with(name, prefix = "MutMap::") || String::starts_with(name, prefix = "Map::") || String::starts_with(name, prefix = "FixedArray::") || String::starts_with(name, prefix = "Option::")) && builtin_resolves_at(env = env, name = name, ident_off = noff)
-}
-
-/// The builtins that call the function they are handed and keep nothing,
-/// where the call at `noff` reaches the builtin (#3255). A program's own
-/// `fn Array::map` is a function like any other: it may push the callback
-/// into a module-level array, and the spelling alone used to wave the
-/// handle-bound closure through -- measured, the kept closure later answered
-/// `6` from the dead handler after `vibe check` was clean. Such a callee falls
-/// to the declaration check below, as `keep` does.
-fn hce_calls_only_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
-  (name == "Array::map" || name == "Array::filter" || name == "Array::fold" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "__region_run") && builtin_resolves_at(env = env, name = name, ident_off = noff)
-}
-
-fn hce_fn_params(_ ty: Type) -> Option[Array[Type]] {
-  match ty {
-    CtForAll(_, _, inner) => hce_fn_params(inner),
-    CtFn(params, _, _) => Some(params),
-    _ => None
-  }
-}
-
-/// Is every use of `name` in `e` a call of it, none inside a closure? An
-/// inner binding of the same spelling is not told apart, which can only
-/// answer no.
-fn hce_only_called(name: String, e: Expr) -> Bool {
-  match e {
-    EIdent(n, _) => n != name,
-    EFn(_, _, _, _, _, fbody) => !hce_names_anywhere(e = fbody, name = name),
-    ECall(callee, args, _, _) => if hce_is_paren(e) {
-      hce_only_called_children(name = name, e = e)
-    } else {
-      let mut ok = match callee {
-        EIdent(n, _) => n == name || hce_only_called(name = name, e = callee),
-        _ => hce_only_called(name = name, e = callee)
-      }
-      for arg in args {
-        if ok && !hce_only_called(name = name, e = arg) {
-          ok = false
-        } else {
-          ()
-        }
-      }
-      ok
-    },
-    _ => hce_only_called_children(name = name, e = e)
-  }
-}
-
-fn hce_only_called_children(name: String, e: Expr) -> Bool {
-  let mark = expr_children_push(e)
-  let top = expr_children_top()
-  let mut ok = true
-  let mut i = mark
-  while ok && i < top {
-    if !hce_only_called(name = name, e = expr_child_at(i)) {
-      ok = false
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  expr_children_pop(mark)
-  ok
-}
-
-/// Does `name` occur anywhere in `e`?
-fn hce_names_anywhere(e: Expr, name: String) -> Bool {
-  match e {
-    EIdent(n, _) => n == name,
-    _ => {
-      let mark = expr_children_push(e)
-      let top = expr_children_top()
-      let mut found = false
-      let mut i = mark
-      while !found && i < top {
-        if hce_names_anywhere(e = expr_child_at(i), name = name) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      expr_children_pop(mark)
-      found
-    }
-  }
 }
 
 fn hce_note_outer_write(st: HceWalk, name: String, off: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Unit {
