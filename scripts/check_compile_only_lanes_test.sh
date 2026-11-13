@@ -8,7 +8,7 @@
 #   2. leak       -- a named wasm that defines a function of a dropped lane
 #                    (a probe program spelling `compile_file_fs_mode_gc`):
 #                    the absence check must name it.
-#                    Also run for a component-tool family (#2499) and the
+#                    Also run for component and editor tools (#2499) and the
 #                    ingestion-pipeline telemetry encoder (#2498).
 #   3. lost       -- a named wasm with no async component composition: the
 #                    presence check must say the production lane is gone.
@@ -128,6 +128,8 @@ check_leak() { # <source-level name of a forbidden family>
 check_leak compile_file_fs_mode_gc
 check_leak codegen_body_cache_replay
 check_leak adapter_serve_component
+check_leak format_source
+check_leak lsp_main
 check_leak ingestion_pipeline_telemetry_json
 
 # 3. lost: a named build with no forbidden name and no async component lane.
@@ -160,7 +162,7 @@ check_lost() {
     echo "check_compile_only_lanes_test: FAIL (lost): the probe defines an async component function, so the mutation did not hit" >&2
     exit 1
   fi
-  expect_fail lost "the async component composition the production lanes need is gone" --scan-only "$OUT"
+  expect_fail lost "defines no required function matching 'comp_emit_component_wasm_async_stdin_provider'" --scan-only "$OUT"
 }
 check_lost
 

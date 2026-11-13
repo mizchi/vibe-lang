@@ -33,7 +33,7 @@ import @vibe/compiler/lowering/effects/direct {
 }
 
 import @vibe/compiler/lowering/effects/evidence {
-  edp_collect_effect_defs, edp_collect_fn_defs, edp_es_collect_into, edp_params_of_fn, evidence_split_handler_sets
+  edp_collect_effect_defs, edp_collect_fn_defs, edp_es_collect_into, edp_params_of_fn, evidence_split_handler_sets_with_binders
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -48,7 +48,7 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 import ./suspend_census.vibe {
-  scps_census_appended, scps_census_drop, scps_census_note, scps_census_replaced
+  scps_census_appended, scps_census_drop, scps_census_kept, scps_census_note, scps_census_replaced
 }
 
 import ./suspend_fn_aliases.vibe {
@@ -270,14 +270,15 @@ export fn suspend_cps_pass(_ stmts: Array[Stmt]) -> Array[String] {
   // hides sibling effects from its continuation and return-owner analysis.
   // Split only the ordinary handler sets left after those drivers exist.
   let errs = scps_lower_handle_sites(stmts)
-  // The census describes the list as this pass left it; nothing after the
-  // pass keeps it current, so it is not kept past the pass.
-  scps_census_drop()
+  // The census describes the list as this pass left it, which is what the
+  // split reads its binders from (#4041). Nothing after the pass keeps it
+  // current, so it is not kept past the pass.
   if Array::length(errs) == 0 {
-    for e in evidence_split_handler_sets(stmts) {
+    for e in evidence_split_handler_sets_with_binders(stmts = stmts, binders = scps_census_kept()) {
       Array::push(errs, value = e)
     }
   } else ()
+  scps_census_drop()
   errs
 }
 
@@ -285,6 +286,7 @@ fn scps_lower_handle_sites(_ stmts: Array[Stmt]) -> Array[String] {
   scps_lower_handle_sites_with(stmts = stmts, extra = array_empty_str())
 }
 
+// review-lint: allow-program-walk (drives the pass: builds its tables, then rewrites each statement in turn)
 /// `extra`: effects put in step mode although no arm stores `resume` -- the
 /// retry below (#3540).
 fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Array[String] {
@@ -431,6 +433,7 @@ fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Arr
   }
 }
 
+// review-lint: allow-program-walk (drives the pass: builds its tables, then rewrites each statement in turn)
 /// Phase 2 over every statement: step-split the literals that need a
 /// CPS-mode effect and fix up argument conventions (scps_prepass_expr).
 /// `split_effs` collects the effects something was step-compiled for.
@@ -467,6 +470,7 @@ fn scps_prepass_stmts(stmts: Array[Stmt], ecfgs: Array[(String, Array[String], A
   }
 }
 
+// review-lint: allow-program-walk (answers a summary question: whether the prepass splits one effect, on a copy)
 /// #3192: does this program step-compile a closure value for `eff`?
 ///
 /// The linker asks before it injects the `Async` entry boundary. That
@@ -521,6 +525,7 @@ export fn suspend_prepass_splits(stmts: Array[Stmt], eff: String) -> Bool {
   }
 }
 
+// review-lint: allow-program-walk (drops the originals no statement references, until none is left)
 /// Drop the ORIGINAL of a function the suspend lowering cloned
 /// (`__scps_cps_<E>_<f>`) once nothing references it any more.
 ///
@@ -569,6 +574,7 @@ export fn scps_drop_orphaned_originals(_ stmts: Array[Stmt]) -> Unit {
   }
 }
 
+// review-lint: allow-program-walk (answers a summary question: whether one function has a clone)
 fn scps_has_clone_of(stmts: Array[Stmt], fname: String) -> Bool {
   let suffix = String::concat("_", scps_sanitize(fname))
   let mut found = false
@@ -587,6 +593,7 @@ fn scps_has_clone_of(stmts: Array[Stmt], fname: String) -> Bool {
   found
 }
 
+// review-lint: allow-program-walk (answers a summary question: whether one name is referenced outside one statement)
 fn scps_referenced_elsewhere(stmts: Array[Stmt], at: Int, name: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -2179,6 +2186,7 @@ fn scps_has_catch(e: Expr, top: Bool) -> Bool {
   }
 }
 
+// review-lint: allow-program-walk (answers a summary question: whether one name is referenced)
 fn scps_name_referenced(stmts: Array[Stmt], nm: String) -> Bool {
   let mut hit = false
   let mut i = 0

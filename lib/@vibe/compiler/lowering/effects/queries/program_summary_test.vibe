@@ -1,0 +1,40 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import @vibe/compiler/lowering/effects/queries {
+  edp_program_decls_named
+}
+
+fn kinds(_ stmts: Array[Stmt]) -> String {
+  let parts: Array[String] = []
+  for stmt in stmts {
+    Array::push(parts, value = match stmt {
+      STypeAlias(_, _, ps, _) => "alias/" + Int::to_string(Array::length(ps)),
+      SStruct(_, _, _, _, _, _) => "struct",
+      SLet(_, _, _, _, EInt(n)) => "let=" + Int::to_string(n),
+      SLetMut(_, _, _) => "mut",
+      _ => "other"
+    })
+  }
+  String::join(parts, sep = ",")
+}
+
+test "the declarations of a name are its aliases, structs and lets, in program order" {
+  let stmts = [
+    STypeAlias(false, "A", [], TyUnit),
+    SLet(false, false, "b", None, EInt(1)),
+    SStruct(false, "A", [("f", TyUnit)], [], [], []),
+    SExpr(EIdent("A", -1)),
+    SLet(false, false, "A", None, EInt(2)),
+    STypeAlias(false, "A", ["T"], TyName("T")),
+    SLetMut("A", None, EInt(3))
+  ]
+  // A reader that keeps the last match sees the last alias, as it did when
+  // it walked the whole program.
+  inspect(kinds(edp_program_decls_named(stmts = stmts, name = "A")), content = "alias/0,struct,let=2,alias/1,mut")
+  inspect(kinds(edp_program_decls_named(stmts = stmts, name = "b")), content = "let=1")
+  // A statement that declares nothing is never one of them, whatever name is
+  // asked for.
+  inspect(kinds(edp_program_decls_named(stmts = stmts, name = "")), content = "")
+  inspect(kinds(edp_program_decls_named(stmts = stmts, name = "C")), content = "")
+}

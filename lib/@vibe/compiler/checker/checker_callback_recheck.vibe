@@ -75,7 +75,7 @@ import ./checker_region_retention_types.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_assigned_values_into
+  retention_assigned_values_into, retention_result_items
 }
 
 import ./checker_region_retention_summary.vibe {
@@ -173,7 +173,7 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, leads: Array[Expr],
           }
           Array::push(outer, value = match from {
             Some(e) => if transports {
-              retention_arg_predates(arg = e, env = env)
+              callback_input_predates(arg = e, env = env)
             } else {
               array_empty()
             },
@@ -409,6 +409,30 @@ fn callback_any(_ sets: Array[Array[String]]) -> Bool {
     any = any || Array::length(set) > 0
   }
   any
+}
+
+/// An input to an element callback may be returned by a call whose arguments
+/// do not reveal the returned storage. Preserve the conservative region set
+/// unless the location can be read from the input.
+fn callback_input_predates(arg: Expr, env: TypeEnv) -> Array[String] {
+  if callback_input_location_known(arg) {
+    retention_arg_predates(arg = arg, env = env)
+  } else {
+    callback_region_names(env)
+  }
+}
+
+fn callback_input_location_known(_ e: Expr) -> Bool {
+  match e {
+    ECall(EIdent("__index", _), args, _, _) => if Array::length(args) > 0 {
+      callback_input_location_known(Array::get(args, at = 0))
+    } else {
+      false
+    },
+    ECall(_, _, _, _) => false,
+    ELet(_, _, _, _)|ELetMut(_, _, _, _)|ELetRec(_, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _)|EMatch(_, _)|ELoop(_, _)|EForIn(_, _, _, _)|EHandle(_, _) => false,
+    _ => Array::all(retention_result_items(e), f = callback_input_location_known)
+  }
 }
 
 /// The names of the regions active in `env`.

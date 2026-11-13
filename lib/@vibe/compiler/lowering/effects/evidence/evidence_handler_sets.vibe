@@ -14,7 +14,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/lowering/effects/queries {
-  edp_effect_name_of, edp_pat_qname, edp_str_array_contains
+  edp_effect_name_of, edp_mf_set_stmt, edp_pat_qname, edp_str_array_contains
 }
 
 import ./evidence_slot_refusals.vibe {
@@ -25,10 +25,27 @@ import ./evidence_slot_refusals.vibe {
 /// effects (a handler set, ADR-0102). Read-only and allocation-free apart
 /// from the arm labels, so a program with none pays one walk.
 export fn edp_handler_set_statements(_ stmts: Array[Stmt]) -> Array[Int] {
+  edp_handler_set_statements_among(stmts = stmts, multi_arm = None)
+}
+
+// review-lint: allow-program-walk (builds the index of statements holding a handler set)
+/// edp_handler_set_statements, asking the walk only of the statements that
+/// can hold a set (#4040): a set has two arms or more, so a statement whose
+/// `multi_arm` flag is false (the statement facts saw no handle with two
+/// arms) holds none. The facts do not read a `let` pattern statement, so
+/// that one is always walked.
+export fn edp_handler_set_statements_among(stmts: Array[Stmt], multi_arm: Option[Array[Bool]]) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    let hit = match Array::get(stmts, at = i) {
+    let may_hold = match multi_arm {
+      Some(flags) => match Array::get(stmts, at = i) {
+        SLetPat(_, _) => true,
+        _ => i >= Array::length(flags) || Array::get(flags, at = i)
+      },
+      None => true
+    }
+    let hit = may_hold && match Array::get(stmts, at = i) {
       SLet(_, _, _, _, expr) => edp_hs_has_set(expr),
       SLetMut(_, _, expr) => edp_hs_has_set(expr),
       SLetPat(_, expr) => edp_hs_has_set(expr),
@@ -82,12 +99,12 @@ export fn edp_split_handler_sets(stmts: Array[Stmt], indices: Array[Int], may: (
   while k < Array::length(indices) {
     let i = Array::get(indices, at = k)
     match Array::get(stmts, at = i) {
-      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
-      SLetMut(name, ty, expr) => Array::set(stmts, at = i, value = SLetMut(name, ty, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
-      SLetPat(p, expr) => Array::set(stmts, at = i, value = SLetPat(p, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
-      SExpr(expr) => Array::set(stmts, at = i, value = SExpr(edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
-      STest(tn, expr) => Array::set(stmts, at = i, value = STest(tn, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
-      SBench(bn, expr) => Array::set(stmts, at = i, value = SBench(bn, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
+      SLet(exported, is_rec, name, ty, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLet(exported, is_rec, name, ty, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
+      SLetMut(name, ty, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLetMut(name, ty, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
+      SLetPat(p, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLetPat(p, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
+      SExpr(expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SExpr(edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
+      STest(tn, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = STest(tn, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
+      SBench(bn, expr) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SBench(bn, edp_hs_expr(expr = expr, may = may, at = at, errs = errs))),
       _ => ()
     }
     k = k + 1
