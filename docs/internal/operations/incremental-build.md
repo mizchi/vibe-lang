@@ -1834,6 +1834,21 @@ reuse. A torn or foreign text record misses and is rewritten by the next
 publication. The reader accepts either segment form at any position, so a
 forged inline witness is still compared by content.
 
+Measured on the CLI closure with reuse on, N=3 medians per side, each side in
+fresh caches, emitted wasm byte-identical to the inline-witness compiler:
+
+| | inline witnesses | by-reference texts |
+|---|---:|---:|
+| cold cache directory | 185 MB | 46 MB |
+| cache growth per leaf edit | +177 MB | +35 MB |
+| cold `heap_ptr` | 2783 MB | 2797 MB |
+| edited-warm `heap_ptr` | 1917 MB | 1799 MB |
+| edited-warm peak RSS | 2016 MB | 1895 MB |
+
+The cold heap rises by 14 MB, because the walk keeps the texts it has written or read.
+Cold wall moved within noise: reuse on minus reuse off went from +0.79 s to
+−0.19 s, and single samples spread over about 1 s on this host.
+
 Reuse on minus reuse off, measured after #3808:
 
 | corpus | case | heap | wall (advisory, one round) |
