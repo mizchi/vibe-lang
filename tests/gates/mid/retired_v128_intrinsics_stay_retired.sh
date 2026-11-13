@@ -592,6 +592,39 @@ done
 rm -rf "$sbdir"
 echo "[compiler-gate] RC branch-dup short-by-two guard ok (0 on bump/rc/shadow/gc, rc heap_used=$sb_used B at N=20000)"
 
+# 40e10. #1980: a pattern binder consumed on one branch releases the dup the
+# path did not spend. A match payload binder takes one reference per consume
+# its arm may perform (the maximum over the arm's branches) and nothing
+# released them, so `Some(v) => { if c { sink(v) } else { 0 }; read(v) }`
+# leaked the dup on every path that skipped the consume; `if o is Some(v)`,
+# `guard` and a tuple `let` lower to the same match. A projection `let`
+# (`let v = h.inner`, a struct destructure's binders) had the plan's counted
+# path drop, which the `let` lowering declined. The fixture measured
+# 9,101,724 B at N=20000 before the change and 5,868 B after; the bound is
+# 8,000. Its controls keep the consumed values past the call, so the shadow
+# run is what proves no arm-end release freed a value still held, and the
+# answer is checked on bump, rc, shadow and gc.
+echo "[compiler-gate] 40e10/40 RC pattern-binder branch-dup guard"
+gate_workdir pqdir "_build/_gate_rc_pattern_binder_dup"
+for pq_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$pq_lane" "fixtures/rc_pattern_binder_dup_leak_test.vibe" "$pqdir/pq.wasm" main
+  gate_require_artifact "$pqdir/pq.wasm" "rc_pattern_binder_dup_leak fixture did not compile on the $pq_lane lane (#1980)"
+  gate_run pq_out last "$pqdir/pq.wasm"
+  gate_require_eq "$pq_out" "0" "rc_pattern_binder_dup_leak got '$pq_out' on the $pq_lane lane (want 0). A trap means an arm-end or path release freed a value a path still held (#1980)."
+  if [ "$pq_lane" = rc ]; then
+    pq_json="$(node scripts/measure_heap.mjs "$pqdir/pq.wasm" main 2>/dev/null)"
+    pq_used="$(printf '%s' "$pq_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$pq_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_pattern_binder_dup_leak heap ($pq_json)" >&2; exit 1
+    fi
+    if [ "$pq_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_pattern_binder_dup_leak heap_used=$pq_used >= 8000 (a pattern binder or a projection let keeps the dup of a consume its path skipped; measured 9101724 at N=20000 when both did)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$pqdir"
+echo "[compiler-gate] RC pattern-binder branch-dup guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pq_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a
