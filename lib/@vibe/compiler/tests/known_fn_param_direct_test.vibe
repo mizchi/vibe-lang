@@ -24,6 +24,18 @@ import @vibe/compiler/query {
   rc_plan_source
 }
 
+import @vibe/compiler/syntax {
+  lex, parse_program, print_expr
+}
+
+import @vibe/compiler/codegen/wasi {
+  lc_prepare_module_with_split_grants, lc_render_unused
+}
+
+import @vibe/compiler/codegen/common_base {
+  codegen_body_cache_discard, empty_dbg_prov, module_split_none
+}
+
 //# Helpers
 
 fn ty(_ n: String) -> Option[TypeExpr] {
@@ -339,4 +351,62 @@ let two_callback_prelude = "struct Ctx {\n  n: Int;\n  xs: Array[Int]\n}\n\nfn u
 test "rc-plan keeps the dup when the callback can be either of two functions" {
   let plan = rc_plan_source(source = two_callback_prelude, fn_filter = "")
   assert(String::contains(plan, needle = "step ctx dup"))
+}
+
+//# Exported functions (production lane)
+
+// `apply` is called once, with `inc`, by `main`. Whether its `cb(x)` may
+// become `inc(x)` depends on whether `main` is its only caller: an export the
+// module keeps can be called by the host with any callback.
+fn exported_apply_source(exported: Bool) -> String {
+  let head = if exported {
+    "export fn apply"
+  } else {
+    "fn apply"
+  }
+  "fn inc(x: Int) -> Int {\n  x + 1\n}\n\n" + head + "(cb: (Int) -> Int, x: Int) -> Int {\n  cb(x)\n}\n\nexport fn main() -> Int {\n  apply(inc, 1)\n}\n"
+}
+
+/// The callee `apply` calls once the RC linked lane has prepared `source` as
+/// a library build or not, with or without the executable export strip.
+fn prepared_apply_callee(source: String, library_mode: Bool, exports_stripped: Bool) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  let prepared = lc_prepare_module_with_split_grants(stmts = stmts, entry_name_in = "main", srcs = [
+    ("input.vibe", source)
+  ], linked_imports = [], library_mode = library_mode, enable_rc = true, coverage = false, debug_trace = false, debug_break = false, rc_shadow = false, enable_late_dce = false, prov = empty_dbg_prov(), body_cache_in = codegen_body_cache_discard(), body_cache_out = codegen_body_cache_discard(), slice_lo = 0, slice_hi = -1, checker_float_call_offsets = [
+  ], checker_int_render_offsets = [], checker_bool_render_offsets = [], checker_eq_offsets = [
+  ], checker_eq_type_keys = [], split = module_split_none(), render = lc_render_unused, grants = [
+  ], exports_stripped = exports_stripped)
+  let mut found = "(absent)"
+  for stmt in prepared.input.stmts {
+    match stmt {
+      SLet(_, _, "apply", _, EFn(_, _, _, _, _, body)) => {
+        found = if String::contains(print_expr(body), needle = "inc(") {
+          "inc"
+        } else if String::contains(print_expr(body), needle = "cb(") {
+          "cb"
+        } else {
+          print_expr(body)
+        }
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+test "a function only the program calls has its callback called directly" {
+  inspect(prepared_apply_callee(source = exported_apply_source(exported = false), library_mode = false, exports_stripped = false), content = "inc")
+}
+
+test "an export the module keeps keeps its callback indirect" {
+  inspect(prepared_apply_callee(source = exported_apply_source(exported = true), library_mode = false, exports_stripped = false), content = "cb")
+}
+
+test "an export the executable strip drops is called only by the program" {
+  inspect(prepared_apply_callee(source = exported_apply_source(exported = true), library_mode = false, exports_stripped = true), content = "inc")
+}
+
+test "a library build exports every function, so none is specialized" {
+  inspect(prepared_apply_callee(source = exported_apply_source(exported = false), library_mode = true, exports_stripped = false), content = "cb")
 }
