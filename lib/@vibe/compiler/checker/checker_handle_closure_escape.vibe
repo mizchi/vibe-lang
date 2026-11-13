@@ -236,9 +236,9 @@ struct HceWalk {
   assigned: Array[(Int, String)];
   /// #4064: by declaration, the bindings of the body each binding was
   /// taken from (`let a2 = arr`, `for row in rows`, `Box::{ fs: arr }`),
-  /// whose storage it may share: a value stored into it is stored into them
-  /// too (`hce_store`). Kept from one walk to the next, as `assigned` is.
-  links: Array[(Int, Int)];
+  /// whose storage it may share. The flag restricts a link to writes into
+  /// an element or field. Kept across walks like `assigned`.
+  links: Array[(Int, Int, Bool)];
   /// The identity the next binding the walk binds takes.
   mut next_decl: Int;
   /// Whether this walk added to `assigned`.
@@ -501,7 +501,7 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
     let body_names: Array[String] = array_empty()
     hce_collect_let_names(e = body, out = body_names)
     let assigned: Array[(Int, String)] = array_empty()
-    let links: Array[(Int, Int)] = array_empty()
+    let links: Array[(Int, Int, Bool)] = array_empty()
     let st = hce_walk_body(body = body, labels = labels, find_routes = false, sites_from = sites_from, body_names = body_names, assigned = assigned, links = links, env = env, defs = defs, s = s)
     let mut reach = 0
     let mut pick = 0 - 1
@@ -563,7 +563,7 @@ fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv,
 /// in a loop, or in a closure called later -- so each walk binds those
 /// bindings with every handle-bound value the walks before found assigned
 /// to them; `assigned` only grows, so the walks end.
-fn hce_walk_body(body: Expr, labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)], links: Array[(Int, Int)], env: TypeEnv, defs: Array[TypeDef], s: Subst) -> HceWalk {
+fn hce_walk_body(body: Expr, labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)], links: Array[(Int, Int, Bool)], env: TypeEnv, defs: Array[TypeDef], s: Subst) -> HceWalk {
   let mut st = hce_new(labels = labels, find_routes = find_routes, sites_from = sites_from, body_names = body_names, assigned = assigned, links = links)
   hce_walk(e = body, st = st, env = env, defs = defs, s = s)
   while st.grew {
@@ -573,7 +573,7 @@ fn hce_walk_body(body: Expr, labels: Array[String], find_routes: Bool, sites_fro
   st
 }
 
-fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)], links: Array[(Int, Int)]) -> HceWalk {
+fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names: Array[String], assigned: Array[(Int, String)], links: Array[(Int, Int, Bool)]) -> HceWalk {
   HceWalk::{
     labels: labels,
     scope: array_empty(),
@@ -1225,7 +1225,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       let parts: Array[(String, Bool)] = array_empty()
       let held = hce_match_parts(e = scrutinee, parts = parts, st = st, env = env, defs = defs, s = s)
       let fresh = Array::length(st.producers) > producers_before
-      let srcs = hce_source_ids(st = st, e = scrutinee, env = env)
+      let srcs = hce_source_ids(st = st, e = scrutinee, env = env, element = true)
       for arm in marms {
         let (pat, abody) = arm
         let mark = Array::length(st.scope)
@@ -1265,8 +1265,10 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       for p in lparams {
         let (pname, init) = p
         let srcs = hce_source_ids(st = st, e = init, env = env)
+        let elements = hce_source_ids(st = st, e = init, env = env, element = true)
         hce_declare(st = st, name = pname, label = Array::get(held, at = pi), decls = "")
         hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = srcs)
+        hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = elements, projected = true)
         Array::push(names, value = pname)
         pi = pi + 1
       }
@@ -1485,8 +1487,10 @@ fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env:
     ""
   }
   let srcs = hce_source_ids(st = st, e = val, env = env)
+  let elements = hce_source_ids(st = st, e = val, env = env, element = true)
   hce_declare(st = st, name = name, label = bound, decls = decls)
   hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = srcs)
+  hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = elements, projected = true)
   hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
   Array::truncate(st.scope, length = mark)
 }
@@ -1594,35 +1598,35 @@ fn hce_has_int(items: Array[Int], n: Int) -> Bool {
 
 /// #4064: every binding at scope index `from` or later was taken from the
 /// declarations `srcs`.
-fn hce_link_from(st: HceWalk, from: Int, srcs: Array[Int]) -> Unit {
+fn hce_link_from(st: HceWalk, from: Int, srcs: Array[Int], projected: Bool = false) -> Unit {
   let mut i = if from < 0 {
     0
   } else {
     from
   }
   while i < Array::length(st.scope) {
-    hce_link_one(st = st, i = i, srcs = srcs)
+    hce_link_one(st = st, i = i, srcs = srcs, projected = projected)
     i = i + 1
   }
 }
 
 /// #4064: the binding at scope index `i` was taken from the declarations
 /// `srcs` (see `HceWalk.links`).
-fn hce_link_one(st: HceWalk, i: Int, srcs: Array[Int]) -> Unit {
+fn hce_link_one(st: HceWalk, i: Int, srcs: Array[Int], projected: Bool = false) -> Unit {
   let (_, _, _, id) = Array::get(st.scope, at = i)
   for src in srcs {
     if id >= 0 && src >= 0 && src != id {
       let mut hit = false
       for l in st.links {
-        let (a, b) = l
-        if a == id && b == src {
+        let (a, b, p) = l
+        if a == id && b == src && p == projected {
           hit = true
         } else {
           ()
         }
       }
       if !hit {
-        Array::push(st.links, value = (id, src))
+        Array::push(st.links, value = (id, src, projected))
       } else {
         ()
       }
@@ -1639,6 +1643,7 @@ fn hce_link_name(st: HceWalk, name: String, e: Expr, env: TypeEnv) -> Unit {
   let i = hce_scope_index(st = st, name = name)
   if i >= 0 {
     hce_link_one(st = st, i = i, srcs = hce_source_ids(st = st, e = e, env = env))
+    hce_link_one(st = st, i = i, srcs = hce_source_ids(st = st, e = e, env = env, element = true), projected = true)
   } else {
     ()
   }
@@ -1648,31 +1653,33 @@ fn hce_link_name(st: HceWalk, name: String, e: Expr, env: TypeEnv) -> Unit {
 /// `Array::push`, `Array::set`, `xs[i] = ..`, a field, a helper): it holds
 /// it from here on, and so does every binding of the body it was taken
 /// from, whose storage it may share (`HceWalk.links`).
-fn hce_store(st: HceWalk, name: String, held: String) -> Unit {
+fn hce_store(st: HceWalk, name: String, held: String, projected: Bool) -> Unit {
   let i = hce_scope_index(st = st, name = name)
   if held != "" && i >= 0 {
-    hce_store_at(st = st, i = i, held = held, seen = array_empty())
+    hce_store_at(st = st, i = i, held = held, projected = projected, seen = array_empty())
   } else {
     ()
   }
 }
 
-fn hce_store_at(st: HceWalk, i: Int, held: String, seen: Array[Int]) -> Unit {
+fn hce_store_at(st: HceWalk, i: Int, held: String, projected: Bool, seen: Array[(Int, Bool)]) -> Unit {
   let (n, label, decls, id) = Array::get(st.scope, at = i)
   Array::set(st.scope, at = i, value = (n, hce_set_union(a = label, b = held), decls, id))
-  if id >= 0 && !hce_has_int(items = seen, n = id) {
-    Array::push(seen, value = id)
+  let key = (id, projected)
+  if id >= 0 && !Array::any(seen, f = (item) -> item == key) {
+    Array::push(seen, value = key)
     hce_note_assigned(st = st, id = id, held = held)
-    let srcs: Array[Int] = array_empty()
+    let srcs: Array[(Int, Bool)] = array_empty()
     for l in st.links {
-      let (a, b) = l
-      if a == id {
-        Array::push(srcs, value = b)
+      let (a, b, element_link) = l
+      if a == id && (!element_link || projected) {
+        Array::push(srcs, value = (b, projected && !element_link))
       } else {
         ()
       }
     }
-    for src in srcs {
+    for source in srcs {
+      let (src, into_element) = source
       let mut k = Array::length(st.scope) - 1
       let mut at = 0 - 1
       while k >= 0 && at < 0 {
@@ -1685,7 +1692,7 @@ fn hce_store_at(st: HceWalk, i: Int, held: String, seen: Array[Int]) -> Unit {
         k = k - 1
       }
       if at >= 0 {
-        hce_store_at(st = st, i = at, held = held, seen = seen)
+        hce_store_at(st = st, i = at, held = held, projected = into_element, seen = seen)
       } else {
         // Out of scope here; later walks bind it holding `held`.
         hce_note_assigned(st = st, id = src, held = held)
@@ -1700,21 +1707,21 @@ fn hce_store_at(st: HceWalk, i: Int, held: String, seen: Array[Int]) -> Unit {
 /// #4064: the binding of the body a value stored into `e` lands in: `e`
 /// itself, a field of it, or an element a getter reads out of it
 /// (`Array::get(rows, at = 0)`, `rows[0]`).
-fn hce_store_root(e: Expr, st: HceWalk, env: TypeEnv) -> Option[String] {
+fn hce_store_root(e: Expr, st: HceWalk, env: TypeEnv, projected: Bool = false) -> Option[(String, Bool)] {
   match e {
     EIdent(name, _) => if hce_scope_index(st = st, name = name) >= 0 {
-      Some(name)
+      Some((name, projected))
     } else {
       None
     },
-    EDot(base, _, _, _) => hce_store_root(e = base, st = st, env = env),
-    ELabeledArg(_, _, inner) => hce_store_root(e = inner, st = st, env = env),
+    EDot(base, _, _, _) => hce_store_root(e = base, st = st, env = env, projected = true),
+    ELabeledArg(_, _, inner) => hce_store_root(e = inner, st = st, env = env, projected = projected),
     ECall(callee, cargs, _, _) => if hce_is_paren(e) {
-      hce_store_root(e = Array::get(cargs, at = 0), st = st, env = env)
+      hce_store_root(e = Array::get(cargs, at = 0), st = st, env = env, projected = projected)
     } else {
       match callee {
         EIdent(cname, coff) => if Array::length(cargs) > 0 && hce_store_getter(env = env, name = cname, noff = coff) {
-          hce_store_root(e = Array::get(cargs, at = 0), st = st, env = env)
+          hce_store_root(e = Array::get(cargs, at = 0), st = st, env = env, projected = true)
         } else {
           None
         },
@@ -1750,7 +1757,7 @@ fn hce_note_stores(callee: Expr, args: Array[Expr], held: Array[String], st: Hce
       i = i + 1
     }
     match hce_store_root(e = Array::get(args, at = 0), st = st, env = env) {
-      Some(root) => hce_store(st = st, name = root, held = stored),
+      Some((root, projected)) => hce_store(st = st, name = root, held = stored, projected = projected),
       None => ()
     }
     return ()
@@ -1771,7 +1778,7 @@ fn hce_note_stores(callee: Expr, args: Array[Expr], held: Array[String], st: Hce
     let mut j = 0
     while j < Array::length(args) {
       match hce_store_root(e = Array::get(args, at = j), st = st, env = env) {
-        Some(root) => {
+        Some((root, projected)) => {
           let mut into = by_callee
           let mut i = 0
           while i < Array::length(held) {
@@ -1782,7 +1789,7 @@ fn hce_note_stores(callee: Expr, args: Array[Expr], held: Array[String], st: Hce
             }
             i = i + 1
           }
-          hce_store(st = st, name = root, held = into)
+          hce_store(st = st, name = root, held = into, projected = projected)
         },
         None => ()
       }
@@ -1791,7 +1798,7 @@ fn hce_note_stores(callee: Expr, args: Array[Expr], held: Array[String], st: Hce
     // A method call stores into its receiver.
     match callee {
       EDot(base, _, _, _) => match hce_store_root(e = base, st = st, env = env) {
-        Some(root) => hce_store(st = st, name = root, held = all),
+        Some((root, projected)) => hce_store(st = st, name = root, held = all, projected = projected),
         None => ()
       },
       _ => ()
