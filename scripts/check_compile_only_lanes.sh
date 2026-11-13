@@ -49,6 +49,9 @@
 #      `_v1_json` counter encoder it embeds are absent, and
 #      VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT is refused naming
 #      VIBE_CFG=telemetry with a planted destination left as it was.
+#      The ingestion fingerprint sidecar likewise: its encoder is absent, and
+#      VIBE_INGESTION_TELEMETRY_OUT is refused naming VIBE_CFG=telemetry after
+#      its own stale sidecar is cleared (as the pipeline sibling's is).
 #   3. ACCEPTANCE. The two production lanes still compile, and the default
 #      lane's output runs. Cfg, unstable authorization and generated-source
 #      trust remain per-compilation inputs to this same artifact.
@@ -75,6 +78,8 @@
 #       runs check 2b's incremental-typecheck half alone (likewise)
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --invalidation-trace-only
 #       runs check 2b's invalidation-trace half alone (likewise)
+#   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --ingestion-fingerprint-only
+#       runs check 2b's ingestion-fingerprint half alone (likewise)
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -88,6 +93,7 @@ SCHEDULER_TRACE_ONLY=0
 MEMORY_MARKS_ONLY=0
 INCREMENTAL_ONLY=0
 INVALIDATION_ONLY=0
+INGESTION_FP_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifact) ARTIFACT="$2"; shift 2 ;;
@@ -99,6 +105,7 @@ while [ "$#" -gt 0 ]; do
     --memory-marks-only) MEMORY_MARKS_ONLY=1; shift ;;
     --incremental-telemetry-only) INCREMENTAL_ONLY=1; shift ;;
     --invalidation-trace-only) INVALIDATION_ONLY=1; shift ;;
+    --ingestion-fingerprint-only) INGESTION_FP_ONLY=1; shift ;;
     *) echo "check-compile-only-lanes: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -164,6 +171,12 @@ ABSENT_PATTERNS="$ABSENT_PATTERNS|incremental_typecheck_telemetry_json|telemetry
 # publication reaches them. The walk's observation points and counters stay
 # (unit tests on the default cfg drive them); they are not on this list.
 ABSENT_PATTERNS="$ABSENT_PATTERNS|incremental_invalidation_trace_json|incremental_trace_json_string|incremental_typecheck_telemetry_v1_json"
+# #2498: the ingestion fingerprint sidecar's encoder (the cache's and the
+# persistent-cache wrapper; `ingestion_fingerprint_telemetry_json` matches
+# both), the counter reader only it calls, and the cache module's JSON string
+# escaper only it uses (spelled with its module so another module's escaper
+# cannot match). The counters themselves stay: unit tests drive them.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|ingestion_fingerprint_telemetry_json|(^| )ingestion_telemetry_counter_|json_escape_string_dep_lib__vibe_compiler_cache_cache_underlying"
 
 scan_names() { # <wasm>
   local wasm="$1" listing
@@ -451,6 +464,36 @@ refuse_invalidation_trace() {
 $PROBE_DIAG" \
     || fail "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_invalidation_trace.log") ${PROBE_DIAG}'"
 }
+# The ingestion fingerprint sidecar. The check-only lane publishes it, so
+# that is where the generation's stage2 is caught accepting it. A build
+# without it refuses on every lane -- AFTER its own stale sidecar and the
+# sibling's are cleared, as the pipeline sibling does -- so a planted sidecar
+# at the destination must be gone.
+refuse_ingestion_fingerprint() {
+  local sidecar="$WORK/ingestion_fingerprint.json"
+  rm -f "$sidecar"
+  compile_probe refuse_ingestion_fp_accepted VIBE_CHECK_ONLY=1 \
+    VIBE_INGESTION_TELEMETRY_OUT="$sidecar" VIBE_INGESTION_TELEMETRY_NONCE=compile-only-2498
+  if [ -e "$sidecar" ]; then
+    fail "VIBE_INGESTION_TELEMETRY_OUT was ACCEPTED by $ARTIFACT (invoke $ENTRY): it published '$(head -c 160 "$sidecar")'"
+  fi
+  printf 'stale sidecar from an earlier run\n' >"$sidecar"
+  # shellcheck disable=SC2046
+  compile_probe refuse_ingestion_fingerprint VIBE_INGESTION_TELEMETRY_OUT="$sidecar" \
+    VIBE_INGESTION_TELEMETRY_NONCE=compile-only-2498 $(plant_stale_sibling)
+  if [ -e "$sidecar" ]; then
+    fail "VIBE_INGESTION_TELEMETRY_OUT was refused before its own stale sidecar was cleared by $ARTIFACT (invoke $ENTRY): '$(head -c 160 "$sidecar")' survived the refused invocation"
+  fi
+  if [ -s "$PROBE_OUT" ]; then
+    fail "VIBE_INGESTION_TELEMETRY_OUT was ignored by $ARTIFACT: it compiled the probe"
+  fi
+  if stale_sibling_survived; then
+    fail "VIBE_INGESTION_TELEMETRY_OUT was refused before the stale-sidecar cleanup by $ARTIFACT (invoke $ENTRY): the earlier run's VIBE_ARTIFACT_INPUT_TRACE_OUT sidecar survived the refused invocation"
+  fi
+  grep -qF "VIBE_CFG=telemetry" <<<"$(cat "$WORK/refuse_ingestion_fingerprint.log")
+$PROBE_DIAG" \
+    || fail "VIBE_INGESTION_TELEMETRY_OUT was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_ingestion_fingerprint.log") ${PROBE_DIAG}'"
+}
 if [ "$SCHEDULER_TRACE_ONLY" = 1 ]; then
   refuse_scheduler_trace
   echo "compile-only-lanes: scheduler trace refusal ok"
@@ -471,6 +514,11 @@ if [ "$INVALIDATION_ONLY" = 1 ]; then
   echo "compile-only-lanes: invalidation trace refusal ok"
   exit 0
 fi
+if [ "$INGESTION_FP_ONLY" = 1 ]; then
+  refuse_ingestion_fingerprint
+  echo "compile-only-lanes: ingestion fingerprint refusal ok"
+  exit 0
+fi
 
 for sw in VIBE_BACKEND=gc VIBE_DEBUG_BREAK=1 VIBE_DEBUG=1 VIBE_RC=shadow VIBE_COVERAGE=1 VIBE_CODEGEN_BODY_CACHE=on; do
   refuse "$sw"
@@ -487,6 +535,8 @@ refuse_incremental_telemetry
 echo "compile-only-lanes: telemetry refusal ok (VIBE_INCREMENTAL_TELEMETRY_OUT refused, destination untouched)"
 refuse_invalidation_trace
 echo "compile-only-lanes: telemetry refusal ok (VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT refused, destination untouched)"
+refuse_ingestion_fingerprint
+echo "compile-only-lanes: telemetry refusal ok (VIBE_INGESTION_TELEMETRY_OUT refused after its stale sidecar was cleared)"
 
 # 3. acceptance: the default (RC) lane and the bump lane compile; they differ;
 # the default output runs.
