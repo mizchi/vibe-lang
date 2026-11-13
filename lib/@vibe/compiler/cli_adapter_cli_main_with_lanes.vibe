@@ -176,6 +176,98 @@ import ./cli_adapter_fs_lane_request.vibe {
   ss_lane_request
 }
 
+// --- #2498: the incremental typecheck telemetry sidecar --------------------
+//
+// `VIBE_INCREMENTAL_TELEMETRY_OUT` names a file this invocation clears before
+// the work and writes after it, guarded by `refuse_telemetry_destination_conflict`
+// so the observation can never destroy what it observes (#2510, #2738). Only a
+// compiler built with `VIBE_CFG=telemetry` -- the generation's stage2, which
+// every consumer (the KPIs, the oracles, check_telemetry_sidecar_guards.sh)
+// drives -- clears, guards or publishes. A build without it refuses the request
+// by name (`incremental_telemetry_refusal`) after the shared stale-sidecar
+// cleanup and never touches the destination: with no guard, a clear could
+// delete the very input the request named. The twins below keep the call
+// sites unchanged; the guard, its path helpers and the JSON encoder are reached
+// only from the `#cfg(telemetry)` halves, so the compile-only artifact defines
+// none of them (scripts/check_compile_only_lanes.sh reads that from its name
+// section). The walk's counters stay: the invalidation trace still enables
+// them, and a disabled counter is one cell read.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_TELEMETRY_OUT`, or `""`
+/// when it can.
+fn incremental_telemetry_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_TELEMETRY_OUT`, or `""`
+/// when it can. This build has no sidecar writer, so it always refuses.
+fn incremental_telemetry_refusal() -> String {
+  telemetry_build_refusal("VIBE_INCREMENTAL_TELEMETRY_OUT")
+}
+
+#cfg(telemetry)
+/// Refuse a destination that collides with what this invocation reads or
+/// writes, then clear it, so a failure later in the run leaves no earlier
+/// run's sidecar behind.
+fn incremental_telemetry_prepare(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
+  refuse_telemetry_destination_conflict(destination = destination, input = input, output = output, trace = trace)
+  if destination != "" && Fs::exists(destination) {
+    Fs::remove_file(destination)
+  } else {
+    ()
+  }
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: the destination is never touched, and a request
+/// is refused by `incremental_telemetry_refusal`.
+fn incremental_telemetry_prepare(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
+  ()
+}
+
+#cfg(telemetry)
+/// This invocation's incremental typecheck counters as the sidecar's JSON.
+fn incremental_telemetry_snapshot() -> String {
+  incremental_typecheck_telemetry_json()
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: nothing to snapshot.
+fn incremental_telemetry_snapshot() -> String {
+  ""
+}
+
+#cfg(telemetry)
+/// Publish `contents` at `destination`, re-asking the collision question now
+/// that the artifact and its derived sidecars exist.
+fn incremental_telemetry_publish(destination: String, input: String, output: String, trace: String, contents: String,) -> Unit with Fs + Exception {
+  refuse_telemetry_destination_conflict(destination = destination, input = input, output = output, trace = trace)
+  Fs::write_file(destination, contents = contents)
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: refuse, as the request should already have been.
+fn incremental_telemetry_publish(destination: String, input: String, output: String, trace: String, contents: String,) -> Unit with Fs + Exception {
+  throw(incremental_telemetry_refusal())
+}
+
+#cfg(telemetry)
+/// Write `contents` at `destination` with no second collision check: the
+/// check-only lane writes no artifact, so the guard asked before the work
+/// (`incremental_telemetry_prepare`) is the whole question there.
+fn incremental_telemetry_write(destination: String, contents: String) -> Unit with Fs {
+  Fs::write_file(destination, contents = contents)
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: the request was refused before the work.
+fn incremental_telemetry_write(destination: String, contents: String) -> Unit with Fs {
+  ()
+}
+
+#cfg(telemetry)
 /// What does the telemetry destination collide with? "" when nothing.
 ///
 /// One list, asked at both guards, because every entry names something this
@@ -229,6 +321,7 @@ fn telemetry_destination_conflict(destination: String, input: String, output: St
   }
 }
 
+#cfg(telemetry)
 /// Throw if the destination collides, with a message that names the edit.
 fn refuse_telemetry_destination_conflict(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
   let conflict = telemetry_destination_conflict(destination = destination, input = input, output = output, trace = trace)
@@ -838,12 +931,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // neither the positional argument nor the variable is set), so probing the
   // paths this early is safe on the lanes that have no input or output
   // argument at all.
-  refuse_telemetry_destination_conflict(destination = fs_telemetry_out, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
-  if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
-    Fs::remove_file(fs_telemetry_out)
-  } else {
-    ()
-  }
+  incremental_telemetry_prepare(destination = fs_telemetry_out, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
   // Set from the env on every invocation, not merely enabled: a long-lived
   // instance that served a telemetry request must not leave counting on for
   // the next caller. The check-only branch may enable it again for its own
@@ -933,6 +1021,18 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // oracle would report as a run that planned nothing -- and only HERE, after
   // the shared stale-sidecar cleanup above, so a sibling observation's file
   // from an earlier run cannot survive the refusal and read as this one's.
+  // #2498: likewise for the incremental typecheck sidecar. A build without the
+  // telemetry flag never touched its destination above (no guard, no clear).
+  let incremental_refusal = if fs_telemetry_out != "" {
+    incremental_telemetry_refusal()
+  } else {
+    ""
+  }
+  if incremental_refusal != "" {
+    throw(incremental_refusal)
+  } else {
+    ()
+  }
   let scheduler_trace = Env::get("VIBE_SCHEDULER_TRACE")
   if scheduler_trace == "" {
     ()
@@ -1258,7 +1358,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       unstable_closure_reset()
       let checked_source_groups = check_linked_file_source_groups(input_path, checked_error_row = checked_error_row)
       if telemetry_out != "" {
-        Fs::write_file(telemetry_out, contents = incremental_typecheck_telemetry_json())
+        incremental_telemetry_write(destination = telemetry_out, contents = incremental_telemetry_snapshot())
       } else {
         ()
       }
@@ -1456,7 +1556,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // after it; writing here would publish a fresh sidecar for a compile the
       // closure gate or the artifact write below still rejects (Codex P2).
       let fs_telemetry_json = if fs_telemetry_out != "" {
-        incremental_typecheck_telemetry_json()
+        incremental_telemetry_snapshot()
       } else {
         ""
       }
@@ -1562,8 +1662,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       if fs_telemetry_out == "" {
         ()
       } else {
-        refuse_telemetry_destination_conflict(destination = fs_telemetry_out, input = input_path, output = output_path, trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
-        Fs::write_file(fs_telemetry_out, contents = fs_telemetry_json)
+        incremental_telemetry_publish(destination = fs_telemetry_out, input = input_path, output = output_path, trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"), contents = fs_telemetry_json,)
       }
       0
     } with {

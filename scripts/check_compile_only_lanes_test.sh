@@ -10,7 +10,9 @@
 #                    the absence check must name it.
 #                    Also run for component and editor tools (#2499) and the
 #                    ingestion-pipeline telemetry encoder, the scheduler
-#                    trace's row encoders and the heap-mark emitter (#2498).
+#                    trace's row encoders, the heap-mark emitter, and the
+#                    incremental typecheck sidecar's encoder and destination
+#                    guard (#2498).
 #   3. lost       -- a named wasm with no async component composition: the
 #                    presence check must say the production lane is gone.
 #   4. accepted   -- the full CLI stage2, invoked as `cli_main`: it serves
@@ -20,16 +22,20 @@
 #                    `telemetry` cfg flag (#2498): it publishes the
 #                    ingestion-pipeline sidecar, so --telemetry-only must
 #                    fail.
-#                    It also writes the scheduler trace and emits heap
-#                    marks, so --scheduler-trace-only and
-#                    --memory-marks-only must fail.
+#                    It also writes the scheduler trace, emits heap marks
+#                    and publishes the incremental typecheck sidecar, so
+#                    --scheduler-trace-only, --memory-marks-only and
+#                    --incremental-telemetry-only must fail.
 #   4c. stale     -- the compile-only artifact rebuilt from its own flat
 #                    module source with the scheduler-trace and heap-mark
 #                    refusals moved back in front of the shared
 #                    stale-sidecar cleanup (the defect fixed after #4105's
 #                    review): a stale VIBE_INCREMENTAL_TELEMETRY_OUT sidecar
 #                    survives each refusal, so --scheduler-trace-only and
-#                    --memory-marks-only must both fail.
+#                    --memory-marks-only must both fail. The same mutant
+#                    clears VIBE_INCREMENTAL_TELEMETRY_OUT with no destination
+#                    guard, so the probe naming the compile input deletes it
+#                    and --incremental-telemetry-only must fail.
 #   5. control    -- the real compile-only artifact passes.
 #
 # Fixture: a fresh named compile-only artifact built with the selected compiler
@@ -145,6 +151,8 @@ check_leak ingestion_pipeline_telemetry_json
 check_leak scheduler_trace_project
 check_leak scheduler_trace_step
 check_leak profile_memory_mark_emit
+check_leak incremental_typecheck_telemetry_json
+check_leak telemetry_destination_conflict
 
 # 3. lost: a named build with no forbidden name and no async component lane.
 # The same probe shape as a leak, under a name no pattern matches, so the
@@ -191,6 +199,7 @@ expect_fail accepted_tool "VIBE_EMIT_WIT=1 was ACCEPTED" --artifact "$STAGE2" --
 expect_fail telemetry "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --telemetry-only
 expect_fail scheduler_trace "VIBE_SCHEDULER_TRACE was ACCEPTED" --artifact "$STAGE2" --entry cli_main --scheduler-trace-only
 expect_fail memory_marks "VIBE_PROFILE_MEMORY_MARKS=1 was ACCEPTED" --artifact "$STAGE2" --entry cli_main --memory-marks-only
+expect_fail incremental "VIBE_INCREMENTAL_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --incremental-telemetry-only
 
 # 4c. stale: refuse VIBE_SCHEDULER_TRACE and VIBE_PROFILE_MEMORY_MARKS=1
 # before the stale-sidecar cleanup. One mutant carries both early refusals.
@@ -211,7 +220,7 @@ if (text.split(anchor).length !== 2 || !refusal || !marks) {
   console.error("check_compile_only_lanes_test: FAIL (stale): the mutation anchor is not unique in the module source");
   process.exit(1);
 }
-const early = `{ if (Env::get("VIBE_SCHEDULER_TRACE") != "") { throw(${refusal[0]}()) } else { () }; if (Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1") { throw(${marks[0]}()) } else { () }; let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT");`;
+const early = `{ if (Env::get("VIBE_SCHEDULER_TRACE") != "") { throw(${refusal[0]}()) } else { () }; if (Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1") { throw(${marks[0]}()) } else { () }; let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT"); if (fs_telemetry_out != "") { Fs::remove_file(fs_telemetry_out) } else { () };`;
 fs.writeFileSync(out, text.replace(anchor, early));
 NODE
   cmp -s "$SRC" "$MUT" && { echo "check_compile_only_lanes_test: FAIL (stale): the mutation did not change the module source" >&2; exit 1; }
@@ -224,6 +233,7 @@ NODE
   [ -s "$OUT" ] || { echo "check_compile_only_lanes_test: FAIL (stale): the mutated artifact did not compile" >&2; cat "$OUT.diag" >&2 2>/dev/null; tail -5 "$TMP/stale.build.log" >&2; exit 1; }
   expect_fail stale "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --scheduler-trace-only
   expect_fail stale_marks "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --memory-marks-only
+  expect_fail unguarded_clear "DELETED or rewrote it" --artifact "$OUT" --entry cli_main_compile_only --incremental-telemetry-only
 }
 check_stale_refusal
 

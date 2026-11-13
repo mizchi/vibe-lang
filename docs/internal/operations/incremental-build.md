@@ -3899,6 +3899,12 @@ sees. A sidecar exists only for a compile that finished: a throw anywhere above
 removes it. Measured on the compiler's own closure, a cold build reports
 `modules_planned: 219`, which is `vibe deps` (218) plus the entry.
 
+The sidecar, its encoder and the destination guard below exist only in a
+compiler built with the `telemetry` cfg flag, which the generation's stage2 is
+by default (#2498). A build without it -- the compile-only artifact -- refuses
+`VIBE_INCREMENTAL_TELEMETRY_OUT` by name and never touches the destination,
+on the check lane and the compile lane alike.
+
 **The destination is not a free-form path.** It names a file the CLI DELETES
 before the compile -- so a sidecar left by an earlier run cannot be read as
 this run's result -- and WRITES after it. Both are destructive, so a request
