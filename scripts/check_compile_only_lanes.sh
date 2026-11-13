@@ -32,6 +32,10 @@
 #      encoder are absent (check 1 reads it), and a request for that sidecar
 #      (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT) publishes nothing and fails
 #      naming VIBE_CFG=telemetry -- never an empty or all-zero observation.
+#      The scheduler trace is the same shape: its row encoders are absent, and
+#      VIBE_SCHEDULER_TRACE on a compile writes no trace and fails naming
+#      VIBE_CFG=telemetry -- an empty trace would read as a run that planned
+#      nothing.
 #      Heap marks are the same shape: the emitter is absent, and
 #      VIBE_PROFILE_MEMORY_MARKS=1 on a compile fails naming VIBE_CFG=telemetry
 #      rather than printing no marks, and only after the stale-sidecar cleanup
@@ -54,6 +58,8 @@
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --telemetry-only
 #       runs check 2b's ingestion-pipeline half alone (the self-test hands it a
 #       telemetry-enabled stage2)
+#   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --scheduler-trace-only
+#       runs check 2b's scheduler-trace half alone (likewise)
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --memory-marks-only
 #       runs check 2b's heap-mark half alone (likewise)
 set -euo pipefail
@@ -65,6 +71,7 @@ ENTRY="cli_main_compile_only"
 SCAN_ONLY=""
 TOOLS_ONLY=0
 TELEMETRY_ONLY=0
+SCHEDULER_TRACE_ONLY=0
 MEMORY_MARKS_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -73,6 +80,7 @@ while [ "$#" -gt 0 ]; do
     --scan-only) SCAN_ONLY="$2"; shift 2 ;;
     --tools-only) TOOLS_ONLY=1; shift ;;
     --telemetry-only) TELEMETRY_ONLY=1; shift ;;
+    --scheduler-trace-only) SCHEDULER_TRACE_ONLY=1; shift ;;
     --memory-marks-only) MEMORY_MARKS_ONLY=1; shift ;;
     *) echo "check-compile-only-lanes: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -115,6 +123,12 @@ PRESENT_PATTERNS='comp_emit_component_wasm_async_stdin_provider|comp_emit_compon
 # `#cfg(not(telemetry))` twins (`..._refusal`, `..._publish`, the no-op
 # `..._add`) keep other names and may remain.
 ABSENT_PATTERNS="$ABSENT_PATTERNS|ingestion_pipeline_telemetry_json|ingestion_pipeline_json_string|ingestion_pipeline_counter|ingestion_pipeline_enabled"
+# #2498: the scheduler trace's row encoders
+# (runtime/typecheck_fs_ensure_fingerprint_fs_impl.vibe). Only the
+# `#cfg(telemetry)` trace points reach them; the points' no-op twins
+# (`scheduler_trace_planned` / `_published` / `_publish`) and the
+# `scheduler_trace_refusal` stub keep other names and may remain.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|scheduler_trace_project|scheduler_trace_step"
 # #2498: the heap-mark emitter (cli_adapter_cli_main_with_lanes.vibe). Only
 # the `#cfg(telemetry)` marks reach it; their no-op twins
 # (`profile_memory_mark`, `profile_memory_phase_mark`) and the
@@ -287,12 +301,44 @@ refuse_telemetry() {
   grep -qF "VIBE_CFG=telemetry" "$WORK/refuse_ingestion_pipeline.log" \
     || fail "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_ingestion_pipeline.log")'"
 }
-# Heap marks ride a compile. The generation's stage2 compiles the probe and
-# prints its marks; a build without them must refuse, and only after the
-# CLI's shared stale-sidecar cleanup: a sibling observation requested on the
-# same run (VIBE_INCREMENTAL_TELEMETRY_OUT, which a compile accepts) whose file
-# is left from an earlier run would otherwise survive the refused invocation
-# and read as its result.
+# The scheduler trace rides a compile, not a check: the walk it records is the
+# FS compile lane's import-DAG walk. The generation's stage2 writes it even for
+# this one-module probe (a `project` and a `step` row).
+#
+# The refusal must come AFTER the CLI's shared stale-sidecar cleanup: a sibling
+# observation requested on the same run (here VIBE_INCREMENTAL_TELEMETRY_OUT,
+# which a compile accepts) whose file is left over from an earlier run would
+# otherwise survive the refused invocation and read as its result. So the
+# probe plants a stale sibling sidecar and requires it gone.
+refuse_scheduler_trace() {
+  local trace="$WORK/scheduler.trace" stale="$WORK/stale_incremental_telemetry.json"
+  rm -f "$trace"
+  printf 'stale sidecar from an earlier run\n' >"$stale"
+  compile_probe refuse_scheduler_trace VIBE_SCHEDULER_TRACE="$trace" VIBE_INCREMENTAL_TELEMETRY_OUT="$stale"
+  if [ -e "$trace" ]; then
+    fail "VIBE_SCHEDULER_TRACE was ACCEPTED by $ARTIFACT (invoke $ENTRY): it wrote '$(head -c 160 "$trace")'"
+  fi
+  if grep -qF "stale sidecar from an earlier run" "$stale" 2>/dev/null; then
+    fail "VIBE_SCHEDULER_TRACE was refused before the stale-sidecar cleanup by $ARTIFACT (invoke $ENTRY): the earlier run's VIBE_INCREMENTAL_TELEMETRY_OUT sidecar survived the refused invocation"
+  fi
+  if [ -s "$PROBE_OUT" ]; then
+    fail "VIBE_SCHEDULER_TRACE was ignored by $ARTIFACT: it compiled the probe without the trace it was asked for"
+  fi
+  # A here-string, not a pipe: under pipefail `grep -q` closing the pipe early
+  # fails the writer, and a refusal that names the flag would read as one
+  # that does not.
+  grep -qF "VIBE_CFG=telemetry" <<<"$(cat "$WORK/refuse_scheduler_trace.log")
+$PROBE_DIAG" \
+    || fail "VIBE_SCHEDULER_TRACE was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_scheduler_trace.log") ${PROBE_DIAG}'"
+}
+if [ "$TELEMETRY_ONLY" = 1 ]; then
+  refuse_telemetry
+  echo "compile-only-lanes: telemetry refusal ok"
+  exit 0
+fi
+# Heap marks ride a compile too. The generation's stage2 compiles the probe
+# and prints its marks; a build without them must refuse by name, after the
+# same stale-sidecar cleanup as the scheduler trace above.
 refuse_memory_marks() {
   local stale="$WORK/stale_incremental_telemetry.json"
   printf 'stale sidecar from an earlier run\n' >"$stale"
@@ -303,16 +349,13 @@ refuse_memory_marks() {
   if grep -qF "stale sidecar from an earlier run" "$stale" 2>/dev/null; then
     fail "VIBE_PROFILE_MEMORY_MARKS=1 was refused before the stale-sidecar cleanup by $ARTIFACT (invoke $ENTRY): the earlier run's VIBE_INCREMENTAL_TELEMETRY_OUT sidecar survived the refused invocation"
   fi
-  # A here-string, not a pipe: under pipefail `grep -q` closing the pipe early
-  # fails the writer, and a refusal that names the flag would read as one
-  # that does not.
   grep -qF "VIBE_CFG=telemetry" <<<"$(cat "$WORK/refuse_memory_marks.log")
 $PROBE_DIAG" \
     || fail "VIBE_PROFILE_MEMORY_MARKS=1 was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_memory_marks.log") ${PROBE_DIAG}'"
 }
-if [ "$TELEMETRY_ONLY" = 1 ]; then
-  refuse_telemetry
-  echo "compile-only-lanes: telemetry refusal ok"
+if [ "$SCHEDULER_TRACE_ONLY" = 1 ]; then
+  refuse_scheduler_trace
+  echo "compile-only-lanes: scheduler trace refusal ok"
   exit 0
 fi
 if [ "$MEMORY_MARKS_ONLY" = 1 ]; then
@@ -328,6 +371,8 @@ echo "compile-only-lanes: refusal ok (6 switches refused by name)"
 refuse_tools
 refuse_telemetry
 echo "compile-only-lanes: telemetry refusal ok (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT refused, no sidecar)"
+refuse_scheduler_trace
+echo "compile-only-lanes: telemetry refusal ok (VIBE_SCHEDULER_TRACE refused, no trace)"
 refuse_memory_marks
 echo "compile-only-lanes: telemetry refusal ok (VIBE_PROFILE_MEMORY_MARKS=1 refused after the sidecar cleanup)"
 

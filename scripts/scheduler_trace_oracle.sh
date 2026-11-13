@@ -52,7 +52,10 @@
 #
 # Usage: scheduler_trace_oracle.sh [entry.vibe]
 # Env:
-#   VIBE_SCHEDULER_ORACLE_COMPILER  stage2 wasm override
+#   VIBE_SCHEDULER_ORACLE_COMPILER  stage2 wasm override. It must be built with
+#                                   the compiler's `telemetry` cfg flag, as the
+#                                   generation's stage2 is by default (#2498):
+#                                   a build without it refuses the trace.
 #   VIBE_SCHEDULER_ORACLE_SEEDS     seeds to compare (default "1 7 23")
 set -euo pipefail
 
@@ -91,8 +94,15 @@ run_traced() {  # run_traced <tag> [seed]
   env $extra VIBE_SCHEDULER_TRACE="$OUT/trace.$tag" VIBE_BUILD_CACHE_DIR="$cache" \
     VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$COMPILER" \
-    "$ENTRY" "$OUT/$tag.wasm" __no_entry__ >/dev/null 2>&1 || true
-  [ -s "$OUT/trace.$tag" ] || { echo "[scheduler-oracle] no trace produced for $tag" >&2; return 1; }
+    "$ENTRY" "$OUT/$tag.wasm" __no_entry__ >"$OUT/$tag.log" 2>&1 || true
+  # A compiler built without `VIBE_CFG=telemetry` (#2498) has no trace writer
+  # and refuses the request by name; show why rather than only that.
+  [ -s "$OUT/trace.$tag" ] || {
+    echo "[scheduler-oracle] no trace produced for $tag" >&2
+    tail -3 "$OUT/$tag.log" >&2
+    cat "$OUT/$tag.wasm.diag" >&2 2>/dev/null || true
+    return 1
+  }
 }
 
 echo "[scheduler-oracle] compiler: $COMPILER"

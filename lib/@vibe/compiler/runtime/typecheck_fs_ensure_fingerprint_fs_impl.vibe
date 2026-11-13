@@ -232,6 +232,8 @@ export fn module_plan_manifest_fs_with_config(_ entry_path: String, cfg: TargetC
   }
   (StringBuilder::freeze(buf), ordered_sources)
 }
+
+#cfg(telemetry)
 /// The `project` half of a scheduler trace: one row per planned module, with
 /// its rank and its dependency list. This IS Scheduler.lean's `Project` --
 /// `dependencies` and `rank` -- serialized, so the oracle can check
@@ -264,6 +266,71 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
     i = i + 1
   }
 }
+
+#cfg(telemetry)
+/// The `step` row of a scheduler trace for the module just published, in
+/// execution order. Its env hash is the checked environment the module
+/// published (`-` when the step published none), which is what the oracle's
+/// StoreCorrect check compares across schedules.
+fn scheduler_trace_step(buf: StringBuilder, path: String, fp: String, env_cache: Array[(String, TypeEnv)]) -> Unit {
+  let env_hash = match typecheck_fs_lookup_env_cache(cache = env_cache, path = path) {
+    Some(env) => compact_string_fingerprint(persistent_type_env_cache_text(env)),
+    None => "-"
+  }
+  StringBuilder::push(buf, value = "step\t")
+  StringBuilder::push(buf, value = path)
+  StringBuilder::push(buf, value = "\t")
+  StringBuilder::push(buf, value = fp)
+  StringBuilder::push(buf, value = "\t")
+  StringBuilder::push(buf, value = env_hash)
+  StringBuilder::push(buf, value = "\n")
+}
+
+// --- #2498: the walk's three trace points --------------------------------
+//
+// Each has a `#cfg(not(telemetry))` twin that does nothing, so the walk below
+// compiles unchanged in a build without the trace. The row encoders above
+// (`scheduler_trace_project`, `scheduler_trace_step`) have no twin: only
+// these reach them, so a build without `VIBE_CFG=telemetry` defines neither
+// (scripts/check_compile_only_lanes.sh reads that from the name section).
+
+#cfg(telemetry)
+/// Record the planned graph: one `project` row per module.
+fn scheduler_trace_planned(buf: StringBuilder, order: Array[String], ranks: Array[Int], plan_edges: Array[(String, Array[String])]) -> Unit {
+  scheduler_trace_project(buf = buf, order = order, ranks = ranks, plan_edges = plan_edges)
+}
+
+#cfg(not(telemetry))
+/// No trace writer in this build: the walk is never traced.
+fn scheduler_trace_planned(buf: StringBuilder, order: Array[String], ranks: Array[Int], plan_edges: Array[(String, Array[String])]) -> Unit {
+  ()
+}
+
+#cfg(telemetry)
+/// Record one published module: a `step` row, in execution order.
+fn scheduler_trace_published(buf: StringBuilder, path: String, fp: String, env_cache: Array[(String, TypeEnv)]) -> Unit {
+  scheduler_trace_step(buf = buf, path = path, fp = fp, env_cache = env_cache)
+}
+
+#cfg(not(telemetry))
+/// No trace writer in this build: the walk is never traced.
+fn scheduler_trace_published(buf: StringBuilder, path: String, fp: String, env_cache: Array[(String, TypeEnv)]) -> Unit {
+  ()
+}
+
+#cfg(telemetry)
+/// Write the whole trace once the walk is complete. Written once, not
+/// appended per row: a partial file would read as a shorter schedule.
+fn scheduler_trace_publish(path: String, buf: StringBuilder) -> Unit with Fs {
+  Fs::write_file(path, contents = StringBuilder::freeze(buf))
+}
+
+#cfg(not(telemetry))
+/// No trace writer in this build: the walk is never traced.
+fn scheduler_trace_publish(path: String, buf: StringBuilder) -> Unit with Fs {
+  ()
+}
+
 /// The import-DAG walk, as the wave loop a coordinator dispatches from
 /// (#1239 step 4(D)).
 ///
@@ -321,18 +388,21 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
   } with { ModuleWalk::Planned(order, ranks, edges) => {
     incremental_typecheck_telemetry_add(index = 0, amount = Array::length(order))
     if tracing {
-      scheduler_trace_project(buf = trace, order = order, ranks = ranks, plan_edges = edges)
+      scheduler_trace_planned(buf = trace, order = order, ranks = ranks, plan_edges = edges)
     } else ()
     resume(())
   }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer_with_config(leaf_fps = plan_leaf_fps, edges = plan_edges, fps = fps, state = current, path = module_path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
-    fs_walk_published(path = module_path, fp = fp, state = next, previous_parse_count = previous_parse_count, interfaces = interfaces, trace = trace, tracing = tracing)
+    fs_walk_published(path = module_path, fp = fp, state = next, previous_parse_count = previous_parse_count, interfaces = interfaces)
+    if tracing {
+      scheduler_trace_published(buf = trace, path = module_path, fp = fp, env_cache = next.env_cache)
+    } else ()
     resume(())
   }; ModuleWalk::Failed(_) => {
     incremental_typecheck_telemetry_add(index = 4, amount = 1)
     resume(())
   }; ModuleWalk::Complete => {
     if tracing {
-      Fs::write_file(trace_path, contents = StringBuilder::freeze(trace))
+      scheduler_trace_publish(path = trace_path, buf = trace)
     } else ()
     resume(())
   }; ModuleWalk::Finish(current, root) => {
@@ -358,7 +428,7 @@ fn fs_walk_step_answer_with_config(leaf_fps: Array[(String, String)], edges: Arr
   } with { Exception::Throw(message) => (String::concat("diagnosed:", path), state, Some(message)) }
 }
 
-fn fs_walk_published(path: String, fp: String, state: ModuleWalkState, previous_parse_count: Int, interfaces: DependencyInterfaceSet, trace: StringBuilder, tracing: Bool) -> Unit {
+fn fs_walk_published(path: String, fp: String, state: ModuleWalkState, previous_parse_count: Int, interfaces: DependencyInterfaceSet) -> Unit {
   if state.parse_count > previous_parse_count {
     incremental_typecheck_telemetry_add(index = 1, amount = 1)
     incremental_typecheck_telemetry_decide(path = path, decision = "rechecked")
@@ -370,19 +440,6 @@ fn fs_walk_published(path: String, fp: String, state: ModuleWalkState, previous_
     Some(env) => dependency_interface_set_publish(interfaces = interfaces, path = path, env = env),
     None => ()
   }
-  if tracing {
-    let env_hash = match typecheck_fs_lookup_env_cache(cache = state.env_cache, path = path) {
-      Some(env) => compact_string_fingerprint(persistent_type_env_cache_text(env)),
-      None => "-"
-    }
-    StringBuilder::push(trace, value = "step\t")
-    StringBuilder::push(trace, value = path)
-    StringBuilder::push(trace, value = "\t")
-    StringBuilder::push(trace, value = fp)
-    StringBuilder::push(trace, value = "\t")
-    StringBuilder::push(trace, value = env_hash)
-    StringBuilder::push(trace, value = "\n")
-  } else ()
 }
 
 fn fs_walk_finish_answer(state: ModuleWalkState, path: String, starting_parse_count: Int) -> (ModuleWalkState, Option[String]) with Env + Fs {
