@@ -164,6 +164,7 @@ import ./cli_adapter_fs_lane_request.vibe {
   fs_lane_request,
   fs_path_is_unresolved_link,
   fs_paths_name_same_file,
+  input_trace_sidecar_refusal,
   join_binding_occurrences,
   join_escape_spans,
   join_lines,
@@ -445,6 +446,20 @@ fn has_control_character(_ value: String) -> Bool {
     i = i + 1
   }
   found
+}
+
+#cfg(telemetry)
+/// Write this successful compile's artifact-input trace to `path`, as the
+/// final publication of the compile (the lane produced `contents`).
+fn input_trace_sidecar_publish(path: String, contents: String) -> Unit with Fs {
+  Fs::write_file(path, contents = contents)
+}
+
+#cfg(not(telemetry))
+/// No artifact-input trace in this build: the request was refused before the
+/// work, so nothing reaches here.
+fn input_trace_sidecar_publish(path: String, contents: String) -> Unit with Fs {
+  ()
 }
 
 // --- #2498: heap marks (VIBE_PROFILE_MEMORY_MARKS=1, #1553) ---------------
@@ -942,12 +957,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // downstream code that hasn't annotated yet. Set before ANY compile
   // path runs so every lane (file compile, FS compile, diagnostics, lsp)
   // sees the same mode.
-  let artifact_input_trace_checked_error_row_mode = if Env::get("VIBE_CHECK_ERROR_ROW") == "0" {
-    "unchecked"
-  } else {
-    "checked"
-  }
-  let checked_error_row = artifact_input_trace_checked_error_row_mode == "checked"
+  let checked_error_row = Env::get("VIBE_CHECK_ERROR_ROW") != "0"
   // Checking and cache identity share this invocation snapshot.
   // #906 Phase 0: dependency-visit-order oracle. A non-zero seed permutes
   // each node's dep visit order (set_dep_order_seed, runtime/typecheck_fs.vibe);
@@ -959,14 +969,6 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   let dep_seed_text = Env::get("VIBE_DEP_ORDER_SEED")
   // Canonical trace spelling is the effective parsed decimal, so absent,
   // invalid, and zero spellings collapse to the production default `0`.
-  let artifact_input_trace_dep_order_seed = match Int::parse(dep_seed_text) {
-    Some(dep_seed) => if dep_seed == 0 {
-      "0"
-    } else {
-      __to_string(dep_seed)
-    },
-    None => "0"
-  }
   if dep_seed_text == "" {
     ()
   } else {
@@ -991,14 +993,9 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // before db_typecheck_fs is called, so a syntax error still fails the build
   // at that earlier point and only the first one is reported. Collecting
   // there is a loader change, not a walk change.
-  let artifact_input_trace_diagnostics_mode = if Env::get("VIBE_DIAGNOSTICS_ALL") == "1" {
-    "all"
-  } else {
-    "fail-fast"
-  }
   // Presentation/scheduling policy is not a successful typing identity, but
   // its process-wide cell still needs an explicit per-invocation reset.
-  set_collect_module_diagnostics(artifact_input_trace_diagnostics_mode == "all")
+  set_collect_module_diagnostics(Env::get("VIBE_DIAGNOSTICS_ALL") == "1")
   // #2510: the incremental typecheck telemetry request joins the shared
   // clear-then-validate discipline rather than re-deriving it in a branch.
   // Cleared HERE, before any validation below can throw and before every
@@ -1186,6 +1183,23 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   }
   if marks_refusal != "" {
     throw(marks_refusal)
+  } else {
+    ()
+  }
+  // #2498: the artifact-input trace is refused LAST, after every other
+  // observation's refusal. Its stale sidecar was cleared with the others
+  // above, in every build, and its request shape validated there; ordering
+  // its refusal after the rest keeps each of those refusals the one a
+  // combined request reports (scripts/check_compile_only_lanes.sh plants this
+  // trace as the stale sibling of every refusal probe, and asserts each probe
+  // is refused by its own name).
+  let input_trace_refusal = if artifact_input_trace_out != "" {
+    input_trace_sidecar_refusal()
+  } else {
+    ""
+  }
+  if input_trace_refusal != "" {
+    throw(input_trace_refusal)
   } else {
     ()
   }
@@ -1643,8 +1657,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // `modules_planned` is added. So this reports the real walk rather than
       // a lane that happens to look similar.
       //
-      let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
-      let fs_lane = fs_lane_request(mark_memory = mark_memory, artifact_input_trace_out = artifact_input_trace_out, artifact_input_trace_nonce = artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode = artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode = artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed = artifact_input_trace_dep_order_seed)
+      let fs_lane = fs_lane_request(mark_memory = mark_memory)
       // Record the lane that will actually produce `bytes`; raw Env presence
       // is not an artifact property when selectors are combined.
       let fs_coverage_selected = match fs_lane {
@@ -1748,7 +1761,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // The compiler artifact is committed first; this requested observation
       // sidecar is deliberately the final publication operation.
       if artifact_input_trace_out != "" {
-        Fs::write_file(artifact_input_trace_out, contents = artifact_input_trace)
+        input_trace_sidecar_publish(path = artifact_input_trace_out, contents = artifact_input_trace)
       } else {
         ()
       }
