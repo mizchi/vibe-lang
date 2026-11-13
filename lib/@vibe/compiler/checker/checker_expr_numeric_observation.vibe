@@ -1,5 +1,15 @@
 import @vibe/compiler/core {
-  Expr, Subst, Type, TypeDef, TypeEnv, bound_flat_self_add, subst_apply, subst_bounds_for, typed_negation_operand_key, unify
+  Expr,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  bound_flat_self_add,
+  collect_type_var_ids,
+  subst_apply,
+  subst_bounds_for,
+  typed_negation_operand_key,
+  unify
 }
 import @vibe/compiler/checker/diagnostics {
   off_marker
@@ -379,21 +389,16 @@ export fn deferred_numeric_inputs(left: Expr, right: Expr, left_ty: Type, right_
   if !has_deferred_checks() || checker_call_header_is_probe() {
     return None
   }
-  let pending_left = pending_type_id(ty = left_ty, s = s)
-  let pending_right = pending_type_id(ty = right_ty, s = s)
-  match (pending_left, pending_right) {
-    (Some(a), Some(b)) => Some([a, b]),
-    (Some(id), None) => if int32_literal_can_adapt(e = right, actual = right_ty) {
-      Some([id])
-    } else {
-      None
-    },
-    (None, Some(id)) => if int32_literal_can_adapt(e = left, actual = left_ty) {
-      Some([id])
-    } else {
-      None
-    },
-    _ => None
+  let pending_left = pending_type_ids(ty = left_ty, s = s)
+  let pending_right = pending_type_ids(ty = right_ty, s = s)
+  if Array::length(pending_left) > 0 && Array::length(pending_right) > 0 {
+    Some(Array::concat(pending_left, pending_right))
+  } else if Array::length(pending_left) > 0 && int32_literal_can_adapt(e = right, actual = right_ty) {
+    Some(pending_left)
+  } else if Array::length(pending_right) > 0 && int32_literal_can_adapt(e = left, actual = left_ty) {
+    Some(pending_right)
+  } else {
+    None
   }
 }
 
@@ -421,6 +426,12 @@ export fn deferred_join_inputs(joined: Type, actual: Type, e: Expr, count: Int, 
     },
     _ => None
   }
+}
+
+fn pending_type_ids(ty: Type, s: Subst) -> Array[Int] {
+  let ids: Array[Int] = []
+  collect_type_var_ids(ty = ty, out = ids)
+  Array::filter(ids, f = (id) -> deferred_result_pending(id = id, s = s))
 }
 
 fn pending_type_id(ty: Type, s: Subst) -> Option[Int] {
