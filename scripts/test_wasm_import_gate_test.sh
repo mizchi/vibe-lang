@@ -77,6 +77,17 @@ fresh
 python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); assert b.count(b"\x42\x07")==1, "patch target not unique"; open(p,"wb").write(b.replace(b"\x42\x07", b"\x42\x08"))' "$SCRATCH/fx/reactor.wasm" || fail "could not patch reactor.wasm"
 expect_fail "a different initializer effect" "init_main printed value=8\\ foo=42"
 
+# 6b. An extern effect's answer through its provider is checked by value
+#     (ADR-0124, #2656).
+fresh; mutate extern_greeter_main.vibex 'hello(name = "vibe")' 'hello(name = "vibes")'
+expect_fail "a different extern-effect answer" "extern_greeter_main printed"
+
+# 6c. A provider that matches the declaration links, so the signature
+#     refusal must notice it no longer fires.
+fresh; mutate extern_greeter_drift_main.vibex "  greet(Int) -> Int" "  greet(String) -> String"
+mutate extern_greeter_drift_main.vibex 'Greeter::greet(1)' 'Greeter::greet("x")'
+expect_fail "a provider-signature refusal that does not fire" "a provider with another signature was linked"
+
 # 7. A narrow-width answer that differs is caught (#3826).
 fresh; mutate narrow_import_test.vibe 'inspect(inc8(254), content = "255")' 'inspect(inc8(254), content = "254")'
 expect_fail "a different narrow-width answer" "narrow_import_test failed"

@@ -6,7 +6,7 @@ import @vibe/ast {
   TypeExpr
 }
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, is_effect_inst_label
+  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, is_row_provenance_label
 }
 import @vibe/compiler/syntax {
   Token
@@ -215,6 +215,8 @@ export fn engine_interface_effect_set_with_vars(effect_name: Option[String], ids
       let mut i = 0
       while i < Array::length(pieces) {
         let label = String::trim(Array::get(pieces, at = i))
+        // A capture label is kept, spelled by its binding's name rather than
+        // its id; every other provenance label is left out.
         if String::starts_with(label, prefix = "#capture[") {
           let close = String::index_of(label, needle = "]")
           let mut capture_id = 0
@@ -233,7 +235,7 @@ export fn engine_interface_effect_set_with_vars(effect_name: Option[String], ids
               vi = vi + 1
             }
           }
-        } else if String::starts_with(label, prefix = "#region_") || String::starts_with(label, prefix = "#param[") || String::starts_with(label, prefix = "#aliasparam[") || String::starts_with(label, prefix = "#fieldparam[") || is_effect_inst_label(label) {
+        } else if is_row_provenance_label(label) {
           ()
         } else if String::length(label) > 0 {
           Array::push(labels, value = label)
@@ -298,13 +300,13 @@ export fn engine_parse_program_with_path_impl_with_config(path: String, source: 
 /// statement about a BUILD -- a warm build reported 0 parses while the merge
 /// lane parsed every source in the closure. The counter that was 0 is still
 /// 0 and still means what it says; the work it never covered now has its own.
-export fn engine_parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
-  engine_parse_program_with_path_with_config(path = path, source = source, cfg = target_cfg_ambient())
+export fn engine_parse_program_with_path(path: String, source: String, checked_error_row: Bool) -> Array[Stmt] with Exception {
+  engine_parse_program_with_path_with_config(path = path, source = source, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-export fn engine_parse_program_with_path_with_config(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Exception {
-  let result = engine_parse_program_unrestored(path = path, source = source, cfg = cfg)
+export fn engine_parse_program_with_path_with_config(path: String, source: String, cfg: TargetCfg, checked_error_row: Bool) -> Array[Stmt] with Exception {
+  let result = engine_parse_program_unrestored(path = path, source = source, cfg = cfg, checked_error_row = checked_error_row)
   match engine_module_typed_lowering_offsets_for_source(path = path, source = source) {
     Some(rows) => {
       restore_resolved_callees(stmts = result, rows = rows)
@@ -314,8 +316,8 @@ export fn engine_parse_program_with_path_with_config(path: String, source: Strin
   }
   result
 }
-fn engine_parse_program_unrestored(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Exception {
-  match checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg)) {
+fn engine_parse_program_unrestored(path: String, source: String, cfg: TargetCfg, checked_error_row: Bool) -> Array[Stmt] with Exception {
+  match checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row) {
     Some(stmts) => stmts,
     None => {
       let stmts = engine_parse_program_with_path_impl_with_config(path = path, source = source, observe_current_source_parse = false, cfg = cfg)
@@ -335,8 +337,8 @@ fn engine_parse_program_unrestored(path: String, source: String, cfg: TargetCfg)
 
 /// Restore call identities and placements exclusively from accepted owned rows.
 /// Reset shared raw cells first, including facts absent from this snapshot.
-export fn engine_parse_program_with_lowering(path: String, source: String, cfg: TargetCfg, rows: Array[Int]) -> Array[Stmt] with Exception {
-  let result = engine_parse_program_unrestored(path = path, source = source, cfg = cfg)
+export fn engine_parse_program_with_lowering(path: String, source: String, cfg: TargetCfg, rows: Array[Int], checked_error_row: Bool) -> Array[Stmt] with Exception {
+  let result = engine_parse_program_unrestored(path = path, source = source, cfg = cfg, checked_error_row = checked_error_row)
   call_cells_reset(result)
   restore_resolved_callees(stmts = result, rows = rows)
   restore_call_placements(stmts = result, rows = rows)

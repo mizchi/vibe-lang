@@ -54,7 +54,7 @@ test "an unlocated diagnostic carries a VALID range plus synthetic (#2831)" {
   // this path exists to deliver. The claim lives in `data.synthetic` instead,
   // which is what a client should read to know the position is artificial.
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let v = if true { 1 } else { true }\n  true\n}\n"
-  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  let parsed = Json::parse(lsp_diagnostics_json_string(src, checked_error_row = false))
   assert(Json::length(parsed) >= 1)
   let diag = Json::index(parsed, idx = 0)
   let range = Json::field(diag, key = "range")
@@ -105,17 +105,17 @@ test "a path-prefixed FS diagnostic still slices the string (#2831)" {
 }
 
 test "lsp diagnostics: a clean source produces an empty array" {
-  inspect(lsp_diagnostics_json_string("fn f(x: Int) -> Int { x }"), "[]")
+  inspect(lsp_diagnostics_json_string("fn f(x: Int) -> Int { x }", checked_error_row = false), "[]")
 }
 
 test "lsp diagnostics: an empty source produces an empty array" {
-  inspect(lsp_diagnostics_json_string(""), "[]")
+  inspect(lsp_diagnostics_json_string("", checked_error_row = false), "[]")
 }
 
 test "lsp diagnostics: a parse error carries its position and error severity" {
   // severity 1 = Error. The range comes from the `line L:C:` prefix, so this
   // also pins that the prefix is consumed rather than left in the message.
-  inspect(lsp_diagnostics_json_string("fn f( -> Int { 1 }"), "[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name, got '->'\",\"data\":null}]",)
+  inspect(lsp_diagnostics_json_string("fn f( -> Int { 1 }", checked_error_row = false), "[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name, got '->'\",\"data\":null}]",)
 }
 
 test "lsp diagnostics: return-type mismatch on a string slices the string (#2831)" {
@@ -127,8 +127,8 @@ test "lsp diagnostics: return-type mismatch on a string slices the string (#2831
   let endo = start + String::length(token)
   assert(start >= 0)
   assert(String::substring(src, start = start, end = endo) == token)
-  inspect(lsp_diagnostics_json_string(src), "[{\"range\":{\"start\":{\"line\":0,\"character\":16},\"end\":{\"line\":0,\"character\":19}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
-  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  inspect(lsp_diagnostics_json_string(src, checked_error_row = false), "[{\"range\":{\"start\":{\"line\":0,\"character\":16},\"end\":{\"line\":0,\"character\":19}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
+  let parsed = Json::parse(lsp_diagnostics_json_string(src, checked_error_row = false))
   assert(Json::length(parsed) == 1)
   let range = Json::field(Json::index(parsed, idx = 0), key = "range")
   let rs = Json::field(range, key = "start")
@@ -152,13 +152,13 @@ test "lsp diagnostics: columns are UTF-16 code units, not bytes (#1672)" {
   // the second one was reported as 9: two columns right of the character it
   // points at, silently. Any line with non-ASCII ahead of the error drifts,
   // and the drift compounds per character.
-  inspect(lsp_diagnostics_json_string("fn f() -> Int {\n  let 日本 = 1\n  x x\n}"), "[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"unexpected character: 日\",\"data\":null},{\"range\":{\"start\":{\"line\":1,\"character\":7},\"end\":{\"line\":1,\"character\":8}},\"severity\":1,\"source\":\"vibe\",\"message\":\"unexpected character: 本\",\"data\":null}]",)
+  inspect(lsp_diagnostics_json_string("fn f() -> Int {\n  let 日本 = 1\n  x x\n}", checked_error_row = false), "[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"unexpected character: 日\",\"data\":null},{\"range\":{\"start\":{\"line\":1,\"character\":7},\"end\":{\"line\":1,\"character\":8}},\"severity\":1,\"source\":\"vibe\",\"message\":\"unexpected character: 本\",\"data\":null}]",)
 }
 
 test "lsp diagnostics: an ASCII line is unaffected by the UTF-16 conversion" {
   // The conversion must be identity when there is nothing multibyte to convert
   // -- a fix that shifted ASCII columns would be worse than the bug.
-  inspect(lsp_diagnostics_json_string("let a = 1\nfn f( -> Int { 1 }"), "[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name, got '->'\",\"data\":null}]",)
+  inspect(lsp_diagnostics_json_string("let a = 1\nfn f( -> Int { 1 }", checked_error_row = false), "[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name, got '->'\",\"data\":null}]",)
 }
 
 /// Identifier `quux` is the #2024 / #1941 range-agreement token.
@@ -172,7 +172,7 @@ test "json diagnostics slice the same unknown identifier quux (#1941)" {
   let endo = start + String::length(token)
   assert(start >= 0)
   assert(String::substring(src, start = start, end = endo) == token)
-  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  let parsed = Json::parse(lsp_diagnostics_json_string(src, checked_error_row = false))
   assert(Json::length(parsed) == 1)
   let range = Json::field(Json::index(parsed, idx = 0), key = "range")
   let rs = Json::field(range, key = "start")
@@ -196,7 +196,7 @@ test "json diagnostics slice the same unknown identifier quux (#1941)" {
 /// `x`. `data` is null because the node is real source, not synthetic.
 test "a top-level let bound to a literal is located at the string (#2831)" {
   let src = "let x: Int = \"s\""
-  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  let parsed = Json::parse(lsp_diagnostics_json_string(src, checked_error_row = false))
   assert(Json::length(parsed) == 1)
   let diag = Json::index(parsed, idx = 0)
   let range = Json::field(diag, key = "range")

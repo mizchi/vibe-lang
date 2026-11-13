@@ -13,9 +13,6 @@ import @vibe/compiler/codegen/executable {
 import @vibe/blake3/simd {
   blake3_bytes_simd
 }
-import @vibe/compiler/checker {
-  set_error_row_checked
-}
 import @vibe/compiler/core {
   namespace_rename_originals_snapshot
 }
@@ -35,8 +32,8 @@ import @vibe/lowering_worker {
   read_prelude_module_product
 }
 
-fn compile_input() -> Bytes with Env + Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_split(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", use_split = true, exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
+fn compile_input(checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
+  compile_file_fs_mode_rc_body_cached_split(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", use_split = true, exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")), checked_error_row = checked_error_row)
 }
 
 // These callbacks belong to this transient compile image. The host calls
@@ -153,9 +150,9 @@ fn execute_batch(_ batch: PreludeModuleBatch) -> Unit with Exception {
   Array::set(context_digest, at = 0, value = "")
 }
 
-fn single_compile() -> Unit with Env + Exception + Fs {
+fn single_compile(checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   let bytes = prelude_with_module_batch_executor(executor = execute_batch, action = () -> Bytes with Env + Exception + Fs {
-    compile_input()
+    compile_input(checked_error_row = checked_error_row)
   })
   if Array::get(cursor, at = 0) == 0 {
     throw("build without VIBE_TASKGROUP_LOWERING=1 for this program")
@@ -165,12 +162,12 @@ fn single_compile() -> Unit with Env + Exception + Fs {
 
 fn main() -> Unit allows Env + Exception + Fs {
   configure_compiler_cfg_flags()
-  set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+  let checked_error_row = Env::get("VIBE_CHECK_ERROR_ROW") != "0"
   let mode = Env::get("VIBE_LOWERING_MODE")
   if mode == "serial" {
-    Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), bytes = strip_executable_wasm_env(wasm = compile_input(), entry_name = Env::get("VIBE_LOWERING_ENTRY")))
+    Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), bytes = strip_executable_wasm_env(wasm = compile_input(checked_error_row = checked_error_row), entry_name = Env::get("VIBE_LOWERING_ENTRY")))
   } else if mode == "single" {
-    single_compile()
+    single_compile(checked_error_row = checked_error_row)
   }
   else {
     throw("lowering: expected serial or single mode")

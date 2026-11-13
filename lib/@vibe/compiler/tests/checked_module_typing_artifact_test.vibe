@@ -136,7 +136,7 @@ fn mt_v1_empty_dependencies_fields(_ nested: String) -> Array[String] {
 }
 
 fn mt_nested_interface(_ stmts: Array[Stmt]) -> String with Exception {
-  let checked = check_program_result(stmts)
+  let checked = check_program_result(stmts, checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(checked) {
     Some(artifact) => encode_checked_exported_interface_artifact_v1(artifact),
     None => "<none>"
@@ -144,7 +144,7 @@ fn mt_nested_interface(_ stmts: Array[Stmt]) -> String with Exception {
 }
 
 fn mt_build_text(stmts: Array[Stmt], owner: String, kind: String, identity: String, dependencies: Array[(String, String)], closure: Array[(String, String, String)]) -> Option[String] with Exception {
-  let checked = check_program_result(stmts)
+  let checked = check_program_result(stmts, checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(checked) {
     Some(interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked = checked, module_locator = owner, implementation_kind = kind, implementation_identity = identity, dependency_interface_assumptions = dependencies, recorded_implementation_closure = closure, exported_interface = interface) {
       Some(artifact) => Some(encode_checked_module_typing_artifact_v1(artifact)),
@@ -168,7 +168,8 @@ fn mt_module_job(path: String, source: String) -> ModuleJob {
     deps: array_empty(),
     dep_fps: array_empty(),
     dep_envs: array_empty(),
-    ships_owned_heads: false
+    ships_owned_heads: false,
+    checked_error_row: false
   }
 }
 
@@ -188,7 +189,7 @@ fn mt_set(fields: Array[String], at: Int, value: String) -> Array[String] {
 
 test "checked module typing artifact round-trips caller-supplied singleton metadata" {
   let stmts = [SLet(true, false, "api", Some(TyName("Int")), EInt(1))]
-  let checked = check_program_result(stmts)
+  let checked = check_program_result(stmts, checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(checked) {
     Some(interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked = checked, module_locator = "pkg::owner", implementation_kind = "provisional_token_stream_v1", implementation_identity = "1:2:3", dependency_interface_assumptions = [
       ("pkg::dep", checked_exported_interface_artifact_fingerprint_v1(interface))
@@ -227,7 +228,7 @@ test "checked module typing artifact round-trips caller-supplied singleton metad
 test "manually constructed CheckedProgram can produce an unattested shadow artifact" {
   let checked = check_program_result([
     SLet(true, false, "api", Some(TyName("Int")), EInt(1))
-  ])
+  ], checked_error_row = false)
   let manual = CheckedProgram::{
     checked_stmts: [
       SLet(true, false, "api", Some(TyName("Int")), EString("not checked against copied type state", -1))
@@ -249,10 +250,10 @@ test "manually constructed CheckedProgram can produce an unattested shadow artif
 }
 
 test "unattested shadow builder requires matching #1548 bytes and propagates missing provenance" {
-  let first = check_program_result([SLet(true, false, "api", None, EInt(1))])
+  let first = check_program_result([SLet(true, false, "api", None, EInt(1))], checked_error_row = false)
   let second = check_program_result([
     SLet(true, false, "api", None, EString("different", -1))
-  ])
+  ], checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(second) {
     Some(wrong_interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked = first, module_locator = "owner", implementation_kind = "validated_metadata_v1", implementation_identity = "1:2:3", dependency_interface_assumptions = array_empty(), recorded_implementation_closure = [
       ("owner", "validated_metadata_v1", "1:2:3")
@@ -264,7 +265,7 @@ test "unattested shadow builder requires matching #1548 bytes and propagates mis
   }
   let nested = check_program_result([
     SModule(true, "Public", [SLet(true, false, "value", None, EInt(1))])
-  ])
+  ], checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(nested) {
     Some(_) => assert(false),
     None => assert(true)
@@ -312,7 +313,7 @@ test "dependency typing assumptions preserve order and duplicate occurrences" {
 }
 
 test "unattested shadow builder snapshots caller-owned row arrays" {
-  let checked = check_program_result([SLet(true, false, "api", None, EInt(1))])
+  let checked = check_program_result([SLet(true, false, "api", None, EInt(1))], checked_error_row = false)
   let dependencies = [("dep", "1:2:3")]
   let closure = [("owner", "validated_metadata_v1", "1:2:3")]
   match checked_exported_interface_artifact_from_checked_program(checked) {
@@ -530,7 +531,7 @@ test "opaque ModuleOutcome publishes nothing and constructs nothing for ordinary
 }
 
 test "v2 unattested builder rejects mismatched source implementation and owner closure claims" {
-  let checked = check_program_result([SLet(true, false, "api", None, EInt(1))])
+  let checked = check_program_result([SLet(true, false, "api", None, EInt(1))], checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(checked) {
     Some(interface) => {
       match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked = checked, module_locator = "owner", observed_source_identity = "1:2:3", recorded_source_identity = "1:2:4", observed_implementation_identity = "1:2:5", recorded_implementation_identity = "1:2:5", dependency_interface_assumptions = array_empty(), recorded_implementation_closure = [
@@ -606,7 +607,7 @@ test "opaque freshness attestation fails closed for stale missing and diagnosed 
 
 test "strict v2 exact-input matcher rejects stale closure dependencies and non-v2 bytes" {
   inspect(checked_module_typing_artifact_v2_matches_exact_inputs(text = "malformed", module_locator = "owner", source_identity = "1:2:3", implementation_identity = "1:2:5", dependency_interface_assumptions = array_empty()), "false")
-  let checked = check_program_result([SLet(true, false, "api", None, EInt(1))])
+  let checked = check_program_result([SLet(true, false, "api", None, EInt(1))], checked_error_row = false)
   match checked_exported_interface_artifact_from_checked_program(checked) {
     Some(interface) => {
       let source_identity = "1:2:3"

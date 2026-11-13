@@ -1557,6 +1557,43 @@ fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: S
   }
 }
 
+/// ADR-0124 (#2656): the core import module the operations of `extern effect
+/// <effect>` are called through. A runner binds it to the provider component
+/// `vibe run --provide <effect>=<path>` names, and refuses before `main` when
+/// none is bound.
+export fn extern_effect_module_name(_ effect: String) -> String {
+  String::concat("vibe:effect:./", effect)
+}
+
+/// ADR-0124 (#2656): the binding source for one `extern effect`. Each
+/// operation `(name, params, results)` -- component valtype codes, `0x78`
+/// (`s64`) for an `Int` and `0x73` for a `String`, at most one result --
+/// becomes the raw inline-wasm stub and the wrapper an imported component's
+/// export gets, calling field `<name>#<WIT signature>` of
+/// `extern_effect_module_name(effect)`. The wrapper of `name` is
+/// `<prefix>op_<name>`; the caller renames it to `<effect>::<name>`.
+export fn extern_effect_binding_source(prefix: String, effect: String, ops: Array[(String, Array[Int], Array[Int])]) -> String {
+  let module_name = extern_effect_module_name(effect)
+  let raw = String::concat(prefix, "raw_")
+  let out = wib_fresh_strings()
+  // Positional arguments only: this text is bound after the check, and a
+  // labeled call needs the placement the checker records.
+  Array::push(out, value = "fn \{raw}_string_bytes(_ s: String) -> Bytes {\n  let b = Bytes::with_capacity(String::length(s))\n  let mut i = 0\n  while i < String::length(s) {\n    Bytes::push(b, String::byte_at(s, i))\n    i = i + 1\n  }\n  b\n}\n\n")
+  for op in ops {
+    let (nm, ps, rs) = op
+    let core_params = wib_fresh_ints()
+    for _c in ps {
+      Array::push(core_params, value = 0x7E)
+    }
+    let core_results = wib_fresh_ints()
+    for _c in rs {
+      Array::push(core_results, value = 0x7E)
+    }
+    wib_component_emit(out = out, raw = raw, vibe_name = "\{prefix}op_\{nm}", doc = "`\{effect}::\{nm}`, provided by the host.", callee = wasm_import_callee(module_name = module_name, field = wasm_component_field(name = nm, params = ps, results = rs), params = core_params, results = core_results), params = ps, results = rs)
+  }
+  String::join(out, sep = "")
+}
+
 fn wib_component_binding_source(path: String, bytes: Bytes) -> String with Exception {
   let (exports, types) = handle {
     wib_read_component(bytes)

@@ -54,8 +54,8 @@ fn string_to_bytes(_ s: String) -> Bytes {
 }
 
 fn clear_file_compile_module_cache(_ entry_path: String) -> Unit with Env + Exception + Fs {
-  let groups = collect_source_groups_fs(entry_path)
-  let cache_path = persistent_artifact_cache_path(kind = "file-compile-module", entry_name = "", fingerprint = build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups = groups, entry_path = entry_path))
+  let groups = collect_source_groups_fs(entry_path, checked_error_row = false)
+  let cache_path = persistent_artifact_cache_path(kind = "file-compile-module", entry_name = "", fingerprint = build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups = groups, entry_path = entry_path), checked_error_row = false)
   if Fs::exists(cache_path) {
     Fs::remove(cache_path)
   } else {
@@ -77,7 +77,7 @@ test "compile_with_closure_sources_wasi_unchecked_cached: prunes unreachable bro
   "export let used: () -> Int = () -> { 1 }\nexport let unused: () -> Int = () -> { missing() }"
   let main_source = "import ./helpers.vibe { used }\nlet _start: () -> Int = () -> { used() }"
   let sources = [("helpers.vibe", helper_source)]
-  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db = db_new(), main_source = main_source, main_path = "main.vibe", sources = sources, entry_name = "_start")
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", sources = sources, entry_name = "_start")
   assert_wasm_magic(bytes)
 }
 
@@ -85,7 +85,7 @@ test "compile_with_closure_sources_wasi_unchecked_cached: import alias call reso
   let helper_source = "export let add_one: (Int) -> Int = (_ x) -> { x + 1 }"
   let main_source = "import ./helpers.vibe { add_one as inc }\nlet _start: () -> Int = () -> { inc(41) }"
   let sources = [("helpers.vibe", helper_source)]
-  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db = db_new(), main_source = main_source, main_path = "main.vibe", sources = sources, entry_name = "_start")
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", sources = sources, entry_name = "_start")
   assert_wasm_magic(bytes)
 }
 
@@ -94,15 +94,15 @@ test "compile_with_closure_sources_wasi_mode_unchecked_cached: mvp prunes unreac
   "export let used: () -> Int = () -> { 1 }\nexport let unused: () -> Int = () -> { missing() }"
   let main_source = "import ./helpers.vibe { used }\nlet _start: () -> Int = () -> { used() }"
   let sources = [("helpers.vibe", helper_source)]
-  let (bytes, _) = compile_with_closure_sources_wasi_mode_unchecked_cached(db = db_new(), main_source = main_source, main_path = "main.vibe", sources = sources, entry_name = "_start", mode = "mvp")
+  let (bytes, _) = compile_with_closure_sources_wasi_mode_unchecked_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", sources = sources, entry_name = "_start", mode = "mvp")
   assert_wasm_magic(bytes)
 }
 
 test "closure_pruned_stmt_count: drops unreachable statements before codegen" {
   let main_source =
   "let used: () -> Int = () -> { 1 }\nlet unused: () -> Int = () -> { missing() }\nlet _start: () -> Int = () -> { used() }"
-  let merged_count = closure_merged_stmt_count(main_source = main_source, main_path = "main.vibe", sources = empty_sources())
-  let pruned_count = closure_pruned_stmt_count(main_source = main_source, main_path = "main.vibe", sources = empty_sources(), entry_name = "_start")
+  let merged_count = closure_merged_stmt_count(main_source = main_source, main_path = "main.vibe", sources = empty_sources(), checked_error_row = false)
+  let pruned_count = closure_pruned_stmt_count(main_source = main_source, main_path = "main.vibe", sources = empty_sources(), entry_name = "_start", checked_error_row = false)
   assert(pruned_count < merged_count)
 }
 
@@ -114,7 +114,7 @@ test "source_group_pruned_stmt_count: drops unreachable statements before codege
     ("core", [("helpers.vibe", helper_source)]),
     ("entry", [("main.vibe", main_source)])
   ]
-  let pruned_count = source_group_pruned_stmt_count(db = db_new(), main_source = main_source, main_path = "main.vibe", source_groups = source_groups, entry_name = "_start")
+  let pruned_count = source_group_pruned_stmt_count(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", source_groups = source_groups, entry_name = "_start")
   assert(pruned_count > 0)
   assert(pruned_count < 4)
 }
@@ -131,9 +131,9 @@ test "compile_with_source_groups_wasi_cached: grouped source stats follow reacha
   assert(eq(source_group_total_source_count(source_groups), 3))
   assert(eq(source_group_ordered_source_count(main_source = main_source, main_path = "main.vibe", source_groups = source_groups), 2))
   assert(eq(source_group_filtered_group_count(main_source = main_source, main_path = "main.vibe", source_groups = source_groups), 2))
-  assert(source_group_prepare_typecheck_count(db = db_new(), main_source = main_source, main_path = "main.vibe", source_groups = source_groups) > 0)
-  assert(grouped_source_merged_len(db = db_new(), main_source = main_source, main_path = "main.vibe", source_groups = source_groups) > String::length(main_source))
-  assert(source_group_module_source_len(db = db_new(), main_source = main_source, main_path = "main.vibe", source_groups = source_groups) > String::length(main_source))
+  assert(source_group_prepare_typecheck_count(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", source_groups = source_groups) > 0)
+  assert(grouped_source_merged_len(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", source_groups = source_groups) > String::length(main_source))
+  assert(source_group_module_source_len(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", source_groups = source_groups) > String::length(main_source))
 }
 
 test "compile_with_source_groups_via_module_source_wasi_unchecked_cached: grouped sources compile to valid WASM" {
@@ -143,7 +143,7 @@ test "compile_with_source_groups_via_module_source_wasi_unchecked_cached: groupe
     ("core", [("helpers.vibe", helper_source)]),
     ("entry", [("main.vibe", main_source)])
   ]
-  let (bytes1, db1) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(db = db_new(), main_source = main_source, main_path = "main.vibe", source_groups = source_groups, entry_name = "_start")
+  let (bytes1, db1) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", source_groups = source_groups, entry_name = "_start")
   assert_wasm_magic(bytes1)
   let codegen_count1 = db_codegen_count(db1)
   let (bytes2, db2) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(db = db1, main_source = main_source, main_path = "main.vibe", source_groups = source_groups, entry_name = "_start")
@@ -154,7 +154,7 @@ test "compile_with_source_groups_via_module_source_wasi_unchecked_cached: groupe
 test "compile_with_modules_cached: same output reuses compiled artifact after path-aware merge" {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = empty_sources()
-  let (_, db1) = compile_with_modules_cached(db = db_new(), main_source = main_source, main_path = "main_a.vibe", sources = sources)
+  let (_, db1) = compile_with_modules_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main_a.vibe", sources = sources)
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_with_modules_cached(db = db1, main_source = main_source, main_path = "main_b.vibe", sources = sources)
   assert(eq(db_codegen_count(db2), codegen_count1))
@@ -175,7 +175,7 @@ test "compile_with_modules_cached: builds no module source, and shares the artif
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let other_source = "let main: () -> Int = () -> { 1 + 3 }"
   let sources = empty_sources()
-  let (_, db1) = compile_with_modules_cached(db = db_new(), main_source = main_source, main_path = "main_a.vibe", sources = sources)
+  let (_, db1) = compile_with_modules_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main_a.vibe", sources = sources)
   assert(eq(db_module_source_count(db1), 0))
   let codegen1 = db_codegen_count(db1)
   assert(codegen1 > 0)
@@ -193,7 +193,7 @@ test "compile_file_fs_module_cached: warm compile reuses compiled fs artifact ca
   let main_path = "/tmp/vibe_compiler_codegen_cache_main.vibe"
   Fs::write_bytes(helper_path, bytes = string_to_bytes("export let add: (Int, Int) -> Int = (_ a, _ b) -> { a + b }"))
   Fs::write_bytes(main_path, bytes = string_to_bytes("import ./vibe_compiler_codegen_cache_helper.vibe { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
-  let (_, db1) = compile_file_fs_module_cached(db = db_new(), entry_path = main_path)
+  let (_, db1) = compile_file_fs_module_cached(db = db_new(checked_error_row = false), entry_path = main_path)
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db = db1, entry_path = main_path)
   assert(eq(db_codegen_count(db2), codegen_count1))
@@ -207,7 +207,7 @@ test "compile_file_fs_module_cached: same output reuses compiled artifact after 
   Fs::write_bytes(main_path2, bytes = string_to_bytes(source))
   clear_file_compile_module_cache(main_path1)
   clear_file_compile_module_cache(main_path2)
-  let (_, db1) = compile_file_fs_module_cached(db = db_new(), entry_path = main_path1)
+  let (_, db1) = compile_file_fs_module_cached(db = db_new(checked_error_row = false), entry_path = main_path1)
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db = db1, entry_path = main_path2)
   assert(eq(db_codegen_count(db2), codegen_count1))
@@ -233,7 +233,7 @@ test "compile_file_fs_module_cached: builds no module source, and shares the art
   Fs::write_bytes(main_path2, bytes = string_to_bytes(source))
   clear_file_compile_module_cache(main_path1)
   clear_file_compile_module_cache(main_path2)
-  let (_, db1) = compile_file_fs_module_cached(db = db_new(), entry_path = main_path1)
+  let (_, db1) = compile_file_fs_module_cached(db = db_new(checked_error_row = false), entry_path = main_path1)
   assert(eq(db_module_source_count(db1), 0))
   let codegen_count1 = db_codegen_count(db1)
   assert(codegen_count1 > 0)

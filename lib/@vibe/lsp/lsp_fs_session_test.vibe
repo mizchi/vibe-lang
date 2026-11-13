@@ -74,7 +74,7 @@ fn hover_type(_ result: Json) -> String {
 }
 
 fn hover(docs: Map[String, String], path: String, line0: Int, char0: Int) -> String with Env + Fs {
-  hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri_of(path), line0 = line0, char0 = char0), docs = docs))
+  hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri_of(path), line0 = line0, char0 = char0), docs = docs, checked_error_row = false))
 }
 
 fn dep_text(twice_ret: String, body: String) -> String {
@@ -150,7 +150,7 @@ test "#1960: an unsaved buffer edit is typed from the buffer, not the file" {
   let docs2 = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri_of(main), text = edited), docs = docs)
   let before = lsp_hover_fs_typings()
   inspect(hover(docs = docs2, path = main, line0 = 5, char0 = 6), content = "String")
-  inspect(type_at_fs(path = main, source = edited, line = 6, col = 7), content = "String")
+  inspect(type_at_fs(path = main, source = edited, line = 6, col = 7, checked_error_row = false), content = "String")
   inspect(lsp_hover_fs_typings() - before, content = "1")
   // The file on disk was never written.
   inspect(Fs::read_file(main) == main_text(), content = "true")
@@ -167,7 +167,7 @@ test "#1960: a dependency's signature edited on disk is typed again" {
   // event was sent -- the dependency's stat token is what moved.
   inspect(hover(docs = docs, path = main, line0 = 5, char0 = 10), content = "(Int) -> Bool")
   inspect(hover(docs = docs, path = main, line0 = 5, char0 = 6), content = "Bool")
-  inspect(type_at_fs(path = main, source = main_text(), line = 6, col = 11), content = "(Int) -> Bool")
+  inspect(type_at_fs(path = main, source = main_text(), line = 6, col = 11, checked_error_row = false), content = "(Int) -> Bool")
   inspect(lsp_hover_fs_typings() - before, content = "1")
 }
 
@@ -193,7 +193,7 @@ test "#1960: a declaration moved within the buffer answers at its new line" {
   inspect(hover(docs = docs2, path = main, line0 = 7, char0 = 10), content = "(Int) -> Int")
   inspect(hover(docs = docs2, path = main, line0 = 7, char0 = 6), content = "Int")
   // The old position is now the `fn show` line's parameter list.
-  inspect(hover(docs = docs2, path = main, line0 = 5, char0 = 10), content = type_at_fs(path = main, source = moved, line = 6, col = 11))
+  inspect(hover(docs = docs2, path = main, line0 = 5, char0 = 10), content = type_at_fs(path = main, source = moved, line = 6, col = 11, checked_error_row = false))
 }
 
 test "#1960: closing the document drops its kept typing" {
@@ -223,7 +223,7 @@ test "#1960: a kept typing keeps its own local let rows" {
   inspect(String::length("fn lab2(_ n: Int) -> String {\n  \"s\"\n}\nfn show(_ n: Int) -> String {\n"), content = "68")
   inspect(String::length("import ./dep.vibe {\n  twice, label\n}\n\nfn show(_ n: Int) -> String {\n"), content = "68")
   let docs2 = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = "untitled:other", text = other), docs = docs)
-  inspect(hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = "untitled:other", line0 = 4, char0 = 6), docs = docs2)), content = "String")
+  inspect(hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = "untitled:other", line0 = 4, char0 = 6), docs = docs2, checked_error_row = false)), content = "String")
   let before = lsp_hover_fs_typings()
   inspect(hover(docs = docs2, path = main, line0 = 5, char0 = 6), content = "Int")
   inspect(lsp_hover_fs_typings() - before, content = "0")
@@ -242,7 +242,7 @@ test "#1960: a package file is typed through its directory-shared imports" {
   let docs = open_doc(path = path, text = text)
   inspect(hover(docs = docs, path = path, line0 = 3, char0 = 2), content = "(Int) -> Int")
   inspect(hover(docs = docs, path = path, line0 = 2, char0 = 25), content = "Int")
-  inspect(type_at_fs(path = path, source = text, line = 4, col = 3), content = "(Int) -> Int")
+  inspect(type_at_fs(path = path, source = text, line = 4, col = 3, checked_error_row = false), content = "(Int) -> Int")
 }
 
 test "#1960: an absolute, percent-escaped file URI inside the project is typed through its imports" {
@@ -258,8 +258,8 @@ test "#1960: an absolute, percent-escaped file URI inside the project is typed t
   let uri = String::concat("file://", String::concat(Fs::getcwd(), "/lib/%40vibe/process/process.vibe"))
   let docs = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri, text = text), docs = Map::new())
   // `let result = ShResult::{ .. }`, 1-based line 54.
-  inspect(hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri, line0 = 53, char0 = 6), docs = docs)), content = "ShResult")
-  inspect(type_at_fs(path = path, source = text, line = 54, col = 7), content = "ShResult")
+  inspect(hover_type(lsp_request(method = "textDocument/hover", params = pos_params(uri = uri, line0 = 53, char0 = 6), docs = docs, checked_error_row = false)), content = "ShResult")
+  inspect(type_at_fs(path = path, source = text, line = 54, col = 7, checked_error_row = false), content = "ShResult")
 }
 
 test "#1960: the package's index.vpkg edited on disk is typed again" {
@@ -276,7 +276,7 @@ test "#1960: the package's index.vpkg edited on disk is typed again" {
   inspect(hover(docs = docs, path = impl_path, line0 = 1, char0 = 6), content = "Int")
   Fs::write_file(String::concat(dir, "/index.vpkg"), contents = "import @vibe/random { next as pick }\n\nfn use_it(_ x: Int) -> Int\n")
   inspect(hover(docs = docs, path = impl_path, line0 = 1, char0 = 6), content = "(Int, Int)")
-  inspect(type_at_fs(path = impl_path, source = impl_text, line = 2, col = 7), content = "(Int, Int)")
+  inspect(type_at_fs(path = impl_path, source = impl_text, line = 2, col = 7, checked_error_row = false), content = "(Int, Int)")
 }
 
 test "#1960: a dependency deleted on disk is typed again rather than trusted" {

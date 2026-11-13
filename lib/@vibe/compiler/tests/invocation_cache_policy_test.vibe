@@ -30,7 +30,7 @@ import @vibe/compiler/runtime/checked_module_cache {
 let policy_source = "#cfg(alpha)\nexport let a = 11\n#cfg(beta)\nexport let b = 22\n#cfg(beta)\nexport let c = 33\n"
 
 fn policy_ast_path(path: String, flags: String) -> String with Env {
-  persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = path, fingerprint = compact_source_fingerprint_memo(path = path, source = policy_source), cfg_csv = flags)
+  persistent_artifact_cache_path_with_cfg(kind = "selfhost_ast_v1", entry_name = path, fingerprint = compact_source_fingerprint_memo(path = path, source = policy_source), cfg_csv = flags, checked_error_row = false)
 }
 
 fn policy_evict(_ path: String) -> Unit with Exception {
@@ -59,24 +59,24 @@ test "AST data policy controls cold publication disk hits and prefetch after mem
   let off = ast_cache_policy(active = false)
   let on = ast_cache_policy(active = true)
   let key = policy_ast_path(path = path, flags = "alpha")
-  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off)), 1)
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off, checked_error_row = false)), 1)
   assert(parse_program_located_shared_ran_parser())
   assert(!Fs::exists(key))
   policy_evict(path)
-  let enabled = parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on)
+  let enabled = parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on, checked_error_row = false)
   assert_eq(Array::length(enabled), 1)
   assert(Fs::exists(key))
   policy_evict(path)
-  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off)), 1)
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off, checked_error_row = false)), 1)
   assert(parse_program_located_shared_ran_parser())
   policy_evict(path)
-  assert(!ast_cache_prefetch_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off))
-  assert(ast_cache_prefetch_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on))
-  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on)), 1)
+  assert(!ast_cache_prefetch_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = off, checked_error_row = false))
+  assert(ast_cache_prefetch_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on, checked_error_row = false))
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on, checked_error_row = false)), 1)
   assert(!parse_program_located_shared_ran_parser())
   policy_evict(path)
   Fs::write_bytes(key, bytes = Bytes::from_array([255]))
-  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on)), 1)
+  assert_eq(Array::length(parse_program_located_shared_fs_with_cache_policy(path = path, source = policy_source, cfg = cfg, policy = on, checked_error_row = false)), 1)
   assert(parse_program_located_shared_ran_parser())
   policy_remove_ast(path)
 }
@@ -86,23 +86,23 @@ test "AST policy remains captured across nested success refusal and legacy mode 
   let counts = [0, 0]
   handle {
     let outer = handle {
-      parse_program_located_shared_fs_cache_configured(path = path, source = policy_source)
+      parse_program_located_shared_fs_cache_configured(path = path, source = policy_source, checked_error_row = false)
     } with { Config::CfgFlags() => {
       Array::set(counts, at = 0, value = Array::get(counts, at = 0) + 1); resume("alpha")
     }; AstCacheConfig::Active() => {
       Array::set(counts, at = 1, value = Array::get(counts, at = 1) + 1)
       let inner = handle {
-        parse_program_located_shared_fs_cache_configured(path = path, source = policy_source)
+        parse_program_located_shared_fs_cache_configured(path = path, source = policy_source, checked_error_row = false)
       } with { Config::CfgFlags() => resume("beta"); AstCacheConfig::Active() => resume(false) }
       assert_eq(Array::length(inner), 2)
       let refused = handle {
         let _ = handle {
-          parse_program_located_shared_fs_cache_configured(path = path + "_bad", source = "let broken =")
+          parse_program_located_shared_fs_cache_configured(path = path + "_bad", source = "let broken =", checked_error_row = false)
         } with { Config::CfgFlags() => resume(""); AstCacheConfig::Active() => resume(false) }
         false
       } with { Exception::Throw(_) => true }
       assert(refused)
-      set_checked_module_cache_mode("on")
+      set_checked_module_cache_mode("on", checked_error_row = false)
       resume(true)
     } }
     assert_eq(Array::length(outer), 1)
@@ -112,12 +112,12 @@ test "AST policy remains captured across nested success refusal and legacy mode 
     assert(!Fs::exists(policy_ast_path(path = path, flags = "beta")))
     policy_evict(path)
     assert(handle {
-      ast_cache_prefetch_fs_cache_configured(path = path, source = policy_source)
+      ast_cache_prefetch_fs_cache_configured(path = path, source = policy_source, checked_error_row = false)
     } with { Config::CfgFlags() => resume("alpha"); AstCacheConfig::Active() => resume(true) })
-    set_checked_module_cache_mode("off")
+    set_checked_module_cache_mode("off", checked_error_row = false)
     policy_remove_ast(path)
   } with { Exception::Throw(message) => {
-    set_checked_module_cache_mode("off"); policy_remove_ast(path); throw(message)
+    set_checked_module_cache_mode("off", checked_error_row = false); policy_remove_ast(path); throw(message)
   } }
 }
 

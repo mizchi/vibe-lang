@@ -23,6 +23,9 @@ let module_typed_lowering_memo_sources: Array[Option[String]] = []
 // remain unbound until their accepting checker/cache provider supplies it.
 let module_typed_lowering_memo_cfgs: Array[Option[String]] = []
 
+// The checker policy is bound with the exact accepted fingerprint.
+let module_typed_lowering_memo_error_rows: Array[Option[Bool]] = []
+
 let module_typed_lowering_memo_offsets: Array[Array[Int]] = []
 
 // #2441: the typed-`==` rows ride the same memo lifecycle as the Int table
@@ -37,6 +40,7 @@ export fn reset_checked_lowering_memo() -> Unit {
   Array::truncate(module_typed_lowering_memo_fps, length = 0)
   Array::truncate(module_typed_lowering_memo_sources, length = 0)
   Array::truncate(module_typed_lowering_memo_cfgs, length = 0)
+  Array::truncate(module_typed_lowering_memo_error_rows, length = 0)
   Array::truncate(module_typed_lowering_memo_offsets, length = 0)
   Array::truncate(module_typed_lowering_memo_eq_offs, length = 0)
   Array::truncate(module_typed_lowering_memo_eq_keys, length = 0)
@@ -52,6 +56,7 @@ export fn record_checked_lowering(path: String, fingerprint: String, offsets: Ar
         Array::set(module_typed_lowering_memo_sources, at = i, value = None)
       }
       Array::set(module_typed_lowering_memo_cfgs, at = i, value = None)
+      Array::set(module_typed_lowering_memo_error_rows, at = i, value = None)
       Array::set(module_typed_lowering_memo_fps, at = i, value = fingerprint)
       Array::set(module_typed_lowering_memo_offsets, at = i, value = offsets)
       Array::set(module_typed_lowering_memo_eq_offs, at = i, value = eq_offs)
@@ -67,6 +72,7 @@ export fn record_checked_lowering(path: String, fingerprint: String, offsets: Ar
     Array::push(module_typed_lowering_memo_fps, value = fingerprint)
     Array::push(module_typed_lowering_memo_sources, value = None)
     Array::push(module_typed_lowering_memo_cfgs, value = None)
+    Array::push(module_typed_lowering_memo_error_rows, value = None)
     Array::push(module_typed_lowering_memo_offsets, value = offsets)
     Array::push(module_typed_lowering_memo_eq_offs, value = eq_offs)
     Array::push(module_typed_lowering_memo_eq_keys, value = eq_keys)
@@ -83,6 +89,7 @@ export fn bind_checked_lowering_source(path: String, fingerprint: String, source
     if Array::get(module_typed_lowering_memo_paths, at = i) == path && Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint {
       if Array::get(module_typed_lowering_memo_sources, at = i) != Some(source) {
         Array::set(module_typed_lowering_memo_cfgs, at = i, value = None)
+        Array::set(module_typed_lowering_memo_error_rows, at = i, value = None)
       }
       Array::set(module_typed_lowering_memo_sources, at = i, value = Some(source))
     }
@@ -92,12 +99,13 @@ export fn bind_checked_lowering_source(path: String, fingerprint: String, source
 
 /// Bind a source and target identity after a configured check/cache acceptance.
 /// This is a publication operation; raw compatibility records stay unbound.
-export fn bind_checked_lowering_context(path: String, fingerprint: String, source: String, cfg_identity: String) -> Unit {
+export fn bind_checked_lowering_context(path: String, fingerprint: String, source: String, cfg_identity: String, checked_error_row: Bool) -> Unit {
   bind_checked_lowering_source(path = path, fingerprint = fingerprint, source = source)
   let mut i = 0
   while i < Array::length(module_typed_lowering_memo_paths) {
     if Array::get(module_typed_lowering_memo_paths, at = i) == path && Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint {
       Array::set(module_typed_lowering_memo_cfgs, at = i, value = Some(cfg_identity))
+      Array::set(module_typed_lowering_memo_error_rows, at = i, value = Some(checked_error_row))
     }
     i = i + 1
   }
@@ -115,6 +123,17 @@ fn module_typed_lowering_cfg_for_fp(_ fingerprint: String) -> Option[String] {
     }
   }
   answer
+}
+
+fn module_typed_lowering_error_row_for_fp(_ fingerprint: String) -> Option[Bool] {
+  let mut i = 0
+  while i < Array::length(module_typed_lowering_memo_fps) {
+    if Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint {
+      return Array::get(module_typed_lowering_memo_error_rows, at = i)
+    }
+    i = i + 1
+  }
+  None
 }
 
 fn module_typed_lowering_source_for_fp(_ fingerprint: String) -> Option[String] {
@@ -427,10 +446,14 @@ export fn rebind_checked_lowering(path: String, fingerprint: String) -> Bool {
     Some((offsets, eq_offs, eq_keys)) => {
       let source = module_typed_lowering_source_for_fp(fingerprint)
       let cfg = module_typed_lowering_cfg_for_fp(fingerprint)
+      let error_row = module_typed_lowering_error_row_for_fp(fingerprint)
       record_checked_lowering(path = path, fingerprint = fingerprint, offsets = offsets, eq_offs = eq_offs, eq_keys = eq_keys)
       match source {
         Some(text) => match cfg {
-          Some(identity) => bind_checked_lowering_context(path = path, fingerprint = fingerprint, source = text, cfg_identity = identity),
+          Some(identity) => match error_row {
+            Some(policy) => bind_checked_lowering_context(path = path, fingerprint = fingerprint, source = text, cfg_identity = identity, checked_error_row = policy),
+            None => bind_checked_lowering_source(path = path, fingerprint = fingerprint, source = text)
+          },
           None => bind_checked_lowering_source(path = path, fingerprint = fingerprint, source = text)
         },
         None => ()
@@ -459,9 +482,9 @@ export fn ensure_checked_lowering_for_source(path: String, fingerprint: String, 
 }
 
 /// Accepting callers have already validated this fingerprint for source/cfg.
-export fn ensure_checked_lowering_for_source_in_context(path: String, fingerprint: String, source: String, cfg_identity: String) -> Bool {
+export fn ensure_checked_lowering_for_source_in_context(path: String, fingerprint: String, source: String, cfg_identity: String, checked_error_row: Bool) -> Bool {
   if rebind_checked_lowering(path = path, fingerprint = fingerprint) {
-    bind_checked_lowering_context(path = path, fingerprint = fingerprint, source = source, cfg_identity = cfg_identity)
+    bind_checked_lowering_context(path = path, fingerprint = fingerprint, source = source, cfg_identity = cfg_identity, checked_error_row = checked_error_row)
     true
   } else {
     false
@@ -480,19 +503,19 @@ struct OwnedLoweringRow {
 /// Owned copies of accepted source-bound lowering rows for one target context.
 /// The contract hides the constructor; queries never expose retained arrays.
 export enum CheckedLoweringInputs {
-  CheckedLoweringInputs(String, Array[OwnedLoweringRow])
+  CheckedLoweringInputs(String, Array[OwnedLoweringRow], Bool)
 }
 
 /// Capture only exact, configured publications. A stale/missing row is an
 /// error, not an empty complete channel. Strings are immutable; arrays copy.
-export fn capture_checked_lowering_inputs(requests: Array[(String, String, String)], cfg_identity: String) -> CheckedLoweringInputs with Exception {
+export fn capture_checked_lowering_inputs(requests: Array[(String, String, String)], cfg_identity: String, checked_error_row: Bool) -> CheckedLoweringInputs with Exception {
   let rows: Array[OwnedLoweringRow] = Array::with_capacity(Array::length(requests))
   for request in requests {
     let (path, source, fingerprint) = request
     let mut i = 0
     let mut found = false
     while i < Array::length(module_typed_lowering_memo_paths) && !found {
-      if Array::get(module_typed_lowering_memo_paths, at = i) == path && Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint && Array::get(module_typed_lowering_memo_sources, at = i) == Some(source) && Array::get(module_typed_lowering_memo_cfgs, at = i) == Some(cfg_identity) {
+      if Array::get(module_typed_lowering_memo_paths, at = i) == path && Array::get(module_typed_lowering_memo_fps, at = i) == fingerprint && Array::get(module_typed_lowering_memo_sources, at = i) == Some(source) && Array::get(module_typed_lowering_memo_cfgs, at = i) == Some(cfg_identity) && Array::get(module_typed_lowering_memo_error_rows, at = i) == Some(checked_error_row) {
         let offsets = Array::get(module_typed_lowering_memo_offsets, at = i)
         let eq_offs = Array::get(module_typed_lowering_memo_eq_offs, at = i)
         let eq_keys = Array::get(module_typed_lowering_memo_eq_keys, at = i)
@@ -515,12 +538,12 @@ export fn capture_checked_lowering_inputs(requests: Array[(String, String, Strin
       throw("recheck '\{path}' with the selected target flags before capturing lowering")
     }
   }
-  CheckedLoweringInputs(cfg_identity, rows)
+  CheckedLoweringInputs(cfg_identity, rows, checked_error_row)
 }
 
 fn owned_lowering_row(inputs: CheckedLoweringInputs, path: String) -> OwnedLoweringRow with Exception {
   match inputs {
-    CheckedLoweringInputs(_, rows) => {
+    CheckedLoweringInputs(_, rows, _) => {
       for row in rows {
         if row.path == path {
           return row
@@ -532,10 +555,12 @@ fn owned_lowering_row(inputs: CheckedLoweringInputs, path: String) -> OwnedLower
 }
 
 /// Validate the target and every exact source before consuming any merge state.
-export fn CheckedLoweringInputs::validate(_ inputs: CheckedLoweringInputs, sources: Array[(String, String)], cfg_identity: String) -> Unit with Exception {
+export fn CheckedLoweringInputs::validate(_ inputs: CheckedLoweringInputs, sources: Array[(String, String)], cfg_identity: String, checked_error_row: Bool) -> Unit with Exception {
   match inputs {
-    CheckedLoweringInputs(identity, _) => if identity != cfg_identity {
+    CheckedLoweringInputs(identity, _, policy) => if identity != cfg_identity {
       throw("capture lowering with the selected target flags before merging")
+    } else if policy != checked_error_row {
+      throw("capture lowering with the selected Exception-row policy before merging")
     }
   }
   for source in sources {
@@ -602,5 +627,12 @@ fn append_eq_rows_rebased(out_offs: Array[Int], out_keys: Array[String], path: S
       None => ()
     }
     j = j + 1
+  }
+}
+
+/// The immutable checking policy of this accepted, owned input snapshot.
+export fn CheckedLoweringInputs::error_row_checked(_ inputs: CheckedLoweringInputs) -> Bool {
+  match inputs {
+    CheckedLoweringInputs(_, _, checked_error_row) => checked_error_row
   }
 }

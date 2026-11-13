@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  alias_expansion_node_limit,
   apply_type_constructor,
   canonical_trait_arg_type_expr,
   canonical_trait_key,
@@ -53,6 +54,7 @@ import @vibe/compiler/core {
   instantiate,
   is_exception_label,
   resolve_builtin,
+  resolve_trait_key_arg,
   resolve_type_constructor_args,
   subst_apply,
   subst_bounds_for,
@@ -60,6 +62,7 @@ import @vibe/compiler/core {
   trait_method_sig_binders_deep,
   trait_method_sig_deep,
   type_constructor_name,
+  type_expr_expansion_node_count,
   type_to_string,
   unify
 }
@@ -752,7 +755,15 @@ export fn record_decl_exception_kinds(stmts: Array[Stmt], defs: Array[TypeDef], 
           scratch
         }, record_kinds = true)
         if complete && exported {
-          refuse_unpublishable_exception_row(t = resolve_type_expr_shadowed(te = te, defs = defs, shadow = params), owner = name, anchor = name, defs = defs, errors = errors)
+          // Completion reports the primary expansion error. Collecting a
+          // secondary publication diagnostic must not resolve that same
+          // refused expression again (#3995).
+          let limit = alias_expansion_node_limit()
+          if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = limit) <= limit {
+            refuse_unpublishable_exception_row(t = resolve_type_expr_shadowed(te = te, defs = defs, shadow = params), owner = name, anchor = name, defs = defs, errors = errors)
+          } else {
+            ()
+          }
         } else {
           ()
         }
@@ -1582,31 +1593,13 @@ fn trait_bound_type_expr(_ ty: Type) -> Option[TypeExpr] {
   canonical_trait_arg_type_expr(ty)
 }
 
-/// #3953: the type aliases `env` imports, `(name, params, body)`, with each
-/// body written back as a type expression the way a bound's argument is. An
-/// alias whose body has no such spelling (a still-open variable) is left out,
-/// so a key through it stays as written.
-export fn imported_trait_ref_aliases(_ env: TypeEnv) -> Array[(String, Array[String], TypeExpr)] {
-  let out: Array[(String, Array[String], TypeExpr)] = array_empty()
-  for def in env_type_defs(env) {
-    match def {
-      TDAlias(name, params, body) => match trait_bound_type_expr(body) {
-        Some(te) => Array::push(out, value = (name, params, te)),
-        None => ()
-      },
-      _ => ()
-    }
-  }
-  out
-}
-
 fn resolve_trait_bound_arg_expr(arg: TypeExpr, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> Option[TypeExpr] {
   match arg {
     TyName(name) => if name == trait_bound_self_marker {
       trait_bound_type_expr(self_ty)
     } else match parse_trait_bound_vid(name) {
       Some(vid) => trait_bound_type_expr(subst_apply(s = s, ty = CtVar(vid))),
-      None => trait_bound_type_expr(replace_trait_bound_self_type(ty = resolve_type_expr(te = arg, defs = defs), self_ty = self_ty))
+      None => trait_bound_type_expr(replace_trait_bound_self_type(ty = resolve_trait_key_arg(te = arg, defs = defs, shadow = array_empty()), self_ty = self_ty))
     },
     TyApp(name, args) => {
       let resolved_head = if name == trait_bound_self_marker {

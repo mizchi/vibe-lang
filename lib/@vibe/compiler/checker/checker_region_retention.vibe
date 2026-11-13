@@ -214,7 +214,7 @@ let retention_result_cell: Array[String] = []
 /// Fresh variables of a re-check start this far above the counter the real
 /// check is at, so no id it hands out is ever handed out again by the real
 /// check (a stale per-run row would otherwise alias a fresh variable).
-fn retention_counter_gap() -> Int {
+export fn retention_counter_gap() -> Int {
   1000000000
 }
 
@@ -2132,12 +2132,12 @@ fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> Retenti
 /// yet open where the closure was written laid on top, so a binding the body
 /// captured reads as declared before that region. A name bound any other way
 /// answers `None`.
-export fn retention_local_closure_literal(env: TypeEnv, name: String) -> Option[(Expr, TypeEnv)] {
+export fn retention_local_closure_literal(env: TypeEnv, name: String) -> Option[(Expr, TypeEnv, String)] {
   // Every literal the name is seen to stand for: a local `let`'s (`c:`), a
   // module-level one's (`top:`, Codex on #3461), or the argument a re-checked
   // lambda's parameter was bound to (`p:`), each read in its own scope.
   match retention_named_callee(env = env, name = name) {
-    RetentionVisible(lit, scope, _) => Some((lit, retention_with_call_regions(def = scope, call = env))),
+    RetentionVisible(lit, scope, key) => Some((lit, retention_with_call_regions(def = scope, call = env), retention_callee_identity(key))),
     _ => None
   }
 }
@@ -2223,7 +2223,7 @@ fn retention_named_callee(env: TypeEnv, name: String) -> RetentionCallee {
 
 /// The regions active in `env`, innermost first, each with whether it is a
 /// task group's (`#active_nursery`).
-fn retention_active_regions(_ env: TypeEnv) -> Array[(String, Bool)] {
+export fn retention_active_regions(_ env: TypeEnv) -> Array[(String, Bool)] {
   let names = array_empty()
   let nurseries = array_empty()
   let mut cur = env
@@ -2551,12 +2551,12 @@ fn retention_region_env(base: TypeEnv, regions: Array[(String, Bool)]) -> TypeEn
 }
 
 /// Check `lit` again in `scope` under `regions`, with `overrides` for its
-/// parameters, and report what its writes do with them. `c` is already in the
-/// re-check's own variable range. `key` names the
+/// parameters, and report what its writes do with them; its diagnostics land
+/// in `found`. `c` is in the re-check's own variable range. `key` names the
 /// callee and the argument shape; a re-check already in progress for the same
 /// key answers nothing new, and a chain of re-checks deeper than any real
 /// program builds is refused rather than cut off silently.
-fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String]) {
+export fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, found: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String]) {
   // A re-check skipped -- already in progress for this key, or a chain
   // deeper than any real program builds -- says nothing about the callee's
   // result, so it answers that the result may carry every region.
@@ -2575,7 +2575,7 @@ fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], 
     Array::truncate(retention_param_override_cell, length = 0)
     Array::push(retention_param_override_cell, value = overrides)
     Array::truncate(retention_result_cell, length = 0)
-    let rc_errors = array_empty()
+    let rc_errors = found
     let rc_tab = array_empty()
     let _ = check_child(lit, retention_region_env(base = scope, regions = regions), defs, s, c, rc_errors, rc_tab, None, "AuxiliaryRetentionRecheck")
     let result_regions = Array::slice(retention_result_cell, start = 0, end = Array::length(retention_result_cell))
@@ -2814,7 +2814,7 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
               shape = String::concat(shape, String::concat("|", String::concat(String::join(shown, sep = ","), String::concat("/", String::concat(String::join(predates, sep = ","), String::concat("/", String::concat(String::join(hidden, sep = ","), String::concat("/", retention_callee_identity(fn_arg)))))))))
               ai = ai + 1
             }
-            let (kind, result_regions) = retention_recheck(lit = lit, scope = scope, regions = regions, overrides = overrides, key = shape, defs = defs, s = s_args, c = c_args, check_child = check_child)
+            let (kind, result_regions) = retention_recheck(lit = lit, scope = scope, regions = regions, overrides = overrides, key = shape, defs = defs, s = s_args, c = c_args, found = array_empty(), check_child = check_child)
             Array::truncate(retention_arg_lambdas, length = lambdas_before)
             if call_key >= 0 {
               Array::push(retention_call_rows, value = (call_key, result_regions))
@@ -2951,7 +2951,7 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
           ], key = String::concat("run|", String::concat(retention_callee_identity(key), String::concat("|", String::join(for r in all_regions {
             let (an, _) = r
             an
-          }, sep = ",")))), defs = defs, s = s, c = c + retention_counter_gap(), check_child = check_child)
+          }, sep = ",")))), defs = defs, s = s, c = c + retention_counter_gap(), found = array_empty(), check_child = check_child)
           (kind, retention_string_has(items = result_regions, wanted = rname))
         },
         // A function imported from another module: by the summary it
@@ -2992,7 +2992,7 @@ export fn retention_bind_module_summaries(stmts: Array[Stmt], env: TypeEnv, defs
       RetentionOpaque => (2, EUnit),
       _ => (0, EUnit)
     }, fresh = (k) -> CtVar(base + k), recheck = (lit, overrides, key) -> {
-      let (kind, result) = retention_recheck(lit = lit, scope = scope, regions = regions, overrides = overrides, key = key, defs = defs, s = s, c = base + 4096, check_child = check_child)
+      let (kind, result) = retention_recheck(lit = lit, scope = scope, regions = regions, overrides = overrides, key = key, defs = defs, s = s, c = base + 4096, found = array_empty(), check_child = check_child)
       (kind, retention_string_has(items = result, wanted = retention_summary_region()))
     })
   }

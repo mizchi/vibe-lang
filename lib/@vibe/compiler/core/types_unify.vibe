@@ -1,3 +1,7 @@
+import ./alias_expansion_count.vibe {
+  alias_expansion_node_limit, type_expr_expansion_node_count
+}
+
 // lib/@vibe/compiler/core/types.vibe — unify.
 
 import ./ast.vibe {
@@ -60,7 +64,7 @@ import ./types_types_equal.vibe {
   resolve_builtin,
   resolve_effect_opt_preserving_open,
   resolve_row_type_arg,
-  resolve_type_expr_core_shadowed,
+  resolve_trait_key_arg,
   row_var_type_arg,
   subst_apply,
   trait_is_subtrait,
@@ -1371,15 +1375,43 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
 /// structure around it is canonical: `Value[StringMap[T]]` is
 /// `Value[Map[String, T]]` (Codex on #3956). A bare trait name is kept as
 /// written.
+///
+/// An oversized reference keeps its source spelling for callers without a
+/// diagnostic channel. The checker and desugar use the checked form.
 export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[TypeDef]) -> String {
   if !trait_ref_is_applied(key) {
     key
   } else {
-    match trait_ref_from_key(key) {
-      Some(TyApp(head, args)) => {
+    canonical_trait_key_checked(key = key, binders = binders, defs = defs).0
+  }
+}
+
+/// Check the entire argument list before resolving any argument. Earlier
+/// arguments stay live while later ones expand. A bare alias constructor
+/// contributes only its name to the key, so count it as a single node.
+export fn canonical_trait_key_checked(key: String, binders: Array[String], defs: Array[TypeDef]) -> (String, Option[String]) {
+  if !trait_ref_is_applied(key) {
+    return (key, None)
+  }
+  match trait_ref_from_key(key) {
+    Some(TyApp(head, args)) => {
+      let budget_args = for arg in args {
+        match arg {
+          TyName(_) => match resolve_trait_key_arg(te = arg, defs = defs, shadow = binders) {
+            CtConstructor(_, _) => TyUnit,
+            _ => arg
+          },
+          _ => arg
+        }
+      }
+      let limit = alias_expansion_node_limit()
+      if type_expr_expansion_node_count(te = TyTuple(budget_args), defs = defs, shadow = binders, capped_aliases = [
+      ], limit = limit) > limit {
+        (key, Some("trait argument expansion exceeds \{limit} nodes for `\{head}`; replace the shared alias DAG with a nominal struct or enum"))
+      } else {
         let mut changed = false
         let mapped = for arg in args {
-          match canonical_trait_arg_type_expr(resolve_type_expr_core_shadowed(te = arg, defs = defs, shadow = binders)) {
+          match canonical_trait_arg_type_expr(resolve_trait_key_arg(te = arg, defs = defs, shadow = binders)) {
             Some(next) => {
               if next != arg {
                 changed = true
@@ -1392,106 +1424,14 @@ export fn canonical_trait_key(key: String, binders: Array[String], defs: Array[T
           }
         }
         if changed {
-          trait_ref_key(TyApp(head, mapped))
+          (trait_ref_key(TyApp(head, mapped)), None)
         } else {
-          key
-        }
-      },
-      _ => key
-    }
-  }
-}
-
-fn canonical_key_arg_names(ty: TypeExpr, binders: Array[String]) -> Bool {
-  match ty {
-    TyName(n) => {
-      let mut found = false
-      for b in binders {
-        if !found && type_param_name(b) == n {
-          found = true
-        } else {
-          ()
+          (key, None)
         }
       }
-      found
     },
-    TyApp(n, args) => canonical_key_arg_names(ty = TyName(n), binders = binders) || canonical_key_args_name(tys = args, binders = binders),
-    TyTuple(items) => canonical_key_args_name(tys = items, binders = binders),
-    TyFn(params, ret, _) => canonical_key_arg_names(ty = ret, binders = binders) || canonical_key_args_name(tys = params, binders = binders),
-    TyUnit => false
+    _ => (key, None)
   }
-}
-
-fn canonical_key_args_name(tys: Array[TypeExpr], binders: Array[String]) -> Bool {
-  let mut found = false
-  for t in tys {
-    if !found && canonical_key_arg_names(ty = t, binders = binders) {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-/// #3947: the type declarations of `stmts` as `canonical_trait_key` resolves
-/// against them. A struct, enum or suberror is entered by name and parameters
-/// (the resolver keeps a declared name as written, so a program's own
-/// `struct StringMap[T]` is that type, not the builtin map); an alias by its
-/// resolved body, one round per alias when an alias names another.
-export fn canonical_key_defs(_ stmts: Array[Stmt]) -> Array[TypeDef] {
-  let nominal: Array[TypeDef] = []
-  let aliases: Array[(String, Array[String], TypeExpr)] = []
-  for stmt in stmts {
-    match stmt {
-      SStruct(_, name, _, _, _, tparams) => Array::push(nominal, value = TDStruct(name, [
-      ], [], tparams)),
-      SEnum(_, name, params, _, _) => Array::push(nominal, value = TDEnum(name, params, [
-      ])),
-      SSuberror(_, name, _) => Array::push(nominal, value = TDEnum(name, [], [])),
-      STypeAlias(_, name, params, target) => Array::push(aliases, value = (name, params, target)),
-      _ => ()
-    }
-  }
-  let alias_names: Array[String] = []
-  for row in aliases {
-    let (name, _, _) = row
-    Array::push(alias_names, value = name)
-  }
-  let mut chained = false
-  for row in aliases {
-    let (_, _, target) = row
-    if !chained && canonical_key_arg_names(ty = target, binders = alias_names) {
-      chained = true
-    } else {
-      ()
-    }
-  }
-  let rounds = if chained {
-    Array::length(aliases)
-  } else if Array::length(aliases) > 0 {
-    1
-  } else {
-    0
-  }
-  let mut defs: Array[TypeDef] = []
-  for d in nominal {
-    Array::push(defs, value = d)
-  }
-  let mut r = 0
-  while r < rounds {
-    let next: Array[TypeDef] = []
-    for d in nominal {
-      Array::push(next, value = d)
-    }
-    for row in aliases {
-      let (name, params, target) = row
-      Array::push(next, value = TDAlias(name, params, resolve_type_expr_core_shadowed(te = target, defs = defs, shadow = params)))
-    }
-    defs = next
-    r = r + 1
-  }
-  defs
 }
 
 /// #3947: a resolved type written back as the `TypeExpr` a trait key spells,

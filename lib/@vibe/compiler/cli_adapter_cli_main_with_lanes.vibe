@@ -72,7 +72,8 @@ import @vibe/compiler/loader {
   find_deps_missing,
   find_missing_vpkg_dirs,
   ingest_source_text_fs,
-  ingestion_pipeline_telemetry_json,
+  ingestion_pipeline_telemetry_publish,
+  ingestion_pipeline_telemetry_refusal,
   load_or_parse_module_header_fs,
   publish_check_fs,
   set_ingestion_pipeline_telemetry_enabled,
@@ -134,10 +135,6 @@ import @vibe/compiler/core {
 
 import @vibe/lsp {
   lsp_diagnostics_json_of_messages, lsp_diagnostics_json_string, lsp_main
-}
-
-import @vibe/compiler/checker {
-  set_error_row_checked
 }
 
 import ./cli_adapter_fs_lane_request.vibe {
@@ -385,7 +382,7 @@ fn adapter_emit_wit(input_path: String, output_path: String) -> Int with Fs + En
 /// adapter and launches `wasmtime serve` — artifact generation stays in the
 /// compiler, serving stays in the runner. VIBE_SERVE_WIT_OUT optionally writes
 /// the WIT world sidecar.
-fn adapter_serve_component(input_path: String, output_path: String) -> Int with Fs + Env {
+fn adapter_serve_component(input_path: String, output_path: String, checked_error_row: Bool) -> Int with Fs + Env {
   handle {
     // ADR-0068 gate, BEFORE any compile work -- the same gate the FS-compile
     // branch applies, for the same reason. `vibe serve` reaches this function
@@ -398,7 +395,7 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     let serve_unstable = if serve_opt_in {
       adapter_no_warnings()
     } else {
-      check_unstable_surface_warnings_from_path(input_path)
+      check_unstable_surface_warnings_from_path(input_path, checked_error_row = checked_error_row)
     }
     // #2289: report EVERY unstable import, not `Array::get(.., 0)`. A file can
     // depend on the package twice -- once inherited from its directory's
@@ -424,7 +421,7 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     // No command entry: the component surface is `handler`. `__no_entry__`
     // is the explicit sentinel — any other unknown entry name is a compile
     // error since ADR-0069.
-    let core = compile_file_fs_mode(entry_path = input_path, entry_name = "__no_entry__", mode = "no-dce", exports_stripped = false)
+    let core = compile_file_fs_mode(entry_path = input_path, entry_name = "__no_entry__", mode = "no-dce", exports_stripped = false, checked_error_row = checked_error_row)
     // The complete answer, from the closure that compile actually loaded, and
     // BEFORE the component is emitted. Placement matters: emitting first let
     // the handler-purity check speak instead -- an unstable dependency drags
@@ -474,13 +471,13 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
 /// reason and carries the same ADR-0068 gates: a verb that PRODUCES an
 /// artifact must not accept what `vibe check` refuses, and the closure gate
 /// has to be re-asked after the loader has walked it.
-fn adapter_command_component(input_path: String, output_path: String) -> Int with Fs + Env {
+fn adapter_command_component(input_path: String, output_path: String, checked_error_row: Bool) -> Int with Fs + Env {
   handle {
     let opt_in = Env::get("VIBE_UNSTABLE") == "1"
     let entry_unstable = if opt_in {
       adapter_no_warnings()
     } else {
-      check_unstable_surface_warnings_from_path(input_path)
+      check_unstable_surface_warnings_from_path(input_path, checked_error_row = checked_error_row)
     }
     if Array::length(entry_unstable) > 0 {
       return emit_compile_diag(output_path = output_path, msg = String::join(entry_unstable, sep = "\n"))
@@ -493,7 +490,7 @@ fn adapter_command_component(input_path: String, output_path: String) -> Int wit
     // `no-dce` (what this used before) kept the whole closure: a command
     // calling `check_linked_file` came to 40.4 MB, 7.8 times this adapter.
     // `dce-root` prunes from the command and still emits a library (2.6 MB).
-    let core = compile_file_fs_mode(entry_path = input_path, entry_name = command_component_entry(), mode = command_component_compile_mode(), exports_stripped = false)
+    let core = compile_file_fs_mode(entry_path = input_path, entry_name = command_component_entry(), mode = command_component_compile_mode(), exports_stripped = false, checked_error_row = checked_error_row)
     let closure_unstable = if opt_in {
       adapter_no_warnings()
     } else {
@@ -541,18 +538,18 @@ fn component_tool_switch(_ tool: cli_adapter_ComponentTool) -> String {
 }
 
 /// Every component tool the full CLI serves.
-fn component_tools_full(tool: cli_adapter_ComponentTool, input_path: String, output_path: String) -> Int with Fs + Env {
+fn component_tools_full(tool: cli_adapter_ComponentTool, input_path: String, output_path: String, checked_error_row: Bool) -> Int with Fs + Env {
   match tool {
     ToolEmitWit => adapter_emit_wit(input_path = input_path, output_path = output_path),
-    ToolServeComponent => adapter_serve_component(input_path = input_path, output_path = output_path),
-    ToolBuildComponent => adapter_command_component(input_path = input_path, output_path = output_path)
+    ToolServeComponent => adapter_serve_component(input_path = input_path, output_path = output_path, checked_error_row = checked_error_row),
+    ToolBuildComponent => adapter_command_component(input_path = input_path, output_path = output_path, checked_error_row = checked_error_row)
   }
 }
 
 /// The compile-only artifact's component tools: none. A request is refused by
 /// its switch, with no output written, rather than falling through to an
 /// ordinary core compile that a caller could mistake for the component.
-fn component_tools_none(tool: cli_adapter_ComponentTool, input_path: String, output_path: String) -> Int with Fs + Env {
+fn component_tools_none(tool: cli_adapter_ComponentTool, input_path: String, output_path: String, checked_error_row: Bool) -> Int with Fs + Env {
   let _ = input_path
   emit_compile_diag(output_path = output_path, msg = "this compiler is the compile-only build and has no tool for \{component_tool_switch(tool)}; unset it, or run the same command with the full CLI build (stage2.wasm from scripts/generations.sh)")
 }
@@ -575,7 +572,7 @@ fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
 /// tables are the ONLY difference between the two artifacts, so every other
 /// switch (the remaining command selectors, VIBE_CFG, VIBE_UNSTABLE, the
 /// trusted-source boundary) behaves identically on both.
-fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool, String, Bool) -> Bytes with Exception, component_tools: (cli_adapter_ComponentTool, String, String) -> Int with Fs + Env) -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
+fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool, String, Bool, Bool) -> Bytes with Exception, component_tools: (cli_adapter_ComponentTool, String, String, Bool) -> Int with Fs + Env) -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
   // Typing-dependency env reuse (TDRE10) is the default on every lane, the
   // compile lanes included (#2728). `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1`
   // opts out, and an invalidation trace forces it off so the trace stays
@@ -611,9 +608,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     "checked"
   }
   let checked_error_row = artifact_input_trace_checked_error_row_mode == "checked"
-  // This is the sole process-wide authority for both checker behavior and its
-  // cache identity. Long-lived CLI hosts reset it on every invocation.
-  set_error_row_checked(checked_error_row)
+  // Checking and cache identity share this invocation snapshot.
   // #906 Phase 0: dependency-visit-order oracle. A non-zero seed permutes
   // each node's dep visit order (set_dep_order_seed, runtime/typecheck_fs.vibe);
   // the compiled output must stay byte-identical across seeds, which is what
@@ -769,7 +764,13 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     ()
   }
   if ingestion_pipeline_out != "" {
-    if Env::get("VIBE_CHECK_ONLY") != "1" {
+    // #2498: a compiler flattened without `VIBE_CFG=telemetry` has no counters
+    // to publish. Refuse here, after the stale sidecar is gone and before any
+    // work, rather than answer the request with zeros or with nothing.
+    let pipeline_refusal = ingestion_pipeline_telemetry_refusal()
+    if pipeline_refusal != "" {
+      throw(pipeline_refusal)
+    } else if Env::get("VIBE_CHECK_ONLY") != "1" {
       throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
     } else if ingestion_pipeline_nonce == "" || has_control_character(ingestion_pipeline_nonce) {
       throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
@@ -788,14 +789,14 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     "off"
   } else {
     checked_module_mode
-  })
+  }, checked_error_row = checked_error_row)
   // `vibe lsp` (self-hosted, #lsp-selfhost): takes over stdin/stdout
   // directly as a long-running JSON-RPC server -- unlike every other mode
   // below, it never reads VIBE_INPUT/VIBE_OUTPUT or writes to output_path.
   // Checked first so it never touches the one-shot input/output-file
   // machinery the rest of this function assumes.
   if Env::get("VIBE_LSP") == "1" {
-    return lsp_main(Env::get("VIBE_UNSTABLE") == "1")
+    return lsp_main(Env::get("VIBE_UNSTABLE") == "1", checked_error_row = checked_error_row)
   }
   let input_path = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT"))
@@ -809,9 +810,9 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     return handle {
       let algo = Env::get("VIBE_HASH_ALGO")
       let (pkg_hash, ct_hash) = if algo == "sha1" {
-        contract_package_hashes_fs_algo(path = input_path, algo = "sha1")
+        contract_package_hashes_fs_algo(path = input_path, algo = "sha1", checked_error_row = checked_error_row)
       } else {
-        contract_package_hashes_fs(input_path)
+        contract_package_hashes_fs(input_path, checked_error_row = checked_error_row)
       }
       Fs::write_file(output_path, contents = "package #\{pkg_hash}\ncontract \{ct_hash}\n")
       0
@@ -825,7 +826,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // over the real target in place.
   if Env::get("VIBE_HASH_WRITE") == "1" {
     return handle {
-      let rewritten = write_generated_hash_fs(input_path)
+      let rewritten = write_generated_hash_fs(input_path, checked_error_row = checked_error_row)
       Fs::write_file(output_path, contents = rewritten)
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path = output_path, msg = msg) }
@@ -868,7 +869,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // output path. Idempotent; pinned form is the canonical form.
   if Env::get("VIBE_FILL_PINS") == "1" {
     return handle {
-      let filled = fill_require_pins_fs_mode(source = Fs::read_file(input_path), repin = Env::get("VIBE_REPIN") == "1")
+      let filled = fill_require_pins_fs_mode(source = Fs::read_file(input_path), repin = Env::get("VIBE_REPIN") == "1", checked_error_row = checked_error_row)
       Fs::write_file(output_path, contents = filled)
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path = output_path, msg = msg) }
@@ -909,7 +910,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // receives its dependencies' environments as values in the job.
   if Env::get("VIBE_MODULE_JOB_DIR") == "1" {
     return handle {
-      run_module_job_dir(input_path)
+      run_module_job_dir(input_path, checked_error_row = checked_error_row)
       0
     } with {
       // A throw here is an infrastructure failure (unreadable or malformed
@@ -962,8 +963,8 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       // on the SAME already-ingested `source` (ripple_get_source) -- so
       // matching that here is what keeps this host-side path equivalent to
       // the serial walk instead of an approximation of it.
-      let ingested = ingest_source_text_fs(path = input_path, raw = source)
-      let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(path = input_path, source = ingested, parse_count = 0)
+      let ingested = ingest_source_text_fs(path = input_path, raw = source, checked_error_row = checked_error_row)
+      let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(path = input_path, source = ingested, parse_count = 0, checked_error_row = checked_error_row)
       Fs::write_file(output_path, contents = String::concat(String::join(deps, sep = "\n"), "\n"))
       // Hand back the SAME ingested source a parallel host driver must use
       // to build this module's ModuleJob for the job-dir worker: check_module
@@ -1013,7 +1014,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // companion needs a collision-proof unique id for (#1170).
   if Env::get("VIBE_MODULE_PLAN") == "1" {
     return handle {
-      let (manifest, sources) = module_plan_manifest_fs(input_path)
+      let (manifest, sources) = module_plan_manifest_fs(input_path, checked_error_row = checked_error_row)
       let mut i = 0
       while i < Array::length(sources) {
         Fs::write_file(String::concat(output_path, String::concat(".", String::concat(__to_string(i), ".src"))), contents = Array::get(sources, at = i))
@@ -1080,14 +1081,14 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       // #2284: the closure record is filled by the loader during this call,
       // and read by the gate below. Reset first so it describes THIS check.
       unstable_closure_reset()
-      let checked_source_groups = check_linked_file_source_groups(input_path)
+      let checked_source_groups = check_linked_file_source_groups(input_path, checked_error_row = checked_error_row)
       if telemetry_out != "" {
         Fs::write_file(telemetry_out, contents = incremental_typecheck_telemetry_json())
       } else {
         ()
       }
       if invalidation_trace_out != "" {
-        Fs::write_file(invalidation_trace_out, contents = incremental_invalidation_trace_json(entry_path = input_path, run_nonce = invalidation_trace_nonce))
+        Fs::write_file(invalidation_trace_out, contents = incremental_invalidation_trace_json(entry_path = input_path, run_nonce = invalidation_trace_nonce, checked_error_row = checked_error_row))
       } else {
         ()
       }
@@ -1103,7 +1104,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       // lines BEFORE the final `ok` marker. The launcher forwards them to
       // stderr and still reports success; an older launcher only tests the
       // file for non-emptiness, so extra lines stay backward compatible.
-      let dep_warns = check_deprecated_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups)
+      let dep_warns = check_deprecated_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups, checked_error_row = checked_error_row)
       let out_text = StringBuilder::new()
       let mut wi = 0
       while wi < Array::length(dep_warns) {
@@ -1111,7 +1112,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
         StringBuilder::push(out_text, value = "\n")
         wi = wi + 1
       }
-      let redundant_import_warns = check_redundant_import_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups)
+      let redundant_import_warns = check_redundant_import_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups, checked_error_row = checked_error_row)
       let mut rwi = 0
       while rwi < Array::length(redundant_import_warns) {
         StringBuilder::push(out_text, value = Array::get(redundant_import_warns, at = rwi))
@@ -1120,7 +1121,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       }
       // #3044: a `let*` where `?` is the one spelling (a function body's
       // top-level block).
-      let let_star_warns = check_let_star_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups)
+      let let_star_warns = check_let_star_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups, checked_error_row = checked_error_row)
       let mut lwi = 0
       while lwi < Array::length(let_star_warns) {
         StringBuilder::push(out_text, value = Array::get(let_star_warns, at = lwi))
@@ -1128,7 +1129,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
         lwi = lwi + 1
       }
       // #3549: an arm an earlier arm already covers.
-      let unreachable_arm_warns = check_unreachable_arm_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups)
+      let unreachable_arm_warns = check_unreachable_arm_warnings_from_source_groups(input_path = input_path, source_groups = checked_source_groups, checked_error_row = checked_error_row)
       let mut uwi = 0
       while uwi < Array::length(unreachable_arm_warns) {
         StringBuilder::push(out_text, value = Array::get(unreachable_arm_warns, at = uwi))
@@ -1190,7 +1191,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       // Publish this successful-check observation strictly after the final
       // output. If that authoritative write fails, no pipeline sidecar exists.
       if ingestion_pipeline_out != "" {
-        Fs::write_file(ingestion_pipeline_out, contents = ingestion_pipeline_telemetry_json(ingestion_pipeline_nonce))
+        ingestion_pipeline_telemetry_publish(path = ingestion_pipeline_out, nonce = ingestion_pipeline_nonce)
       } else {
         ()
       }
@@ -1226,7 +1227,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       let fs_unstable = if unstable_opt_in {
         adapter_no_warnings()
       } else {
-        check_unstable_surface_warnings_from_path(input_path)
+        check_unstable_surface_warnings_from_path(input_path, checked_error_row = checked_error_row)
       }
       if Array::length(fs_unstable) > 0 {
         return emit_compile_diag(output_path = output_path, msg = String::join(fs_unstable, sep = "\n"))
@@ -1274,7 +1275,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       // other compile in the process -- nested, later, or after this one
       // throws -- can observe it.
       let fs_exports_stripped = !fs_lane_is_instrumented(fs_lane) && executable_exports_stripped(entry_name)
-      let (bytes, artifact_input_trace) = fs_lanes(fs_lane, input_path, entry_name, fs_exports_stripped)
+      let (bytes, artifact_input_trace) = fs_lanes(fs_lane, input_path, entry_name, fs_exports_stripped, checked_error_row)
       // Captured at the walk's boundary, PUBLISHED at the compile's. Reading
       // the counters here keeps them describing the typing walk and nothing
       // after it; writing here would publish a fresh sidecar for a compile the
@@ -1351,7 +1352,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       let entry_testmeta_out = Env::get("VIBE_ENTRY_TESTMETA_OUT")
       let _entry_meta_rc = if entry_testmeta_out != "" {
         handle {
-          let cacheable = entry_cacheable_for_fs(entry_path = input_path, entry_name = entry_name)
+          let cacheable = entry_cacheable_for_fs(entry_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
           Fs::write_file(entry_testmeta_out, contents = if cacheable {
             "1"
           } else {
@@ -1448,7 +1449,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     // answer offline (best-effort; an uninstalled package leaves its line
     // verbatim -- fetching belongs to `vibe add`/`update`). `.vpkg` headers
     // included (#2260 round 3).
-    let fmt_pre = fill_require_pins_lenient(src)
+    let fmt_pre = fill_require_pins_lenient(src, checked_error_row = checked_error_row)
     // format_source dispatches on the extension: `.vpkg` package contracts
     // get the canonical header writer, plain vibe sources get the verbatim
     // require-head split (#1435, #2253 round 6).
@@ -1539,7 +1540,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     let src = Fs::read_file(input_path)
     let line = cli_adapter_parse_int_or(s = Env::get("VIBE_TYPE_LINE"), default = 1)
     let col = cli_adapter_parse_int_or(s = Env::get("VIBE_TYPE_COL"), default = 1)
-    let ty = type_at_fs(path = input_path, source = src, line = line, col = col)
+    let ty = type_at_fs(path = input_path, source = src, line = line, col = col, checked_error_row = checked_error_row)
     Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(ty)))
     return 0
   }
@@ -1659,14 +1660,14 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   if Env::get("VIBE_RC_CLASSIFY") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(rc_classify_source(src))))
+      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(rc_classify_source(src, checked_error_row = checked_error_row))))
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path = output_path, msg = msg) }
   }
   if Env::get("VIBE_RC_PLAN") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(rc_plan_source(source = src, fn_filter = Env::get("VIBE_RC_PLAN_FN")))))
+      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(rc_plan_source(source = src, fn_filter = Env::get("VIBE_RC_PLAN_FN"), checked_error_row = checked_error_row))))
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path = output_path, msg = msg) }
   }
@@ -1675,7 +1676,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   if Env::get("VIBE_RC_VALIDATE") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(rc_validate_source(source = src, fn_filter = Env::get("VIBE_RC_VALIDATE_FN")))))
+      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(rc_validate_source(source = src, fn_filter = Env::get("VIBE_RC_VALIDATE_FN"), checked_error_row = checked_error_row))))
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path = output_path, msg = msg) }
   }
@@ -1720,11 +1721,11 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
         // with shared vpkg imports injects them into each member. Reading the
         // raw bytes instead would under-report both.
         let raw = Fs::read_file(input_path)
-        let source = ingest_source_text_fs(path = input_path, raw = raw)
-        let (deps, _, _) = load_or_parse_module_header_fs(path = input_path, source = source, parse_count = 0)
+        let source = ingest_source_text_fs(path = input_path, raw = raw, checked_error_row = checked_error_row)
+        let (deps, _, _) = load_or_parse_module_header_fs(path = input_path, source = source, parse_count = 0, checked_error_row = checked_error_row)
         Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(join_lines(deps))))
       } else {
-        let groups = collect_source_groups_fs(input_path)
+        let groups = collect_source_groups_fs(input_path, checked_error_row = checked_error_row)
         Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(cli_adapter_line_terminated(cli_adapter_join_dep_paths(groups = groups, entry_path = input_path))))
       }
       0
@@ -1769,7 +1770,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       } else {
         ""
       }
-      let (text, warnings) = grep_scan_files_report(files = sweep_files, pattern = Env::get("VIBE_GREP_PATTERN"), wheres = adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), where_rows = adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), only = Env::get("VIBE_GREP_ONLY"), json = Env::get("VIBE_GREP_JSON") == "1", named_files = adapter_grep_named_files(input_path), resume_out = resume_out)
+      let (text, warnings) = grep_scan_files_report(files = sweep_files, pattern = Env::get("VIBE_GREP_PATTERN"), wheres = adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), where_rows = adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), only = Env::get("VIBE_GREP_ONLY"), json = Env::get("VIBE_GREP_JSON") == "1", named_files = adapter_grep_named_files(input_path), resume_out = resume_out, checked_error_row = checked_error_row)
       // #2133: both are line-oriented (`path:line:col: <match>` one per line,
       // and one warning per line), so both terminate their last record. JSON
       // mode gets the trailing newline too, which is conventional and which no
@@ -1808,7 +1809,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
     // before this: the LSP (which already used the combined collector)
     // reported the opt-in for such a contract and this lane did not.
     let all_diags = handle {
-      collect_all_diagnostics_with_unstable_for_path(input_path = input_path, source = src, allow_unstable = Env::get("VIBE_UNSTABLE") == "1")
+      collect_all_diagnostics_with_unstable_for_path(input_path = input_path, source = src, allow_unstable = Env::get("VIBE_UNSTABLE") == "1", checked_error_row = checked_error_row)
     } with { Exception::Throw(_) => adapter_no_warnings() }
     if Env::get("VIBE_DIAGNOSTICS_JSON") == "1" {
       // The JSON form is what the editor consumes; dropping the opt-in
@@ -1856,7 +1857,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       } else {
         ()
       }
-      let merged_src = coverage_driver_program_source_fs(entry_path = input_path, driver_path = driver_path)
+      let merged_src = coverage_driver_program_source_fs(entry_path = input_path, driver_path = driver_path, checked_error_row = checked_error_row)
       // Prune before the pinned seed type-checks the result. The full no-DCE
       // compiler contains intentionally dormant generic scaffolding that is
       // not a valid standalone program; the driver and every exact target it
@@ -1868,7 +1869,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   }
   if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
     return handle {
-      let merged_src = merged_program_source_fs(input_path)
+      let merged_src = merged_program_source_fs(input_path, checked_error_row = checked_error_row)
       Fs::write_file(output_path, contents = merged_src)
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path = output_path, msg = msg) }
@@ -1878,7 +1879,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // world imports). Same (input, output) interface; imports resolved from FS.
   // Contract: docs/internal/design/effect-wit-mapping.md.
   if Env::get("VIBE_EMIT_WIT") == "1" {
-    return component_tools(ToolEmitWit, input_path, output_path)
+    return component_tools(ToolEmitWit, input_path, output_path, checked_error_row)
   }
   // #537 `vibe serve` artifact step: validate the wasi-http P3 handler
   // contract, compile the file, and wrap it into a component exporting
@@ -1887,14 +1888,14 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
   // the P3 HTTP adapter and launches `wasmtime serve` — artifact generation
   // stays in the compiler, serving stays in the runner.
   if Env::get("VIBE_SERVE_COMPONENT") == "1" {
-    return component_tools(ToolServeComponent, input_path, output_path)
+    return component_tools(ToolServeComponent, input_path, output_path, checked_error_row)
   }
   // `vibe build --component` (docs/internal/design/component-lazy-dispatch.md).
   // Immediately after the serve wrap: both produce a component from a library
   // build, and keeping them adjacent keeps the launcher's derived clear list
   // for the two identical but for each other.
   if Env::get("VIBE_BUILD_COMPONENT") == "1" {
-    return component_tools(ToolBuildComponent, input_path, output_path)
+    return component_tools(ToolBuildComponent, input_path, output_path, checked_error_row)
   }
   let source = Fs::read_file(input_path)
   // ADR-0068 gate for the SINGLE-SOURCE lane. `VIBE_TEST_BACKEND=gc` and
@@ -1970,7 +1971,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool) -> (
       // the compile-only artifact are this lane's flat module sources, in
       // which every function is spelled `export`.
       let ss_exports_stripped = !ss_lane_is_instrumented(ss_lane) && executable_exports_stripped(entry_name)
-      let bytes = ss_lanes(ss_lane, source_cfg, entry_name, trusted_generated, cfg_csv, ss_exports_stripped)
+      let bytes = ss_lanes(ss_lane, source_cfg, entry_name, trusted_generated, cfg_csv, ss_exports_stripped, checked_error_row)
       profile_memory_mark(mark_memory)
       // Binary-size (#1100): same release strip as the FS-compile lane above.
       // This single-source lane builds the compiler's own stage wasm
@@ -2087,12 +2088,8 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
     // #2513: the `#cfg` flag set for every module this invocation parses;
     // cli_main_with_lanes does the same for the positional protocol.
     configure_compiler_cfg_flags()
-    // The checked effect-row mode is the CLI default and a process-wide cell
-    // that defaults to UNCHECKED until an invocation sets it; the positional
-    // protocol sets it in cli_main_with_lanes, so the verb route sets it here
-    // before any lane runs (Codex review of #2858). `VIBE_CHECK_ERROR_ROW=0`
-    // is the documented opt-out, the same spelling as there.
-    set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+    // Snapshot the checked CLI default once, including its documented opt-out.
+    let checked_error_row = Env::get("VIBE_CHECK_ERROR_ROW") != "0"
     // The checked-module cache mode is the same kind of per-invocation cell
     // (cli_main_with_lanes sets it for the positional protocol).
     let checked_module_mode = Env::get("VIBE_CHECKED_MODULE_CACHE")
@@ -2100,8 +2097,8 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
       "off"
     } else {
       checked_module_mode
-    })
-    let code = run_user_dispatch_args(host_argv())
+    }, checked_error_row = checked_error_row)
+    let code = run_user_dispatch_args(host_argv(), checked_error_row = checked_error_row)
     vibe_process_exit_raw(code)
     code
   } else {

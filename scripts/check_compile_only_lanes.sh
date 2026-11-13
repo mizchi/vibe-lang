@@ -26,6 +26,11 @@
 #      compiling on another lane, or writing a core module where a component
 #      was asked for, is the failure this guards against (policy: never
 #      silently wrong).
+#   2b. TELEMETRY (#2498). The artifact is flattened without the compiler's
+#      `telemetry` cfg flag, so the ingestion-pipeline counters and their JSON
+#      encoder are absent (check 1 reads it), and a request for that sidecar
+#      (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT) publishes nothing and fails
+#      naming VIBE_CFG=telemetry -- never an empty or all-zero observation.
 #   3. ACCEPTANCE. The two production lanes still compile, and the default
 #      lane's output runs. Cfg, unstable authorization and generated-source
 #      trust remain per-compilation inputs to this same artifact.
@@ -41,6 +46,8 @@
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --tools-only
 #       runs the component-tool half of check 2 alone (the self-test's probe
 #       for it: the full CLI fails the lane half first)
+#   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --telemetry-only
+#       runs check 2b alone (the self-test hands it a telemetry-enabled stage2)
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -49,12 +56,14 @@ ARTIFACT=""
 ENTRY="cli_main_compile_only"
 SCAN_ONLY=""
 TOOLS_ONLY=0
+TELEMETRY_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifact) ARTIFACT="$2"; shift 2 ;;
     --entry) ENTRY="$2"; shift 2 ;;
     --scan-only) SCAN_ONLY="$2"; shift 2 ;;
     --tools-only) TOOLS_ONLY=1; shift ;;
+    --telemetry-only) TELEMETRY_ONLY=1; shift ;;
     *) echo "check-compile-only-lanes: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -88,6 +97,11 @@ ABSENT_PATTERNS="$ABSENT_PATTERNS|(^| )adapter_(emit_wit|serve_component|command
 # function, so a cut that removed the lane a user program needs fails here
 # instead of passing as a smaller artifact.
 PRESENT_PATTERNS='comp_emit_component_wasm_async_stdin_provider|comp_emit_component_wasm_async_hostfuture|maybe_wrap_async_component|maybe_wrap_stdin_provider_core'
+# #2498: the `#cfg(telemetry)` half of loader/ingestion_pipeline_telemetry.vibe
+# -- the counter cells, their reader and the sidecar encoder. Its
+# `#cfg(not(telemetry))` twins (`..._refusal`, `..._publish`, the no-op
+# `..._add`) keep other names and may remain.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|ingestion_pipeline_telemetry_json|ingestion_pipeline_json_string|ingestion_pipeline_counter|ingestion_pipeline_enabled"
 
 scan_names() { # <wasm>
   local wasm="$1" listing
@@ -222,11 +236,37 @@ if [ "$TOOLS_ONLY" = 1 ]; then
   refuse_tools
   exit 0
 fi
+# 2b. telemetry: a check-only request for the ingestion-pipeline sidecar.
+# The positive control is the generation's stage2, flattened WITH the flag:
+# scripts/ingestion_pipeline_telemetry_integration.mjs reads its sidecar, and
+# this gate's self-test hands it to --telemetry-only, which must fail.
+refuse_telemetry() {
+  local sidecar="$WORK/ingestion_pipeline.json"
+  rm -f "$sidecar"
+  compile_probe refuse_ingestion_pipeline VIBE_CHECK_ONLY=1 \
+    VIBE_INGESTION_PIPELINE_TELEMETRY_OUT="$sidecar" VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE=compile-only-2498
+  if [ -e "$sidecar" ]; then
+    fail "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was ACCEPTED by $ARTIFACT (invoke $ENTRY): it published '$(head -c 160 "$sidecar")'"
+  fi
+  if [ -s "$PROBE_OUT" ] && grep -qx ok "$PROBE_OUT"; then
+    fail "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was ignored by $ARTIFACT: the check answered ok without the sidecar it was asked for"
+  fi
+  grep -qF "VIBE_CFG=telemetry" "$WORK/refuse_ingestion_pipeline.log" \
+    || fail "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_ingestion_pipeline.log")'"
+}
+if [ "$TELEMETRY_ONLY" = 1 ]; then
+  refuse_telemetry
+  echo "compile-only-lanes: telemetry refusal ok"
+  exit 0
+fi
+
 for sw in VIBE_BACKEND=gc VIBE_DEBUG_BREAK=1 VIBE_DEBUG=1 VIBE_RC=shadow VIBE_COVERAGE=1 VIBE_CODEGEN_BODY_CACHE=on; do
   refuse "$sw"
 done
 echo "compile-only-lanes: refusal ok (6 switches refused by name)"
 refuse_tools
+refuse_telemetry
+echo "compile-only-lanes: telemetry refusal ok (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT refused, no sidecar)"
 
 # 3. acceptance: the default (RC) lane and the bump lane compile; they differ;
 # the default output runs.
