@@ -12,6 +12,10 @@ import ./checker_deferred_method_call.vibe {
   resolve_deferred_checks
 }
 
+import ./checker_lambda_result.vibe {
+  body_has_return, check_unwritten_result, unwritten_result_key
+}
+
 import ./checker_retaining_write.vibe {
   retaining_write_argument_mask, retaining_write_call_mask
 }
@@ -64,6 +68,7 @@ import @vibe/compiler/core {
   is_hkt_app,
   pattern_ctor_base_name,
   resolve_builtin,
+  row_items,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -610,8 +615,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
           }
           match callee_effect {
             Some(row) => if String::contains(row, needle = "#aliasparam[") {
-              for raw in String::split(row, sep = ",") {
-                let label = String::trim(raw)
+              for label in row_items(row) {
                 if String::starts_with(label, prefix = "#aliasparam[") {
                   let close = String::index_of(label, needle = "]")
                   let mut index = 0
@@ -631,8 +635,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
             None => ()
           }
           match callee_effect {
-            Some(row) => for raw in String::split(row, sep = ",") {
-              let label = String::trim(raw)
+            Some(row) => for label in row_items(row) {
               if String::starts_with(label, prefix = "#fieldparam[") {
                 let close = String::index_of(label, needle = "]")
                 let mut index = 0
@@ -2014,35 +2017,37 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       } else {
         ()
       }
-      // Bind the function's annotated return type under a sentinel so an
-      // explicit `return e` inside the body can be checked against it (the body
-      // value is checked below, but `return` short-circuits and was otherwise
-      // unchecked — `() -> Int { return "x" }` was accepted). Nested functions
-      // rebind the sentinel, so `return` always targets the nearest enclosing
-      // function's type.
-      // #964 (Codex P2 on #941): an UNANNOTATED function must SHADOW the
-      // sentinel too (bind CtUnknown), not inherit the enclosing function's.
-      // `return` targets the nearest enclosing function, so a `return Ok(1)`
-      // inside an unannotated lambda nested in a `-> Option[Int]` fn belongs
-      // to the LAMBDA — checking it against the OUTER annotation wrongly
-      // rejected it once the #941 railway-conflict report landed. CtUnknown
-      // unifies with anything, so the EReturn check is inert for it.
+      // The result type is bound under a sentinel so an explicit `return e`
+      // is checked against it (`() -> Int { return "x" }` was accepted). Every
+      // function rebinds it, so `return` targets the nearest one (#964: a
+      // `return Ok(1)` in an unannotated lambda inside a `-> Option[Int]` fn
+      // is the lambda's). Unwritten in a body with a `return`, it is a fresh
+      // variable, not `CtUnknown` (#4062): each `return` meets the others and
+      // the body's value (`check_unwritten_result`), and a caller's expected
+      // type reaches them.
+      let (unwritten_result, result_c) = if (ret_ty is None) && (return_seed is None) && body_has_return(body) {
+        fresh_var(c1)
+      } else {
+        (CtUnknown, c1)
+      }
       let annotated_body_env = match ret_ty {
         Some(rte) => {
           // #2125: see the parameter arm above.
           report_unknown_type_names(te = rte, defs = defs, shadow = tparams, env = fn_env, row_binders = declared_row_binders, where_label = "the return type", errors = errors)
           report_bare_generic_heads_in_env(te = rte, defs = defs, shadow = tparams, env = fn_env, where_label = "the return type", errors = errors)
           report_formal_applications(te = rte, formals = tparams, where_label = "the return type", errors = errors)
-          env_bind(env = fn_env, name = "__return__", ty = resolve_tparams_in(ty = resolve_type_expr_shadowed(te = rte, defs = defs, shadow = formal_shadow(te = rte, env = env, own = tparams)), env = fn_env))
+          env_bind(env = env_bind(env = fn_env, name = unwritten_result_key(), ty = CtUnit), name = "__return__", ty = resolve_tparams_in(ty = resolve_type_expr_shadowed(te = rte, defs = defs, shadow = formal_shadow(te = rte, env = env, own = tparams)), env = fn_env))
         },
         // #4053: a call that expects an `Int32` / `UInt32` result of a lambda
-        // that writes none checks its `return`s as an annotation would.
+        // that writes none checks its `return`s as an annotation would: the
+        // seed stands in for a written result, so the unwritten-result key is
+        // `Unit` and no result variable is made.
         None => match return_seed {
-          Some(want) => env_bind(env = fn_env, name = "__return__", ty = want),
-          None => env_bind(env = fn_env, name = "__return__", ty = CtUnknown)
+          Some(want) => env_bind(env = env_bind(env = fn_env, name = unwritten_result_key(), ty = CtUnit), name = "__return__", ty = want),
+          None => env_bind(env = env_bind(env = fn_env, name = unwritten_result_key(), ty = unwritten_result), name = "__return__", ty = unwritten_result)
         }
       }
-      let (return_provenance, return_c) = fresh_var(c1)
+      let (return_provenance, return_c) = fresh_var(result_c)
       let return_env = env_bind(env = annotated_body_env, name = "__return_provenance__", ty = return_provenance)
       let top_level = match env_lookup(env = env, name = "#interp.top.fn") {
         Some(CtBool) => true,
@@ -2098,7 +2103,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       } else {
         ()
       }
-      let (base_ret, s3) = match ret_ty {
+      let (base_ret, s3, c2) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr_shadowed(te = te, defs = defs, shadow = formal_shadow(te = te, env = env, own = tparams))
           let resolved_ret = resolve_tparams_in(ty = resolved, env = fn_env)
@@ -2130,17 +2135,18 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           let ns_ret = check_assignable(expected = resolved_ret, actual = int32_literal_adapt(e = body, expected = resolved_ret, actual = bt, s = s2, errors = errors, off = tail_expr_off(body)), s = s2, errors = errors, what = "return type mismatch", off = tail_expr_off(body))
           // #3341: a returned function value is used at the declared row.
           let ns = effect_inst_annotation_check(env = body_env, value = body, value_ty = bt, want_ty = resolved_ret, s = ns_ret, subject = "the returned function", slot = "the return type's row", defs = defs, errors = errors)
-          (merge_capture_provenance(expected = subst_apply(s = ns, ty = resolved_ret), actual = subst_apply(s = ns, ty = bt)), ns)
+          (merge_capture_provenance(expected = subst_apply(s = ns, ty = resolved_ret), actual = subst_apply(s = ns, ty = bt)), ns, c2)
         },
         // #4053: the tail of a lambda seeded with an expected result, checked
-        // as an annotated return is (`return_seed`).
+        // as an annotated return is (`return_seed`). Otherwise #4062: the
+        // tail meets the `return`s through the result variable.
         None => match return_seed {
           Some(want) => {
             check_assignable_set_end(string_lit_end(body))
             let ns = check_assignable(expected = want, actual = int32_literal_adapt(e = body, expected = want, actual = bt, s = s2, errors = errors, off = tail_expr_off(body)), s = s2, errors = errors, what = "return type mismatch", off = tail_expr_off(body))
-            (want, ns)
+            (want, ns, c2)
           },
-          None => (subst_apply(s = s2, ty = bt), s2)
+          None => check_unwritten_result(body = body, result = unwritten_result, actual = bt, s = s2, c = c2, errors = errors)
         }
       }
       let mut final_ret = base_ret

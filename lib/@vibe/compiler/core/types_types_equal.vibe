@@ -25,7 +25,7 @@ import ./env_name_index.vibe {
 }
 
 import ./effect_row_items.vibe {
-  RowItem, is_row_provenance_label, row_item_of_label, row_items
+  RowItem, is_row_provenance_label, row_item_of_label, row_items, split_top_level_commas
 }
 
 import @vibe/core {
@@ -205,8 +205,7 @@ export fn subst_eff_binding(s: Subst, name: String) -> Option[String] {
 fn push_resolved_effect_var(s: Subst, label: String, resolved: Array[String], fuel: Int) -> Unit {
   match subst_eff_lookup(s = s, name = label) {
     Some(bound) => if String::length(bound) > 0 {
-      for part in String::split(bound, sep = ",") {
-        let trimmed = String::trim(part)
+      for trimmed in row_items(bound) {
         if String::length(trimmed) == 0 {
           ()
         } else if fuel > 0 && trimmed != label && is_effect_var_name(trimmed) {
@@ -230,11 +229,11 @@ fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
     Some(row) => if String::index_of(row, needle = ",") < 0 && String::trim(row) == row && !is_effect_var_name(row) && !String::starts_with(row, prefix = "#capture[") {
       eff
     } else {
-      let labels = String::split(row, sep = ",")
+      let labels = row_items(row)
       let resolved = array_empty()
       let mut i = 0
       while i < Array::length(labels) {
-        let label = String::trim(Array::get(labels, at = i))
+        let label = Array::get(labels, at = i)
         if is_effect_var_name(label) {
           push_resolved_effect_var(s = s, label = label, resolved = resolved, fuel = 16)
         } else if String::starts_with(label, prefix = "#capture[") {
@@ -288,11 +287,9 @@ export fn resolve_effect_opt_preserving_open(s: Subst, eff: Option[String]) -> O
     None => None,
     Some(row) => {
       let out = array_empty()
-      for raw in String::split(row, sep = ",") {
-        let original = String::trim(raw)
+      for original in row_items(row) {
         match resolve_effect_opt(s = s, eff = Some(original)) {
-          Some(resolved_row) => for resolved_raw in String::split(resolved_row, sep = ",") {
-            let resolved = String::trim(resolved_raw)
+          Some(resolved_row) => for resolved in row_items(resolved_row) {
             // Restore the source spelling ONLY over a fresh `$N`. When one
             // source binder resolves to ANOTHER source binder, the body proved
             // they are the same row, and republishing the original made them
@@ -357,8 +354,7 @@ fn collect_region_skolems_in_type(ty: Type, out: Array[String]) -> Unit {
     CtFn(params, ret, eff) => {
       match eff {
         Some(row) => {
-          for raw in String::split(row, sep = ",") {
-            let label = String::trim(raw)
+          for label in row_items(row) {
             if String::starts_with(label, prefix = "#region_") && !string_array_contains(items = out, wanted = label) {
               Array::push(out, value = label)
             }
@@ -1495,8 +1491,7 @@ fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
     CtFn(params, ret, eff) => {
       match eff {
         Some(row) => {
-          for raw in String::split(row, sep = ",") {
-            let name = String::trim(raw)
+          for name in row_items(row) {
             if is_effect_var_name(name) {
               let mut seen = false
               let mut k = 0
@@ -1568,8 +1563,8 @@ fn rename_eff_name(name: String, pairs: Array[(String, String)]) -> String {
 
 fn rename_effect_row(row: String, pairs: Array[(String, String)]) -> String {
   let labels = array_empty()
-  for raw in String::split(row, sep = ",") {
-    Array::push(labels, value = rename_eff_name(name = String::trim(raw), pairs = pairs))
+  for label in split_top_level_commas(row) {
+    Array::push(labels, value = rename_eff_name(name = label, pairs = pairs))
   }
   String::join(labels, sep = ", ")
 }

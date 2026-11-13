@@ -440,6 +440,11 @@ function rewrite(kind, paths, replacement) {
 function core(ctx, base) {
   const onCache = ctx.onCache;
   const report = {};
+  // #2825: a publication retires the previous one of its module, so the
+  // edits below leave as many witnesses and targets as the cold build wrote.
+  const coldWitnesses = witnessRecords(onCache).length;
+  const coldTargets = targetRecords(onCache).length;
+  if (coldWitnesses === 0) fail("the cold build published no witness, so the retention check would prove nothing");
 
   // Each body edit HITS both consumers, changes what the program does, and
   // compiles to exactly the fresh module.
@@ -457,7 +462,14 @@ function core(ctx, base) {
     expectResult(label, warm, state);
     report[name.replace("-", "_")] = warm.telemetry;
     before = warm;
+    const witnesses = witnessRecords(onCache).length;
+    const targets = targetRecords(onCache).length;
+    if (witnesses !== coldWitnesses || targets !== coldTargets) {
+      fail(`after the ${label} the cache holds ${witnesses} witnesses and ${targets} targets; ` +
+        `the cold build wrote ${coldWitnesses} and ${coldTargets}, so a previous publication was not retired`);
+    }
   }
+  report.retained_witnesses = coldWitnesses;
 
   // A body error behind an unchanged public env: the same diagnostics as a
   // fresh compile, and the next good edit is compiled from the source.

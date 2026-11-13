@@ -78,6 +78,7 @@ import @vibe/compiler/loader {
   load_or_parse_module_header_fs,
   publish_check_fs,
   set_ingestion_pipeline_telemetry_enabled,
+  telemetry_build_refusal,
   write_generated_hash_fs
 }
 
@@ -175,6 +176,147 @@ import ./cli_adapter_fs_lane_request.vibe {
   ss_lane_request
 }
 
+// --- #2498: the incremental typecheck telemetry sidecar --------------------
+//
+// `VIBE_INCREMENTAL_TELEMETRY_OUT` names a file this invocation clears before
+// the work and writes after it, guarded by `refuse_telemetry_destination_conflict`
+// so the observation can never destroy what it observes (#2510, #2738). Only a
+// compiler built with `VIBE_CFG=telemetry` -- the generation's stage2, which
+// every consumer (the KPIs, the oracles, check_telemetry_sidecar_guards.sh)
+// drives -- clears, guards or publishes. A build without it refuses the request
+// by name (`incremental_telemetry_refusal`) after the shared stale-sidecar
+// cleanup and never touches the destination: with no guard, a clear could
+// delete the very input the request named. The twins below keep the call
+// sites unchanged; the guard, its path helpers and the JSON encoder are reached
+// only from the `#cfg(telemetry)` halves, so the compile-only artifact defines
+// none of them (scripts/check_compile_only_lanes.sh reads that from its name
+// section). The walk's counters stay: the invalidation trace still enables
+// them, and a disabled counter is one cell read.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_TELEMETRY_OUT`, or `""`
+/// when it can.
+fn incremental_telemetry_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_TELEMETRY_OUT`, or `""`
+/// when it can. This build has no sidecar writer, so it always refuses.
+fn incremental_telemetry_refusal() -> String {
+  telemetry_build_refusal("VIBE_INCREMENTAL_TELEMETRY_OUT")
+}
+
+#cfg(telemetry)
+/// Refuse a destination that collides with what this invocation reads or
+/// writes, then clear it, so a failure later in the run leaves no earlier
+/// run's sidecar behind.
+fn incremental_telemetry_prepare(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
+  refuse_telemetry_destination_conflict(destination = destination, input = input, output = output, trace = trace)
+  if destination != "" && Fs::exists(destination) {
+    Fs::remove_file(destination)
+  } else {
+    ()
+  }
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: the destination is never touched, and a request
+/// is refused by `incremental_telemetry_refusal`.
+fn incremental_telemetry_prepare(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
+  ()
+}
+
+#cfg(telemetry)
+/// This invocation's incremental typecheck counters as the sidecar's JSON.
+fn incremental_telemetry_snapshot() -> String {
+  incremental_typecheck_telemetry_json()
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: nothing to snapshot.
+fn incremental_telemetry_snapshot() -> String {
+  ""
+}
+
+#cfg(telemetry)
+/// Publish `contents` at `destination`, re-asking the collision question now
+/// that the artifact and its derived sidecars exist.
+fn incremental_telemetry_publish(destination: String, input: String, output: String, trace: String, contents: String,) -> Unit with Fs + Exception {
+  refuse_telemetry_destination_conflict(destination = destination, input = input, output = output, trace = trace)
+  Fs::write_file(destination, contents = contents)
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: refuse, as the request should already have been.
+fn incremental_telemetry_publish(destination: String, input: String, output: String, trace: String, contents: String,) -> Unit with Fs + Exception {
+  throw(incremental_telemetry_refusal())
+}
+
+#cfg(telemetry)
+/// Write `contents` at `destination` with no second collision check: the
+/// check-only lane writes no artifact, so the guard asked before the work
+/// (`incremental_telemetry_prepare`) is the whole question there.
+fn incremental_telemetry_write(destination: String, contents: String) -> Unit with Fs {
+  Fs::write_file(destination, contents = contents)
+}
+
+#cfg(not(telemetry))
+/// No sidecar in this build: the request was refused before the work.
+fn incremental_telemetry_write(destination: String, contents: String) -> Unit with Fs {
+  ()
+}
+
+// --- #2498: the incremental invalidation trace ----------------------------
+//
+// `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT` (+ nonce) asks the check-only lane
+// for the per-module invalidation decisions and their interface / checked-env
+// observations, with the incremental counters embedded as
+// `aggregate_telemetry`. Only a compiler built with `VIBE_CFG=telemetry`
+// publishes it -- the generation's stage2, which
+// scripts/incremental_invalidation_oracle.mjs, edit_cycle_kpi.mjs and
+// check_telemetry_sidecar_guards.sh drive. A build without it refuses the
+// request by name after the shared stale-sidecar cleanup and never touches the
+// destination; the trace encoder and the `_v1_json` counter encoder it embeds
+// are then reached only from the `#cfg(telemetry)` publication below, so the
+// compile-only artifact defines neither.
+//
+// What stays, deliberately: the walk's observation points and counters
+// (`incremental_interface_trace_observe`, `incremental_typecheck_telemetry_add`
+// and the engine cells behind them). Unit tests on the default cfg drive them
+// (checked_module_cache/cache_test.vibe, tests/cache_probe_test.vibe,
+// fixtures/checker_engine_runtime_owner_test.vibe), and gating the engine's
+// half would split the checker package by cfg. In this build nothing turns
+// them on, so each is one disabled-cell read.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT`,
+/// or `""` when it can.
+fn invalidation_trace_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT`,
+/// or `""` when it can. This build has no trace writer, so it always refuses.
+fn invalidation_trace_refusal() -> String {
+  telemetry_build_refusal("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+}
+
+#cfg(telemetry)
+/// Write the invalidation trace for this successful check to `destination`.
+fn invalidation_trace_publish(destination: String, entry_path: String, run_nonce: String, checked_error_row: Bool,) -> Unit with Env + Exception + Fs {
+  Fs::write_file(destination, contents = incremental_invalidation_trace_json(entry_path = entry_path, run_nonce = run_nonce, checked_error_row = checked_error_row))
+}
+
+#cfg(not(telemetry))
+/// No trace writer in this build: refuse, as the request should already have
+/// been.
+fn invalidation_trace_publish(destination: String, entry_path: String, run_nonce: String, checked_error_row: Bool,) -> Unit with Env + Exception + Fs {
+  throw(invalidation_trace_refusal())
+}
+
+#cfg(telemetry)
 /// What does the telemetry destination collide with? "" when nothing.
 ///
 /// One list, asked at both guards, because every entry names something this
@@ -228,6 +370,7 @@ fn telemetry_destination_conflict(destination: String, input: String, output: St
   }
 }
 
+#cfg(telemetry)
 /// Throw if the destination collides, with a message that names the edit.
 fn refuse_telemetry_destination_conflict(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
   let conflict = telemetry_destination_conflict(destination = destination, input = input, output = output, trace = trace)
@@ -260,13 +403,70 @@ fn has_control_character(_ value: String) -> Bool {
   found
 }
 
+// --- #2498: heap marks (VIBE_PROFILE_MEMORY_MARKS=1, #1553) ---------------
+//
+// A mark is an `Env::get` of a name the node runner intercepts
+// (scripts/wasm_vibe_host_runtime.js maybeEmitEnvMemoryMark): the bare
+// `VIBE_PROFILE_MEMORY_MARK`, or `VIBE_PROFILE_MEMORY_MARK:<phase>` for a
+// named one. Only a compiler built with `VIBE_CFG=telemetry` emits them -- the
+// generation's stage2, which scripts/measure_fs_heap.sh,
+// scripts/compile_phase_memory.sh and the bootstrap heap oracle drive. The
+// compile-only artifact keeps the no-op twins below, has no
+// `profile_memory_mark_emit` (scripts/check_compile_only_lanes.sh reads that
+// from its name section), and refuses the request by name.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_PROFILE_MEMORY_MARKS=1`, or `""` when
+/// it can. The CLI asks after the shared sidecar cleanup and before any work.
+fn profile_memory_marks_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_PROFILE_MEMORY_MARKS=1`, or `""` when
+/// it can. This build emits no heap marks, so it always refuses.
+fn profile_memory_marks_refusal() -> String {
+  telemetry_build_refusal("VIBE_PROFILE_MEMORY_MARKS=1")
+}
+
+#cfg(telemetry)
+/// Emit one heap mark: read the env name the runner intercepts. The variable
+/// is never set, so the read is a pure signal.
+fn profile_memory_mark_emit(_ name: String) -> Unit with Env {
+  let _ = Env::get(name)
+  ()
+}
+
+#cfg(telemetry)
+/// An unnamed heap mark at a single-source compile boundary, when enabled.
 fn profile_memory_mark(_ enabled: Bool) -> Unit with Env {
   if enabled {
-    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK")
-    ()
+    profile_memory_mark_emit("VIBE_PROFILE_MEMORY_MARK")
   } else {
     ()
   }
+}
+
+#cfg(not(telemetry))
+/// No heap marks in this build: a request is refused before any work.
+fn profile_memory_mark(_ enabled: Bool) -> Unit with Env {
+  ()
+}
+
+#cfg(telemetry)
+/// A named heap mark (`VIBE_PROFILE_MEMORY_MARK:<phase>`), when enabled.
+fn profile_memory_phase_mark(enabled: Bool, phase: String) -> Unit with Env {
+  if enabled {
+    profile_memory_mark_emit(String::concat("VIBE_PROFILE_MEMORY_MARK:", phase))
+  } else {
+    ()
+  }
+}
+
+#cfg(not(telemetry))
+/// No heap marks in this build: a request is refused before any work.
+fn profile_memory_phase_mark(enabled: Bool, phase: String) -> Unit with Env {
+  ()
 }
 
 /// #cfg activation on the single-file lane, kept for the byte-offset property:
@@ -780,12 +980,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // neither the positional argument nor the variable is set), so probing the
   // paths this early is safe on the lanes that have no input or output
   // argument at all.
-  refuse_telemetry_destination_conflict(destination = fs_telemetry_out, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
-  if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
-    Fs::remove_file(fs_telemetry_out)
-  } else {
-    ()
-  }
+  incremental_telemetry_prepare(destination = fs_telemetry_out, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
   // Set from the env on every invocation, not merely enabled: a long-lived
   // instance that served a telemetry request must not leave counting on for
   // the next caller. The check-only branch may enable it again for its own
@@ -875,6 +1070,31 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // oracle would report as a run that planned nothing -- and only HERE, after
   // the shared stale-sidecar cleanup above, so a sibling observation's file
   // from an earlier run cannot survive the refusal and read as this one's.
+  // #2498: likewise for the incremental typecheck sidecar. A build without the
+  // telemetry flag never touched its destination above (no guard, no clear).
+  let incremental_refusal = if fs_telemetry_out != "" {
+    incremental_telemetry_refusal()
+  } else {
+    ""
+  }
+  if incremental_refusal != "" {
+    throw(incremental_refusal)
+  } else {
+    ()
+  }
+  // #2498: and for the incremental invalidation trace, which only the
+  // check-only lane publishes but every lane reads (it forces typing-env reuse
+  // off). A build without the telemetry flag refuses it on every lane.
+  let invalidation_refusal = if Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT") != "" {
+    invalidation_trace_refusal()
+  } else {
+    ""
+  }
+  if invalidation_refusal != "" {
+    throw(invalidation_refusal)
+  } else {
+    ()
+  }
   let scheduler_trace = Env::get("VIBE_SCHEDULER_TRACE")
   if scheduler_trace == "" {
     ()
@@ -905,6 +1125,20 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   let output_path = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(index = 2, env_name = "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
+  // #2498: a compiler flattened without `VIBE_CFG=telemetry` emits no heap
+  // marks. Refuse the request here -- after the shared stale-sidecar cleanup
+  // above, before any work -- rather than compile and print no marks, which a
+  // heap measurement would read as a run that allocated nothing.
+  let marks_refusal = if mark_memory {
+    profile_memory_marks_refusal()
+  } else {
+    ""
+  }
+  if marks_refusal != "" {
+    throw(marks_refusal)
+  } else {
+    ()
+  }
   // #730 (D-2) / #2829: `vibe hash` — print a contract package's
   // content-addressing hashes. New writes are `pkg:b3:<64hex>` /
   // `ct:b3:<64hex>`. VIBE_HASH_ALGO=sha1 is the legacy-read verifier for
@@ -1186,12 +1420,12 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       unstable_closure_reset()
       let checked_source_groups = check_linked_file_source_groups(input_path, checked_error_row = checked_error_row)
       if telemetry_out != "" {
-        Fs::write_file(telemetry_out, contents = incremental_typecheck_telemetry_json())
+        incremental_telemetry_write(destination = telemetry_out, contents = incremental_telemetry_snapshot())
       } else {
         ()
       }
       if invalidation_trace_out != "" {
-        Fs::write_file(invalidation_trace_out, contents = incremental_invalidation_trace_json(entry_path = input_path, run_nonce = invalidation_trace_nonce, checked_error_row = checked_error_row))
+        invalidation_trace_publish(destination = invalidation_trace_out, entry_path = input_path, run_nonce = invalidation_trace_nonce, checked_error_row = checked_error_row,)
       } else {
         ()
       }
@@ -1384,7 +1618,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // after it; writing here would publish a fresh sidecar for a compile the
       // closure gate or the artifact write below still rejects (Codex P2).
       let fs_telemetry_json = if fs_telemetry_out != "" {
-        incremental_typecheck_telemetry_json()
+        incremental_telemetry_snapshot()
       } else {
         ""
       }
@@ -1433,12 +1667,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // #1553: this observes the executable-strip + primary-output boundary.
       // It is intentionally not called "final": optional sidecars below are
       // still observable work and fs_compile_complete marks their completion.
-      if mark_memory {
-        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:write_output")
-        ()
-      } else {
-        ()
-      }
+      profile_memory_phase_mark(enabled = mark_memory, phase = "write_output")
       // Best-effort `.funcmap` sidecar (entry-file top-level funcs -> line). A
       // failure to build/write it must NOT fail the compile (the wasm is already
       // written), so swallow any Exception::Throw here. The discarded result is bound
@@ -1476,12 +1705,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // Successful FS compilation is now complete, including optional
       // sidecar publication. This is a coarse completion boundary only; it
       // deliberately does not infer a normalize or link sub-phase.
-      if mark_memory {
-        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:fs_compile_complete")
-        ()
-      } else {
-        ()
-      }
+      profile_memory_phase_mark(enabled = mark_memory, phase = "fs_compile_complete")
       // #2510: published LAST, past every sidecar including the
       // failure-propagating artifact-input trace, and past the completion mark
       // so an opt-in observation never lands inside the phase numbers it
@@ -1500,8 +1724,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       if fs_telemetry_out == "" {
         ()
       } else {
-        refuse_telemetry_destination_conflict(destination = fs_telemetry_out, input = input_path, output = output_path, trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
-        Fs::write_file(fs_telemetry_out, contents = fs_telemetry_json)
+        incremental_telemetry_publish(destination = fs_telemetry_out, input = input_path, output = output_path, trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"), contents = fs_telemetry_json,)
       }
       0
     } with {
