@@ -32,6 +32,10 @@
 #      encoder are absent (check 1 reads it), and a request for that sidecar
 #      (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT) publishes nothing and fails
 #      naming VIBE_CFG=telemetry -- never an empty or all-zero observation.
+#      Heap marks are the same shape: the emitter is absent, and
+#      VIBE_PROFILE_MEMORY_MARKS=1 on a compile fails naming VIBE_CFG=telemetry
+#      rather than printing no marks, and only after the stale-sidecar cleanup
+#      (a planted VIBE_INCREMENTAL_TELEMETRY_OUT file must be gone).
 #   3. ACCEPTANCE. The two production lanes still compile, and the default
 #      lane's output runs. Cfg, unstable authorization and generated-source
 #      trust remain per-compilation inputs to this same artifact.
@@ -48,7 +52,10 @@
 #       runs the tool half of check 2 alone (the self-test's probe
 #       for it: the full CLI fails the lane half first)
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --telemetry-only
-#       runs check 2b alone (the self-test hands it a telemetry-enabled stage2)
+#       runs check 2b's ingestion-pipeline half alone (the self-test hands it a
+#       telemetry-enabled stage2)
+#   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --memory-marks-only
+#       runs check 2b's heap-mark half alone (likewise)
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -58,6 +65,7 @@ ENTRY="cli_main_compile_only"
 SCAN_ONLY=""
 TOOLS_ONLY=0
 TELEMETRY_ONLY=0
+MEMORY_MARKS_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifact) ARTIFACT="$2"; shift 2 ;;
@@ -65,6 +73,7 @@ while [ "$#" -gt 0 ]; do
     --scan-only) SCAN_ONLY="$2"; shift 2 ;;
     --tools-only) TOOLS_ONLY=1; shift ;;
     --telemetry-only) TELEMETRY_ONLY=1; shift ;;
+    --memory-marks-only) MEMORY_MARKS_ONLY=1; shift ;;
     *) echo "check-compile-only-lanes: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -106,6 +115,11 @@ PRESENT_PATTERNS='comp_emit_component_wasm_async_stdin_provider|comp_emit_compon
 # `#cfg(not(telemetry))` twins (`..._refusal`, `..._publish`, the no-op
 # `..._add`) keep other names and may remain.
 ABSENT_PATTERNS="$ABSENT_PATTERNS|ingestion_pipeline_telemetry_json|ingestion_pipeline_json_string|ingestion_pipeline_counter|ingestion_pipeline_enabled"
+# #2498: the heap-mark emitter (cli_adapter_cli_main_with_lanes.vibe). Only
+# the `#cfg(telemetry)` marks reach it; their no-op twins
+# (`profile_memory_mark`, `profile_memory_phase_mark`) and the
+# `profile_memory_marks_refusal` stub keep other names and may remain.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|profile_memory_mark_emit"
 
 scan_names() { # <wasm>
   local wasm="$1" listing
@@ -273,9 +287,37 @@ refuse_telemetry() {
   grep -qF "VIBE_CFG=telemetry" "$WORK/refuse_ingestion_pipeline.log" \
     || fail "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_ingestion_pipeline.log")'"
 }
+# Heap marks ride a compile. The generation's stage2 compiles the probe and
+# prints its marks; a build without them must refuse, and only after the
+# CLI's shared stale-sidecar cleanup: a sibling observation requested on the
+# same run (VIBE_INCREMENTAL_TELEMETRY_OUT, which a compile accepts) whose file
+# is left from an earlier run would otherwise survive the refused invocation
+# and read as its result.
+refuse_memory_marks() {
+  local stale="$WORK/stale_incremental_telemetry.json"
+  printf 'stale sidecar from an earlier run\n' >"$stale"
+  compile_probe refuse_memory_marks VIBE_PROFILE_MEMORY_MARKS=1 VIBE_INCREMENTAL_TELEMETRY_OUT="$stale"
+  if [ -s "$PROBE_OUT" ]; then
+    fail "VIBE_PROFILE_MEMORY_MARKS=1 was ACCEPTED by $ARTIFACT (invoke $ENTRY): it compiled the probe"
+  fi
+  if grep -qF "stale sidecar from an earlier run" "$stale" 2>/dev/null; then
+    fail "VIBE_PROFILE_MEMORY_MARKS=1 was refused before the stale-sidecar cleanup by $ARTIFACT (invoke $ENTRY): the earlier run's VIBE_INCREMENTAL_TELEMETRY_OUT sidecar survived the refused invocation"
+  fi
+  # A here-string, not a pipe: under pipefail `grep -q` closing the pipe early
+  # fails the writer, and a refusal that names the flag would read as one
+  # that does not.
+  grep -qF "VIBE_CFG=telemetry" <<<"$(cat "$WORK/refuse_memory_marks.log")
+$PROBE_DIAG" \
+    || fail "VIBE_PROFILE_MEMORY_MARKS=1 was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_memory_marks.log") ${PROBE_DIAG}'"
+}
 if [ "$TELEMETRY_ONLY" = 1 ]; then
   refuse_telemetry
   echo "compile-only-lanes: telemetry refusal ok"
+  exit 0
+fi
+if [ "$MEMORY_MARKS_ONLY" = 1 ]; then
+  refuse_memory_marks
+  echo "compile-only-lanes: heap-mark refusal ok"
   exit 0
 fi
 
@@ -286,6 +328,8 @@ echo "compile-only-lanes: refusal ok (6 switches refused by name)"
 refuse_tools
 refuse_telemetry
 echo "compile-only-lanes: telemetry refusal ok (VIBE_INGESTION_PIPELINE_TELEMETRY_OUT refused, no sidecar)"
+refuse_memory_marks
+echo "compile-only-lanes: telemetry refusal ok (VIBE_PROFILE_MEMORY_MARKS=1 refused after the sidecar cleanup)"
 
 # 3. acceptance: the default (RC) lane and the bump lane compile; they differ;
 # the default output runs.

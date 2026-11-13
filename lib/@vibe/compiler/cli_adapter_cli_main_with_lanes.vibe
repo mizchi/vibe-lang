@@ -77,6 +77,7 @@ import @vibe/compiler/loader {
   load_or_parse_module_header_fs,
   publish_check_fs,
   set_ingestion_pipeline_telemetry_enabled,
+  telemetry_build_refusal,
   write_generated_hash_fs
 }
 
@@ -259,13 +260,70 @@ fn has_control_character(_ value: String) -> Bool {
   found
 }
 
+// --- #2498: heap marks (VIBE_PROFILE_MEMORY_MARKS=1, #1553) ---------------
+//
+// A mark is an `Env::get` of a name the node runner intercepts
+// (scripts/wasm_vibe_host_runtime.js maybeEmitEnvMemoryMark): the bare
+// `VIBE_PROFILE_MEMORY_MARK`, or `VIBE_PROFILE_MEMORY_MARK:<phase>` for a
+// named one. Only a compiler built with `VIBE_CFG=telemetry` emits them -- the
+// generation's stage2, which scripts/measure_fs_heap.sh,
+// scripts/compile_phase_memory.sh and the bootstrap heap oracle drive. The
+// compile-only artifact keeps the no-op twins below, has no
+// `profile_memory_mark_emit` (scripts/check_compile_only_lanes.sh reads that
+// from its name section), and refuses the request by name.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_PROFILE_MEMORY_MARKS=1`, or `""` when
+/// it can. The CLI asks after the shared sidecar cleanup and before any work.
+fn profile_memory_marks_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_PROFILE_MEMORY_MARKS=1`, or `""` when
+/// it can. This build emits no heap marks, so it always refuses.
+fn profile_memory_marks_refusal() -> String {
+  telemetry_build_refusal("VIBE_PROFILE_MEMORY_MARKS=1")
+}
+
+#cfg(telemetry)
+/// Emit one heap mark: read the env name the runner intercepts. The variable
+/// is never set, so the read is a pure signal.
+fn profile_memory_mark_emit(_ name: String) -> Unit with Env {
+  let _ = Env::get(name)
+  ()
+}
+
+#cfg(telemetry)
+/// An unnamed heap mark at a single-source compile boundary, when enabled.
 fn profile_memory_mark(_ enabled: Bool) -> Unit with Env {
   if enabled {
-    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK")
-    ()
+    profile_memory_mark_emit("VIBE_PROFILE_MEMORY_MARK")
   } else {
     ()
   }
+}
+
+#cfg(not(telemetry))
+/// No heap marks in this build: a request is refused before any work.
+fn profile_memory_mark(_ enabled: Bool) -> Unit with Env {
+  ()
+}
+
+#cfg(telemetry)
+/// A named heap mark (`VIBE_PROFILE_MEMORY_MARK:<phase>`), when enabled.
+fn profile_memory_phase_mark(enabled: Bool, phase: String) -> Unit with Env {
+  if enabled {
+    profile_memory_mark_emit(String::concat("VIBE_PROFILE_MEMORY_MARK:", phase))
+  } else {
+    ()
+  }
+}
+
+#cfg(not(telemetry))
+/// No heap marks in this build: a request is refused before any work.
+fn profile_memory_phase_mark(enabled: Bool, phase: String) -> Unit with Env {
+  ()
 }
 
 /// #cfg activation on the single-file lane, kept for the byte-offset property:
@@ -897,6 +955,20 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   let output_path = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(index = 2, env_name = "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
+  // #2498: a compiler flattened without `VIBE_CFG=telemetry` emits no heap
+  // marks. Refuse the request here -- after the shared stale-sidecar cleanup
+  // above, before any work -- rather than compile and print no marks, which a
+  // heap measurement would read as a run that allocated nothing.
+  let marks_refusal = if mark_memory {
+    profile_memory_marks_refusal()
+  } else {
+    ""
+  }
+  if marks_refusal != "" {
+    throw(marks_refusal)
+  } else {
+    ()
+  }
   // #730 (D-2) / #2829: `vibe hash` — print a contract package's
   // content-addressing hashes. New writes are `pkg:b3:<64hex>` /
   // `ct:b3:<64hex>`. VIBE_HASH_ALGO=sha1 is the legacy-read verifier for
@@ -1425,12 +1497,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // #1553: this observes the executable-strip + primary-output boundary.
       // It is intentionally not called "final": optional sidecars below are
       // still observable work and fs_compile_complete marks their completion.
-      if mark_memory {
-        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:write_output")
-        ()
-      } else {
-        ()
-      }
+      profile_memory_phase_mark(enabled = mark_memory, phase = "write_output")
       // Best-effort `.funcmap` sidecar (entry-file top-level funcs -> line). A
       // failure to build/write it must NOT fail the compile (the wasm is already
       // written), so swallow any Exception::Throw here. The discarded result is bound
@@ -1468,12 +1535,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // Successful FS compilation is now complete, including optional
       // sidecar publication. This is a coarse completion boundary only; it
       // deliberately does not infer a normalize or link sub-phase.
-      if mark_memory {
-        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:fs_compile_complete")
-        ()
-      } else {
-        ()
-      }
+      profile_memory_phase_mark(enabled = mark_memory, phase = "fs_compile_complete")
       // #2510: published LAST, past every sidecar including the
       // failure-propagating artifact-input trace, and past the completion mark
       // so an opt-in observation never lands inside the phase numbers it
