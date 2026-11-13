@@ -11,6 +11,7 @@ import @vibe/compiler/core {
   bytebuf_push_opcode_u32_u32,
   bytebuf_push_section,
   bytebuf_push_vec_header,
+  leb128_encode_s32,
   leb128_encode_s_padded,
   leb128_encode_s_slot,
   leb128_encode_u32,
@@ -217,14 +218,25 @@ export fn emit_if_type_index(buf: Bytes, type_idx: Int) -> Unit with Exception {
   }
 }
 
+/// The value type `(ref null <type_idx>)`: `0x63`, then the type index as a
+/// HEAP TYPE. A heap type is a signed LEB128 (s33) -- negative values are the
+/// abstract heap types (`0x6E` any, `0x70` func, ...) -- so the index must be
+/// written signed. Unsigned LEB128 agrees with it only while the last 7-bit
+/// group has bit 6 clear: written unsigned, index 64 is `0x40` (read as -64,
+/// no such heap type) and 110 is `0x6E` (read as `any`), #4084. Every
+/// `(ref null $t)` the compiler writes goes through here.
+export fn emit_ref_null_valtype(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf = buf, byte = 99)
+  leb128_encode_s32(buf = buf, value = type_idx)
+}
+
 /// `(func (result (ref null <ref_type_idx>)))` -- the func type an `if` (or any
 /// other structured instruction) points at to declare a typed-reference result.
 export fn emit_func_type_ref_result(buf: Bytes, ref_type_idx: Int) -> Unit {
   bytebuf_push(buf = buf, byte = 96)
   leb128_encode_u32(buf = buf, value = 0)
   leb128_encode_u32(buf = buf, value = 1)
-  bytebuf_push(buf = buf, byte = 99)
-  leb128_encode_u32(buf = buf, value = ref_type_idx)
+  emit_ref_null_valtype(buf = buf, type_idx = ref_type_idx)
 }
 
 export fn emit_return(_ buf: Bytes) -> Unit {
@@ -676,8 +688,7 @@ export fn emit_struct_type_raw_refs(buf: Bytes, field_types: Array[Int], field_m
   while i < Array::length(field_types) {
     let ft = Array::get(field_types, at = i)
     if ft < 0 {
-      bytebuf_push(buf = buf, byte = 99)
-      leb128_encode_u32(buf = buf, value = ref_type_idx)
+      emit_ref_null_valtype(buf = buf, type_idx = ref_type_idx)
       bytebuf_push(buf = buf, byte = Array::get(field_muts, at = i))
     } else {
       bytebuf_push2(buf = buf, b1 = ft, b2 = Array::get(field_muts, at = i))
