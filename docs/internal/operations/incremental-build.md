@@ -1076,8 +1076,48 @@ So the blocktype padding is consistency, not a measured win: it keeps the
 roundtrip identity holding at a slot width, and it would start to matter only
 if that index stopped being a constant.
 
-Not done: a default, and an in-place output patcher. The patcher is what the
-fixed widths make possible, and its value is what to weigh against the size.
+**In-place relocation of a cached body.** At a slot width a moved index
+normally fits the bytes the old one held. `lc_move_body` tries that first
+(`lc_move_body_inplace`): it copies the body once and overwrites each moved
+immediate where it stands. It builds no edit list and rebuilds no spans, and
+because nothing changes length, no blind record or linemap row has to be
+shifted. A value that outgrew its slot falls back to the rebuild, which is
+unchanged and is the only path at width 0.
+
+Measured on `codegen_lexer_test.vibe` at W=3, body cache on, memo off, with a
+reachable function added ahead of the 127/128 band in `base64.vibe`. Both
+stage2s were built with names and run on the same source tree.
+
+| | main | in-place |
+|---|---:|---:|
+| `lc_src_edit_reindex` (all relocation of cached bodies) | 183 ms | **133 ms** |
+| `lc_move_body` | 117 ms | 102 ms |
+| `scan_body_relocs` inside it | 79 ms | 72 ms |
+| `lc_edit_shift` (record offsets past an edit) | 22 ms | 1 ms |
+| warm build, wall, median of 6 (ABBA × 3) | 7.68 s | 7.91 s |
+
+- **Correctness.** All 12 timed builds, cold and warm, gave one output each:
+  the in-place path is byte-identical to the rebuild. The 26 twin-width
+  body-cache rows pass at both widths. With the overwrite turned into a no-op,
+  `body_cache_insert_function` and `body_cache_edit_classes` fail; the path
+  runs only at a slot width, so those failures come from the width-3 rows.
+- **Value.** The saving is 50 ms, about 0.6% of an 8.3 s profiled warm build.
+  It does not show on wall time: the two medians differ by less than the
+  spread of either side.
+- **The ceiling is small.** All relocation of cached bodies is 2.2% of the
+  warm build, and the scan is more than half of what is left. Removing the scan
+  would need each body's site offsets stored with the cache, and could save at
+  most about 72 ms more. Late-DCE renumbering (`lc_pf_*`) is 3.9% (same
+  profile), and is the
+  other relocation pass a fixed width could make in place.
+- **Where a warm build goes instead** (main's profile of the same edit,
+  7.4 s). The whole-program effect-lowering
+  prelude is 27%, checked source groups 12%, trait-dictionary desugaring 11%
+  and finishing the linked module 10.5%. A patcher of the linked output reaches
+  none of these.
+
+Not done: a default, and a patcher of the linked output itself. On the
+numbers above, that patcher can save at most a few percent of a warm build.
 
 ##### Does a body actually relocate? (#2669, slice 1b)
 
