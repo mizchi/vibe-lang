@@ -25,6 +25,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_const_ctor_tag,
   emit_i32_const_slot,
   emit_i64_const,
+  emit_if_type_index,
   emit_i64_const_slot,
   emit_i64_const_str
 }
@@ -272,4 +273,27 @@ test "a fat string address never exceeds nine bytes, the most a 63-bit Int needs
   let fat = Array::length(str_bytes(value = (65536<<32)|7, fat = true))
   set_reloc_slot_width(0)
   assert_eq(fat, 10)
+}
+
+fn if_type_bytes(_ idx: Int) -> Array[Int] with Exception {
+  let b = Bytes::new()
+  emit_if_type_index(buf = b, type_idx = idx)
+  ints_of(b)
+}
+
+test "width 0 leaves a type-index blocktype one byte" {
+  set_reloc_slot_width(0)
+  assert_eq(if_type_bytes(13), [0x04, 0x0D])
+  assert_eq(if_type_bytes(63), [0x04, 0x3F])
+}
+
+test "width 3 pads a type-index blocktype as a signed LEB with a clear sign bit" {
+  // 63 is the last index a single s33 byte holds; padded, bit 6 of the LAST
+  // byte is the sign, so `0xBF 0x80 0x00` reads back as +63, not -1.
+  set_reloc_slot_width(3)
+  let lo = if_type_bytes(13)
+  let hi = if_type_bytes(63)
+  set_reloc_slot_width(0)
+  assert_eq(lo, [0x04, 0x8D, 0x80, 0x00])
+  assert_eq(hi, [0x04, 0xBF, 0x80, 0x00])
 }

@@ -51,6 +51,9 @@ if [ "${#targets[@]}" -eq 0 ]; then
   # catch, so exception TAG sites are scanned on the gc lane too: at a slot
   # width (#3941) the gc lane's hand-encoded tags were left minimal while the
   # rebuild padded them, and the earlier probe had no tag site to show it.
+  # `pick` joins two native-array references in an `if`, which the gc lane
+  # spells with a TYPE-INDEX blocktype (#1541): the one blocktype site either
+  # lane emits, padded at a slot width like the other type indices.
   cat > "$probe_dir/gcprobe.vibe" <<'PROBE'
 struct Pt { x: Int; y: Int }
 
@@ -71,6 +74,14 @@ fn mid(p: Pt) -> Int {
   p.x + p.y
 }
 
+fn pick(first: Array[Int], second: Array[Int], take_first: Bool) -> Array[Int] {
+  if take_first {
+    first
+  } else {
+    second
+  }
+}
+
 fn main() -> Int {
   let xs = build()
   let p = Pt::{ x: Array::get(xs, at = 0), y: Array::get(xs, at = 3) }
@@ -78,7 +89,11 @@ fn main() -> Int {
   let caught = handle {
     risky(n = Array::length(xs) + 1)
   } with { Exception::Throw(_) => 0 }
-  Array::get(ys, at = 0) + Array::get(ys, at = 1) + Array::length(xs) + caught
+  let a = [1, 1]
+  let b = [2, 2]
+  let chosen = pick(first = a, second = b, take_first = caught > 0)
+  Array::set(chosen, at = 0, value = 7)
+  Array::get(ys, at = 0) + Array::get(ys, at = 1) + Array::length(xs) + caught + Array::get(b, at = 0)
 }
 PROBE
   for backend in linear gc; do
