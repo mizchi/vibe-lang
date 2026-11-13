@@ -546,3 +546,22 @@ test "a labeled literal keeps its written diagnostic column" {
   let src = "fn f(x: Int, y: String) -> Int { x }\nfn main() -> Int {\n  f(x = 10, y = 3)\n}\n"
   assert(anchored_at(src = src, line = 3, col = 17))
 }
+
+/// #4053 review: a literal passed to a function VALUE is range-checked against
+/// its `Int32` / `UInt32` parameter, and that check replaced the located
+/// argument mismatch the call used to report. The range error keeps the
+/// call's anchor, since the literal carries no offset of its own.
+test "a literal range error through a function value keeps the call's anchor (#4053)" {
+  // A callee that is an expression.
+  //    123456789
+  //  `  make()(2147483648)` -- the call's `(` is column 9.
+  let expr = "fn make() -> (Int32) -> Int {\n  (k) -> Int32::to_int(k)\n}\nfn f() -> Int {\n  make()(2147483648)\n}\n"
+  assert(String::contains(first_diag(expr), needle = "integer literal 2147483648 does not fit `Int32`"))
+  assert(anchored_at(src = expr, line = 5, col = 9))
+  // A function stored in a field.
+  //    123456
+  //  `  v.f(-1)` -- the call's `(` is column 6.
+  let field = "struct Holder {\n  f: (UInt32) -> Int\n}\nfn f(v: Holder) -> Int {\n  v.f(-1)\n}\n"
+  assert(String::contains(first_diag(field), needle = "integer literal -1 does not fit `UInt32`"))
+  assert(anchored_at(src = field, line = 5, col = 6))
+}
