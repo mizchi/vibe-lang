@@ -431,10 +431,12 @@ fn callback_input_predates(arg: Expr, env: TypeEnv, follow_bindings: Bool) -> Ar
   }
 }
 
-/// Preserve unknown storage through a local binding and subsequent aliases.
+/// Preserve unknown storage through a local binding and subsequent aliases,
+/// and mark a binding whose initializer's storage is known, so that only a
+/// marked binding is known later.
 export fn callback_bind_input_storage(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr) -> TypeEnv {
   if callback_input_location_known(val, env = def_env, follow_bindings = true) {
-    env
+    env_bind(env = env, name = callback_input_storage_known_key(name), ty = CtUnit)
   } else {
     env_bind(env = env, name = callback_input_storage_key(name), ty = CtUnit)
   }
@@ -444,10 +446,23 @@ fn callback_input_storage_key(_ name: String) -> String {
   String::concat("#callback_input_storage_unknown:", name)
 }
 
+fn callback_input_storage_known_key(_ name: String) -> String {
+  String::concat("#callback_input_storage_known:", name)
+}
+
+/// Whether the name a fold's accumulator is seeded from has known storage.
+/// That holds for a `let` marked known when it was bound, and for a name
+/// declared before every active region, which predates each of them anyway.
+/// Any other name is unknown: a `for` or `match` binder, a closure's
+/// parameter, or a `let mut` may hold a getter's result (Codex on #4078).
+fn callback_input_name_known(name: String, env: TypeEnv) -> Bool {
+  env_mut_escape(env = env, name = name) is None && env_marker_before(env = env, marker = callback_input_storage_key(name), name = name) is None && (env_marker_before(env = env, marker = callback_input_storage_known_key(name), name = name) is Some(_) || Array::length(retention_arg_predates(arg = EIdent(name, 0), env = env)) >= Array::length(retention_active_regions(env)))
+}
+
 fn callback_input_location_known(_ e: Expr, env: TypeEnv, follow_bindings: Bool) -> Bool {
   match e {
     EIdent(name, _) => if follow_bindings {
-      env_mut_escape(env = env, name = name) is None && env_marker_before(env = env, marker = callback_input_storage_key(name), name = name) is None
+      callback_input_name_known(name = name, env = env)
     } else {
       true
     },

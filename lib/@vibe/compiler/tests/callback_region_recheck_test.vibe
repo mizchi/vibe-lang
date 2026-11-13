@@ -190,3 +190,15 @@ test "a fold callback that returns a location the text does not establish predat
   assert(String::contains(check_source_report(String::concat(holder, String::concat("fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let h = Nums::{ items: 0 }\n", String::concat(fold_head, "      let h = Holder::{ items: sink }\n      Holder::{ items: h.items }\n    })\n    h.items\n  }\n}\n")))), needle = "region escapes its scope"))
   assert(String::contains(check_source_report(String::concat(holder, String::concat("fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let f = () -> 0\n", String::concat(fold_head, "      let f = () -> sink\n      Holder::{ items: f() }\n    })\n    f()\n  }\n}\n")))), needle = "region escapes its scope"))
 }
+
+// Codex on #4078: a binder's storage is not known. A `for` or `match` binder
+// and a closure's parameter may each hold a getter's result, so a fold seeded
+// from one predates every active region.
+test "a fold accumulator seeded from a binder predates every region" {
+  let getter = "let kept: Array[MutList[Int]] = []\nfn get_sink() -> Array[MutList[Int]] {\n  kept\n}\n"
+  let fold = "Array::fold(cells, init = s, f = (acc, c) -> {\n      Array::push(acc, value = c)\n      acc\n    })"
+  let head = "fn build() -> Int {\n  region r {\n    let a = MutList::empty(r)\n    let cells = [a]\n"
+  assert(String::contains(check_source_report(String::concat(getter, String::concat(head, String::concat("    for s in [get_sink()] {\n      let _ = ", String::concat(fold, "\n    }\n    1\n  }\n}\n"))))), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report(String::concat(getter, String::concat(head, String::concat("    match Some(get_sink()) {\n      Some(s) => {\n        let _ = ", String::concat(fold, "\n        1\n      },\n      None => 0\n    }\n  }\n}\n"))))), needle = "region escapes its scope"))
+  assert(String::contains(check_source_report(String::concat(getter, String::concat(head, String::concat("    let fill = (s: Array[MutList[Int]]) -> {\n      let _ = ", String::concat(fold, "\n      1\n    }\n    fill(get_sink())\n  }\n}\n"))))), needle = "region escapes its scope"))
+}
