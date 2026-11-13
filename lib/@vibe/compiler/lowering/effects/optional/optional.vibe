@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, expr_any_node, lookup_registry_builtin
+  EffectOwner, Expr, Pat, Stmt, expr_any_node, lookup_registry_builtin, program_declares_extern_effect
 }
 
 import @vibe/core {
@@ -37,6 +37,10 @@ fn opq_collect_source_value_names(stmts: Array[Stmt], names: Array[String]) -> U
     match Array::get(stmts, at = i) {
       SLet(_, _, name, _, _) => Array::push(names, value = name),
       SLetMut(name, _, _) => Array::push(names, value = name),
+      // ADR-0124 (#4082): an `extern effect` not bound yet (the whole-program
+      // route lowers `perform?` before `bind_extern_effects`). The space keeps
+      // the entry from matching any source name.
+      SEffectDef(_, name, _, _, HostProvided) => Array::push(names, value = opq_extern_effect_entry(name)),
       SModule(_, _, body) => opq_collect_source_value_names(stmts = body, names = names),
       _ => ()
     }
@@ -54,11 +58,33 @@ fn opq_source_value_exists(names: Array[String], name: String) -> Bool {
   found
 }
 
+fn opq_extern_effect_entry(_ effect: String) -> String {
+  String::concat("extern effect ", effect)
+}
+
+/// ADR-0124 (#4082): whether `operation` belongs to an `extern effect`, the
+/// one kind of source declaration `perform?` reaches: its grade is granted by
+/// a provider bound at launch. The declaration is in `source_names` until
+/// `bind_extern_effects` replaces it with bindings, and recorded by that pass
+/// after.
+fn opq_is_extern_operation(source_names: Array[String], operation: String) -> Bool {
+  let provider = opq_provider_name(operation)
+  provider != operation && (program_declares_extern_effect(provider) || opq_source_value_exists(names = source_names, name = opq_extern_effect_entry(provider)))
+}
+
 /// Spelling alone is not builtin provenance: a source declaration may shadow
 /// a registry operation with the same qualified name. The checker accepts the
 /// source call, so fail here before a denied branch can erase it or a granted
 /// branch can wrap it as an optional capability result.
 fn opq_require_registry_operation(source_names: Array[String], operation: String) -> Unit with Exception {
+  if opq_is_extern_operation(source_names = source_names, operation = operation) {
+    ()
+  } else {
+    opq_require_builtin_operation(source_names = source_names, operation = operation)
+  }
+}
+
+fn opq_require_builtin_operation(source_names: Array[String], operation: String) -> Unit with Exception {
   let registered = match lookup_registry_builtin(operation) {
     Some(_) => true,
     None => false

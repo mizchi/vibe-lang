@@ -5,7 +5,11 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt
+  Expr, Stmt, set_program_extern_effects
+}
+
+import @vibe/compiler/normalize {
+  bind_extern_effects_owned
 }
 
 import @vibe/compiler/syntax {
@@ -211,4 +215,66 @@ test "#2236: the wasm-gc backend compiles a well-graded perform?" allows Excepti
     }
   } with { Exception::Throw(error) => error }
   assert_eq(msg, "")
+}
+
+fn extern_optional_program() -> String {
+  "extern effect Greeter {\n  greet(String) -> String\n}\n\nfn main() -> Int allows Greeter? {\n  let result = perform? Greeter::greet(\"x\")\n  0\n}\n"
+}
+
+/// The `main` binding's `result` value after the optional lowering, with
+/// the program's `extern effect` bound first when `bound` says so (the
+/// split route binds before it lowers `perform?`; the whole-program route
+/// lowers first).
+fn extern_lowered_binding(resolution: Array[(String, String)], bound: Bool) -> Expr with Exception {
+  let stmts = parse_program(lex(extern_optional_program()))
+  if bound {
+    bind_extern_effects_owned(stmts = stmts, owners = [])
+  } else {
+    // Nothing recorded from an earlier compile: the declaration alone must
+    // carry the answer.
+    set_program_extern_effects([])
+  }
+  lower_optional_performs(stmts = stmts, resolution = resolution)
+  let mut found: Option[Expr] = None
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, "main", _, EFn(_, _, _, _, _, ELet("result", value, _, _))) => found = Some(value),
+      _ => ()
+    }
+  }
+  match found {
+    Some(value) => value,
+    None => throw("expected the parsed main binding")
+  }
+}
+
+fn extern_granted(_ e: Expr) -> Bool {
+  match e {
+    EHandle(ECall(EIdent("$vibe_attempt_granted", _), args, _, _), _) => Array::length(args) == 1 && match Array::get(args, at = 0) {
+      ECall(EIdent("Greeter::greet", _), _, _, _) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn extern_not_granted(_ e: Expr) -> Bool {
+  match e {
+    EIdent("$vibe_attempt_not_granted", _) => true,
+    _ => false
+  }
+}
+
+test "#4082: an extern effect's optional operation is NotGranted without a provider" allows Exception {
+  assert(extern_not_granted(extern_lowered_binding(resolution = [], bound = false)))
+  assert(extern_not_granted(extern_lowered_binding(resolution = [], bound = true)))
+}
+
+test "#4082: a bound provider grants an extern effect's optional operation" allows Exception {
+  assert(extern_granted(extern_lowered_binding(resolution = [
+    ("Greeter", "Granted")
+  ], bound = false)))
+  assert(extern_granted(extern_lowered_binding(resolution = [
+    ("Greeter", "Granted")
+  ], bound = true)))
 }

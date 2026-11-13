@@ -293,8 +293,14 @@ fn main allows Console + Kv {
   providers (#2966).
 - **Grades.** A bound provider is the grant. `allows Kv?` resolves `Granted`
   when a provider is bound and `NotGranted` otherwise, through the same
-  launcher-grant path `perform?` reads for standard providers, and moves to the
-  instantiate-time branch with them (#2825; the withheld-capability stub of
+  launcher-grant path `perform?` reads for standard providers: `vibe run`
+  adds one `Granted` row per `--provide` to the table it hands the compile,
+  and `perform? Kv::get(..)` lowers against it. A `NotGranted` call is erased
+  before its arguments are visited, so the operation is never imported and the
+  preflight has nothing to refuse. A `--provide` spelled like a standard
+  provider grants nothing, so it cannot undo a `--deny-*`. The grade moves to
+  the instantiate-time branch with the standard providers' (#2825; the
+  withheld-capability stub of
   [capability-host-contract.md](capability-host-contract.md) applies
   unchanged).
 
@@ -371,8 +377,6 @@ which row the walk sees and not what the walk does. `test` / `bench` /
 
 Each fails closed today:
 
-- the optional grade `allows Kv?` for an extern effect, which decision 2 makes
-  a bound provider the grant for: the grade is refused;
 - extern effects on the wasm-gc backend: the program is refused at build time;
 - package-qualified ids: the import module is `vibe:effect:./<Effect>` for
   every extern effect, so two packages declaring one under the same name would

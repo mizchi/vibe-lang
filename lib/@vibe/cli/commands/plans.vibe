@@ -1063,6 +1063,41 @@ fn optional_grants_from_flags(allows: Array[String], denies: Array[String]) -> A
   out
 }
 
+/// ADR-0124 decision 2 (#4082): a provider bound with `--provide
+/// <Effect>=<component.wasm>` is the grant of the `extern effect` it names,
+/// so `allows Effect?` resolves `Granted` and `perform? Effect::op(..)` calls
+/// the provider. An effect no `--provide` names stays `NotGranted`, and its
+/// operation is never imported, so the run needs no provider for it. A
+/// `--provide` spelled like a standard provider grants nothing: those are
+/// granted by `--allow-*` alone, so a `--deny-fs` cannot be undone this way.
+fn optional_grants_with_providers(grants: Array[(String, String)], provides: Array[String]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  for g in grants {
+    Array::push(out, value = g)
+  }
+  let standard = standard_host_provider_names()
+  for spec in provides {
+    let at = String::index_of(spec, needle = "=")
+    let effect = if at > 0 {
+      String::substring(spec, start = 0, end = at)
+    } else {
+      ""
+    }
+    let mut is_standard = false
+    for p in standard {
+      if p == effect {
+        is_standard = true
+      }
+    }
+    if effect != "" && !is_standard {
+      Array::push(out, value = (effect, "Granted"))
+    } else {
+      ()
+    }
+  }
+  out
+}
+
 fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Array[String] {
   let base = if Array::length(allows) > 0 {
     allows
@@ -1439,7 +1474,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String, c
     } else {
       ()
     }
-    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_from_flags(allows = allows, denies = denies), checked_error_row = checked_error_row)
+    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_with_providers(grants = optional_grants_from_flags(allows = allows, denies = denies), provides = provides), checked_error_row = checked_error_row)
     write_user_run_executable(output_path = out, bytes = bytes, kind = kind)
     write_user_funcmap(input_path = src, output_path = out)
     let acc = StringBuilder::new()
