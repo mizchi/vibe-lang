@@ -546,12 +546,110 @@ fn component_tools_full(tool: cli_adapter_ComponentTool, input_path: String, out
   }
 }
 
+fn compile_only_tool_message(_ switch: String) -> String {
+  "this compiler is the compile-only build and has no tool for \{switch}; unset it, or run the same command with the full CLI build (stage2.wasm from scripts/generations.sh)"
+}
+
 /// The compile-only artifact's component tools: none. A request is refused by
 /// its switch, with no output written, rather than falling through to an
 /// ordinary core compile that a caller could mistake for the component.
 fn component_tools_none(tool: cli_adapter_ComponentTool, input_path: String, output_path: String, checked_error_row: Bool) -> Int with Fs + Env {
   let _ = input_path
-  emit_compile_diag(output_path = output_path, msg = "this compiler is the compile-only build and has no tool for \{component_tool_switch(tool)}; unset it, or run the same command with the full CLI build (stage2.wasm from scripts/generations.sh)")
+  emit_compile_diag(output_path = output_path, msg = compile_only_tool_message(component_tool_switch(tool)))
+}
+
+// #2149 `vibe fmt`: format a source file and write the result. Same
+// (input, output) interface as `vibe normalize` below.
+//
+// The GUARD is the reason this is not a bare call to format_source. The
+// formatter turned source that compiles into source that does not on four
+// separate occasions (#945, #1429, #1505, #1821), and `--check` then
+// reported the wreckage as correctly formatted. So the output is PARSED:
+// if the input was a program and the output is not, the rewrite is
+// discarded and the run reports non-zero. That question has a bounded
+// answer, and it holds for the next spelling nobody has thought of yet.
+//
+// Ported from lib/@vibe/cli/fmt_entry.vibe rather than restated: this is
+// the path an installed user runs, where no CI fmt gate is watching.
+//
+// On refusal the INPUT is written back, so the caller always has a valid
+// file at output_path; the non-zero return is what says "I refused": 2 when
+// the input does not parse (the parse error is in the `.diag` sidecar), 1
+// when the formatted output does not parse and the input did. The runner
+// exits 0 whatever this returns and prints the value as the last stdout
+// line, so runtime/vibe's `fmt` arm reads that line -- discarding it is how
+// a refusal once looked exactly like "nothing to change" (#1821).
+fn adapter_format(input_path: String, output_path: String, checked_error_row: Bool) -> Int with Fs + Env {
+  let src = Fs::read_file(input_path)
+  // #730 (D-3): pinned form is canonical, so fmt completes an unpinned
+  // `require` directive with `= #hash` when the workspace store can
+  // answer offline (best-effort; an uninstalled package leaves its line
+  // verbatim -- fetching belongs to `vibe add`/`update`). `.vpkg` headers
+  // included (#2260 round 3).
+  let fmt_pre = fill_require_pins_lenient(src, checked_error_row = checked_error_row)
+  // format_source dispatches on the extension: `.vpkg` package contracts
+  // get the canonical header writer, plain vibe sources get the verbatim
+  // require-head split (#1435, #2253 round 6).
+  let formatted = format_source(path = input_path, src = fmt_pre)
+  // A `.vpkg` header is not vibe syntax, so a whole-file parse never
+  // succeeds for one and the questions below would say nothing. format_vpkg
+  // already refuses to touch a header it cannot read -- the same policy
+  // reached by a different route (#1435).
+  //
+  // Two questions, both asked of the BODY (a require-pin head is not vibe
+  // syntax either and is reattached verbatim, so source and output start
+  // their body at the same boundary -- source_header_end; -1 refused and 0
+  // absent both mean "the body is the whole file"). First: does the INPUT
+  // parse? If not it is not a program, and no spelling is minted for it
+  // (#2636: `cond ? a : b` was reflowed into text that still did not parse,
+  // which `--check` then certified. lib/@vibe/cli/fmt_entry.vibe refused
+  // that first; this branch -- the route an installed user takes -- kept
+  // formatting under an older "no worse" promise until Codex found it on
+  // #2708). The parse error goes to the `.diag` sidecar and the verdict is
+  // 2, which runtime/vibe's `fmt` arm reports as "does not parse" with the
+  // edit named, not as a formatter bug. Second: does the OUTPUT parse? A
+  // rewrite that breaks a program that parsed is the formatter's own
+  // defect, verdict 1.
+  let fmt_head_end = if adapter_path_has_suffix(s = input_path, suffix = ".vpkg") {
+    0
+  } else {
+    let e = source_header_end(fmt_pre)
+    if e > 0 {
+      e
+    } else {
+      0
+    }
+  }
+  let fmt_body = String::substring(fmt_pre, start = fmt_head_end, end = String::length(fmt_pre))
+  let fmt_formatted_body = String::substring(formatted, start = fmt_head_end, end = String::length(formatted))
+  let fmt_is_vpkg = adapter_path_has_suffix(s = input_path, suffix = ".vpkg")
+  let fmt_input_error = if fmt_is_vpkg {
+    ""
+  } else {
+    adapter_parse_error_of(fmt_body)
+  }
+  if String::length(fmt_input_error) > 0 {
+    let _ = emit_compile_diag(output_path = output_path, msg = String::concat("vibe fmt: refusing to format ", String::concat(input_path, String::concat(": it does not parse\n  ", fmt_input_error))))
+    Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(src))
+    return 2
+  }
+  if !fmt_is_vpkg && !adapter_program_parses(fmt_formatted_body) {
+    Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(src))
+    return 1
+  }
+  Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(formatted))
+  0
+}
+
+fn format_tool_unavailable(_input_path: String, output_path: String, _checked_error_row: Bool) -> Int with Fs {
+  emit_compile_diag(output_path = output_path, msg = compile_only_tool_message("VIBE_FMT=1"))
+}
+
+fn lsp_tool_unavailable(_allow_unstable: Bool, _checked_error_row: Bool) -> Int with Stderr + Process {
+  // LSP owns stdin/stdout and has no output path for a diagnostic sidecar.
+  Stderr::write_stream(compile_only_tool_message("VIBE_LSP=1") + "\n")
+  vibe_process_exit_raw(1)
+  1
 }
 
 fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
@@ -566,13 +664,10 @@ fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
   }
 }
 
-/// The env-mode CLI body, parameterized by its lane tables (#2497) and its
-/// component tool table (#2499). `cli_main` installs the full tables;
-/// `cli_main_compile_only` the production lanes and no component tools. The
-/// tables are the ONLY difference between the two artifacts, so every other
-/// switch (the remaining command selectors, VIBE_CFG, VIBE_UNSTABLE, the
-/// trusted-source boundary) behaves identically on both.
-fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool, String, Bool, Bool) -> Bytes with Exception, component_tools: (cli_adapter_ComponentTool, String, String, Bool) -> Int with Fs + Env) -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
+/// The env-mode CLI body keeps the selector order shared between both
+/// artifacts. The compile-only entry installs the production lanes and tool
+/// refusals, leaving tool implementations out of its reachability graph.
+fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool, String, Bool, Bool) -> Bytes with Exception, component_tools: (cli_adapter_ComponentTool, String, String, Bool) -> Int with Fs + Env, format_tool: (String, String, Bool) -> Int with Fs + Env, lsp_tool: (Bool, Bool) -> Int with Stdin + Console + Env + Fs + Stderr + Process) -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
   // Typing-dependency env reuse (TDRE10) is the default on every lane, the
   // compile lanes included (#2728). `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1`
   // opts out, and an invalidation trace forces it off so the trace stays
@@ -796,7 +891,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // Checked first so it never touches the one-shot input/output-file
   // machinery the rest of this function assumes.
   if Env::get("VIBE_LSP") == "1" {
-    return lsp_main(Env::get("VIBE_UNSTABLE") == "1", checked_error_row = checked_error_row)
+    return lsp_tool(Env::get("VIBE_UNSTABLE") == "1", checked_error_row)
   }
   let input_path = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT"))
@@ -1421,87 +1516,9 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       }
     }
   }
-  // #2149 `vibe fmt`: format a source file and write the result. Same
-  // (input, output) interface as `vibe normalize` below.
-  //
-  // The GUARD is the reason this is not a bare call to format_source. The
-  // formatter turned source that compiles into source that does not on four
-  // separate occasions (#945, #1429, #1505, #1821), and `--check` then
-  // reported the wreckage as correctly formatted. So the output is PARSED:
-  // if the input was a program and the output is not, the rewrite is
-  // discarded and the run reports non-zero. That question has a bounded
-  // answer, and it holds for the next spelling nobody has thought of yet.
-  //
-  // Ported from lib/@vibe/cli/fmt_entry.vibe rather than restated: this is
-  // the path an installed user runs, where no CI fmt gate is watching.
-  //
-  // On refusal the INPUT is written back, so the caller always has a valid
-  // file at output_path; the non-zero return is what says "I refused": 2 when
-  // the input does not parse (the parse error is in the `.diag` sidecar), 1
-  // when the formatted output does not parse and the input did. The runner
-  // exits 0 whatever this returns and prints the value as the last stdout
-  // line, so runtime/vibe's `fmt` arm reads that line -- discarding it is how
-  // a refusal once looked exactly like "nothing to change" (#1821).
+  // #2149: the formatter uses the positional input and output paths.
   if Env::get("VIBE_FMT") == "1" {
-    let src = Fs::read_file(input_path)
-    // #730 (D-3): pinned form is canonical, so fmt completes an unpinned
-    // `require` directive with `= #hash` when the workspace store can
-    // answer offline (best-effort; an uninstalled package leaves its line
-    // verbatim -- fetching belongs to `vibe add`/`update`). `.vpkg` headers
-    // included (#2260 round 3).
-    let fmt_pre = fill_require_pins_lenient(src, checked_error_row = checked_error_row)
-    // format_source dispatches on the extension: `.vpkg` package contracts
-    // get the canonical header writer, plain vibe sources get the verbatim
-    // require-head split (#1435, #2253 round 6).
-    let formatted = format_source(path = input_path, src = fmt_pre)
-    // A `.vpkg` header is not vibe syntax, so a whole-file parse never
-    // succeeds for one and the questions below would say nothing. format_vpkg
-    // already refuses to touch a header it cannot read -- the same policy
-    // reached by a different route (#1435).
-    //
-    // Two questions, both asked of the BODY (a require-pin head is not vibe
-    // syntax either and is reattached verbatim, so source and output start
-    // their body at the same boundary -- source_header_end; -1 refused and 0
-    // absent both mean "the body is the whole file"). First: does the INPUT
-    // parse? If not it is not a program, and no spelling is minted for it
-    // (#2636: `cond ? a : b` was reflowed into text that still did not parse,
-    // which `--check` then certified. lib/@vibe/cli/fmt_entry.vibe refused
-    // that first; this branch -- the route an installed user takes -- kept
-    // formatting under an older "no worse" promise until Codex found it on
-    // #2708). The parse error goes to the `.diag` sidecar and the verdict is
-    // 2, which runtime/vibe's `fmt` arm reports as "does not parse" with the
-    // edit named, not as a formatter bug. Second: does the OUTPUT parse? A
-    // rewrite that breaks a program that parsed is the formatter's own
-    // defect, verdict 1.
-    let fmt_head_end = if adapter_path_has_suffix(s = input_path, suffix = ".vpkg") {
-      0
-    } else {
-      let e = source_header_end(fmt_pre)
-      if e > 0 {
-        e
-      } else {
-        0
-      }
-    }
-    let fmt_body = String::substring(fmt_pre, start = fmt_head_end, end = String::length(fmt_pre))
-    let fmt_formatted_body = String::substring(formatted, start = fmt_head_end, end = String::length(formatted))
-    let fmt_is_vpkg = adapter_path_has_suffix(s = input_path, suffix = ".vpkg")
-    let fmt_input_error = if fmt_is_vpkg {
-      ""
-    } else {
-      adapter_parse_error_of(fmt_body)
-    }
-    if String::length(fmt_input_error) > 0 {
-      let _ = emit_compile_diag(output_path = output_path, msg = String::concat("vibe fmt: refusing to format ", String::concat(input_path, String::concat(": it does not parse\n  ", fmt_input_error))))
-      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(src))
-      return 2
-    }
-    if !fmt_is_vpkg && !adapter_program_parses(fmt_formatted_body) {
-      Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(src))
-      return 1
-    }
-    Fs::write_bytes(output_path, bytes = adapter_string_to_bytes(formatted))
-    return 0
+    return format_tool(input_path, output_path, checked_error_row)
   }
   // #594 `vibe normalize`: respell dot calls as `Type::method(recv, ..)` and
   // write the result, every other byte unchanged (#4027). Same (input,
@@ -2102,7 +2119,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
     vibe_process_exit_raw(code)
     code
   } else {
-    cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full)
+    cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full, format_tool = adapter_format, lsp_tool = lsp_main)
   }
 }
 
@@ -2115,11 +2132,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
 /// scripts/check_compile_only_lanes.sh). Declared in this file for the same
 /// reason `main` is: only the entry file's own exports keep their public
 /// names through the flatten.
-export fn cli_main_compile_only() -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
-  cli_main_with_lanes(fs_lanes = fs_lane_compile_production, ss_lanes = ss_lane_compile_production, component_tools = component_tools_none)
+export fn cli_main_compile_only() -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
+  cli_main_with_lanes(fs_lanes = fs_lane_compile_production, ss_lanes = ss_lane_compile_production, component_tools = component_tools_none, format_tool = format_tool_unavailable, lsp_tool = lsp_tool_unavailable)
 }
 
-export fn main_compile_only() -> Unit with Exception + Fs + Env + Process + Profiler + Stdin + Console {
+export fn main_compile_only() -> Unit with Exception + Fs + Env + Process + Profiler + Stdin + Console + Stderr {
   let code = cli_main_compile_only()
   if code != 0 {
     vibe_process_exit_raw(code)

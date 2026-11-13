@@ -15,14 +15,15 @@
 #      unchecked, not safe.
 #      Since #2499 the same holds for the component tools of the positional
 #      protocol (WIT emission, the serve and command lifts, the vfs wraps),
-#      and the async component composition that user programs reach must
-#      still be PRESENT -- a cut that took it out would change what this
-#      artifact emits for an `Async` export.
+#      plus formatter and LSP server code. The async component composition
+#      that user programs reach must still be PRESENT, as must the shared
+#      JSON diagnostics.
 #   2. REFUSAL. Each switch that selects a dropped lane (VIBE_BACKEND=gc,
 #      VIBE_DEBUG_BREAK=1, VIBE_DEBUG=1, VIBE_RC=shadow, VIBE_COVERAGE=1,
-#      VIBE_CODEGEN_BODY_CACHE=on) or a dropped component tool
-#      (VIBE_EMIT_WIT=1, VIBE_SERVE_COMPONENT=1, VIBE_BUILD_COMPONENT=1)
-#      produces no output and a diagnostic that names the switch. Silently
+#      VIBE_CODEGEN_BODY_CACHE=on) or a dropped tool (VIBE_EMIT_WIT=1,
+#      VIBE_SERVE_COMPONENT=1, VIBE_BUILD_COMPONENT=1, VIBE_FMT=1, VIBE_LSP=1)
+#      produces no artifact and a diagnostic that names the switch. LSP
+#      reports on stderr before the positional output path is read. Silently
 #      compiling on another lane, or writing a core module where a component
 #      was asked for, is the failure this guards against (policy: never
 #      silently wrong).
@@ -44,7 +45,7 @@
 #   bash scripts/check_compile_only_lanes.sh --scan-only W
 #       runs check 1 alone against W (the self-test's mutation probe)
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --tools-only
-#       runs the component-tool half of check 2 alone (the self-test's probe
+#       runs the tool half of check 2 alone (the self-test's probe
 #       for it: the full CLI fails the lane half first)
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --telemetry-only
 #       runs check 2b alone (the self-test hands it a telemetry-enabled stage2)
@@ -91,12 +92,15 @@ ABSENT_PATTERNS="$ABSENT_PATTERNS|codegen_body_cache_(replay|record|filter_fold_
 # the serve / command lifts and the vfs wraps they alone reach (#2504's
 # inventory of what those arms held).
 ABSENT_PATTERNS="$ABSENT_PATTERNS|(^| )adapter_(emit_wit|serve_component|command_component)|codegen_wit_wit_gen_vibe|(^| )wit_from_program|(^| )validate_serve_handler|(^| )comp_emit_component_wasm_(string_handler|stream_handler|command|service_handler)|(^| )comp_emit_string_handler|(^| )comp_generate_vfs_|(^| )comp_generate_serve_stream_adapter_module"
+# #2499: the formatter and LSP server. The LSP package also defines shared
+# JSON diagnostics, so match server entry points instead of its module path.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|(^| )adapter_format|compiler_fmt_|(^| )format_source|(^| )lsp_(main|step|dispatch_request|run_with_handler)"
 # What must stay: the async component composition the production compile lanes
 # reach for a user program (`maybe_wrap_async_component`,
 # `maybe_wrap_stdin_provider_core`). Each pattern must match at least one
 # function, so a cut that removed the lane a user program needs fails here
 # instead of passing as a smaller artifact.
-PRESENT_PATTERNS='comp_emit_component_wasm_async_stdin_provider|comp_emit_component_wasm_async_hostfuture|maybe_wrap_async_component|maybe_wrap_stdin_provider_core'
+PRESENT_PATTERNS='comp_emit_component_wasm_async_stdin_provider|comp_emit_component_wasm_async_hostfuture|maybe_wrap_async_component|maybe_wrap_stdin_provider_core|lsp_diagnostics_json'
 # #2498: the `#cfg(telemetry)` half of loader/ingestion_pipeline_telemetry.vibe
 # -- the counter cells, their reader and the sidecar encoder. Its
 # `#cfg(not(telemetry))` twins (`..._refusal`, `..._publish`, the no-op
@@ -135,7 +139,7 @@ scan_names() { # <wasm>
     # A here-string, not a pipe: under pipefail `grep -q` closing the pipe
     # early fails the writer, and a present name would read as missing.
     grep -qE "$want" <<<"$names" \
-      || fail "$wasm defines no function matching '$want': the async component composition the production lanes need is gone"
+      || fail "$wasm defines no required function matching '$want'"
   done
   echo "compile-only-lanes: absence ok ($named of $total functions named, none from a dropped lane; the async component lane is present)"
 }
@@ -210,11 +214,8 @@ refuse() { # <switch NAME=VALUE>
     *) fail "$switch produced no wasm but the diagnostic does not name it: '${PROBE_DIAG:-<none>}'" ;;
   esac
 }
-# The component tools are positional-protocol selectors that the FS compile
-# arm precedes, so they are asked with VIBE_FS_COMPILE unset, the way their
-# callers ask (tests/gates/mid, scripts/test_serve_body_stream_gate.sh). Each
-# would write a .wit or a component to the output path; refused, it writes
-# nothing there.
+# The formatter and component tools come after the FS compile arm. Select
+# them without FS compile and check their positional diagnostic sidecar.
 refuse_tool() { # <switch NAME=VALUE>
   local switch="$1"
   compile_input_mode 0 "$WORK/probe.vibe" "refuse_${switch%%=*}" "$switch"
@@ -226,11 +227,29 @@ refuse_tool() { # <switch NAME=VALUE>
     *) fail "$switch produced no output but the diagnostic does not name it: '${PROBE_DIAG:-<none>}'" ;;
   esac
 }
+refuse_lsp() {
+  local rc=0 out="$WORK/refuse_lsp.wasm"
+  # LSP takes precedence over FS compile and handles its own streams. Even
+  # with an input and output path supplied, it must refuse on stderr.
+  env $CLEAR_ARGS -u VIBE_RUNNER_EXIT_WITH_RESULT -u VIBE_RUNNER_QUIET_RESULT \
+    VIBE_LSP=1 VIBE_FS_COMPILE=1 VIBE_STDIN_BYTES="" \
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SKIP_RUN_INIT=1 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke "$ENTRY" "$ARTIFACT" \
+    "$WORK/probe.vibe" "$out" main >"$WORK/lsp.stdout" 2>"$WORK/lsp.stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "VIBE_LSP=1 was ACCEPTED by $ARTIFACT (invoke $ENTRY)"
+  [ "$rc" -eq 1 ] || fail "VIBE_LSP=1 exited with $rc instead of 1"
+  grep -qF "has no tool for VIBE_LSP=1" "$WORK/lsp.stderr" \
+    || fail "VIBE_LSP=1 did not report its refusal on stderr: $(cat "$WORK/lsp.stderr")"
+  [ ! -e "$out" ] && [ ! -e "$out.diag" ] \
+    || fail "VIBE_LSP=1 touched the positional output"
+  [ ! -s "$WORK/lsp.stdout" ] || fail "VIBE_LSP=1 wrote unexpected stdout"
+}
 refuse_tools() {
-  for sw in VIBE_EMIT_WIT=1 VIBE_SERVE_COMPONENT=1 VIBE_BUILD_COMPONENT=1; do
+  for sw in VIBE_EMIT_WIT=1 VIBE_SERVE_COMPONENT=1 VIBE_BUILD_COMPONENT=1 VIBE_FMT=1; do
     refuse_tool "$sw"
   done
-  echo "compile-only-lanes: tool refusal ok (3 component tools refused by name)"
+  refuse_lsp
+  echo "compile-only-lanes: tool refusal ok (3 component tools, fmt and LSP refused by name)"
 }
 if [ "$TOOLS_ONLY" = 1 ]; then
   refuse_tools
@@ -279,6 +298,17 @@ cmp -s "$DEFAULT_OUT" "$PROBE_OUT" && fail "the default and VIBE_RC=0 outputs ar
 got="$(bash scripts/run_wasm_vibe_host_runner.sh "$DEFAULT_OUT" 2>/dev/null | tail -1 | tr -d '[:space:]')"
 [ "$got" = "42" ] || fail "the default lane's output printed '$got', expected 42"
 echo "compile-only-lanes: acceptance ok (RC and bump lanes compile, default runs)"
+
+# The editor protocol and positional JSON diagnostics share an encoder. A
+# malformed program must still produce structured diagnostics without LSP.
+printf 'fn main() -> Int { "a" }\n' > "$WORK/diagnostics.vibe"
+compile_input_mode 0 "$WORK/diagnostics.vibe" diagnostics VIBE_DIAGNOSTICS=1 VIBE_DIAGNOSTICS_JSON=1
+node -e '
+  const rows = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  if (!rows.some((row) => row.severity === 1 && row.range.start.line === 0 &&
+      row.message.includes("return type mismatch"))) process.exit(1);
+' "$PROBE_OUT" || fail "JSON diagnostics did not report the return type mismatch"
+echo "compile-only-lanes: JSON diagnostics ok"
 
 # Specializing the compiler's cache policy must not bake the target program's
 # cfg or authorization into that compiler. Reuse one artifact and cache while
