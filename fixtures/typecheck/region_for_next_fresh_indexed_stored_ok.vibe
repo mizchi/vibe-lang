@@ -1,0 +1,46 @@
+// #4050 (Codex on #4061): a type with an `impl Iterator` is iterated through
+// `next`, which the `for` desugar selects ahead of the indexed protocol, so
+// the binder is what `next` returns -- here a new array -- and not what the
+// stored-element `iter_get` would return. `main` answers 10 * the block's
+// value + the outer array's length: 10 shows the loop never wrote `outer`.
+trait Iterator[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+struct Gen {
+  items: Array[Array[MutList[Int]]];
+  left: Int
+}
+
+impl Iterator for Gen {
+  next(self) -> Option[(T, Gen)] {
+    if self.left > 0 {
+      let fresh: Array[MutList[Int]] = []
+      Some((fresh, Gen::{ items: [], left: 0 }))
+    } else {
+      None
+    }
+  }
+}
+
+fn Gen::iter_length(_ g: Gen) -> Int {
+  Array::length(g.items)
+}
+
+fn Gen::iter_get(_ g: Gen, i: Int) -> Array[MutList[Int]] {
+  Array::get(g.items, at = i)
+}
+
+fn main() -> Int allows Exception {
+  let outer: Array[MutList[Int]] = []
+  let xs = Gen::{ items: [outer], left: 1 }
+  let v = region r {
+    let cell = MutList::empty(r)
+    MutList::push(cell, 3)
+    for a in xs {
+      Array::push(a, value = cell)
+    }
+    1
+  }
+  v * 10 + Array::length(outer)
+}

@@ -620,8 +620,22 @@ export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: 
 /// positions this scan reports stay exact.
 export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, source: String, allow_unstable: Bool, checked_error_row: Bool) -> Array[String] with Exception {
   let msgs = collect_all_diagnostics_for_path_with_error_row(input_path = input_path, source = source, checked_error_row = checked_error_row)
+  let extra = collect_unstable_import_diagnostics_for_path(input_path = input_path, source = source, allow_unstable = allow_unstable)
+  let mut i = 0
+  while i < Array::length(extra) {
+    Array::push(msgs, value = Array::get(extra, at = i))
+    i = i + 1
+  }
+  msgs
+}
+
+/// The ADR-0068 opt-in half of `collect_all_diagnostics_with_unstable_for_path`
+/// on its own: `[]` when `allow_unstable` is on, and never a throw. The
+/// embedded language server pairs it with diagnostics it does not take from
+/// this lane (#4013).
+export fn collect_unstable_import_diagnostics_for_path(input_path: String, source: String, allow_unstable: Bool) -> Array[String] {
   if allow_unstable {
-    msgs
+    array_empty()
   } else {
     // The scan must never COST diagnostics. `collect_all_diagnostics` above
     // uses the RECOVERING lexer and returns a lex error as a diagnostic;
@@ -635,16 +649,10 @@ export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, sou
     // A file that does not lex has no import declarations worth scanning, so
     // degrading this half to "no unstable diagnostics" loses nothing, while
     // the lexer's own diagnostics -- the ones the reader needs first -- survive.
-    let extra = handle {
+    handle {
       let (_pins, pin_blanked) = extract_require_pins(source)
       unstable_import_diagnostics(input_path = input_path, detected = pin_blanked, located = pin_blanked)
     } with { Exception::Throw(_) => array_empty() }
-    let mut i = 0
-    while i < Array::length(extra) {
-      Array::push(msgs, value = Array::get(extra, at = i))
-      i = i + 1
-    }
-    msgs
   }
 }
 
@@ -665,6 +673,24 @@ export fn collect_all_diagnostics_with_error_row(_ source: String, checked_error
 
 /// Explicit policy for a diagnostic request; no process configuration is read.
 export fn collect_all_diagnostics_for_path_with_error_row(input_path: String, source: String, checked_error_row: Bool) -> Array[String] with Exception {
+  collect_diagnostics_for_path_phases(input_path = input_path, source = source, checked_error_row = checked_error_row, syntax_only = false)
+}
+
+/// The syntax half of `collect_all_diagnostics_for_path`: every lexer error,
+/// or else every error the recovering parser collects, and `[]` for a file
+/// that parses -- the single-file type check and its warnings are not run.
+/// A `require` head the loader rejects is reported here too. A contract
+/// (`.vpkg`) is answered in full, as its grammar has no separate type phase.
+///
+/// For a caller that types the file on another lane: the embedded language
+/// server types a file on disk with its imports resolved (#4013), where the
+/// single-file check reports every imported type and every name a package's
+/// `index.vpkg` shares as unknown.
+export fn collect_syntax_diagnostics_for_path(input_path: String, source: String) -> Array[String] with Exception {
+  collect_diagnostics_for_path_phases(input_path = input_path, source = source, checked_error_row = false, syntax_only = true)
+}
+
+fn collect_diagnostics_for_path_phases(input_path: String, source: String, checked_error_row: Bool, syntax_only: Bool) -> Array[String] with Exception {
   // #2227, round 3 of the book-review eval: a leading `require @scope/name
   // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
   // ingestion blanks before parsing -- but this single-file lane parsed the
@@ -747,7 +773,7 @@ export fn collect_all_diagnostics_for_path_with_error_row(input_path: String, so
   // A check that throws must not leave this module named as the one being
   // checked: the cells are process-global.
   let found = handle {
-    collect_all_diagnostics_on(input_path = input_path, source = pin_blanked, pkg_version = pkg_version, checked_error_row = checked_error_row)
+    collect_all_diagnostics_on(input_path = input_path, source = pin_blanked, pkg_version = pkg_version, checked_error_row = checked_error_row, syntax_only = syntax_only)
   } with { Exception::Throw(message) => {
     declaring_module_path_clear()
     throw(message)
@@ -1167,7 +1193,7 @@ fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Arra
   locate_type_error_lines(source = source, msg = msg)
 }
 
-fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String, checked_error_row: Bool) -> Array[String] with Exception {
+fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String, checked_error_row: Bool, syntax_only: Bool) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
     // A contract LEXES like a program, so it gets the recovering lexer and
     // every lex error, the same as the branch below (#2314 review). Only the
@@ -1260,6 +1286,8 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
     let (stmts, parse_diags) = parse_program_recovering(tokens = tokens, starts = starts, source = source)
     if Array::length(parse_diags) > 0 {
       dedupe_diagnostics(parse_diags)
+    } else if syntax_only {
+      array_empty()
     } else {
       // #3044: read the `let*` spine BEFORE checking -- the check lowers the
       // parser's `__try_bind` sentinel in place, after which a `let*` is an
