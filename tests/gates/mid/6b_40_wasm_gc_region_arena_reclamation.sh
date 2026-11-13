@@ -632,12 +632,15 @@ echo "[compiler-gate] wasm-gc test-block runtime regression suite ok"
 # `map_from_pairs_scalar_key_test.vibe` builds such maps with
 # `Map::from_pairs` and scalar literal keys, the same `Map::set` calls;
 # `mapbuilder_scalar_key_test.vibe` builds them through `MapBuilder`.
+# `map_scalar_key_index_test.vibe` holds maps past the 8-entry threshold,
+# where the linear lane looks a scalar key up through its hash index.
 echo "[compiler-gate] 40h8s/40 wasm-gc runs a scalar-keyed Map (#2334)"
 if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc VIBE_TEST_QUIET_COMPILER_NOTE=1 \
   bash scripts/vibe_test.sh \
     fixtures/map_scalar_key_test.vibe \
     fixtures/map_from_pairs_scalar_key_test.vibe \
     fixtures/mapbuilder_scalar_key_test.vibe \
+    fixtures/map_scalar_key_index_test.vibe \
     fixtures/int32_hash_map_key_test.vibe; then
   echo "[compiler-gate] FAIL: a scalar-keyed Map on the wasm-gc lane" >&2
   exit 1
