@@ -25,7 +25,7 @@ import ./checker_deferred_method_rows.vibe {
 }
 
 import ./checker_call_arguments.vibe {
-  checker_labeled_argument_context
+  checker_labeled_argument_context, seed_struct_field_lambda
 }
 
 import ./checker_expr_numeric_observation.vibe {
@@ -288,7 +288,6 @@ import ./checker_merge_capture_provenance.vibe {
   erased_throw_arm_leave,
   erased_throw_binder_vars,
   exception_kind_formals_in_env,
-  expression_aliases_outer_binding,
   formal_shadow,
   marker_default_dispatch_error,
   merge_capture_provenance,
@@ -297,6 +296,10 @@ import ./checker_merge_capture_provenance.vibe {
   reset_eq_formal_vars,
   resume_walk_param_base,
   return_provenance_key
+}
+
+import ./checker_region_binder_alias.vibe {
+  region_for_binder_bind, region_outer_alias_bind, region_outer_alias_mark, region_outer_alias_regions
 }
 
 import ./checker_region_retention.vibe {
@@ -403,7 +406,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // #3050: the binding's own type -- the generalized one its uses
         // instantiate, not the monotype before quantification (#3104 review).
         record_local_let_type(let_off = let_off, ty = gen, lane = lane)
-        let aliases_outer = spine_region_active && expression_aliases_outer_binding(expr = val, env = cenv)
+        let outer_regions = region_outer_alias_regions(value = val, scope = cenv, active = spine_region_active)
         note_local_generic_binding(val = val, bound = gen, env = cenv)
         let def_env = cenv
         cenv = checker_bind_call_header(env = cenv, name = name, ty = gen, value = val)
@@ -429,11 +432,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           },
           _ => ()
         }
-        if aliases_outer {
-          cenv = env_bind(env = cenv, name = String::concat("__region_outer_alias__", name), ty = CtUnit)
-        } else {
-          ()
-        }
+        cenv = region_outer_alias_mark(env = cenv, name = name, regions = outer_regions)
         // #3343: what a call of `name` reaches -- the closure literal, or the
         // callee an alias stands for -- so a call inside a region can check
         // the body for what it keeps.
@@ -1143,6 +1142,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Some(t) => env_bind(env = arm_env, name = spawn_safe_marker(t), ty = CtUnit),
             None => arm_env
           }
+          let arm_env = region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env)
           // #3548: a pattern carries no offset, so what `check_pattern`
           // reports (a constructor bound with the wrong arity, ...) is
           // anchored at its arm -- the body, or the scrutinee when the body
@@ -2098,7 +2098,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           (CtUnknown, c1)
         }
       }
-      let env2 = env_bind(env = env, name = name, ty = et)
+      let env2 = region_for_binder_bind(env = env_bind(env = env, name = name, ty = et), name = name, iterable = iterable, iter_ty = it_resolved, scope = env, defs = defs)
       let env3 = match index_name {
         Some(index_name) => env_bind(env = env2, name = index_name, ty = CtInt),
         None => env2
@@ -2276,8 +2276,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       while fi < flen {
         let (fname, fval) = Array::get(fields, at = fi)
         // A field may be given only once in a record literal (`P::{ x: 1, x: 2 }`
-        // silently kept the last). Report a duplicate by scanning the names
-        // already collected.
+        // silently kept the last): report a duplicate among those collected.
         let mut dj = 0
         let mut dup = false
         while dj < Array::length(field_tys) {
@@ -2294,6 +2293,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else {
           ()
         }
+        seed_struct_field_lambda(defs = defs, struct_name = rn, field = fname, value = fval, s = s1)
         let (ft, ns, nc) = check_expr_capture(expr = fval, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
         Array::push(field_tys, value = (fname, ft))
         s1 = ns

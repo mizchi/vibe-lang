@@ -140,6 +140,14 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   and in an `if` / `match` whose other branch or arm is sized (`if c { x }
   else { 0 }`, also an array literal `[x, 0]`). A literal is refused when it
   does not fit. Elsewhere, convert with `Int::wrap_int32`.
+- **A lambda takes the function type expected of it.** Where `(Int32) ->
+  Int32` is expected (an argument, a named struct literal's field, or an
+  `Array::map` / `filter` / `any` / `all` / `find` callback over an
+  `Array[Int32]`), an unannotated `(k) -> k + 1` has `k: Int32` and wraps as
+  `(k: Int32) -> k + 1` does. Where the expected result is `Int32` /
+  `UInt32` too, the lambda is checked as if it were written with that result
+  type: an integer-literal tail (`(k) -> 7`) takes it, and so does every
+  `return` (an out-of-range `return 2147483648` is refused).
 - **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
   `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` holds, and
   a generic `+` wraps as the concrete one does (`add(2147483647, 1)` is

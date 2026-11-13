@@ -55,6 +55,17 @@ document (an unsaved new buffer, a contract), and a file that does not check
 with its imports, is typed on its own; that typing is kept per exact text in
 the same way.
 
+Its diagnostics for such a file come from the same walk (#4013). Syntax errors
+come first, all of them, from the recovering parser; a buffer that parses is
+reported with the errors of `vibe check`'s import-resolving check, so an
+imported type, a `Type::method` of an import, and a name the package's
+`index.vpkg` shares with its siblings are never reported as unknown.
+Publishing a revision's diagnostics walks it once, and the hovers that follow
+reuse that walk. When the file checks, the warnings come from the buffer typed on its
+own, and none are reported when that typing fails. The lowering-phase refusals
+that `vibe check` runs the effect prelude for are not reported. Any other
+document is diagnosed on its own.
+
 ### Extract a function
 
 ```bash
