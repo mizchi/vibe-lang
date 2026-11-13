@@ -32,7 +32,7 @@
 //# that spelling.
 
 import @vibe/compiler/core {
-  BindingOrigin, Expr, Type, TypeEnv, env_lookup, env_lookup_binding, env_name_index_find
+  BindingOrigin, Expr, Type, TypeEnv, TypeExpr, env_lookup, env_lookup_binding, env_name_index_find, expr_children
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -391,5 +391,30 @@ fn region_type_head(_ t: Type) -> String {
     CtBytes => "Bytes",
     CtForAll(_, _, body) => region_type_head(body),
     _ => ""
+  }
+}
+
+/// The annotation of the parameter spelled `name`: `Some(None)` for one with
+/// none, `None` when no parameter is spelled so.
+export fn held_param_annotation(name: String, params: Array[(String, Option[TypeExpr])]) -> Option[Option[TypeExpr]] {
+  let mut out: Option[Option[TypeExpr]] = None
+  for p in params {
+    if p.0 == name || p.0 == String::concat(name, "?") {
+      out = Some(p.1)
+    }
+  }
+  out
+}
+
+/// Every name `e` reads, in order, binders included.
+export fn held_value_names_into(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EIdent(n, _) => Array::push(out, value = n),
+    _ => {
+      for child in expr_children(e) {
+        held_value_names_into(e = child, out = out)
+      }
+      ()
+    }
   }
 }
