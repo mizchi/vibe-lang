@@ -13,11 +13,14 @@ import @vibe/compiler/lowering/effects/evidence {
   edp_append_visible_pure_lambda_names,
   edp_collect_fn_defs,
   edp_etawrap_stmts_in,
+  edp_handler_set_statements,
+  edp_handler_set_statements_among,
   edp_mf_base,
   edp_mf_binders,
   edp_mf_effect_sites,
   edp_mf_handle_count,
   edp_mf_handle_statement_index,
+  edp_mf_multi_arm_handles,
   edp_mf_new,
   edp_mf_refresh,
   edp_mf_row_lit_scan,
@@ -375,4 +378,33 @@ test "the handle index and effect sites come from the facts, through marked rewr
   Array::push(stmts, value = SExpr(handle_of(effect = "Log", body = perform_of("Log"))))
   assert(sites_agree(facts = facts, stmts = stmts))
   inspect(render_index(edp_mf_handle_statement_index(facts)), content = "Tick=0 Ask=2 Log=4")
+}
+
+fn ints(_ xs: Array[Int]) -> String {
+  let parts: Array[String] = []
+  for x in xs {
+    Array::push(parts, value = Int::to_string(x))
+  }
+  String::join(parts, sep = ",")
+}
+
+test "the handler-set index asked only of statements the facts allow is the walked one" {
+  // A set names two effects in one handle; a two-arm handle of one effect is
+  // no set, and a `let` pattern statement, which the facts do not read, is
+  // always walked.
+  let set = EHandle(EInt(0), [
+    (PCtor("Ask::Get", []), EInt(1)),
+    (PCtor("Log::Say", []), EInt(2))
+  ])
+  let stmts = [
+    top_fn(name = "a", params = [], body = set),
+    top_fn(name = "b", params = [], body = handle_of(effect = "Ask", body = EInt(0))),
+    top_fn(name = "c", params = [], body = EInt(0)),
+    SLetPat(PBind("p"), set)
+  ]
+  let facts = edp_mf_new()
+  edp_mf_refresh(facts = facts, stmts = stmts)
+  let walked = ints(edp_handler_set_statements(stmts))
+  inspect(walked, content = "0,3")
+  inspect(ints(edp_handler_set_statements_among(stmts = stmts, multi_arm = Some(edp_mf_multi_arm_handles(facts)))), content = walked)
 }
