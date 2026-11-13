@@ -52,10 +52,12 @@ import ./common_analysis_mrv_fresh.vibe {
 /// forwarded parameter counts only when its own function's body does not
 /// rebind it. A cycle of forwards that no call feeds a function into is left
 /// alone, and so is a program with a nested module. Returns `f:p=g` for each
-/// rewritten parameter, sorted. Run on the RC lanes only, before
+/// rewritten parameter, sorted. The optional cache rows record each rewrite
+/// in application order with its function, parameter position and target.
+/// Run on the RC lanes only, before
 /// `borrow_owned_value_thunks`: that pass renames the value uses of `g`, and
 /// a call rewritten after it would name the owning thunk.
-export fn direct_known_fn_params(stmts: Array[Stmt], exclude: Array[String]) -> Array[String] {
+export fn direct_known_fn_params(stmts: Array[Stmt], exclude: Array[String], rewrites: Option[Array[(String, Int, String)]] = None) -> Array[String] {
   let mut nested = false
   for stmt in stmts {
     match stmt {
@@ -85,7 +87,7 @@ export fn direct_known_fn_params(stmts: Array[Stmt], exclude: Array[String]) -> 
     while more && rounds < 8 {
       let known_before = Array::length(rewritten.fns)
       let dead = kp_dead(stmts = stmts, prog = prog, rewritten = rewritten)
-      let done = kp_run(stmts = stmts, prog = prog, dead = dead, rewritten = rewritten)
+      let done = kp_run(stmts = stmts, prog = prog, dead = dead, rewritten = rewritten, rewrites = rewrites)
       for d in done {
         Array::push(all, value = d)
       }
@@ -445,7 +447,7 @@ struct KpFacts {
 }
 
 /// One round of the pass.
-fn kp_run(stmts: Array[Stmt], prog: KpProgram, dead: MutMap[String, Int], rewritten: KpSlots) -> Array[String] {
+fn kp_run(stmts: Array[Stmt], prog: KpProgram, dead: MutMap[String, Int], rewritten: KpSlots, rewrites: Option[Array[(String, Int, String)]]) -> Array[String] {
   // Only a function with a candidate parameter can be taken, so only those
   // names are asked about as values.
   let cands = prog.cands
@@ -537,7 +539,7 @@ fn kp_run(stmts: Array[Stmt], prog: KpProgram, dead: MutMap[String, Int], rewrit
       si = si + 1
     }
     kp_settle(facts)
-    kp_rewrite(stmts = stmts, facts = facts, rewritten = rewritten)
+    kp_rewrite(stmts = stmts, facts = facts, rewritten = rewritten, rewrites = rewrites)
   }
 }
 
@@ -670,7 +672,7 @@ fn kp_settle(_ facts: KpFacts) -> Unit {
 }
 
 /// Rewrite the calls of each parameter that settled on one function.
-fn kp_rewrite(stmts: Array[Stmt], facts: KpFacts, rewritten: KpSlots) -> Array[String] {
+fn kp_rewrite(stmts: Array[Stmt], facts: KpFacts, rewritten: KpSlots, rewrites: Option[Array[(String, Int, String)]]) -> Array[String] {
   let done: Array[String] = []
   let mut f = 0
   while f < Array::length(facts.stmt) {
@@ -708,6 +710,10 @@ fn kp_rewrite(stmts: Array[Stmt], facts: KpFacts, rewritten: KpSlots) -> Array[S
         if calls > 0 {
           MutMap::set(to, k = Array::get(names, at = k), v = g)
           Array::push(done, value = String::concat(String::concat(String::concat(String::concat(fname, ":"), Array::get(names, at = k)), "="), g))
+          match rewrites {
+            Some(rows) => Array::push(rows, value = (fname, k, g)),
+            None => ()
+          }
           any = true
         } else {
           ()
