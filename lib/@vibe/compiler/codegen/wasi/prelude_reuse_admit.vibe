@@ -7,9 +7,9 @@
 // them?" Two facts are kept per build:
 //
 // - which statements are RELEVANT: the passes rewrote or dropped them, or
-//   they hold effect syntax (`handle`, `perform`, `resume`, an effect
-//   definition, a row naming a user effect or a row variable, a declaration
-//   whose types carry a row);
+//   they hold effect syntax (`handle`, `perform` other than an exception
+//   throw, `resume`, an effect definition, a row naming a user effect or a
+//   row variable, a declaration whose types carry a row);
 // - what to AVOID: every name from which a relevant statement is reachable
 //   (the relevant names included), and every name a relevant statement binds
 //   to a local lambda (the evidence pass counts those spellings program-wide
@@ -29,9 +29,33 @@
 // This is the conservative syntactic check #3999 measured (19 of 26 recent
 // commits admitted, none wrongly), with reachability taken transitively
 // rather than one call deep.
+//
+// An exception throw is not effect syntax (#4123). The desugar lowers
+// `throw(v)` to `perform <Exception>::Throw(v)` before the passes run, so
+// every function that throws held a `perform`, and editing any of them
+// missed. The passes read whether a callee throws only off its declared row:
+// suspend CPS through `scps_fn_row_of` (`scps_row_may_throw`), the evidence
+// pass's handler-set split through `edp_fn_row_label_table`
+// (`edp_ao_arm_may_perform`), which looks into a body only for the handle it
+// is splitting -- a statement that holds a `handle`, and so is relevant
+// anyway. No function is rewritten for throwing. The payload temp the
+// desugar binds for each throw (`__exn_payload<n>`) is admitted too
+// (`prelude_reuse_binder_ok`). A declared row is part of
+// the signature replay compares, so an edit that adds or drops `Exception`
+// there still misses, and one that throws differently inside the body no
+// longer has to. `VIBE_PRELUDE_REUSE=verify` and the oracle's
+// `exception-body` steps hold this to the passes' own output.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, dce_statement_refs, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+  Expr,
+  Stmt,
+  TypeExpr,
+  dce_statement_refs,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_throw_operation
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -181,6 +205,39 @@ fn prelude_reuse_type_has_row(_ ty: TypeExpr) -> Bool {
 /// top-level function (`let x = f`): either keeps a statement from being
 /// quiet. `effect` counts only the first; both are false for a quiet body.
 fn prelude_reuse_expr_flags(expr: Expr, scope: PreludeReuseScope, out: Array[Bool]) -> Unit {
+  match prelude_reuse_exception_throw(expr) {
+    // A lowered `throw`: only its payload can hold effect syntax.
+    Some(payload) => {
+      for p in payload {
+        prelude_reuse_expr_flags(expr = p, scope = scope, out = out)
+      }
+      ()
+    },
+    None => prelude_reuse_expr_flags_at(expr = expr, scope = scope, out = out)
+  }
+}
+
+/// The arguments of `perform <Exception>::Throw(..)`, the form the desugar
+/// gives `throw(..)` (see the file comment); `None` for anything else.
+fn prelude_reuse_exception_throw(_ expr: Expr) -> Option[Array[Expr]] {
+  match expr {
+    ECall(EIdent(nm, _), args, _, _) => if nm == "perform" && Array::length(args) == 1 {
+      match Array::get(args, at = 0) {
+        ECall(EIdent(op, _), payload, _, _) => if is_exception_throw_operation(op) {
+          Some(payload)
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn prelude_reuse_expr_flags_at(expr: Expr, scope: PreludeReuseScope, out: Array[Bool]) -> Unit {
   match expr {
     EHandle(_, _) => Array::set(out, at = 0, value = true),
     EIdent(name, _) => if name == "perform" || name == "resume" {
@@ -297,6 +354,15 @@ fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
 }
 
 /// Whether `stmt` is quiet against `avoid` (see the file comment).
+/// Whether a quiet statement may bind `name`: not a generated (`__`) name,
+/// except the payload temp the desugar gives each lowered `throw`
+/// (`__exn_payload<n>`, counted per top-level statement since #3829). No pass
+/// mints a name with that prefix, so binding one cannot move a name the
+/// passes pick.
+fn prelude_reuse_binder_ok(_ name: String) -> Bool {
+  !String::starts_with(name, prefix = "__") || String::starts_with(name, prefix = "__exn_payload")
+}
+
 export fn prelude_reuse_quiet(stmt: Stmt, scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
   match prelude_reuse_body(stmt) {
     // A marker only the checker reads (positional parameters, a test's
@@ -312,7 +378,7 @@ export fn prelude_reuse_quiet(stmt: Stmt, scope: PreludeReuseScope, avoid: MutSe
         ok = ok && !MutSet::has(avoid, x = r)
       }
       for b in edp_statement_binder_log(stmt) {
-        ok = ok && !MutSet::has(scope.top, x = b) && !String::starts_with(b, prefix = "__") && !MutSet::has(avoid, x = b)
+        ok = ok && !MutSet::has(scope.top, x = b) && prelude_reuse_binder_ok(b) && !MutSet::has(avoid, x = b)
       }
       // Its own name: a statement some relevant statement reaches is not
       // quiet whatever its body holds.

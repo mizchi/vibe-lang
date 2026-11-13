@@ -46,7 +46,7 @@ FAKE_GIT="$WORK/fake-git"
 mkdir -p "$FAKE_GIT/lib/@vibe/core"
 git -C "$FAKE_GIT" init -q
 for i in 1 2 3; do
-  printf 'fn hex_probe() -> Int {\n  %s\n}\n' "$i" > "$FAKE_GIT/lib/@vibe/core/hex.vibe"
+  printf 'fn hex_probe() -> Int {\n  %s\n}\n\nfn hex_digit_value(_ c: Int) -> Int with Exception {\n  c\n}\n' "$i" > "$FAKE_GIT/lib/@vibe/core/hex.vibe"
   git -C "$FAKE_GIT" add -A
   git -C "$FAKE_GIT" -c user.name=oracle -c user.email=oracle@localhost commit -q -m "fake $i"
 done
