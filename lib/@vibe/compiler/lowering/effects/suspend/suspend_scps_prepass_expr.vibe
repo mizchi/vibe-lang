@@ -33,7 +33,7 @@ import @vibe/compiler/lowering/effects/direct {
 }
 
 import @vibe/compiler/lowering/effects/evidence {
-  edp_collect_effect_defs, edp_collect_fn_defs, edp_es_collect_into, edp_params_of_fn, evidence_split_handler_sets
+  edp_collect_effect_defs, edp_collect_fn_defs, edp_es_collect_into, edp_params_of_fn, evidence_split_handler_sets_with_binders
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -48,7 +48,7 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 import ./suspend_census.vibe {
-  scps_census_appended, scps_census_drop, scps_census_note, scps_census_replaced
+  scps_census_appended, scps_census_drop, scps_census_kept, scps_census_note, scps_census_replaced
 }
 
 import ./suspend_fn_aliases.vibe {
@@ -270,14 +270,15 @@ export fn suspend_cps_pass(_ stmts: Array[Stmt]) -> Array[String] {
   // hides sibling effects from its continuation and return-owner analysis.
   // Split only the ordinary handler sets left after those drivers exist.
   let errs = scps_lower_handle_sites(stmts)
-  // The census describes the list as this pass left it; nothing after the
-  // pass keeps it current, so it is not kept past the pass.
-  scps_census_drop()
+  // The census describes the list as this pass left it, which is what the
+  // split reads its binders from (#4041). Nothing after the pass keeps it
+  // current, so it is not kept past the pass.
   if Array::length(errs) == 0 {
-    for e in evidence_split_handler_sets(stmts) {
+    for e in evidence_split_handler_sets_with_binders(stmts = stmts, binders = scps_census_kept()) {
       Array::push(errs, value = e)
     }
   } else ()
+  scps_census_drop()
   errs
 }
 

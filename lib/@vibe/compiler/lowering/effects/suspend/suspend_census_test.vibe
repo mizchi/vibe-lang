@@ -18,7 +18,13 @@ import @vibe/compiler/lowering/effects/queries {
   edp_collect_program_binders, edp_is_program_binder
 }
 import @vibe/compiler/lowering/effects/suspend {
-  scps_census, scps_census_appended, scps_census_drop, scps_census_note, scps_census_replaced, scps_inline_fn_aliases_stmts
+  scps_census,
+  scps_census_appended,
+  scps_census_drop,
+  scps_census_kept,
+  scps_census_note,
+  scps_census_replaced,
+  scps_inline_fn_aliases_stmts
 }
 
 fn top_fn(name: String, body: Expr) -> Stmt {
@@ -132,4 +138,23 @@ test "the argument conditions keep the census they were handed" {
   inspect(edp_is_program_binder("y"), content = "false")
   scps_census_note(stmts)
   inspect(edp_is_program_binder("y"), content = "true")
+}
+
+test "the kept census is offered only while it is kept, and as it stands" {
+  // What `suspend_cps_pass` hands the handler-set split (#4041): the census
+  // as the pass left it, or nothing, never one the pass dropped.
+  let stmts = [binds(fname = "f", x = "x")]
+  scps_census_drop()
+  inspect(scps_census_kept() is None, content = "true")
+  let _ = scps_census(stmts)
+  Array::set(stmts, at = 0, value = binds(fname = "f", x = "y"))
+  scps_census_replaced(stmts = stmts, i = 0)
+  let offered = match scps_census_kept() {
+    Some(kept) => MutSet::has(kept, x = "y") && !MutSet::has(kept, x = "x"),
+    None => false
+  }
+  inspect(offered, content = "true")
+  inspect(census_matches_rebuild(stmts), content = "true")
+  scps_census_drop()
+  inspect(scps_census_kept() is None, content = "true")
 }
