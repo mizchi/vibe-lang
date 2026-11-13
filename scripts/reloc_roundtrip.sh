@@ -53,7 +53,10 @@ if [ "${#targets[@]}" -eq 0 ]; then
   # rebuild padded them, and the earlier probe had no tag site to show it.
   # `pick` joins two native-array references in an `if`, which the gc lane
   # spells with a TYPE-INDEX blocktype (#1541): the one blocktype site either
-  # lane emits, padded at a slot width like the other type indices.
+  # lane emits, padded at a slot width like the other type indices. The gc
+  # lane keeps a function's arrays on the reference lane only when that
+  # function holds no `handle` and no lambda -- measured, a `handle` in `main`
+  # gave `blocktype=0` -- so the handler lives in `safe`, not in `main`.
   cat > "$probe_dir/gcprobe.vibe" <<'PROBE'
 struct Pt { x: Int; y: Int }
 
@@ -74,6 +77,12 @@ fn mid(p: Pt) -> Int {
   p.x + p.y
 }
 
+fn safe(n: Int) -> Int {
+  handle {
+    risky(n = n)
+  } with { Exception::Throw(_) => 0 }
+}
+
 fn pick(first: Array[Int], second: Array[Int], take_first: Bool) -> Array[Int] {
   if take_first {
     first
@@ -86,9 +95,7 @@ fn main() -> Int {
   let xs = build()
   let p = Pt::{ x: Array::get(xs, at = 0), y: Array::get(xs, at = 3) }
   let ys = [mid(p = p), mid(p = p)]
-  let caught = handle {
-    risky(n = Array::length(xs) + 1)
-  } with { Exception::Throw(_) => 0 }
+  let caught = safe(n = Array::length(xs) + 1)
   let a = [1, 1]
   let b = [2, 2]
   let chosen = pick(first = a, second = b, take_first = caught > 0)

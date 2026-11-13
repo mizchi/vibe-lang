@@ -10,6 +10,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/reloc {
+  body_relocs_count,
   rebuild_body_relocs,
   rebuild_body_relocs_with_slot_width,
   reloc_kind_blocktype,
@@ -350,9 +351,24 @@ test "#3941: a type-index blocktype is padded; a value-type blocktype and a heap
   let codes = [0x04, 0x0D, 0x0B, 0x04, 0x7E, 0x0B, 0xD0, 0x0D, 0x1A, 0x0B]
   let b = body_of(codes)
   let r = scan_body_relocs(body = b, start = 0, end_pos = Bytes::length(b))
-  assert_eq(r.kinds, [reloc_kind_blocktype, reloc_kind_heaptype])
+  assert_eq(body_relocs_count(r), 2)
+  assert_eq(Array::get(r.kinds, at = 0), reloc_kind_blocktype)
+  assert_eq(Array::get(r.kinds, at = 1), reloc_kind_heaptype)
   let padded = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = r.values, slot_width = 3)
-  assert_eq(bytes_to_ints(padded), [0x04, 0x8D, 0x80, 0x00, 0x0B, 0x04, 0x7E, 0x0B, 0xD0, 0x0D, 0x1A, 0x0B])
+  assert_eq(bytes_to_ints(padded), [
+    0x04,
+    0x8D,
+    0x80,
+    0x00,
+    0x0B,
+    0x04,
+    0x7E,
+    0x0B,
+    0xD0,
+    0x0D,
+    0x1A,
+    0x0B
+  ])
 }
 
 test "#3941: a padded blocktype reads back and keeps its sign bit clear at 64" {
@@ -362,11 +378,13 @@ test "#3941: a padded blocktype reads back and keeps its sign bit clear at 64" {
   let codes = [0x04, 0x8D, 0x80, 0x00, 0x0B, 0x0B]
   let b = body_of(codes)
   let r = scan_body_relocs(body = b, start = 0, end_pos = Bytes::length(b))
-  assert_eq(r.values, [13])
-  assert_eq(r.widths, [3])
+  assert_eq(Array::get(r.values, at = 0), 13)
+  assert_eq(Array::get(r.widths, at = 0), 3)
   let same = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = r.values, slot_width = 3)
   assert_eq(bytes_to_ints(same), codes)
-  let moved = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = [64], slot_width = 3)
+  let moved = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = [
+    64
+  ], slot_width = 3)
   assert_eq(bytes_to_ints(moved), [0x04, 0xC0, 0x80, 0x00, 0x0B, 0x0B])
 }
 

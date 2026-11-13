@@ -820,7 +820,8 @@ when the layout behind it moves.
 | function index (`call`, `ref.func`) | W | index < 2^21 at W=3 |
 | exception tag (`throw`, `try_table` catch) | W | tag < 2^21 |
 | global (`global.get`, `global.set`) | W | global < 2^21 |
-| type index of `call_indirect` | W | type < 2^21 |
+| type index: `call_indirect`, the gc lane's struct / array operands | W | type < 2^21 |
+| type-index blocktype (the gc lane's reference-result `if`), signed | W | type < 2^20 |
 | funcref table slot: `i64.const ((slot << 2) \| 2)` (kind 101), `i32.const slot` (kind 102) | W | slot < 2^18 |
 | string address, bare offset (`blind_kind_str_ref`) | W | offset < 2^20 |
 | string address, `(offset << 32) \| length` (`blind_kind_str_fat`) | W+5 | offset < 2^23 |
@@ -830,8 +831,10 @@ A non-minimal LEB128 is valid wasm. It is the slot shape that the
 tool-conventions object format, `wasm-ld` and wild reserve for this reason.
 Unset is minimal, and the output is byte-identical to a compiler without the
 switch. A built-in constructor tag (below `2 << 16`) never moves and stays
-minimal. So do the `call_indirect` table index (always 0) and the gc lane's
-type-index blocktypes and heap types.
+minimal. So does the `call_indirect` table index (always 0). Heap types stay
+minimal too: no instruction either lane emits carries a type-index heap type,
+and the gc lane's typed locals (`(ref null $t)` in a body's locals header) sit
+outside the instruction region the relocation scanner reads.
 
 The width is read once, at the top of `cli_main`, so every compile in the
 process uses it. That covers the positional protocol and also the
@@ -843,14 +846,19 @@ without a lane request.
 - `leb128_encode_u32_slot` writes function indices, tags, globals and type
   indices:
   - `emit_call`, `emit_ref_func`, `emit_global_get` and `emit_global_set`;
-  - the type index in `emit_call_indirect`;
+  - the type index in `emit_call_indirect`, and in the gc lane's
+    `struct.*` / `array.*` operands (`emit_gc_type_op`);
   - the inline-wat `call`;
   - the hand-encoded `throw` / `try_table` sites (`common_base_return_frame`,
-    `compile_call_call_core`, `compile_call_named_1`, `compile_expr_tail6`);
+    `compile_call_call_core`, `compile_call_named_1`, `compile_expr_tail6`,
+    and the gc lane's `backend_expr` / `backend_call_named_1`);
   - the body-cache relocator `lc_move_body`;
   - late-DCE renumbering (`lc_pf_emit_code` and its linemap delta).
 - `emit_i64_const_slot` and `emit_i32_const_slot` write table slots, at the
   four sites that record kinds 101 / 102 and in `lc_move_body`.
+- `leb128_encode_s_slot` also writes the type-index blocktype in
+  `emit_if_type_index`. A blocktype is an s33, so it is padded as a signed
+  LEB128: the sign is bit 6 of the last byte, which padding keeps clear.
 - `emit_i64_const_str` writes string addresses:
   - in `emit_str_ref_slot` / `emit_str_fat_slot`;
   - in the string relocator `lc_relocate_body`;
@@ -869,8 +877,8 @@ directory used for `vibe build` at W=0, then 3, then 0 gives 1830, 1907 and
 1830 bytes.
 
 **Coverage is checked, not assumed.** `scripts/reloc_roundtrip.sh` with
-`RELOC_ROUNDTRIP_SLOT_WIDTH=W` rebuilds every function, tag, global and type
-site at width W and requires the bytes back unchanged. An emitter that wrote one of
+`RELOC_ROUNDTRIP_SLOT_WIDTH=W` rebuilds every function, tag, global, type and
+type-index blocktype site at width W and requires the bytes back unchanged. An emitter that wrote one of
 them narrower fails it by name. On the corpus below at W=3 it is clean over
 200,348 function, 740 tag, 3266 global and 1121 type sites. The build before
 type indices were padded fails the same check in 222 bodies. The same module rebuilt at
@@ -1031,6 +1039,42 @@ imports nothing.
 - **Body-cache replay.** On this corpus, with the `ast.vibe` +1-fn edit,
   14,045 of 14,394 bodies are offered and 349 recompiled. The result is
   byte-identical to a fresh compile at W=3 and at W=0.
+
+**The gc lane's blocktype.** The gc lane writes one type-index blocktype: an
+`if` that joins two native-array references (#1541) names the reserved func
+type `gc_native_array_block_type_idx`. Padding it costs 2 bytes per site at
+W=3 and moved nothing, because that index is the constant 13. Bodies are
+generated before the type section is laid out, so it is a fixed base type by
+construction.
+
+Measured on a generated gc-lane corpus: 8 such joins, 300 chained functions
+and one struct, with no lambda and no `handle` in the joining function (either
+one keeps that function's arrays off the reference lane, and the joins then
+emit no blocktype at all). The gc lane has no name section, so bodies were
+matched by sequence alignment rather than with
+`scripts/wasm_index_stability.mjs`. "Length changed" counts the 311 shared
+bodies; the edited body is one of them.
+
+| edit | W=0 | W=3, blocktype minimal | W=3, blocktype padded |
+|---|---:|---:|---:|
+| body only | 0 | 0 | 0 |
+| +1 fn ahead of the chain (every index +1; one `call` target crosses 127 → 128) | 2 | **1** | 1 |
+| +400 fn | 0 | 0 | 0 |
+| +1 struct declared first (`Pt`'s struct type 14 → 15) | 1 | 1 | 1 |
+
+- **The blocktype never moved.** In every build the 8 bodies holding it are
+  byte-identical across all five variants, at W=0, at W=3 with it minimal and
+  at W=3 with it padded.
+- **Parity.** W=0 is byte-identical to main on all five variants.
+- **Cost.** 7,731 → 7,747 bytes on the base module, 2 bytes for each of the 8
+  sites.
+- **Coverage.** The gc probe in `scripts/reloc_roundtrip.sh` now holds one
+  blocktype site. The compiler before this change fails it at W=3 with
+  `identity_mismatch=1`.
+
+So the blocktype padding is consistency, not a measured win: it keeps the
+roundtrip identity holding at a slot width, and it would start to matter only
+if that index stopped being a constant.
 
 Not done: a default, and an in-place output patcher. The patcher is what the
 fixed widths make possible, and its value is what to weigh against the size.
