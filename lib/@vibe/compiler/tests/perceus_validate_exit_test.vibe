@@ -110,11 +110,26 @@ test "a break out of the declaring loop body is released by its exit row" {
   inspect(tagged(tag = "break", out = validate("let run: (Bool) -> Int = (c) -> {\n  let mut k = 0\n  while k < 3 {\n    let d = A([k])\n    if c {\n      break\n    }\n    k = k + keep(d)\n  }\n  k\n}")), content = "break: clean")
 }
 
-//# Known leaks
+// #1980: the guard's consume is a mark the path flag counts, so the exit's
+// counted row (`-2`) releases what the returning path still holds and the
+// fall-through's path drop the dup it did not spend. This shape leaked the
+// dup on the fall-through while the merge declined.
+test "a dup taken for a consume on the exit path is released on the fall-through" {
+  let p = plan(consumed_both)
+  assert(String::contains(p, needle = "run d path_drop 1"))
+  assert(String::contains(p, needle = "run d exit_drop:0:-2 1"))
+  inspect(tagged(tag = "consumed both", out = validate(consumed_both)), content = "consumed both: clean")
+}
 
-test "a dup taken for a consume on the exit path leaks on the fall-through" {
-  inspect(plan(consumed_both), content = "run d dup 1\nrun d exit_site:0:0 1\nrun __seq0 drop 1\nrun d exit_drop:0:1 1")
-  inspect(validate(consumed_both), content = "run d if1:else: owned value not consumed")
+test "a counted exit row one too large releases one more than held" {
+  let out = edited(body = consumed_both, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    rewrite(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_exit_drop(a) && a.name == "d"
+    }, change = (a: PerceusAction) -> PerceusAction {
+      with_extra(a = a, extra = a.extra - 1)
+    })
+  })
+  inspect(out, content = "run d if1:then: owned value released 1 more than held")
 }
 
 //# Mutated exit rows

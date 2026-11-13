@@ -292,18 +292,19 @@ test "a borrowed parameter consumed without a dup" {
   inspect(rc_validate_source(source = src, fn_filter = "sink", checked_error_row = false), content = "")
 }
 
+// Slice 3 checks early exits. The guard's consume is a mark the path flag
+// counts (#1980): the exit's counted row releases what the returning path
+// still holds, and the fall-through's path drop the dup it did not spend.
+// This shape leaked that dup while the merge declined. More exit shapes are
+// in perceus_validate_exit_test.vibe.
+test "an early return that consumes releases the dup on the path that does not return" {
+  inspect(tagged(tag = "early return", out = validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}")), content = "early return: clean")
+}
+
 //# Known leaks
 
 test "a binding consumed on one branch and read in place on the other" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  if c {\n    keep(A(t))\n  } else {\n    Array::get(t, at = 0)\n  }\n}"), content = "run t if1:else: owned value not consumed")
-}
-
-// Slice 3 checks early exits: the plan takes a dup at the declaration for
-// the guard's consume and releases it at the exit, so the path that never
-// reaches the exit keeps it (112 B per call, measured). More exit shapes are
-// in perceus_validate_exit_test.vibe.
-test "an early return that consumes leaks the dup on the path that does not return" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}"), content = "run d if1:else: owned value not consumed")
 }
 
 //# Not checked

@@ -234,10 +234,22 @@ test "a parameter with an exit after its branch dups still gets its path drop" {
   assert(String::contains(plan, needle = "keep t path_drop 1"))
 }
 
-// A `let`'s exit release is guarded on the path flag too, so a path that ran
-// the mark would release nothing at the exit: the merge declines.
-test "a let with an exit after its branch dups gets no path drop" {
+// #1980: a `let`'s exit after its branch dups merges when only consume
+// marks consumed it before the exit. The path flag counts them, so the exit's
+// counted row releases the initial reference and the dup (`-2`) less that
+// count.
+test "a let with an exit after its branch dups gets a counted exit row" {
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  if !c {\n    return u\n  } else {\n    ()\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  assert(String::contains(plan, needle = "run t consume_mark:"))
+  assert(String::contains(plan, needle = "run t exit_drop:0:-2 1"))
+}
+
+// An exit inside a loop the binding is declared outside of can follow, in a
+// later iteration, an occurrence walked after it: the merge still declines.
+test "a let with an exit after its branch dups inside a loop gets no path drop" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  let mut k = 0\n  while k < 2 {\n    if !c {\n      return u\n    } else {\n      ()\n    }\n    k = k + 1\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
   let plan = plan_of(src)
   assert(!String::contains(plan, needle = "run t path_drop"))
   assert(!String::contains(plan, needle = "run t consume_mark:"))
