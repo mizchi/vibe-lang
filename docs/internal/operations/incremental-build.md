@@ -3501,6 +3501,11 @@ VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT=<sidecar.json>
 VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE=<unique-non-empty-run-id>
 ```
 
+The trace exists only in a compiler built with the `telemetry` cfg flag, which
+the generation's stage2 is by default (#2498). A build without it -- the
+compile-only artifact -- refuses `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT` by
+name on every lane and leaves the destination untouched.
+
 The sidecar is schema version 6 and is written **only after a successful
 check**. It includes the nonce, canonical module path, direct dependencies,
 `compact_string_fingerprint` of each module's **ingested source**, distinct
