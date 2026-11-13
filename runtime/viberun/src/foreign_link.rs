@@ -245,7 +245,7 @@ fn effect_name_of(module: &str) -> &str {
     }
 }
 
-/// The providers `vibe run --provide <Effect>=<component>` bound, one
+/// The providers `vibe run` / `vibe test --provide <Effect>=<component>` bound, one
 /// `<Effect>=<path>` per line of `VIBE_PROVIDE`.
 fn bound_providers() -> Result<Vec<(String, PathBuf)>> {
     let mut out = Vec::new();
@@ -269,6 +269,12 @@ fn bound_providers() -> Result<Vec<(String, PathBuf)>> {
 /// imports and the flag that binds a provider.
 fn effect_provider_paths(module: &Module, names: &[String]) -> Result<Vec<Option<PathBuf>>> {
     let bound = bound_providers()?;
+    // The launcher names the verb that binds providers (`vibe run` / `vibe
+    // test`), so the refusal spells the flag on the command the user ran.
+    let verb = match std::env::var("VIBE_PROVIDE_VERB") {
+        Ok(v) if v == "test" => "test",
+        _ => "run",
+    };
     let mut paths = Vec::with_capacity(names.len());
     let mut missing: Vec<String> = Vec::new();
     for name in names {
@@ -289,7 +295,7 @@ fn effect_provider_paths(module: &Module, names: &[String]) -> Result<Vec<Option
                     })
                     .collect();
                 missing.push(format!(
-                    "`{effect}` ({}): bind one with `vibe run --provide {effect}=<component.wasm>`",
+                    "`{effect}` ({}): bind one with `vibe {verb} --provide {effect}=<component.wasm>`",
                     ops.join(", ")
                 ));
                 paths.push(None);

@@ -55,9 +55,24 @@ test "#1683: a missing user effect at main suggests handling, not widening" {
 }
 
 test "#1683: _start is also an entry boundary" {
+  // ADR-0124 decision 3 (#2656): `Ask` is a program-declared effect, so on
+  // `_start`'s row it must be handled inside `_start`; nothing handles it.
   let source = "effect Ask { Get() -> Int }\nfn _start() -> Int allows Ask { perform Ask::Get() }\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, needle = "entry point '_start' cannot discharge { Ask }"))
+  assert(String::contains(msg, needle = "entry point '_start' allows `Ask`, which nothing in its body handles"))
+}
+
+test "ADR-0124: a declared effect spelled like a host provider stays a host grant" {
+  // The CLI declares `effect Profiler` and grants `Profiler` on `main`; the
+  // label is the host's, not a handler record, so it is neither stripped from
+  // the walked row nor refused as vacuous.
+  let source = "effect Profiler { NowUs -> Int }\nfn stamp() -> Int with Profiler { perform Profiler::NowUs }\nfn main() -> Int allows Profiler { stamp() }\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "ADR-0124: a handled program effect on an entry row is admitted" {
+  let source = "effect Ask { Get() -> Int }\nfn ask() -> Int with Ask { perform Ask::Get() }\nfn main() -> Int allows Ask {\n  handle { ask() } with { Ask::Get() => resume(7) }\n}\n"
+  assert_eq(first_check_error(source), "")
 }
 
 test "#1683: an unresolved entry row is rejected fail-closed" {
@@ -484,14 +499,16 @@ test "ADR-0088: the grade is refused on anything but a host capability" {
 test "ADR-0088 (Codex on #2653): a block grant is admitted like main's" {
   let user_op = "effect Ask { Get() -> Int }\ntest \"x\" allows Ask::Get {\n  let _ = perform Ask::Get()\n  assert(true)\n}\n"
   let msg = first_check_error(user_op)
-  assert(String::contains(msg, needle = "entry point test \"x\" cannot discharge { Ask::Get }"))
+  // ADR-0124 decision 3 (#2656): a program-declared label on a block's row
+  // records a handler inside the block, and none of these blocks has one.
+  assert(String::contains(msg, needle = "entry point test \"x\" allows `Ask::Get`, which nothing in its body handles"))
   assert(String::contains(msg, needle = "handle ... with Ask"))
   assert(!String::contains(msg, needle = "add 'allows"))
   let bench_msg = first_check_error("effect Tick { Now() -> Int }\nbench \"b\" allows Tick {\n  let _ = perform Tick::Now()\n  ()\n}\n")
-  assert(String::contains(bench_msg, needle = "entry point bench \"b\" cannot discharge { Tick }"))
+  assert(String::contains(bench_msg, needle = "entry point bench \"b\" allows `Tick`, which nothing in its body handles"))
   assert(String::contains(bench_msg, needle = "handle ... with Tick"))
   let example_msg = first_check_error("effect Ask { Get() -> Int }\nexample \"e\" allows Ask::Get {\n  assert(true)\n}\n")
-  assert(String::contains(example_msg, needle = "\"e\" cannot discharge { Ask::Get }"))
+  assert(String::contains(example_msg, needle = "\"e\" allows `Ask::Get`, which nothing in its body handles"))
   let row_var = first_check_error("test \"v\" allows e {\n  assert(true)\n}\n")
   assert(String::contains(row_var, needle = "entry point test \"v\" has unresolved effect row { e }"))
   let unknown_op = first_check_error("test \"u\" allows Console::Get {\n  assert(true)\n}\n")

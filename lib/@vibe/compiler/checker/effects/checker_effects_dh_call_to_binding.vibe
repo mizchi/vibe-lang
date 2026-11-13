@@ -53,6 +53,10 @@ import ./checker_effects_effect_error_to_string.vibe {
   afe_ascribed_name_type
 }
 
+import ./checker_effects_entry_residual.vibe {
+  entry_vacuous_algebraic_errors, labels_without_algebraic
+}
+
 import ./checker_effects_mutability_expr_into.vibe {
   EffectError,
   append_eff_errs,
@@ -453,7 +457,12 @@ export fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], bo
       EFn(_, _, _, _, _, fbody) => fbody,
       _ => body
     }
-    append_eff_errs(dst = errors, src = entry_grant_errors(entry_name = fn_name, labels = fn_binding_effects(ty = ty, body = body), off = first_expr_offset(inspect_body)))
+    // ADR-0124 decision 3: a label naming an effect the program declares is
+    // admitted by a `handle` in the body, not by the host.
+    let labels = fn_binding_effects(ty = ty, body = body)
+    let off = first_expr_offset(inspect_body)
+    append_eff_errs(dst = errors, src = entry_grant_errors(entry_name = fn_name, labels = labels_without_algebraic(labels), off = off))
+    append_eff_errs(dst = errors, src = entry_vacuous_algebraic_errors(entry_name = fn_name, labels = labels, body = inspect_body, off = off))
   } else {
     ()
   }
@@ -1220,6 +1229,17 @@ fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[
   }
 }
 
+/// ADR-0124 decision 3: a caller of `main` / `_start` is charged the entry's
+/// residual requirement, not the labels its own body handles -- those are a
+/// record of the entry's handlers, and a call of the entry runs them.
+fn entry_published_row(name: String, labels: Array[String]) -> Array[String] {
+  if is_program_entry_name(name) {
+    labels_without_algebraic(labels)
+  } else {
+    labels
+  }
+}
+
 export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
   let first_local = Array::length(fn_names)
   let local_bodies = array_empty()
@@ -1243,7 +1263,7 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
         Array::push(written_rows, value = effs)
       },
       SLet(_, _, name, ty, body) => {
-        let written = fn_binding_effects(ty = dh_expand_sig(ty), body = body)
+        let written = entry_published_row(name = name, labels = fn_binding_effects(ty = dh_expand_sig(ty), body = body))
         Array::push(fn_names, value = name)
         Array::push(fn_effs, value = bare_rows_with_published_payload(declared = written, env = env, name = name))
         Array::push(fn_param_effs, value = fn_binding_param_effects(ty = dh_expand_sig(ty), body = body))
@@ -1252,7 +1272,7 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
         Array::push(written_rows, value = written)
       },
       SLetMut(name, ty, body) => {
-        let written = fn_binding_effects(ty = dh_expand_sig(ty), body = body)
+        let written = entry_published_row(name = name, labels = fn_binding_effects(ty = dh_expand_sig(ty), body = body))
         Array::push(fn_names, value = name)
         Array::push(fn_effs, value = written)
         Array::push(fn_param_effs, value = fn_binding_param_effects(ty = dh_expand_sig(ty), body = body))
