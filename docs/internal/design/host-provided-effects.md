@@ -21,9 +21,12 @@ issue lists three open points. This record decides all three, each from a
 measurement of the tree at `cdbdb1da1` (main), checked with a stage2 compiler
 built from that commit, on viberun and the node runner.
 
-Nothing here is implemented. The acceptance condition is at the end.
+All three decisions are implemented: decision 1 in #4036, decision 2 in #4056
+(`vibe run --provide`) and #4075 (`vibe test --provide`), decision 3 in #4067.
+What pins each is under Acceptance; what is not implemented yet is tracked in
+#4082.
 
-## What the tree does today
+## The tree before this decision (measured at `cdbdb1da1`)
 
 ### Entry admission already classifies through `OperationRef`
 
@@ -147,8 +150,8 @@ Three readings:
 2. **Under a row WITH the user effect, it does not.** r4(b), r12(b) and
    r14(b) report nothing: the `Db` on the row satisfies the call, and the
    walk's entry-specific branch (the `EEUndischargedEntryEffect` arm) fires only
-   for a direct `perform` (r2). Today only admission stands between those
-   programs and a run that reaches an unhandled `Db`. The same row also
+   for a direct `perform` (r2). Before decision 3, only admission stood between
+   those programs and a run that reaches an unhandled `Db`. The same row also
    over-refuses r10, which is clean without `Db` on the row. Relaxing admission alone would
    ship exactly the trap the issue warns about.
 3. **The walk is conservative, never permissive, on what it cannot see.** An
@@ -261,7 +264,8 @@ fn main allows Console + Kv {
   existing WIT generator derives from the declaration (it already
   maps a declared effect to `import <kebab E>: interface { <kebab op>:
   func(..) }`; [effect-wit-mapping.md](effect-wit-mapping.md)), bound at
-  launch: `vibe run --provide Kv=./kv_provider.component.wasm`. viberun links it
+  launch: `vibe run --provide Kv=./kv_provider.component.wasm`, or `vibe test
+  --provide` for the test binaries a test run starts. viberun links it
   through the component bridge it has for `vibe:component:<path>`, range checks
   included. That is ADR-0113's "host capabilities are the same mechanism with
   the runner as provider", and it lets the provider itself be a vibe component.
@@ -301,7 +305,16 @@ Let `R` be the entry's written row after `effectset` expansion.
 1. **Classify.** Every label in `R` must classify against the program catalog
    (§1); an unknown label, a row variable, and a duplicate definition are
    refused as today. `R` splits into `C` (capability, exception and runtime
-   labels) and `A` (labels whose class is algebraic).
+   labels) and `A` (labels whose class is algebraic). `A` holds a bare label
+   naming an effect the program declares without `extern` and without a
+   resource parameter, and an operation label naming an operation such an
+   effect declares (`entry_label_is_algebraic`,
+   `checker/effects/checker_effects_entry_residual.vibe`). Two spellings stay
+   in `C` even though a declaration matches them: an effect with a resource
+   parameter is a capability by its declaration (#3143), and a bare label the
+   host policy admits is the host's grant whatever the program declares under
+   that name (`lib/@vibe/cli/entry.vibe` declares `effect Profiler` and grants
+   `Profiler` on `main`).
 2. **Residual walk.** The residual requirement is the set of labels the
    perform walk reports missing when it runs over the body with an EMPTY
    declared row, the probe `file_tests_cacheable` already runs over a `test`
@@ -348,26 +361,38 @@ which row the walk sees and not what the walk does. `test` / `bench` /
 
 ## Non-goals
 
-- Implementing any of this.
 - Resource-qualified host effects beyond what ADR-0094's `param_kinds` brings.
 - The plan / apply phase and a persisted binding lock (ADR-0088 L2, no owner).
 - Providers composed from providers (`S3 → Http`) beyond one launch-time
   binding per effect.
 - Async host operations (#2832).
 
+## Not implemented yet (#4082)
+
+Each fails closed today:
+
+- the optional grade `allows Kv?` for an extern effect, which decision 2 makes
+  a bound provider the grant for: the grade is refused;
+- extern effects on the wasm-gc backend: the program is refused at build time;
+- package-qualified ids: the import module is `vibe:effect:./<Effect>` for
+  every extern effect, so two packages declaring one under the same name would
+  share a provider binding.
+
 ## Acceptance
 
-ADR-0124 is `proposed`. It becomes `accepted` when all of these are pinned by
-fixtures and gates on main:
+ADR-0124 is `accepted`. Each condition is pinned on main:
 
 1. `extern effect` parses, `TDEffect` carries the owner slot, and
    `fn main allows <extern effect>` is admitted through `classify_operation`
    over a catalog row built from the declaration, with no name list added to
-   `standard_effect_policy.vibe`.
+   `standard_effect_policy.vibe` -- the `err_extern_effect_*` and
+   `extern_effect_entry_ok` typecheck fixtures (#4036, #4056).
 2. viberun links a `vibe:effect:` import to a provider bound with `--provide`,
-   refuses before `main` when none is bound (structured message, not
-   wasmtime's), and the node runner refuses the namespace instead of answering
-   `0`. A gate pins both refusals with a red test that removes the binding.
-3. The residual rule admits r1 and r3 under `allows Console + Db`, refuses
-   r2, r4, r9, r11 and r12 at the unhandled site, and refuses an `allows Db`
-   the body never handles, as fixtures with the messages asserted.
+   refuses before `main` when none is bound, and the node runner refuses the
+   namespace -- `scripts/test_wasm_import_gate.sh` step 15 and its self-test,
+   for `vibe run` (#4056) and `vibe test` (#4075).
+3. The residual rule admits r1 and r3 under `allows Console + Db`, refuses r2,
+   r4, r9, r11 and r12 at the unhandled site, and refuses an `allows Db` the
+   body never handles -- the `entry_allows_*` / `err_entry_allows_*` typecheck
+   fixtures with their messages in `fixtures/typecheck/expected.tsv`, and
+   `fixtures/entry_allows_handled_effect_test.vibe` on both backends (#4067).

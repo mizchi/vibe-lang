@@ -1,7 +1,26 @@
 // The result type of a function written without one (#4062).
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, TypeEnv, env_lookup, expr_child_at, expr_children_pop, expr_children_push, expr_children_top, subst_apply, unify
+  Expr,
+  Subst,
+  Type,
+  TypeEnv,
+  env_lookup,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  subst_apply,
+  subst_bind_value,
+  unify
+}
+
+import @vibe/compiler/checker/type_relations {
+  branch_join_widens
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  merge_value_effect_provenance
 }
 
 import ./checker_int32.vibe {
@@ -70,12 +89,21 @@ fn unwritten_result_id(_ env: TypeEnv) -> Int {
   }
 }
 
+/// Join an inferred result with a later return path using the same effect
+/// row ordering as branches. A written result is checked separately.
+fn widen_unwritten_result(id: Int, anchor: Type, later: Type, s: Subst) -> Option[Subst] {
+  match branch_join_widens(anchor = anchor, later = later, s = s) {
+    Some(ns) => Some(subst_bind_value(id = id, ty = merge_value_effect_provenance(expected = later, actual = anchor, s = ns), s = ns)),
+    None => None
+  }
+}
+
 /// An explicit `return e`, whose value checked as `et`, against the nearest
 /// enclosing function's result (`__return__`).
 ///
 /// #4062: in a function with no written result type that result is a
 /// variable, so the check's substitution is kept: the first `return` binds
-/// it and every other one, and the body's value, must agree
+/// it, and every other one and the body's value join with it
 /// (`check_unwritten_result`). A value whose integer literals could still
 /// take a sized type (`0`, `Some(0)`, `[1, 2]`, `(0, "a")`, an `if` of such)
 /// is left to that final check, because its type is the one the rest of the
@@ -101,14 +129,23 @@ export fn check_return_value(e: Expr, et: Type, env: TypeEnv, s: Subst, errors: 
         Array::push(deferred_returns, value = (unwritten, e, ate))
         s
       } else {
-        // Explicit `return e`: anchor on `e` itself, so this spelling locates
-        // the same way the implicit tail-expression return does.
-        check_assignable_set_end(string_lit_end(e))
-        let ns = check_assignable(expected = rte, actual = int32_assigned_type(e = e, expected = rte, actual = ate, s = s, errors = errors, off = railway_expr_off(e)), s = s, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
-        if unwritten >= 0 {
-          ns
+        let widened = if unwritten >= 0 {
+          widen_unwritten_result(id = unwritten, anchor = rte, later = ate, s = s)
         } else {
-          s
+          None
+        }
+        match widened {
+          Some(ns) => ns,
+          None => {
+            // Anchor on the returned value, as for the implicit tail.
+            check_assignable_set_end(string_lit_end(e))
+            let ns = check_assignable(expected = rte, actual = int32_assigned_type(e = e, expected = rte, actual = ate, s = s, errors = errors, off = railway_expr_off(e)), s = s, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
+            if unwritten >= 0 {
+              ns
+            } else {
+              s
+            }
+          }
         }
       }
     },
@@ -171,8 +208,17 @@ export fn check_unwritten_result(body: Expr, result: Type, actual: Type, s: Subs
         } else {
           "return type mismatch"
         }
-        check_assignable_set_end(string_lit_end(body))
-        check_assignable(expected = result, actual = int32_literal_adapt(e = body, expected = result, actual = actual, s = s, errors = errors, off = tail_expr_off(body)), s = s, errors = errors, what = what, off = tail_expr_off(body))
+        let widened = match result {
+          CtVar(id) => widen_unwritten_result(id = id, anchor = subst_apply(s = s, ty = result), later = subst_apply(s = s, ty = actual), s = s),
+          _ => None
+        }
+        match widened {
+          Some(ns) => ns,
+          None => {
+            check_assignable_set_end(string_lit_end(body))
+            check_assignable(expected = subst_apply(s = s, ty = result), actual = int32_literal_adapt(e = body, expected = result, actual = actual, s = s, errors = errors, off = tail_expr_off(body)), s = s, errors = errors, what = what, off = tail_expr_off(body))
+          }
+        }
       }
     }
     // Only deferred values were returned: the result is the first one's

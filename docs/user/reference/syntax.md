@@ -671,10 +671,13 @@ is the handle's result. An `Exception` arm never resumes; its value is the
 handle's result.
 
 An ordinary function may expose a user-defined effect in its `with` row so a
-caller can handle it. A program entry (`main` or `_start`) cannot: only standard
-host-provider effects (`Fs`, `Env`, `Stdout`, and the other provider labels),
-entry-boundary `Exception`, and runtime-managed `Async` may remain there. Handle
-a user effect before it reaches the entry boundary:
+caller can handle it. A program entry (`main` or `_start`) cannot pass one on:
+only standard host-provider effects (`Fs`, `Env`, `Stdout`, and the other
+provider labels), entry-boundary `Exception`, and runtime-managed `Async` may
+reach it. An entry's `allows` row may name a user effect only when the entry's
+own body handles it, and the label then grants nothing; one the body never
+handles is refused (ADR-0124 decision 3). Handle a user effect before it reaches
+the entry boundary:
 
 Admission follows operation ownership, not just the base effect spelling. A
 user operation `Fs::Custom` does not acquire the standard `Fs` host provider;

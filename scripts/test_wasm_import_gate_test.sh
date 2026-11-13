@@ -82,6 +82,11 @@ expect_fail "a different initializer effect" "init_main printed value=8\\ foo=42
 fresh; mutate extern_greeter_main.vibex 'hello(name = "vibe")' 'hello(name = "vibes")'
 expect_fail "a different extern-effect answer" "extern_greeter_main printed"
 
+# 6d. A test that reads another answer than the provider gives fails, so the
+#     `vibe test --provide` row checks the test ran against the provider.
+fresh; mutate extern_greeter_test.vibe 'content = "hi, test"' 'content = "hi, tests"'
+expect_fail "a vibe test --provide run whose test fails" "extern_greeter_test failed with a provider bound"
+
 # 6c. A provider that matches the declaration links, so the signature
 #     refusal must notice it no longer fires.
 fresh; mutate extern_greeter_drift_main.vibex "  greet(Int) -> Int" "  greet(String) -> String"
@@ -96,4 +101,4 @@ expect_fail "a different narrow-width answer" "narrow_import_test failed"
 fresh; mutate trap_component_u8_range.vibex "inc8(300)" "inc8(200)"
 expect_fail "a u8 refusal that does not fire" "a u8 argument outside 0 .. 255 was accepted"
 
-echo "[wasm-import-gate-test] ok (9 cases)"
+echo "[wasm-import-gate-test] ok (10 cases)"

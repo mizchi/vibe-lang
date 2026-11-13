@@ -353,6 +353,32 @@ fn write_sleb(out: Bytes, value: Int) -> Unit {
   }
 }
 
+/// sleb128 of at least `width` bytes (#3941). The value is a non-negative
+/// type index, so the padding bytes are `0x80` continuations carrying zero
+/// bits and the sign bit of the last byte is clear.
+fn write_sleb_padded(out: Bytes, value: Int, width: Int) -> Unit {
+  let probe = Bytes::new()
+  write_sleb(out = probe, value = value)
+  let w0 = Bytes::length(probe)
+  let w = if width > w0 {
+    width
+  } else {
+    w0
+  }
+  let mut v = value
+  let mut i = 0
+  while i < w {
+    let byte = v&127
+    v = v>>7
+    if i + 1 < w {
+      Bytes::push(out, value = byte|128)
+    } else {
+      Bytes::push(out, value = byte)
+    }
+    i = i + 1
+  }
+}
+
 export fn reloc_uleb_width(_ value: Int) -> Int with Exception {
   let probe = Bytes::new()
   write_uleb(out = probe, value = value)
@@ -752,8 +778,9 @@ export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelo
 }
 
 /// `rebuild_body_relocs`, writing each function index (`reloc_kind_func`: a
-/// `call` target or a `ref.func` operand), exception tag, global index and
-/// `call_indirect` type index at least `slot_width` bytes wide -- the slot width the module was emitted
+/// `call` target or a `ref.func` operand), exception tag, global index,
+/// type index (`call_indirect` and the gc lane's struct / array operands) and
+/// type-index blocktype at least `slot_width` bytes wide -- the slot width the module was emitted
 /// with (#3941). The width cannot be read back off the body: under width 3 a
 /// 3-byte minimal `call 20000` and a padded `call 5` look the same, and only
 /// the second must stay 3 bytes when its value shrinks. 0 is minimal.
@@ -780,7 +807,11 @@ export fn rebuild_body_relocs_with_slot_width(body: Bytes, start: Int, end_pos: 
       c = c + 1
     }
     let kind_i = Array::get(r.kinds, at = i)
-    if kind_i == reloc_kind_blocktype || kind_i == reloc_kind_heaptype {
+    if kind_i == reloc_kind_blocktype && slot_width > 0 {
+      // #3941: `emit_if_type_index` writes a type-index blocktype at the slot
+      // width. A heap type is not padded by any emitter, so it stays minimal.
+      write_sleb_padded(out = out, value = Array::get(new_values, at = i), width = slot_width)
+    } else if kind_i == reloc_kind_blocktype || kind_i == reloc_kind_heaptype {
       write_sleb(out = out, value = Array::get(new_values, at = i))
     } else if (kind_i == reloc_kind_func || kind_i == reloc_kind_tag || kind_i == reloc_kind_global || kind_i == reloc_kind_type) && slot_width > 0 {
       write_uleb_padded(out = out, value = Array::get(new_values, at = i), width = slot_width)
