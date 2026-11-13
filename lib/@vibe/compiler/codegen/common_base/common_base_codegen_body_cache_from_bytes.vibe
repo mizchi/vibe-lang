@@ -47,6 +47,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_const_str,
   emit_i64_eq,
   emit_i64_eqz,
+  emit_i64_lt_s,
   emit_i64_or,
   emit_i64_shr_s,
   emit_if_void,
@@ -1693,6 +1694,48 @@ export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_f
     emit_rc_dup_tagtest_call(buf = buf, local_idx = local_idx, dup_fn_idx = dup_fn_idx)
   } else {
     emit_rc_dup_inline(buf = buf, local_idx = local_idx, rc_shadow = rc_shadow, uaf_abort_idx = 0 - 1, prefix_fat = 0)
+  }
+}
+
+/// #1980: a per-path release flag counts the consume marks its path ran.
+/// Each marked occurrence spends one of the references the binding's flag
+/// guards, so the mark adds one rather than setting a bit: a path through
+/// two merges that each consume on one arm, or a `match` whose arms consume
+/// 2, 1 and 0, runs as many marks as it spent. A drop of one row only asks
+/// whether the count is zero (`emit_rc_path_drop`), so for it (`counted`
+/// false) the mark stores 1, which is shorter and answers the same.
+export fn emit_rc_path_mark(buf: Bytes, flag: Int, counted: Bool) -> Unit {
+  if counted {
+    emit_local_get(buf = buf, idx = flag)
+    emit_i64_const(buf = buf, value = 1)
+    emit_i64_add(buf)
+  } else {
+    emit_i64_const(buf = buf, value = 1)
+  }
+  emit_local_set(buf = buf, idx = flag)
+}
+
+/// #1980: release the references a path still holds of the binding in
+/// `local_idx`: `count` (one per plan row) less the marks counted in `flag`.
+/// Each release has its own guard, `flag < k`, so a path that ran `m` marks
+/// releases `count - m` and one that ran `count` or more releases nothing.
+/// With one row that is `flag == 0`, the guard a #2389 split binding's drop
+/// has always had.
+export fn emit_rc_path_drop(buf: Bytes, flag: Int, local_idx: Int, count: Int, drop_fn_idx: Int) -> Unit {
+  let mut k = 1
+  while k <= count {
+    emit_local_get(buf = buf, idx = flag)
+    if k == 1 {
+      emit_i64_eqz(buf)
+    } else {
+      emit_i64_const(buf = buf, value = k)
+      emit_i64_lt_s(buf)
+    }
+    emit_if_void(buf)
+    emit_local_get(buf = buf, idx = local_idx)
+    emit_call(buf = buf, func_idx = drop_fn_idx)
+    emit_end(buf)
+    k = k + 1
   }
 }
 

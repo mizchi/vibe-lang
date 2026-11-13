@@ -159,6 +159,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_ge_u,
   emit_i32_mul,
   emit_rc_dup_guarded,
+  emit_rc_path_drop,
   expr_tag,
   fn_type_param_types,
   get_efn_body,
@@ -1775,18 +1776,10 @@ export fn LinkedFunctionPlan::emit_with_cache_policy(_ function_plan: LinkedFunc
             }
             let mut ppk = 0
             while ppk < Array::length(ppd_params) {
-              emit_local_get(buf = body_buf, idx = Array::get(ppd_flags, at = ppk))
-              emit_i64_eqz(body_buf)
-              emit_if_void(body_buf)
-              // One plan row per reference the path still holds (#1980).
+              // One plan row per reference the parameter's marks track,
+              // less the marks this path ran (#1980).
               let (ppkn, _) = Array::get(lc_norm_params, at = Array::get(ppd_params, at = ppk))
-              let mut pdk = array_count_str(arr = rc_path_drops, s = ppkn)
-              while pdk > 0 {
-                emit_local_get(buf = body_buf, idx = Array::get(ppd_params, at = ppk))
-                emit_call(buf = body_buf, func_idx = rc_drop_idx)
-                pdk = pdk - 1
-              }
-              emit_end(body_buf)
+              emit_rc_path_drop(buf = body_buf, flag = Array::get(ppd_flags, at = ppk), local_idx = Array::get(ppd_params, at = ppk), count = array_count_str(arr = rc_path_drops, s = ppkn), drop_fn_idx = rc_drop_idx)
               ppk = ppk + 1
             }
             if need_dup {

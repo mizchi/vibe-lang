@@ -1,0 +1,150 @@
+// RC control: a counted path flag counts every occurrence its binding's
+// dups were planned for (#1980).
+//
+// A binding a branch merge leaves holding a dup on one path and not another
+// takes a path drop of one row per dup row, and every occurrence a dup was
+// planned for is a consume mark that adds one to the binding's flag. The
+// drop releases its rows less that count. A mark codegen did not run would
+// release a reference the path had already moved out, so each function here
+// puts an occurrence where the mark has to survive a different lowering --
+// a pipe, a `handle` body, a tuple, a record field, a local lambda, a loop
+// the binding is declared outside of -- next to an asymmetric merge, and
+// keeps every consumed value in `ks`. Freed memory is scribbled over before
+// `ks` is read, and VIBE_RC=shadow traps on a release of a value still held.
+// Each shape adds 0, so the answer is 0 whatever the allocation behaviour.
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+fn keep(ks: Array[Array[Int]], v: Array[Int]) -> Int {
+  Array::push(ks, value = v)
+  0
+}
+
+fn pipe_keep(_ v: Array[Int], ks: Array[Array[Int]]) -> Int {
+  Array::push(ks, value = v)
+  0
+}
+
+effect Ask {
+  Get() -> Int
+}
+
+// Occurrence outside the merge, before it, through a pipe.
+fn pipe_then_merge(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let a = v |> pipe_keep(ks = ks)
+  let b = if i % 2 == 0 {
+    keep(ks = ks, v = v)
+  } else {
+    0
+  }
+  a + b + Array::get(v, at = 0) - i
+}
+
+// Occurrence inside a handle body.
+fn handled(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let b = if i % 2 == 0 {
+    keep(ks = ks, v = v)
+  } else {
+    0
+  }
+  let c = handle {
+    keep(ks = ks, v = v) + perform Ask::Get()
+  } with { Ask::Get() => resume(0) }
+  b + c + Array::get(v, at = 1) - (i + 1)
+}
+
+// Occurrence in a match scrutinee position and a tuple.
+fn tupled(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let b = match i % 3 {
+    0 => keep(ks = ks, v = v) + keep(ks = ks, v = v),
+    1 => {
+      let t = (v, i)
+      Array::push(ks, value = t.0)
+      0
+    },
+    _ => 0
+  }
+  b + Array::get(v, at = 2) - (i + 2)
+}
+
+// Occurrence in a while loop declared INSIDE the binding's scope -- the
+// binding is loop-carried there, so it is not recorded.
+fn looped(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let b = if i % 2 == 0 {
+    keep(ks = ks, v = v)
+  } else {
+    0
+  }
+  let mut k = 0
+  while k < 2 {
+    Array::push(ks, value = v)
+    k = k + 1
+  }
+  b + Array::get(v, at = 0) - i
+}
+
+// Occurrence inside a lambda called locally.
+fn lambdaed(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let b = if i % 2 == 0 {
+    keep(ks = ks, v = v)
+  } else {
+    0
+  }
+  let f = () -> keep(ks = ks, v = v)
+  b + f() + Array::get(v, at = 0) - i
+}
+
+// Occurrence in string interpolation (borrow) and a record.
+struct R {
+  a: Array[Int];
+  n: Int
+}
+
+fn recorded(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let b = if i % 2 == 0 {
+    let r = R::{ a: v, n: i }
+    Array::push(ks, value = r.a)
+    0
+  } else if i % 3 == 0 {
+    keep(ks = ks, v = v) + keep(ks = ks, v = v)
+  } else {
+    0
+  }
+  let s = "\{Array::length(v)}"
+  b + String::length(s) - 1 + Array::get(v, at = 0) - i
+}
+
+fn run_all() -> Int {
+  let ks: Array[Array[Int]] = []
+  let mut acc = 0
+  let mut i = 0
+  while i < 12 {
+    acc = acc + pipe_then_merge(ks = ks, i = i) + handled(ks = ks, i = i) + tupled(ks = ks, i = i) + looped(ks = ks, i = i) + lambdaed(ks = ks, i = i) + recorded(ks = ks, i = i)
+    i = i + 1
+  }
+  // Scribble over freed memory, then read every kept array.
+  let mut j = 0
+  while j < 50 {
+    let _ = mka(1000 + j)
+    j = j + 1
+  }
+  let mut s = 0
+  let mut m = 0
+  while m < Array::length(ks) {
+    let a = Array::get(ks, at = m)
+    s = s + Array::get(a, at = 1) - Array::get(a, at = 0)
+    m = m + 1
+  }
+  acc * 1000 + s - Array::length(ks)
+}
+
+test "every consume-mark site keeps the counted path drop exact" {
+  inspect(run_all(), content = "0")
+}
