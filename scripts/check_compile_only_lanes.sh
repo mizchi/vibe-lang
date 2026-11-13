@@ -45,6 +45,10 @@
 #      VIBE_INCREMENTAL_TELEMETRY_OUT is refused naming VIBE_CFG=telemetry
 #      without the destination being touched -- the probe names the compile
 #      INPUT as the destination, and the input must survive.
+#      The incremental invalidation trace likewise: its encoder and the
+#      `_v1_json` counter encoder it embeds are absent, and
+#      VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT is refused naming
+#      VIBE_CFG=telemetry with a planted destination left as it was.
 #   3. ACCEPTANCE. The two production lanes still compile, and the default
 #      lane's output runs. Cfg, unstable authorization and generated-source
 #      trust remain per-compilation inputs to this same artifact.
@@ -69,6 +73,8 @@
 #       runs check 2b's heap-mark half alone (likewise)
 #   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --incremental-telemetry-only
 #       runs check 2b's incremental-typecheck half alone (likewise)
+#   bash scripts/check_compile_only_lanes.sh --artifact W --entry NAME --invalidation-trace-only
+#       runs check 2b's invalidation-trace half alone (likewise)
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -81,6 +87,7 @@ TELEMETRY_ONLY=0
 SCHEDULER_TRACE_ONLY=0
 MEMORY_MARKS_ONLY=0
 INCREMENTAL_ONLY=0
+INVALIDATION_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --artifact) ARTIFACT="$2"; shift 2 ;;
@@ -91,6 +98,7 @@ while [ "$#" -gt 0 ]; do
     --scheduler-trace-only) SCHEDULER_TRACE_ONLY=1; shift ;;
     --memory-marks-only) MEMORY_MARKS_ONLY=1; shift ;;
     --incremental-telemetry-only) INCREMENTAL_ONLY=1; shift ;;
+    --invalidation-trace-only) INVALIDATION_ONLY=1; shift ;;
     *) echo "check-compile-only-lanes: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -151,6 +159,11 @@ ABSENT_PATTERNS="$ABSENT_PATTERNS|profile_memory_mark_emit"
 # sibling is not on the list: the incremental invalidation trace -- a family
 # still in this build -- embeds it as `aggregate_telemetry`.
 ABSENT_PATTERNS="$ABSENT_PATTERNS|incremental_typecheck_telemetry_json|telemetry_destination_conflict"
+# #2498: the incremental invalidation trace's encoder, its JSON string helper,
+# and the `_v1_json` counter encoder it embeds. Only the `#cfg(telemetry)`
+# publication reaches them. The walk's observation points and counters stay
+# (unit tests on the default cfg drive them); they are not on this list.
+ABSENT_PATTERNS="$ABSENT_PATTERNS|incremental_invalidation_trace_json|incremental_trace_json_string|incremental_typecheck_telemetry_v1_json"
 
 scan_names() { # <wasm>
   local wasm="$1" listing
@@ -409,6 +422,35 @@ refuse_incremental_telemetry() {
 $PROBE_DIAG" \
     || fail "VIBE_INCREMENTAL_TELEMETRY_OUT was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_incremental_telemetry.log") ${PROBE_DIAG}'"
 }
+# The incremental invalidation trace. Only the check-only lane publishes it,
+# so that is where the generation's stage2 is caught accepting it; a build
+# without it refuses on every lane, after the stale-sidecar cleanup, and
+# leaves the destination as it found it.
+refuse_invalidation_trace() {
+  local trace="$WORK/invalidation.json"
+  rm -f "$trace"
+  compile_probe refuse_invalidation_accepted VIBE_CHECK_ONLY=1 \
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT="$trace" VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE=compile-only-2498
+  if [ -e "$trace" ]; then
+    fail "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT was ACCEPTED by $ARTIFACT (invoke $ENTRY): it published '$(head -c 160 "$trace")'"
+  fi
+  printf 'a trace this run must not touch\n' >"$trace"
+  # shellcheck disable=SC2046
+  compile_probe refuse_invalidation_trace VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT="$trace" \
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE=compile-only-2498 $(plant_stale_sibling)
+  if ! grep -qxF "a trace this run must not touch" "$trace" 2>/dev/null; then
+    fail "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT was refused by $ARTIFACT (invoke $ENTRY), but its destination was touched"
+  fi
+  if [ -s "$PROBE_OUT" ]; then
+    fail "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT was ignored by $ARTIFACT: it compiled the probe"
+  fi
+  if stale_sibling_survived; then
+    fail "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT was refused before the stale-sidecar cleanup by $ARTIFACT (invoke $ENTRY): the earlier run's VIBE_ARTIFACT_INPUT_TRACE_OUT sidecar survived the refused invocation"
+  fi
+  grep -qF "VIBE_CFG=telemetry" <<<"$(cat "$WORK/refuse_invalidation_trace.log")
+$PROBE_DIAG" \
+    || fail "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT was refused, but not by naming VIBE_CFG=telemetry: '$(tail -3 "$WORK/refuse_invalidation_trace.log") ${PROBE_DIAG}'"
+}
 if [ "$SCHEDULER_TRACE_ONLY" = 1 ]; then
   refuse_scheduler_trace
   echo "compile-only-lanes: scheduler trace refusal ok"
@@ -422,6 +464,11 @@ fi
 if [ "$INCREMENTAL_ONLY" = 1 ]; then
   refuse_incremental_telemetry
   echo "compile-only-lanes: incremental telemetry refusal ok"
+  exit 0
+fi
+if [ "$INVALIDATION_ONLY" = 1 ]; then
+  refuse_invalidation_trace
+  echo "compile-only-lanes: invalidation trace refusal ok"
   exit 0
 fi
 
@@ -438,6 +485,8 @@ refuse_memory_marks
 echo "compile-only-lanes: telemetry refusal ok (VIBE_PROFILE_MEMORY_MARKS=1 refused after the sidecar cleanup)"
 refuse_incremental_telemetry
 echo "compile-only-lanes: telemetry refusal ok (VIBE_INCREMENTAL_TELEMETRY_OUT refused, destination untouched)"
+refuse_invalidation_trace
+echo "compile-only-lanes: telemetry refusal ok (VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT refused, destination untouched)"
 
 # 3. acceptance: the default (RC) lane and the bump lane compile; they differ;
 # the default output runs.

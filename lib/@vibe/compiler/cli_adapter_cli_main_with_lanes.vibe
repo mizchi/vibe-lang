@@ -267,6 +267,55 @@ fn incremental_telemetry_write(destination: String, contents: String) -> Unit wi
   ()
 }
 
+// --- #2498: the incremental invalidation trace ----------------------------
+//
+// `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT` (+ nonce) asks the check-only lane
+// for the per-module invalidation decisions and their interface / checked-env
+// observations, with the incremental counters embedded as
+// `aggregate_telemetry`. Only a compiler built with `VIBE_CFG=telemetry`
+// publishes it -- the generation's stage2, which
+// scripts/incremental_invalidation_oracle.mjs, edit_cycle_kpi.mjs and
+// check_telemetry_sidecar_guards.sh drive. A build without it refuses the
+// request by name after the shared stale-sidecar cleanup and never touches the
+// destination; the trace encoder and the `_v1_json` counter encoder it embeds
+// are then reached only from the `#cfg(telemetry)` publication below, so the
+// compile-only artifact defines neither.
+//
+// What stays, deliberately: the walk's observation points and counters
+// (`incremental_interface_trace_observe`, `incremental_typecheck_telemetry_add`
+// and the engine cells behind them). Unit tests on the default cfg drive them
+// (checked_module_cache/cache_test.vibe, tests/cache_probe_test.vibe,
+// fixtures/checker_engine_runtime_owner_test.vibe), and gating the engine's
+// half would split the checker package by cfg. In this build nothing turns
+// them on, so each is one disabled-cell read.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT`,
+/// or `""` when it can.
+fn invalidation_trace_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT`,
+/// or `""` when it can. This build has no trace writer, so it always refuses.
+fn invalidation_trace_refusal() -> String {
+  telemetry_build_refusal("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+}
+
+#cfg(telemetry)
+/// Write the invalidation trace for this successful check to `destination`.
+fn invalidation_trace_publish(destination: String, entry_path: String, run_nonce: String, checked_error_row: Bool,) -> Unit with Env + Exception + Fs {
+  Fs::write_file(destination, contents = incremental_invalidation_trace_json(entry_path = entry_path, run_nonce = run_nonce, checked_error_row = checked_error_row))
+}
+
+#cfg(not(telemetry))
+/// No trace writer in this build: refuse, as the request should already have
+/// been.
+fn invalidation_trace_publish(destination: String, entry_path: String, run_nonce: String, checked_error_row: Bool,) -> Unit with Env + Exception + Fs {
+  throw(invalidation_trace_refusal())
+}
+
 #cfg(telemetry)
 /// What does the telemetry destination collide with? "" when nothing.
 ///
@@ -1033,6 +1082,19 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   } else {
     ()
   }
+  // #2498: and for the incremental invalidation trace, which only the
+  // check-only lane publishes but every lane reads (it forces typing-env reuse
+  // off). A build without the telemetry flag refuses it on every lane.
+  let invalidation_refusal = if Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT") != "" {
+    invalidation_trace_refusal()
+  } else {
+    ""
+  }
+  if invalidation_refusal != "" {
+    throw(invalidation_refusal)
+  } else {
+    ()
+  }
   let scheduler_trace = Env::get("VIBE_SCHEDULER_TRACE")
   if scheduler_trace == "" {
     ()
@@ -1363,7 +1425,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
         ()
       }
       if invalidation_trace_out != "" {
-        Fs::write_file(invalidation_trace_out, contents = incremental_invalidation_trace_json(entry_path = input_path, run_nonce = invalidation_trace_nonce, checked_error_row = checked_error_row))
+        invalidation_trace_publish(destination = invalidation_trace_out, entry_path = input_path, run_nonce = invalidation_trace_nonce, checked_error_row = checked_error_row,)
       } else {
         ()
       }
