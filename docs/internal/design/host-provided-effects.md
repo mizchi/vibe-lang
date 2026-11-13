@@ -147,8 +147,8 @@ Three readings:
 2. **Under a row WITH the user effect, it does not.** r4(b), r12(b) and
    r14(b) report nothing: the `Db` on the row satisfies the call, and the
    walk's entry-specific branch (the `EEUndischargedEntryEffect` arm) fires only
-   for a direct `perform` (r2). Today only admission stands between those
-   programs and a run that reaches an unhandled `Db`. The same row also
+   for a direct `perform` (r2). Before decision 3, only admission stood between
+   those programs and a run that reaches an unhandled `Db`. The same row also
    over-refuses r10, which is clean without `Db` on the row. Relaxing admission alone would
    ship exactly the trap the issue warns about.
 3. **The walk is conservative, never permissive, on what it cannot see.** An
@@ -302,7 +302,16 @@ Let `R` be the entry's written row after `effectset` expansion.
 1. **Classify.** Every label in `R` must classify against the program catalog
    (§1); an unknown label, a row variable, and a duplicate definition are
    refused as today. `R` splits into `C` (capability, exception and runtime
-   labels) and `A` (labels whose class is algebraic).
+   labels) and `A` (labels whose class is algebraic). `A` holds a bare label
+   naming an effect the program declares without `extern` and without a
+   resource parameter, and an operation label naming an operation such an
+   effect declares (`entry_label_is_algebraic`,
+   `checker/effects/checker_effects_entry_residual.vibe`). Two spellings stay
+   in `C` even though a declaration matches them: an effect with a resource
+   parameter is a capability by its declaration (#3143), and a bare label the
+   host policy admits is the host's grant whatever the program declares under
+   that name (`lib/@vibe/cli/entry.vibe` declares `effect Profiler` and grants
+   `Profiler` on `main`).
 2. **Residual walk.** The residual requirement is the set of labels the
    perform walk reports missing when it runs over the body with an EMPTY
    declared row, the probe `file_tests_cacheable` already runs over a `test`
