@@ -9,7 +9,8 @@
 #                    (a probe program spelling `compile_file_fs_mode_gc`):
 #                    the absence check must name it.
 #                    Also run for component and editor tools (#2499) and the
-#                    ingestion-pipeline telemetry encoder (#2498).
+#                    ingestion-pipeline telemetry encoder and the
+#                    scheduler trace's row encoders (#2498).
 #   3. lost       -- a named wasm with no async component composition: the
 #                    presence check must say the production lane is gone.
 #   4. accepted   -- the full CLI stage2, invoked as `cli_main`: it serves
@@ -19,6 +20,8 @@
 #                    `telemetry` cfg flag (#2498): it publishes the
 #                    ingestion-pipeline sidecar, so --telemetry-only must
 #                    fail.
+#                    It also writes the scheduler trace, so
+#                    --scheduler-trace-only must fail.
 #   5. control    -- the real compile-only artifact passes.
 #
 # Fixture: a fresh named compile-only artifact built with the selected compiler
@@ -131,6 +134,8 @@ check_leak adapter_serve_component
 check_leak format_source
 check_leak lsp_main
 check_leak ingestion_pipeline_telemetry_json
+check_leak scheduler_trace_project
+check_leak scheduler_trace_step
 
 # 3. lost: a named build with no forbidden name and no async component lane.
 # The same probe shape as a leak, under a name no pattern matches, so the
@@ -175,6 +180,7 @@ expect_fail accepted_tool "VIBE_EMIT_WIT=1 was ACCEPTED" --artifact "$STAGE2" --
 # 4b. telemetry: the generation's stage2 keeps the counters, so it publishes
 # the sidecar the compile-only artifact must refuse.
 expect_fail telemetry "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --telemetry-only
+expect_fail scheduler_trace "VIBE_SCHEDULER_TRACE was ACCEPTED" --artifact "$STAGE2" --entry cli_main --scheduler-trace-only
 
 # 5. control.
 if ! bash "$GATE" --artifact "$ART" --entry cli_main_compile_only >"$TMP/control.log" 2>&1; then
