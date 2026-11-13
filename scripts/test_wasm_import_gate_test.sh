@@ -89,6 +89,10 @@ expect_fail "a different granted optional answer" "extern_greeter_optional_main 
 fresh; mutate extern_greeter_optional_main.vibex 'println("not granted")' 'println("notgranted")'
 expect_fail "a different not-granted optional answer" "extern_greeter_optional_main printed notgranted with no provider bound"
 
+# 6f. The --trace / --break rows check the answer, not just the exit status.
+fresh; mutate extern_greeter_optional_debug_main.vibex 'println("granted: \{s}")' 'println("grantedx \{s}")'
+expect_fail "a different instrumented-build optional answer" "extern_greeter_optional_debug_main printed grantedx"
+
 # 6d. A test that reads another answer than the provider gives fails, so the
 #     `vibe test --provide` row checks the test ran against the provider.
 fresh; mutate extern_greeter_test.vibe 'content = "hi, test"' 'content = "hi, tests"'
@@ -108,4 +112,4 @@ expect_fail "a different narrow-width answer" "narrow_import_test failed"
 fresh; mutate trap_component_u8_range.vibex "inc8(300)" "inc8(200)"
 expect_fail "a u8 refusal that does not fire" "a u8 argument outside 0 .. 255 was accepted"
 
-echo "[wasm-import-gate-test] ok (13 cases)"
+echo "[wasm-import-gate-test] ok (14 cases)"

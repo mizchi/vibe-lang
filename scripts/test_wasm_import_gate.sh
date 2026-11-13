@@ -50,7 +50,9 @@
 #      (#4082), `perform? Greeter::greet(..)` answers `Granted` through a
 #      bound provider and `NotGranted` without one, and the artifact built
 #      without one imports nothing from `vibe:effect:`
-#      (extern_greeter_optional_main.vibex).
+#      (extern_greeter_optional_main.vibex), and `vibe run --trace` /
+#      `--break` answer `Granted` the same way
+#      (extern_greeter_optional_debug_main.vibex).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -280,6 +282,16 @@ out="$(vibe "$VIBERUN" run "$FX/extern_greeter_optional_main.vibex" 2>"$WORK/err
 [ "$out" = "not granted" ] || fail "[viberun] extern_greeter_optional_main printed $(printf '%q' "$out") with no provider bound, want not granted"
 got="$(foreign_imports "$WORK/build/run/extern_greeter_optional_main.wasm" "vibe:effect:./Greeter")"
 [ -z "$got" ] || fail "[viberun] the optional extern effect with no provider bound still imports '$got'"
+# The instrumented builds take the same grants (#4082): `--trace` and
+# `--break` (also the route of `--alloc-site`) answer `Granted` through the
+# bound provider, as the plain run does.
+for DEBUG_FLAG in --trace "--break main"; do
+  status=0
+  # shellcheck disable=SC2086 # the flag and its value are two words
+  out="$(vibe "$VIBERUN" run $DEBUG_FLAG --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_optional_debug_main.vibex" 2>"$WORK/err" </dev/null)" || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] extern_greeter_optional_debug_main exited $status under $DEBUG_FLAG"; }
+  [ "$out" = "granted: hi, debug" ] || fail "[viberun] extern_greeter_optional_debug_main printed $(printf '%q' "$out") under $DEBUG_FLAG with a provider bound, want granted: hi, debug"
+done
 # With no provider bound, nothing of the program runs: the refusal comes
 # before `main` and names the effect, the operation and the flag.
 status=0
@@ -334,4 +346,4 @@ out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/e
 grep -qF "'greet' is now (string->string) but the program was compiled against (s64->s64)" "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "[viberun] the provider-signature refusal does not say why"; }
 
-echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal; extern effect: provider, optional grade, missing-provider refusal, vibe test --provide, node refusal, signature refusal)"
+echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal; extern effect: provider, optional grade (plain, --trace, --break), missing-provider refusal, vibe test --provide, node refusal, signature refusal)"
