@@ -71,7 +71,13 @@
 //# Imports
 
 import @vibe/compiler/runtime {
-  collect_all_diagnostics, collect_all_diagnostics_for_path, collect_all_diagnostics_with_unstable_for_path
+  collect_all_diagnostics,
+  collect_all_diagnostics_for_path,
+  collect_all_diagnostics_for_path_with_error_row,
+  collect_all_diagnostics_with_unstable_for_path,
+  collect_syntax_diagnostics_for_path,
+  collect_unstable_import_diagnostics_for_path,
+  split_check_report
 }
 
 import @vibe/compiler/query {
@@ -81,6 +87,7 @@ import @vibe/compiler/query {
   doc_at_source,
   symbol_spans,
   type_at_fs_session_answer,
+  type_at_fs_session_errors,
   type_at_fs_session_invalidate,
   type_at_fs_session_new,
   type_at_fs_session_release,
@@ -1151,6 +1158,73 @@ fn lsp_handle_diagnostics_for_path(input_path: String, source: String, allow_uns
   })
 }
 
+/// The diagnostics published for the document `uri` holding `source`.
+///
+/// A `.vibe` file on disk is typed with its imports resolved, by the session
+/// the hovers use (#4013). Typed alone, every imported type, every
+/// `Type::method` of an import and every name its package's `index.vpkg`
+/// shares with its siblings is unknown, so a file `vibe check` accepts was
+/// published with errors -- 62 of them on `loader/header_cache.vibe`.
+///
+/// Syntax comes first and from the recovering parser, so every syntax error
+/// is reported and a buffer that does not parse costs no walk. A file that
+/// parses is reported from the walk: its own type errors, located in the
+/// buffer, and a dependency's with that file named as its origin
+/// (`lsp_parse_diag_line_for`). When the walk is clean the single-file lane
+/// still contributes its warnings, but never its errors: an error the
+/// import-resolving check does not make comes from reading the file without
+/// its imports. The ADR-0068 opt-in verdict is the import scan's, as before.
+///
+/// Every other document -- an unsaved buffer, a contract -- is diagnosed
+/// alone, as before.
+fn lsp_document_diagnostics(uri: String, source: String, allow_unstable: Bool, checked_error_row: Bool) -> Json with Env + Exception + Fs {
+  let input_path = lsp_uri_to_path(uri)
+  let path = lsp_hover_fs_path(uri)
+  if path == "" {
+    lsp_handle_diagnostics_for_path(input_path = input_path, source = source, allow_unstable = allow_unstable, checked_error_row = checked_error_row)
+  } else {
+    let syntax = collect_syntax_diagnostics_for_path(input_path = input_path, source = source)
+    if Array::length(syntax) > 0 {
+      JArr(for msg in syntax {
+        lsp_parse_diag_line(source = source, msg = msg)
+      })
+    } else {
+      Array::set(lsp_hover_fs_doc, at = 0, value = (uri, path))
+      let report = type_at_fs_session_errors(session = lsp_hover_fs_session(), path = path, source = source, checked_error_row = checked_error_row)
+      let found = if report == "" {
+        lsp_single_file_warnings(input_path = input_path, source = source, checked_error_row = checked_error_row)
+      } else {
+        for msg in split_check_report(report) {
+          lsp_parse_diag_line_for(path = path, source = source, raw = msg)
+        }
+      }
+      for msg in collect_unstable_import_diagnostics_for_path(input_path = input_path, source = source, allow_unstable = allow_unstable) {
+        Array::push(found, value = lsp_parse_diag_line(source = source, msg = msg))
+      }
+      JArr(found)
+    }
+  }
+}
+
+/// The warnings the single-file lane reports for `source`, rendered; its
+/// errors are dropped (see `lsp_document_diagnostics`).
+fn lsp_single_file_warnings(input_path: String, source: String, checked_error_row: Bool) -> Array[Json] with Exception {
+  let found: Array[Json] = []
+  for msg in collect_all_diagnostics_for_path_with_error_row(input_path = input_path, source = source, checked_error_row = checked_error_row) {
+    let d = lsp_parse_diag_line(source = source, msg = msg)
+    if Json::number(Json::field(d, key = "severity")) == 2.0 {
+      Array::push(found, value = d)
+    } else ()
+  }
+  found
+}
+
+fn lsp_document_diagnostics_safe(uri: String, source: String, allow_unstable: Bool, checked_error_row: Bool) -> Json with Env + Fs {
+  handle {
+    lsp_document_diagnostics(uri = uri, source = source, allow_unstable = allow_unstable, checked_error_row = checked_error_row)
+  } with { Exception::Throw(_) => JArr([]) }
+}
+
 /// `document_symbol`/`diagnostics` declare `with Exception` (symbol_spans/
 /// collect_all_diagnostics can throw on a genuine internal failure, not just
 /// "no symbols" -- see cli_adapter.vibe's own VIBE_SYMBOLS branch, which
@@ -1665,7 +1739,7 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
   }); Lsp::Rename(u2, l2, c2, nn) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
     lsp_handle_rename(source = src, uri = u2, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), new_name = nn)
-  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe_for_path(input_path = lsp_uri_to_path(u2), source = lsp_doc_text(docs = docs, uri = u2), allow_unstable = lsp_unstable_opt_in(), checked_error_row = checked_error_row)); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
+  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::Diagnostics(u2) => resume(lsp_document_diagnostics_safe(uri = u2, source = lsp_doc_text(docs = docs, uri = u2), allow_unstable = lsp_unstable_opt_in(), checked_error_row = checked_error_row)); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
     lsp_handle_signature_help(uri = u2, source = src, line0 = l2, byte_col = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), checked_error_row = checked_error_row)
   }); Lsp::WorkspaceSymbol(q) => resume(lsp_handle_workspace_symbol(query = q, docs = docs)) }
@@ -1786,6 +1860,13 @@ export fn lsp_notify(method: String, params: Json, docs: Map[String, String]) ->
 
 fn lsp_diagnostics_for(uri: String, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
   lsp_run_with_handler(op = lsp_op_diagnostics(), uri = uri, l = 0, c = 0, new_name = "", docs = docs, checked_error_row = checked_error_row)
+}
+
+/// The diagnostics the session loop publishes for `uri` after a `didOpen`,
+/// `didChange` or `didSave` -- the seam a session test reads them through
+/// (#4013).
+export fn lsp_published_diagnostics(uri: String, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
+  lsp_diagnostics_for(uri = uri, docs = docs, checked_error_row = checked_error_row)
 }
 
 //# Document store (plain mutable state -- see the effect handler's own doc
