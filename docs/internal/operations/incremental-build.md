@@ -2496,7 +2496,12 @@ An exception throw is not effect syntax for this rule (#4123). The desugar
 lowers `throw(v)` to `perform <Exception>::Throw(v)`, but the passes read
 whether a callee throws only off its declared row, which replay compares. So
 an edit inside a function that throws replays, while one that adds or drops
-`Exception` in its row does not.
+`Exception` in its row does not. Likewise, the binders the desugar introduces
+with a fixed spelling (`__asc`, a generated comparison's `__ae_i` /
+`__oeq_l` / `__a<n>`, ...) do not keep an edit from replaying (#4130). The
+passes consult the binder census only for function, callee and minted-name
+spellings, and none of these is one. Any other generated `__` binder still
+does.
 
 **The gate: `scripts/prelude_reuse_oracle.mjs`** (stage2-oracles, with
 `scripts/prelude_reuse_oracle_test.sh` as its red self-test).
