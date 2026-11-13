@@ -29,7 +29,7 @@ import @vibe/parser {
 }
 
 fn cg_inputs(sources: Array[(String, String)], entry: String, flags: String) -> CheckedLoweringInputs with Env + Exception {
-  let mut db = db_new()
+  let mut db = db_new(checked_error_row = false)
   for source in sources {
     db = db_set_source(db = db, path = source.0, source = source.1)
   }
@@ -76,7 +76,7 @@ test "configured codegen is byte-identical to the compatibility typed modes" {
   let source = "fn id[T](_ value: T) -> T { value }\nexport fn main() -> Int { let f = () -> { 2.5 }; if __to_string(id(2.5)) == \"2.5\" && __to_string(f()) == \"2.5\" { 7 } else { 0 } }\nfn unused() -> Int { 5 }\n"
   let inputs = cg_inputs(sources = [(path, source)], entry = path, flags = "")
   for mode in ["mvp", "no-dce", "rc", "rc-shadow"] {
-    let (legacy, _) = compile_with_closure_sources_wasi_mode_cached(db = db_new(), main_source = source, main_path = path, sources = [
+    let (legacy, _) = compile_with_closure_sources_wasi_mode_cached(db = db_new(checked_error_row = false), main_source = source, main_path = path, sources = [
     ], entry_name = "main", mode = mode)
     let owned = compile_checked_source_groups_wasi_with_config(source_groups = [
       ("inline", [(path, source)])
@@ -257,13 +257,13 @@ test "RC modes match independent kernels and keep escaping owned captures alive"
   let groups = [("owned", sources)]
   let inputs = cg_inputs(sources = sources, entry = path, flags = "")
   // Independent dispatch: a wrong shared mode decoder must not certify itself.
-  let (stmts, floats, ints, bools, eq_offsets, eq_keys) = merged_stmts_and_offsets(groups)
+  let (stmts, floats, ints, bools, eq_offsets, eq_keys) = merged_stmts_and_offsets(groups, checked_error_row = false)
   let rc = compile_wasi_module_rc_impl_with_typed_offsets(stmts_in = stmts, entry_name = "main", checker_float_call_offsets = floats, checker_int_render_offsets = ints, checker_bool_render_offsets = bools, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys, exports_stripped = false)
   let shadow = compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts_in = stmts, entry_name = "main", checker_float_call_offsets = floats, checker_int_render_offsets = ints, checker_bool_render_offsets = bools, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys)
   assert(rc != shadow)
   let bump = compile_checked_source_groups_wasi_with_config(source_groups = groups, entry_name = "main", mode = "mvp", cfg = target_cfg_from_csv(""), inputs = inputs)
   assert(rc != bump)
-  let mut db = db_new()
+  let mut db = db_new(checked_error_row = false)
   for pair in [
     ("rc", rc),
     ("rc-shadow", shadow),

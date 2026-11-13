@@ -65,7 +65,7 @@ fn build_type_db_fingerprint(source: String, dep_fps: Array[(String, String)]) -
 
 export fn selfbuild_probe_type_db_cache_counts() -> Int with Env + Exception {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
-  let db1 = db_set_source(db = db_new(), path = "main.vibe", source = main_source)
+  let db1 = db_set_source(db = db_new(checked_error_row = false), path = "main.vibe", source = main_source)
   let db2 = db_typecheck(db = db1, path = "main.vibe")
   let count1 = db_typecheck_count(db2)
   let db3 = db_typecheck(db = db2, path = "main.vibe")
@@ -78,7 +78,7 @@ export fn selfbuild_probe_type_db_merge_counts() -> Int with Env + Exception {
     ("helpers.vibe", "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"),
     ("main.vibe", "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(a = 1, b = 2) }")
   ]
-  let result1 = db_merged_source(db = db_new(), _entry_path = "main.vibe", sources = sources)
+  let result1 = db_merged_source(db = db_new(checked_error_row = false), _entry_path = "main.vibe", sources = sources)
   let db1 = result1.2
   let count1 = db_merge_count(db1)
   let result2 = db_merged_source(db = db1, _entry_path = "main.vibe", sources = sources)
@@ -91,7 +91,7 @@ export fn selfbuild_probe_type_db_parse_counts() -> Int with Env + Exception {
   let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
   let main_source = "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(a = 1, b = 2) }"
   let sources = [("helpers.vibe", helper_source)]
-  let db1 = prepare_modules_cached(db = db_new(), main_path = "main.vibe", main_source = main_source, sources = sources)
+  let db1 = prepare_modules_cached(db = db_new(checked_error_row = false), main_path = "main.vibe", main_source = main_source, sources = sources)
   let count1 = db_parse_count(db1)
   let db2 = prepare_modules_cached(db = db1, main_path = "main.vibe", main_source = main_source, sources = sources)
   let count2 = db_parse_count(db2)
@@ -101,7 +101,7 @@ export fn selfbuild_probe_type_db_parse_counts() -> Int with Env + Exception {
 export fn selfbuild_probe_type_db_codegen_counts() -> Int with Env + Exception {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = array_empty()
-  let result1 = compile_with_modules_cached(db = db_new(), main_source = main_source, main_path = "main.vibe", sources = sources)
+  let result1 = compile_with_modules_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main.vibe", sources = sources)
   let db1 = result1.1
   let count1 = db_codegen_count(db1)
   let result2 = compile_with_modules_cached(db = db1, main_source = main_source, main_path = "main.vibe", sources = sources)
@@ -129,9 +129,9 @@ export fn selfbuild_probe_type_db_fs_parse_counts() -> Int with Env + Exception 
   remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let count1 = db_parse_count(db1)
-  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let count2 = db_parse_count(db2)
   count1 * 1000 + count2
 }
@@ -142,6 +142,8 @@ export fn selfbuild_probe_type_db_fs_parse_counts() -> Int with Env + Exception 
 /// a newline so the regression pins both counter classifications independently
 /// from timing-based KPI measurements.
 export fn selfbuild_probe_incremental_typecheck_telemetry() -> String with Env + Exception + Fs {
+  // This probe is an independent unchecked library invocation.
+  let checked_error_row = false
   let helper_path = "_build/incremental_telemetry_probe_helper.vibe"
   let main_path = "_build/incremental_telemetry_probe_main.vibe"
   let helper_source = "export let add: () -> Int = () -> { 1 }"
@@ -161,10 +163,10 @@ export fn selfbuild_probe_incremental_typecheck_telemetry() -> String with Env +
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
   set_incremental_typecheck_telemetry_enabled(true)
-  let _ = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
+  let _ = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = checked_error_row), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let cold = incremental_typecheck_telemetry_json()
   set_incremental_typecheck_telemetry_enabled(true)
-  let _ = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
+  let _ = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = checked_error_row), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let warm = incremental_typecheck_telemetry_json()
   set_incremental_typecheck_telemetry_enabled(false)
   String::concat(cold, String::concat("\n", warm))
@@ -179,7 +181,7 @@ export fn selfbuild_probe_type_db_group_merge_counts() -> Int with Env + Excepti
       ("main.vibe", "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(a = 1, b = 2) }")
     ])
   ]
-  let result1 = db_grouped_merged_source(db = db_new(), groups = groups)
+  let result1 = db_grouped_merged_source(db = db_new(checked_error_row = false), groups = groups)
   let db1 = result1.2
   let count1 = db_merge_count(db1)
   let result2 = db_grouped_merged_source(db = db1, groups = groups)
@@ -191,7 +193,7 @@ export fn selfbuild_probe_type_db_group_merge_counts() -> Int with Env + Excepti
 export fn selfbuild_probe_type_db_module_source_counts() -> Int with Env + Exception {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = array_empty()
-  let result1 = compile_with_modules_cached(db = db_new(), main_source = main_source, main_path = "main_a.vibe", sources = sources)
+  let result1 = compile_with_modules_cached(db = db_new(checked_error_row = false), main_source = main_source, main_path = "main_a.vibe", sources = sources)
   let db1 = result1.1
   let count1 = db_module_source_count(db1)
   // #1290: entry paths participate in compilation identity, so only an
@@ -230,9 +232,9 @@ export fn selfbuild_probe_type_db_fs_multi_dep_parse_counts() -> Int with Env + 
   remove_file_if_exists(persistent_type_env_cache_path(helper1_fp))
   remove_file_if_exists(persistent_type_env_cache_path(helper2_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
   let count1 = db_parse_count(db1)
-  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(checked_error_row = false), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
   let count2 = db_parse_count(db2)
   count1 * 1000 + count2
 }

@@ -324,4 +324,50 @@ else:
   fi
 done
 
-echo "test_ci_compiler_gate_layout_test: ok (control + 20 cases)"
+# PR updates must replace their old CI without cancelling other PRs or main.
+mutate "
+start = s.index('concurrency:\\n')
+end = s.index('\\n\\n', start)
+s = s[:start] + s[end + 2:]
+" "concurrency removed" "
+assert 'concurrency' not in doc, doc.get('concurrency')
+"
+expect_reject "missing PR concurrency is rejected" "group by PR and isolate non-PR runs"
+
+group='${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}'
+for replacement in \
+  '${{ github.workflow }}-${{ github.run_id }}' \
+  '${{ github.workflow }}' \
+  '${{ github.workflow }}-${{ github.ref }}'; do
+  mutate "
+assert '''$group''' in s
+s = s.replace('''$group''', '''$replacement''', 1)
+" "concurrency group changed" "
+assert doc['concurrency']['group'] == '''$replacement''', doc['concurrency']
+"
+  expect_reject "a concurrency group that loses PR or non-PR isolation is rejected" "group by PR and isolate non-PR runs"
+done
+
+cancel="\${{ github.event_name == 'pull_request' }}"
+for replacement in true false; do
+  mutate "
+assert '''$cancel''' in s
+s = s.replace('''$cancel''', '$replacement', 1)
+" "concurrency cancellation changed" "
+assert doc['concurrency']['cancel-in-progress'] is $([ "$replacement" = true ] && echo True || echo False), doc['concurrency']
+"
+  expect_reject "unconditional cancellation policy $replacement is rejected" "cancel superseded PR runs only"
+done
+
+for replacement in 'always()' 'success()'; do
+  mutate "
+start = s.index('  ci-required:')
+assert 'if: \${{ !cancelled() }}' in s[start:]
+s = s[:start] + s[start:].replace('if: \${{ !cancelled() }}', 'if: $replacement', 1)
+" "required check condition changed" "
+assert doc['jobs']['ci-required']['if'] == '$replacement', doc['jobs']['ci-required']
+"
+  expect_reject "ci-required condition $replacement is rejected" "run after failures but stop on cancellation"
+done
+
+echo "test_ci_compiler_gate_layout_test: ok (control + 28 cases)"

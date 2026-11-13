@@ -1,0 +1,110 @@
+// lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — slot-stamp statement facts.
+//
+// What each statement shows the slot stamp's three pre-checks
+// (edp_expr_passes_literal_arg, edp_expr_passes_value_to_slot,
+// edp_expr_builds_row_field) before the program's names are known (#4040).
+// The pre-checks ask about the program as well -- which top-level functions
+// are row-free, which names are aliases or slot callees, which records carry
+// a row field -- so these facts do not answer them. They bound them: a
+// pre-check can hit a statement only where these facts show the node it
+// would hit on, so a statement they rule out is skipped without a walk, and
+// the pre-check itself decides every other one.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+
+/// (a node that hits edp_expr_passes_literal_arg whatever the program,
+/// identifiers passed bare to a named or method call, the callees of named
+/// calls with arguments, the methods of method calls with arguments, the
+/// records built, the type names given as a record's type arguments, the
+/// annotated parameter types of every lambda whose result is not a row-typed
+/// function or a tuple).
+export fn edp_slot_facts_stmt(_ stmt: Stmt) -> (Bool, Array[String], Array[String], Array[String], Array[String], Array[String], Array[TypeExpr]) {
+  let syntactic = [false]
+  let idents: Array[String] = []
+  let callees: Array[String] = []
+  let methods: Array[String] = []
+  let records: Array[String] = []
+  let aliases: Array[String] = []
+  let params: Array[TypeExpr] = []
+  let acc = (syntactic, idents, callees, methods, records, aliases, params)
+  match stmt {
+    SLet(_, _, _, _, e) => edp_slot_facts_expr(e = e, acc = acc),
+    SLetMut(_, _, e) => edp_slot_facts_expr(e = e, acc = acc),
+    SExpr(e) => edp_slot_facts_expr(e = e, acc = acc),
+    STest(_, e) => edp_slot_facts_expr(e = e, acc = acc),
+    SBench(_, e) => edp_slot_facts_expr(e = e, acc = acc),
+    SLetPat(_, e) => edp_slot_facts_expr(e = e, acc = acc),
+    _ => ()
+  }
+  (Array::get(syntactic, at = 0), idents, callees, methods, records, aliases, params)
+}
+
+/// The argument shapes edp_args_pass_literal reads: a row-free lambda hits
+/// on its own, a bare identifier only when it names a row-free function.
+fn edp_slot_facts_args(args: Array[Expr], syntactic: Array[Bool], idents: Array[String]) -> Unit {
+  for a in args {
+    match a {
+      EFn(_, _, _, _, None, _) => Array::set(syntactic, at = 0, value = true),
+      EIdent(an, _) => Array::push(idents, value = an),
+      ELabeledArg(_, _, EFn(_, _, _, _, None, _)) => Array::set(syntactic, at = 0, value = true),
+      ELabeledArg(_, _, EIdent(an, _)) => Array::push(idents, value = an),
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn edp_slot_facts_expr(e: Expr, acc: (Array[Bool], Array[String], Array[String], Array[String], Array[String], Array[String], Array[TypeExpr])) -> Unit {
+  let (syntactic, idents, callees, methods, records, aliases, params) = acc
+  match e {
+    ECall(EIdent(cn, _), args, _, _) => {
+      if Array::length(args) > 0 {
+        Array::push(callees, value = cn)
+      } else ()
+      edp_slot_facts_args(args = args, syntactic = syntactic, idents = idents)
+    },
+    ECall(EDot(_, m, _, _), args, _, _) => {
+      if Array::length(args) > 0 {
+        Array::push(methods, value = m)
+      } else ()
+      edp_slot_facts_args(args = args, syntactic = syntactic, idents = idents)
+    },
+    ECall(EFn(_, _, _, _, _, _), cargs, _, _) => if Array::length(cargs) == 1 {
+      match Array::get(cargs, at = 0) {
+        EFn(_, _, _, _, None, _) => Array::set(syntactic, at = 0, value = true),
+        _ => ()
+      }
+    } else (),
+    ERecord(rn, _, targs) => {
+      Array::push(records, value = rn)
+      for ty in targs {
+        match ty {
+          TyFn(_, _, Some(_)) => Array::set(syntactic, at = 0, value = true),
+          TyName(n) => Array::push(aliases, value = n),
+          TyApp(n, _) => Array::push(aliases, value = n),
+          _ => ()
+        }
+      }
+    },
+    ELet(_, EFn(_, _, _, _, _, _), _, _) => Array::set(syntactic, at = 0, value = true),
+    EFn(_, _, _, Some(TyFn(_, _, Some(_))), _, _) => Array::set(syntactic, at = 0, value = true),
+    EFn(_, _, _, Some(TyTuple(_)), _, _) => Array::set(syntactic, at = 0, value = true),
+    EFn(_, _, ps, _, _, _) => for p in ps {
+      match p.1 {
+        Some(ty) => Array::push(params, value = ty),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    edp_slot_facts_expr(e = expr_child_at(i), acc = acc)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}

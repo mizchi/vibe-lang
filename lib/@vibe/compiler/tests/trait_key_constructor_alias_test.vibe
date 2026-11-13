@@ -1,0 +1,63 @@
+// #3995: a bare parameterized alias is a constructor, not its applied body.
+import @vibe/compiler/core {
+  Stmt, canonicalize_trait_ref_aliases
+}
+import @vibe/compiler/checker {
+  check_program
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn impl_key_after_pass(_ source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  canonicalize_trait_ref_aliases(stmts)
+  canonicalize_trait_ref_aliases(stmts)
+  let mut key = "(not found)"
+  for stmt in stmts {
+    match stmt {
+      SImpl(_, _, name, _) => {
+        key = name
+      },
+      _ => ()
+    }
+  }
+  key
+}
+
+fn diagnostic(_ source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)), checked_error_row = false)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+let constructor_decls = "type Vec[T] = Array[T]\ntrait Functor[F[_]] {}\nstruct Note { n: Int }\n"
+
+test "a unary constructor alias keeps its bare spelling on repeated passes" {
+  inspect(impl_key_after_pass(String::concat(constructor_decls, "impl Functor[Vec] for Note {}\n")) == impl_key_after_pass("trait Functor[F[_]] {}\nstruct Note { n: Int }\nimpl Functor[Vec] for Note {}\n"), content = "true")
+}
+
+test "a previously accepted constructor alias impl still checks" {
+  inspect(diagnostic(String::concat(constructor_decls, "impl Functor[Vec] for Note {}\n")), content = "")
+}
+
+test "a binary alias retains both constructor parameters" {
+  inspect(diagnostic("type Pair[A, B] = (A, B)\ntrait Binary[F[_, _]] {}\nstruct Note { n: Int }\nimpl Binary[Pair] for Note {}\n"), content = "")
+}
+
+test "applied constructor aliases still expand in value-type arguments" {
+  inspect(impl_key_after_pass("type Vec[T] = Array[T]\ntrait Value[A] {}\nstruct Note { n: Int }\nimpl Value[Vec[Int]] for Note {}\n") == impl_key_after_pass("trait Value[A] {}\nstruct Note { n: Int }\nimpl Value[Array[Int]] for Note {}\n"), content = "true")
+}
+
+test "an alias with no parameters still expands" {
+  inspect(impl_key_after_pass("type Scalar = Int\ntrait Value[A] {}\nstruct Note { n: Int }\nimpl Value[Scalar] for Note {}\n") == impl_key_after_pass("trait Value[A] {}\nstruct Note { n: Int }\nimpl Value[Int] for Note {}\n"), content = "true")
+}
+
+test "preserving the constructor does not hide a wrong receiving kind" {
+  inspect(String::contains(diagnostic("type Vec[T] = Array[T]\ntrait Value[A] {}\nstruct Note { n: Int }\nimpl Value[Vec] for Note {}\n"), needle = "expects a complete type, but `Vec` is a constructor with 1 argument(s)"), content = "true")
+}
+
+test "a constructor alias key matches a bound at an actual call" {
+  inspect(diagnostic("type Vec[T] = Array[T]\ntrait Functor[F[_]] { tag(Self) -> Int }\nstruct Note { n: Int }\nimpl Functor[Vec] for Note { tag(self) -> Int { self.n } }\nfn tagged[T: Functor[Vec]](_ value: T) -> Int { T::tag(value) }\nfn main() -> Int { tagged(Note::{ n: 37 }) }\n"), content = "")
+}

@@ -227,12 +227,12 @@ fn rcq_view_ret(_ stmts: Array[Stmt]) -> Array[String] {
 /// refuse the file with "missing or invalid checker argument placement". The
 /// file is checked ALONE: a source whose imports the checker cannot see keeps
 /// the old unchecked lane, so a positional program still answers.
-fn rcq_parse(_ source: String) -> Array[Stmt] with Exception {
+fn rcq_parse(_ source: String, checked_error_row: Bool) -> Array[Stmt] with Exception {
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   desugar_inspect_calls(stmts)
   let checked = handle {
-    let _ = check_program(stmts)
+    let _ = check_program(stmts, checked_error_row = checked_error_row)
     true
   } with { Exception::Throw(_) => false }
   if checked {
@@ -247,8 +247,8 @@ fn rcq_scalar_ret(_ stmts: Array[Stmt]) -> Array[String] {
   sorted_names_of(compute_scalar_returning_names(stmts))
 }
 
-export fn rc_classify_source(_ source: String) -> String with Exception {
-  let stmts = rcq_parse(source)
+export fn rc_classify_source(_ source: String, checked_error_row: Bool) -> String with Exception {
+  let stmts = rcq_parse(source, checked_error_row = checked_error_row)
   rcq_run_prelude(stmts)
   let borrow_ret = rcq_borrow_ret(stmts)
   let masks: Array[Int] = []
@@ -422,8 +422,8 @@ fn rcq_norm_params(params: Array[(String, Option[TypeExpr])], sig: Option[TypeEx
 /// the borrow-param masks. A non-empty filter that names no function throws,
 /// prefixed by `verb`, so "the query broke" stays distinguishable from an
 /// empty answer.
-export fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_names: Array[String], out_fns: Array[Expr], tables: Array[Array[String]], masks: Array[Int]) -> Unit with Exception {
-  let stmts = rcq_parse(source)
+export fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_names: Array[String], out_fns: Array[Expr], tables: Array[Array[String]], masks: Array[Int], checked_error_row: Bool) -> Unit with Exception {
+  let stmts = rcq_parse(source, checked_error_row = checked_error_row)
   rcq_run_prelude(stmts)
   Array::push(tables, value = rcq_borrow_ret(stmts))
   Array::push(tables, value = compute_borrow_param_user_fns(stmts = stmts, exclude = rcq_entry_exclude(), out_masks = masks))
@@ -477,12 +477,12 @@ export fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_n
 /// FN BINDING ACTION COUNT per collapsed Perceus action. `fn_filter` empty
 /// means every user function; a non-empty filter that names no function
 /// throws so "the query broke" stays distinguishable from an empty plan.
-export fn rc_plan_source(source: String, fn_filter: String) -> String with Exception {
+export fn rc_plan_source(source: String, fn_filter: String, checked_error_row: Bool) -> String with Exception {
   let names: Array[String] = []
   let fns: Array[Expr] = []
   let tables: Array[Array[String]] = []
   let masks: Array[Int] = []
-  rcq_planned_fns(source = source, fn_filter = fn_filter, verb = "rc-plan", out_names = names, out_fns = fns, tables = tables, masks = masks)
+  rcq_planned_fns(source = source, fn_filter = fn_filter, verb = "rc-plan", out_names = names, out_fns = fns, tables = tables, masks = masks, checked_error_row = checked_error_row)
   let acc = StringBuilder::new()
   let first: Array[Bool] = [true]
   let mut i = 0

@@ -5,9 +5,6 @@ import @vibe/compiler/config {
 import @vibe/compiler/codegen/executable {
   executable_exports_stripped, strip_executable_wasm_env
 }
-import @vibe/compiler/checker {
-  set_error_row_checked
-}
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc_body_cached
 }
@@ -146,18 +143,18 @@ fn execute_functions(plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage
   result
 }
 
-fn compile_input() -> Bytes with Env + Exception + Fs {
+fn compile_input(checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
   // Keep the ordinary whole-program lowering path; split lowering remains a
   // separate experiment and would confound function-emission measurements.
-  compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
+  compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")), checked_error_row = checked_error_row)
 }
 
 fn main() -> Unit allows Env + Exception + Fs {
   configure_compiler_cfg_flags()
-  set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+  let checked_error_row = Env::get("VIBE_CHECK_ERROR_ROW") != "0"
   let mode = Env::get("VIBE_LOWERING_MODE")
   let bytes = if mode == "serial" {
-    compile_input()
+    compile_input(checked_error_row = checked_error_row)
   } else if mode == "single" {
     let jobs = match Int::parse(Env::get("VIBE_FUNCTION_JOBS")) {
       Some(n) => n,
@@ -167,7 +164,7 @@ fn main() -> Unit allows Env + Exception + Fs {
       throw("functions: jobs must be 1, 2 or 4")
     } else ()
     Array::set(selected_jobs, at = 0, value = jobs)
-    let output = function_with_executor(executor = execute_functions, action = compile_input)
+    let output = function_with_executor(executor = execute_functions, action = () -> compile_input(checked_error_row = checked_error_row))
     if Array::get(cursor, at = 0) != jobs {
       throw("functions: body executor was not invoked")
     } else ()

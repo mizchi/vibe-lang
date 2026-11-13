@@ -1,0 +1,106 @@
+//# An integer literal passed to a function VALUE takes the callee's `Int32` /
+//# `UInt32` parameter type, as it does in a call to a declared function: a
+//# function stored in a struct field (`v.f(5)`), a tuple element
+//# (`(t.0)(5)`), and a callee that is itself an expression (`make()(5)`,
+//# `v.mk()(5)`). Before, the field and expression callees refused the literal
+//# (`expected Int32, got Int`) while a declared `fn g(k: Int32)` took `g(5)`.
+//# Each answer is the value that arrived, so the boundary and negative values
+//# show the literal reached the callee unchanged.
+
+struct Holder {
+  f: (Int32) -> Int;
+  u: (UInt32) -> Int;
+  fa: (Array[Int32]) -> Int;
+  ft: ((UInt32, String)) -> String;
+  fo: (Option[Int32]) -> Int;
+  w: (Int32) -> Int32
+}
+
+struct Box[T] {
+  g: (T) -> Int
+}
+
+fn holder() -> Holder {
+  Holder::{
+    f: (k) -> Int32::to_int(k),
+    u: (k) -> UInt32::to_int(k),
+    fa: (xs) -> Int32::to_int(Array::get(xs, at = 1)),
+    ft: (t) -> {
+      let (n, s) = t
+      "\{s}=\{UInt32::to_int(n)}"
+    },
+    fo: (o) -> match o {
+      Some(x) => Int32::to_int(x),
+      None => 0
+    },
+    w: (k: Int32) -> k + Int::wrap_int32(1)
+  }
+}
+
+fn make_int32() -> (Int32) -> Int {
+  (k) -> Int32::to_int(k)
+}
+
+fn make_uint32() -> (UInt32) -> Int {
+  (k) -> UInt32::to_int(k)
+}
+
+fn Holder::mk(self: Holder) -> (UInt32) -> Int {
+  self.u
+}
+
+fn through_param(v: Holder) -> Int {
+  v.f(-1) + v.f(2147483647)
+}
+
+test "a function stored in a field takes a sized literal" {
+  let v = holder()
+  inspect(v.f(5), content = "5")
+  inspect(v.f(-5), content = "-5")
+  inspect(v.f(2147483647), content = "2147483647")
+  inspect(v.f(-2147483648), content = "-2147483648")
+  inspect(v.u(0), content = "0")
+  inspect(v.u(4294967295), content = "4294967295")
+  inspect((v.f)(7), content = "7")
+  inspect(through_param(v = v), content = "2147483646")
+  inspect(Int32::to_int(v.w(2147483647)), content = "-2147483648")
+}
+
+test "an annotated receiver and a generic field take it too" {
+  let v: Holder = holder()
+  inspect(v.u(4294967295), content = "4294967295")
+  let b: Box[UInt32] = Box::{ g: (k) -> UInt32::to_int(k) }
+  inspect(b.g(4294967295), content = "4294967295")
+}
+
+test "a literal nested in an argument follows the parameter's shape" {
+  let v = holder()
+  let c = false
+  inspect(v.fa([1, -2, 3]), content = "-2")
+  inspect(v.ft((4294967295, "max")), content = "max=4294967295")
+  inspect(v.fo(Some(-2147483648)), content = "-2147483648")
+  inspect(v.f(if c {
+    -3
+  } else {
+    4
+  }), content = "4")
+}
+
+test "a callee that is an expression takes a sized literal" {
+  inspect(make_int32()(-7), content = "-7")
+  inspect(make_int32()(2147483647), content = "2147483647")
+  inspect(make_uint32()(4294967295), content = "4294967295")
+  inspect(holder().mk()(4294967295), content = "4294967295")
+  inspect(((k: Int32) -> Int32::to_int(k))(-2147483648), content = "-2147483648")
+  let fs: Array[(Int32) -> Int] = [(k) -> Int32::to_int(k)]
+  inspect(Array::get(fs, at = 0)(-2147483648), content = "-2147483648")
+  let t: ((UInt32) -> Int, Int) = ((k) -> UInt32::to_int(k), 0)
+  inspect((t.0)(4294967295), content = "4294967295")
+}
+
+test "a function value bound to a name keeps taking one" {
+  let h: (Int32) -> Int = (k) -> Int32::to_int(k)
+  inspect(h(-2147483648), content = "-2147483648")
+  let hu: (Int32, UInt32) -> Int = (a, b) -> Int32::to_int(a) + UInt32::to_int(b)
+  inspect(hu(-2147483648, 4294967295), content = "2147483647")
+}

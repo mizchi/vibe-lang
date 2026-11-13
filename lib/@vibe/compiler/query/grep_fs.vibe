@@ -42,10 +42,10 @@ import @vibe/compiler/query/project_context {
 /// Prepare imports once through the shared project query boundary. The final
 /// checker invocation belongs to grep, which captures types and effects for
 /// its filters. A failed dependency walk is an error, not a well-typed file.
-fn grep_fs_typed_context(path: String, raw_source: String, state: QueryProjectState) -> (GrepTyped, QueryProjectState) with Env + Fs {
+fn grep_fs_typed_context(path: String, raw_source: String, state: QueryProjectState, checked_error_row: Bool) -> (GrepTyped, QueryProjectState) with Env + Fs {
   handle {
-    let context = query_project_context_fs(path = path, source = raw_source, replacement = None, state = state)
-    (grep_typed_context(source = raw_source, typed_source = context.entry_source, import_env = context.import_env), context.state)
+    let context = query_project_context_fs(path = path, source = raw_source, replacement = None, state = state, checked_error_row = checked_error_row)
+    (grep_typed_context(source = raw_source, typed_source = context.entry_source, import_env = context.import_env, checked_error_row = checked_error_row), context.state)
   } with { Exception::Throw(msg) => (grep_typed_context_error(source = raw_source, message = msg), state) }
 }
 
@@ -129,7 +129,7 @@ fn grep_memory_refusal(path: String, done: Int, total: Int, headroom: Int, need:
 
 /// `vibe grep <root>` proper. Typing runs only for files that already have a
 /// structural match: typing a file the pattern never hits would be pure cost.
-export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
+export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, checked_error_row: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
   let files = grep_empty_strings()
   source_walk_collect_files(root = root, out = files)
   // Naming a directory names no FILE, so nothing in it is fatal-if-unparseable
@@ -139,7 +139,7 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
   } else {
     grep_one_string(root)
   }
-  grep_scan_files_report(files = files, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json, named_files = named_files, resume_out = "")
+  grep_scan_files_report(files = files, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json, named_files = named_files, resume_out = "", checked_error_row = checked_error_row)
 }
 
 /// The files a sweep of `root` would visit, one per line, in sweep order.
@@ -451,7 +451,7 @@ fn grep_path_is_named(path: String, named: Array[String]) -> Bool {
 /// supplies -- so every hand-off advances by at least one file. The driver
 /// asserts that anyway, because a resume loop that does not advance would
 /// print results forever, which is worse than the trap this replaces.
-export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, named_files: Array[String], resume_out: String) -> (String, String) with Env + Exception + Fs + Profiler {
+export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, named_files: Array[String], resume_out: String, checked_error_row: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat = pat, wheres = wheres, where_rows = where_rows)
   let typed = grep_needs_typing(wheres = wheres, where_rows = where_rows, only = only)
@@ -571,7 +571,7 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
         } else {
           ()
         }
-        let (typed_ctx, next_state) = grep_fs_typed_context(path = path, raw_source = source, state = typed_state)
+        let (typed_ctx, next_state) = grep_fs_typed_context(path = path, raw_source = source, state = typed_state, checked_error_row = checked_error_row)
         typed_state = next_state
         let cost = Profiler::heap_bytes() - heap_before
         if cost > max_typed_cost {
@@ -608,7 +608,7 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
 
 /// Library-compatible result-only wrapper. The public CLI uses
 /// `grep_scan_fs_report` so it can route per-file skips to stderr.
-export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Env + Exception + Fs + Profiler {
-  let (result, _) = grep_scan_fs_report(root = root, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json)
+export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, checked_error_row: Bool) -> String with Env + Exception + Fs + Profiler {
+  let (result, _) = grep_scan_fs_report(root = root, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json, checked_error_row = checked_error_row)
   result
 }

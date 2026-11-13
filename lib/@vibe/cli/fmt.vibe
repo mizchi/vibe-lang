@@ -149,14 +149,14 @@ fn input_parse_error(rel_path: String, pre: String) -> String {
   }
 }
 
-fn format_one_line(mode: String, rel_path: String) -> String with Env + Fs {
+fn format_one_line(mode: String, rel_path: String, checked_error_row: Bool) -> String with Env + Fs {
   let source = Fs::read_file(rel_path)
   // #730 (D-3): pinned form is canonical -- complete an unpinned `require`
   // directive from the workspace store when it can answer offline
   // (best-effort; an uninstalled package leaves its line verbatim). `.vpkg`
   // headers included (#2260 round 3). Check mode reports the fillable file
   // as DIFF via the comparison below, which is exactly "not canonical yet".
-  let pre = fill_require_pins_lenient(source)
+  let pre = fill_require_pins_lenient(source, checked_error_row = checked_error_row)
   // #2636: the formatter's grammar is the compiler's. A file the parser
   // rejects is REFUSED, never rewritten and never certified -- the same
   // guard the single-file entry (fmt_entry.vibe) runs, so `pkf run fmt` and
@@ -184,12 +184,12 @@ fn format_one_line_parsed(mode: String, rel_path: String, source: String, pre: S
   "\{status}\t\{rel_path}"
 }
 
-fn format_sequential(mode: String, files: Array[String]) -> Array[String] with Env + Fs {
+fn format_sequential(mode: String, files: Array[String], checked_error_row: Bool) -> Array[String] with Env + Fs {
   let n = Array::length(files)
   let mut report = empty_strings()
   let mut i = 0
   while i < n {
-    Array::push(report, value = format_one_line(mode = mode, rel_path = Array::get(files, at = i)))
+    Array::push(report, value = format_one_line(mode = mode, rel_path = Array::get(files, at = i), checked_error_row = checked_error_row))
     i = i + 1
   }
   report
@@ -339,7 +339,7 @@ export fn main() -> Int allows Fs + Env + Process {
     min_shards
   }
   let report = if jobs <= 1 || n <= safety_chunk_cap {
-    format_sequential(mode = mode, files = files)
+    format_sequential(mode = mode, files = files, checked_error_row = false)
   } else {
     format_sharded(mode = mode, files = files, jobs = jobs)
   }

@@ -52,19 +52,19 @@ test "a duplicated top-level name resolves to its first row" {
   let effectful = top(name = "helper", body = fn_with(effect = Some("Fs"), body = EInt(1)))
   let pure = top(name = "helper", body = fn_with(effect = None, body = EInt(2)))
   let caller = top(name = "wrap", body = fn_with(effect = None, body = call0("helper")))
-  let msg = first_msg(check_perform_effects_stmts([effectful, pure, caller]))
+  let msg = first_msg(check_perform_effects_stmts([effectful, pure, caller], checked_error_row = false))
   assert_true(String::contains(msg, needle = "effect row mismatch for 'wrap': missing { Fs }"))
   // The other order: the pure row is first, and the call is clean.
-  assert_eq(first_msg(check_perform_effects_stmts([pure, effectful, caller])), "")
+  assert_eq(first_msg(check_perform_effects_stmts([pure, effectful, caller], checked_error_row = false)), "")
 }
 
 test "a module binding wins over an env binding of the same name" {
   let env = env_bind(env = EnvEmpty, name = "helper", ty = CtFn([CtInt], CtInt, Some("Fs")))
   let pure = top(name = "helper", body = fn_with(effect = None, body = EInt(2)))
   let caller = top(name = "wrap", body = fn_with(effect = None, body = call0("helper")))
-  assert_eq(first_msg(check_perform_effects_stmts_env(stmts = [pure, caller], env = env)), "")
+  assert_eq(first_msg(check_perform_effects_stmts_env(stmts = [pure, caller], env = env, checked_error_row = false)), "")
   // Without the module binding the env's row is the callee's row.
-  let msg = first_msg(check_perform_effects_stmts_env(stmts = [caller], env = env))
+  let msg = first_msg(check_perform_effects_stmts_env(stmts = [caller], env = env, checked_error_row = false))
   assert_true(String::contains(msg, needle = "effect row mismatch for 'wrap': missing { Fs }"))
 }
 
@@ -77,23 +77,23 @@ test "an env binding is found behind the module's own bindings" {
   let msg = first_msg(check_perform_effects_stmts_env(stmts = [
     unrelated,
     caller
-  ], env = env))
+  ], env = env, checked_error_row = false))
   assert_true(String::contains(msg, needle = "effect row mismatch for 'wrap': missing { Fs }"))
 }
 
 test "a callee the table does not hold takes the builtin path" {
   let caller = top(name = "wrap", body = fn_with(effect = None, body = call0("nobody_defines_this")))
-  assert_eq(first_msg(check_perform_effects_stmts([caller])), "")
+  assert_eq(first_msg(check_perform_effects_stmts([caller], checked_error_row = false)), "")
 }
 
 test "a local binder of a table name shadows the table's row" {
   let effectful = top(name = "helper", body = fn_with(effect = Some("Fs"), body = EInt(1)))
   let shadowing = ELet("helper", fn_with(effect = None, body = EInt(3)), call0("helper"), -1)
   let caller = top(name = "wrap", body = fn_with(effect = None, body = shadowing))
-  assert_eq(first_msg(check_perform_effects_stmts([effectful, caller])), "")
+  assert_eq(first_msg(check_perform_effects_stmts([effectful, caller], checked_error_row = false)), "")
   // The same body without the shadowing binder reports the table's row.
   let direct = top(name = "wrap", body = fn_with(effect = None, body = call0("helper")))
-  let msg = first_msg(check_perform_effects_stmts([effectful, direct]))
+  let msg = first_msg(check_perform_effects_stmts([effectful, direct], checked_error_row = false))
   assert_true(String::contains(msg, needle = "effect row mismatch for 'wrap': missing { Fs }"))
 }
 
@@ -102,14 +102,14 @@ test "a parameter named like a table entry shadows it" {
   let caller = top(name = "wrap", body = fn_with_params(effect = None, params = [
     ("helper", None)
   ], body = call0("helper")))
-  assert_eq(first_msg(check_perform_effects_stmts([effectful, caller])), "")
+  assert_eq(first_msg(check_perform_effects_stmts([effectful, caller], checked_error_row = false)), "")
 }
 
 test "the one-statement entry checks a body against its own row" {
   let stmt = top(name = "load", body = fn_with(effect = None, body = ECall(EIdent("perform", -1), [
     ECall(EIdent("Fs::ReadFile", -1), [EString("p", -1)], -1, [])
   ], -1, [])))
-  let msg = first_msg(check_perform_effects_stmt(stmt))
+  let msg = first_msg(check_perform_effects_stmt(stmt, checked_error_row = false))
   assert_true(String::contains(msg, needle = "effect row mismatch for 'load': missing { Fs::ReadFile }"))
 }
 
@@ -118,71 +118,71 @@ test "the test and entry cacheability walks see the table through their own inde
   let pure = top(name = "pure", body = fn_with(effect = None, body = EInt(2)))
   let effectful_test = STest("t", call0("helper"))
   let pure_test = STest("t", call0("pure"))
-  assert_true(!file_tests_cacheable([effectful, pure, effectful_test]))
-  assert_true(file_tests_cacheable([effectful, pure, pure_test]))
+  assert_true(!file_tests_cacheable([effectful, pure, effectful_test], checked_error_row = false))
+  assert_true(file_tests_cacheable([effectful, pure, pure_test], checked_error_row = false))
   let main_effectful = top(name = "main", body = fn_with(effect = None, body = call0("helper")))
   let main_pure = top(name = "main", body = fn_with(effect = None, body = call0("pure")))
-  assert_true(!file_entry_cacheable(stmts = [effectful, pure, main_effectful], entry_name = "main"))
-  assert_true(file_entry_cacheable(stmts = [effectful, pure, main_pure], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [effectful, pure, main_effectful], entry_name = "main", checked_error_row = false))
+  assert_true(file_entry_cacheable(stmts = [effectful, pure, main_pure], entry_name = "main", checked_error_row = false))
 }
 
 test "a Console entry caches only when the body is stdout writes" {
   let printed = top(name = "main", body = fn_with(effect = Some("Console"), body = ECall(EIdent("println", -1), [
     EString("x", -1)
   ], -1, [])))
-  assert_true(file_entry_cacheable(stmts = [printed], entry_name = "main"))
+  assert_true(file_entry_cacheable(stmts = [printed], entry_name = "main", checked_error_row = false))
   let read = top(name = "main", body = fn_with(effect = Some("Console"), body = ECall(EIdent("Stdin::read_stream", -1), [
     EInt(1)
   ], -1, [])))
-  assert_true(!file_entry_cacheable(stmts = [read], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [read], entry_name = "main", checked_error_row = false))
   let nested = top(name = "main", body = fn_with(effect = Some("Console"), body = EFn(array_empty(), array_empty(), array_empty(), None, Some("Stdin"), ECall(EIdent("Stdin::read_char", -1), array_empty(), -1, [
   ]))))
-  assert_true(!file_entry_cacheable(stmts = [nested], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [nested], entry_name = "main", checked_error_row = false))
   let stdout_write = top(name = "main", body = fn_with(effect = Some("Stdout"), body = ECall(EIdent("Stdout::write_stream", -1), [
     EString("x", -1)
   ], -1, [])))
-  assert_true(file_entry_cacheable(stmts = [stdout_write], entry_name = "main"))
+  assert_true(file_entry_cacheable(stmts = [stdout_write], entry_name = "main", checked_error_row = false))
   let interp = top(name = "main", body = fn_with(effect = Some("Console"), body = ECall(EIdent("println", -1), [
     EStringInterp(["", "Stdin::read_stream(1)"])
   ], -1, [])))
-  assert_true(!file_entry_cacheable(stmts = [interp], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [interp], entry_name = "main", checked_error_row = false))
   let alias_println = top(name = "main", body = fn_with(effect = Some("Console"), body = ELet("println", EIdent("Stdin::read_stream", -1), ESeq(ECall(EIdent("println", -1), [
     EInt(8)
   ], -1, []), EUnit), -1)))
-  assert_true(!file_entry_cacheable(stmts = [alias_println], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [alias_println], entry_name = "main", checked_error_row = false))
   let user_println = top(name = "println", body = fn_with(effect = Some("Stdin"), body = ECall(EIdent("Stdin::read_stream", -1), [
     EInt(8)
   ], -1, [])))
   let main_calls_user = top(name = "main", body = fn_with(effect = Some("Console"), body = ECall(EIdent("println", -1), [
     EString("x", -1)
   ], -1, [])))
-  assert_true(!file_entry_cacheable(stmts = [user_println, main_calls_user], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [user_println, main_calls_user], entry_name = "main", checked_error_row = false))
   let for_read = top(name = "main", body = fn_with(effect = Some("Console"), body = EForIn("line", None, EIdent("s", -1), ECall(EIdent("println", -1), [
     EIdent("line", -1)
   ], -1, []))))
-  assert_true(!file_entry_cacheable(stmts = [for_read], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [for_read], entry_name = "main", checked_error_row = false))
   let stream_for = top(name = "main", body = fn_with(effect = Some("Console,Async"), body = EForIn("b", None, EIdent("stream", -1), ECall(EIdent("println", -1), [
     EIdent("b", -1)
   ], -1, []))))
-  assert_true(!file_entry_cacheable(stmts = [stream_for], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [stream_for], entry_name = "main", checked_error_row = false))
   let param_println = top(name = "main", body = fn_with_params(effect = Some("Console"), params = [
     ("println", None)
   ], body = ECall(EIdent("println", -1), [EString("x", -1)], -1, [])))
-  assert_true(!file_entry_cacheable(stmts = [param_println], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [param_println], entry_name = "main", checked_error_row = false))
   let param_optional = top(name = "main", body = fn_with_params(effect = Some("Console"), params = [
     ("println?", None)
   ], body = ECall(EIdent("println", -1), [EString("x", -1)], -1, [])))
-  assert_true(!file_entry_cacheable(stmts = [param_optional], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [param_optional], entry_name = "main", checked_error_row = false))
   let param_stdout = top(name = "main", body = fn_with_params(effect = Some("Console"), params = [
     ("Stdout", None)
   ], body = ECall(EDot(EIdent("Stdout", -1), "write_stream", -1, -1), [
     EString("x", -1)
   ], -1, [])))
-  assert_true(!file_entry_cacheable(stmts = [param_stdout], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [param_stdout], entry_name = "main", checked_error_row = false))
   let piped_read = top(name = "main", body = fn_with(effect = Some("Console"), body = EBinOp("|>", EInt(8), EIdent("Stdin::read_stream", -1), -1)))
-  assert_true(!file_entry_cacheable(stmts = [piped_read], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [piped_read], entry_name = "main", checked_error_row = false))
   let piped_user = top(name = "main", body = fn_with(effect = Some("Console"), body = EBinOp("|>", EString("s", -1), EIdent("println", -1), -1)))
-  assert_true(!file_entry_cacheable(stmts = [user_println, piped_user], entry_name = "main"))
+  assert_true(!file_entry_cacheable(stmts = [user_println, piped_user], entry_name = "main", checked_error_row = false))
   let piped_builtin = top(name = "main", body = fn_with(effect = Some("Console"), body = EBinOp("|>", EString("x", -1), EIdent("println", -1), -1)))
-  assert_true(file_entry_cacheable(stmts = [piped_builtin], entry_name = "main"))
+  assert_true(file_entry_cacheable(stmts = [piped_builtin], entry_name = "main", checked_error_row = false))
 }

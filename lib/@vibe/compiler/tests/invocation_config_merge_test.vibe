@@ -47,7 +47,7 @@ fn merge_cfg_groups() -> Array[(String, Array[(String, String)])] {
 
 // Shared virtual merging needs only Exception, without Env or Fs authority.
 fn merge_cfg_text(_ flags: String) -> String with Exception {
-  print_program(build_grouped_merged_stmts_with_config(merge_cfg_groups(), cfg = target_cfg_from_csv(flags)))
+  print_program(build_grouped_merged_stmts_with_config(merge_cfg_groups(), cfg = target_cfg_from_csv(flags), checked_error_row = false))
 }
 
 test "shared merge reads the captured flags and leaves compatibility flags intact" {
@@ -55,7 +55,7 @@ test "shared merge reads the captured flags and leaves compatibility flags intac
   set_persistent_cache_cfg_flags("beta")
   handle {
     let alpha = merge_cfg_text("alpha")
-    let beta = print_program(build_grouped_merged_stmts(merge_cfg_groups()))
+    let beta = print_program(build_grouped_merged_stmts(merge_cfg_groups(), checked_error_row = false))
     assert(String::contains(alpha, needle = "11"))
     assert(!String::contains(alpha, needle = "22"))
     assert(String::contains(beta, needle = "22"))
@@ -73,14 +73,14 @@ test "one Config read owns a complete merge despite successful and failing inner
   handle {
     let calls = [0]
     let alpha = handle {
-      build_grouped_merged_source_configured(merge_cfg_groups())
+      build_grouped_merged_source_configured(merge_cfg_groups(), checked_error_row = false)
     } with { Config::CfgFlags() => {
       Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
       assert(String::contains(merge_cfg_text("beta"), needle = "22"))
       let error = handle {
         let _ = build_grouped_merged_stmts_with_config([
           ("bad", [("merge_cfg/bad.vibe", "fn broken( {")])
-        ], cfg = target_cfg_from_csv("beta"))
+        ], cfg = target_cfg_from_csv("beta"), checked_error_row = false)
         ""
       } with { Exception::Throw(message) => message }
       assert(error != "")
@@ -88,7 +88,7 @@ test "one Config read owns a complete merge despite successful and failing inner
     } }
     assert_eq(Array::get(calls, at = 0), 1)
     assert_eq(alpha, merge_cfg_text("alpha"))
-    assert(String::contains(print_program(build_grouped_merged_stmts(merge_cfg_groups())), needle = "22"))
+    assert(String::contains(print_program(build_grouped_merged_stmts(merge_cfg_groups(), checked_error_row = false)), needle = "22"))
     merge_cfg_reset()
   } with { Exception::Throw(message) => {
     merge_cfg_reset(); throw(message)
@@ -96,7 +96,7 @@ test "one Config read owns a complete merge despite successful and failing inner
 }
 
 fn merge_cfg_db_sources() -> TypeDb {
-  let mut db = db_new()
+  let mut db = db_new(checked_error_row = false)
   for source in merge_cfg_sources() {
     db = db_set_source(db = db, path = source.0, source = source.1)
   }
@@ -131,7 +131,7 @@ test "ordinary resident merges bind flags to text, fingerprints and cached produ
     let (again, again_fp, _) = db_merged_source_with_config(db = b, _entry_path = "merge_cfg/main.vibe", sources = merge_cfg_sources(), cfg = alpha_cfg)
     assert_eq(again, alpha)
     assert_eq(again_fp, alpha_fp)
-    let (legacy, _, _) = db_merged_source(db = db_new(), _entry_path = "merge_cfg/main.vibe", sources = merge_cfg_sources())
+    let (legacy, _, _) = db_merged_source(db = db_new(checked_error_row = false), _entry_path = "merge_cfg/main.vibe", sources = merge_cfg_sources())
     assert_eq(legacy, beta)
     merge_cfg_reset()
   } with { Exception::Throw(message) => {
@@ -161,7 +161,7 @@ test "grouped resident merges isolate configurations and retain warm group reuse
     let (again, again_fp, _) = db_grouped_merged_source_with_config(db = b, groups = merge_cfg_groups(), cfg = alpha_cfg)
     assert_eq(again, alpha)
     assert_eq(again_fp, alpha_fp)
-    let (legacy, _, _) = db_grouped_merged_source(db = db_new(), groups = merge_cfg_groups())
+    let (legacy, _, _) = db_grouped_merged_source(db = db_new(checked_error_row = false), groups = merge_cfg_groups())
     assert_eq(legacy, beta)
     merge_cfg_reset()
   } with { Exception::Throw(message) => {
@@ -173,25 +173,25 @@ test "merge identities bind flags even when selected source text is identical or
   let sources = [("same.vibe", "fn same() -> Int { 7 }")]
   let alpha = target_cfg_from_csv("alpha")
   let beta = target_cfg_from_csv("beta")
-  let (a, a_fp, _) = db_merged_source_with_config(db = db_new(), _entry_path = "same.vibe", sources = sources, cfg = alpha)
-  let (b, b_fp, _) = db_merged_source_with_config(db = db_new(), _entry_path = "same.vibe", sources = sources, cfg = beta)
+  let (a, a_fp, _) = db_merged_source_with_config(db = db_new(checked_error_row = false), _entry_path = "same.vibe", sources = sources, cfg = alpha)
+  let (b, b_fp, _) = db_merged_source_with_config(db = db_new(checked_error_row = false), _entry_path = "same.vibe", sources = sources, cfg = beta)
   assert_eq(a, b)
   assert(a_fp != b_fp)
-  let (_, empty_fp, _) = db_merged_source_with_config(db = db_new(), _entry_path = "same.vibe", sources = sources, cfg = target_cfg_from_csv(""))
+  let (_, empty_fp, _) = db_merged_source_with_config(db = db_new(checked_error_row = false), _entry_path = "same.vibe", sources = sources, cfg = target_cfg_from_csv(""))
   assert_eq(empty_fp, compilation_input_fingerprint(sources = sources, entry_path = "same.vibe"))
-  let (_, ga_fp, _) = db_grouped_merged_source_with_config(db = db_new(), groups = [
+  let (_, ga_fp, _) = db_grouped_merged_source_with_config(db = db_new(checked_error_row = false), groups = [
     ("same", sources)
   ], cfg = alpha)
-  let (_, gb_fp, _) = db_grouped_merged_source_with_config(db = db_new(), groups = [
+  let (_, gb_fp, _) = db_grouped_merged_source_with_config(db = db_new(checked_error_row = false), groups = [
     ("same", sources)
   ], cfg = beta)
   assert(ga_fp != gb_fp)
-  let (_, ea_fp, _) = db_grouped_merged_source_with_config(db = db_new(), groups = [
+  let (_, ea_fp, _) = db_grouped_merged_source_with_config(db = db_new(checked_error_row = false), groups = [
   ], cfg = alpha)
-  let (_, eb_fp, _) = db_grouped_merged_source_with_config(db = db_new(), groups = [
+  let (_, eb_fp, _) = db_grouped_merged_source_with_config(db = db_new(checked_error_row = false), groups = [
   ], cfg = beta)
   assert(ea_fp != eb_fp)
-  let (_, legacy_empty_fp, _) = db_grouped_merged_source_with_config(db = db_new(), groups = [
+  let (_, legacy_empty_fp, _) = db_grouped_merged_source_with_config(db = db_new(checked_error_row = false), groups = [
   ], cfg = target_cfg_from_csv(""))
   assert_eq(legacy_empty_fp, "merged-groups")
 }
@@ -199,8 +199,8 @@ test "merge identities bind flags even when selected source text is identical or
 test "legacy merge entries capture flag changes before consulting resident caches" {
   handle {
     set_cfg_ambient_flags(["alpha"])
-    let (a, a_fp, a_db) = db_merged_source(db = db_new(), _entry_path = "merge_cfg/main.vibe", sources = merge_cfg_sources())
-    let (ga, ga_fp, ga_db) = db_grouped_merged_source(db = db_new(), groups = merge_cfg_groups())
+    let (a, a_fp, a_db) = db_merged_source(db = db_new(checked_error_row = false), _entry_path = "merge_cfg/main.vibe", sources = merge_cfg_sources())
+    let (ga, ga_fp, ga_db) = db_grouped_merged_source(db = db_new(checked_error_row = false), groups = merge_cfg_groups())
     set_cfg_ambient_flags(["beta"])
     let (b, b_fp, _) = db_merged_source(db = a_db, _entry_path = "merge_cfg/main.vibe", sources = merge_cfg_sources())
     let (gb, gb_fp, _) = db_grouped_merged_source(db = ga_db, groups = merge_cfg_groups())
@@ -227,7 +227,7 @@ test "collision-provider reparses use the same flags as the merge plan" {
   ]
   set_cfg_ambient_flags(["beta"])
   handle {
-    let (text, _, _) = db_merged_source_with_config(db = db_new(), _entry_path = "collision/one.vibe", sources = sources, cfg = target_cfg_from_csv("alpha"))
+    let (text, _, _) = db_merged_source_with_config(db = db_new(checked_error_row = false), _entry_path = "collision/one.vibe", sources = sources, cfg = target_cfg_from_csv("alpha"))
     assert(String::contains(text, needle = "first ="))
     assert(String::contains(text, needle = "11"))
     assert(!String::contains(text, needle = "22"))
@@ -239,7 +239,7 @@ test "collision-provider reparses use the same flags as the merge plan" {
 
 test "a failed grouped merge leaves the last successful DB warm" {
   let cfg = target_cfg_from_csv("alpha")
-  let (before, fp, db) = db_grouped_merged_source_with_config(db = db_new(), groups = merge_cfg_groups(), cfg = cfg)
+  let (before, fp, db) = db_grouped_merged_source_with_config(db = db_new(checked_error_row = false), groups = merge_cfg_groups(), cfg = cfg)
   let message = handle {
     let _ = db_grouped_merged_source_with_config(db = db, groups = [
       ("bad", [("bad.vibe", "fn broken( {")])

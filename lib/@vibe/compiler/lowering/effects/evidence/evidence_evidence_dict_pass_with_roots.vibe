@@ -7,7 +7,7 @@ import @vibe/compiler/core {
   Type,
   TypeExpr,
   builtin_shadow_source_name,
-  dce_keep_flags,
+  dce_keep_flags_from_refs,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -34,7 +34,6 @@ import @vibe/compiler/lowering/effects/queries {
   edp_collect_program_binders,
   edp_effect_name_of,
   edp_handle_matches_effect,
-  edp_handle_statement_index,
   edp_handle_statement_indices,
   edp_has_unsafe_construct,
   edp_mf_set_stmt,
@@ -62,7 +61,7 @@ import ./evidence_edp_apply_migration.vibe {
 }
 
 import ./evidence_handler_sets.vibe {
-  edp_handler_set_statements, edp_iso_map, edp_split_handler_sets
+  edp_handler_set_statements, edp_handler_set_statements_among, edp_iso_map, edp_split_handler_sets
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
@@ -82,12 +81,20 @@ import ./evidence_handle_effect_names_expr.vibe {
   edp_live_handle_dirty_selfdischarge,
   edp_mf_base,
   edp_mf_binders,
+  edp_mf_dce_refs,
+  edp_mf_effect_sites,
+  edp_mf_handle_count,
+  edp_mf_handle_statement_index,
+  edp_mf_multi_arm_handles,
   edp_mf_new,
+  edp_mf_perform_facts,
   edp_mf_refresh,
+  edp_mf_refresh_perform_facts,
   edp_mf_row_lit_scan,
   edp_mf_statements_naming,
   edp_rowvar_withheld_callees,
-  edp_unmangle_shadow_name
+  edp_unmangle_shadow_name,
+  struct EdpStmtFacts
 }
 
 import ./evidence_poison_expr.vibe {
@@ -107,8 +114,6 @@ import ./evidence_poison_expr.vibe {
   edp_performing_graph_new,
   edp_performing_graph_refresh,
   edp_pure_fn_names,
-  edp_refresh_statement_perform_facts,
-  edp_statement_perform_facts,
   empty_str_array
 }
 
@@ -537,8 +542,13 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
 /// for the sets no nesting answers. `suspend_cps_pass` calls it after building
 /// grouped suspend drivers, so evidence migration sees single-effect sites.
 export fn evidence_split_handler_sets(_ stmts: Array[Stmt]) -> Array[String] {
+  evidence_split_handler_sets_in(stmts = stmts, statements = edp_handler_set_statements(stmts))
+}
+
+/// evidence_split_handler_sets over `statements`, the program's
+/// edp_handler_set_statements.
+fn evidence_split_handler_sets_in(stmts: Array[Stmt], statements: Array[Int]) -> Array[String] {
   let errs = empty_str_array()
-  let statements = edp_handler_set_statements(stmts)
   if Array::length(statements) > 0 {
     let fn_defs = edp_collect_fn_defs(stmts)
     let es_names = array_empty()
@@ -567,16 +577,20 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   } else {
     false
   }
+  // Per-statement facts for every inert base and binder census from here on
+  // (handler sets, isolation, vacuity, planning, migrations). Each step that
+  // replaces a statement marks it, and the next refresh walks only those.
+  let statement_facts = edp_mf_new()
+  edp_mf_refresh(facts = statement_facts, stmts = stmts)
   // #3583: before anything reads a handle's effect from its first arm --
   // including the isolation below, which works on nested pairs. The
-  // pipelines have already split in `suspend_cps_pass`; this is a no-op then.
-  for e in evidence_split_handler_sets(stmts) {
+  // pipelines have already split in `suspend_cps_pass`; this is a no-op then,
+  // and the facts say so without a walk of the program (#4040).
+  let set_statements = edp_handler_set_statements_among(stmts = stmts, multi_arm = Some(edp_mf_multi_arm_handles(statement_facts)))
+  for e in evidence_split_handler_sets_in(stmts = stmts, statements = set_statements) {
     Array::push(errs, value = e)
   }
-  // Per-statement facts for every inert base and binder census from here on
-  // (isolation, vacuity, planning, migrations). Each step that replaces a
-  // statement marks it, and the next refresh walks only those.
-  let statement_facts = edp_mf_new()
+  // The split replaced its statements through edp_mf_set_stmt.
   edp_mf_refresh(facts = statement_facts, stmts = stmts)
   // #3540: before the effect list is read -- it may declare fresh copies.
   edp_isolate_nested_arm_handlers(stmts = stmts, facts = statement_facts)
@@ -618,7 +632,10 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   // Erasure, alpha/eta rewrites and migration preserve statement ownership:
   // no handle is introduced in another statement. Rows remain supersets;
   // consumers still check the current expression, rather than stale sites.
-  let handle_statements = edp_handle_statement_index(stmts)
+  // Read from the statement facts (#4040), brought up to the statements
+  // isolation replaced or appended.
+  edp_mf_refresh(facts = statement_facts, stmts = stmts)
+  let handle_statements = edp_mf_handle_statement_index(statement_facts)
   let vhe_handle_names = empty_str_array()
   for row in handle_statements {
     let (name, _) = row
@@ -674,7 +691,10 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
       ()
     } else {
       if !vhe_facts_ready {
-        for fact in edp_statement_perform_facts(stmts = stmts, inert = vhe_inert, fn_names = vhe_fn_names) {
+        // From the statement facts (#4040), which keep each statement's
+        // perform facts before the sets are applied.
+        edp_mf_refresh(facts = statement_facts, stmts = stmts)
+        for fact in edp_mf_perform_facts(facts = statement_facts, inert = vhe_inert, fn_names = vhe_fn_names) {
           Array::push(vhe_facts, value = fact)
         }
         vhe_facts_ready = true
@@ -695,7 +715,9 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
         // the whole CLI dispatch).
         edp_erase_effect_handles_with_index(stmts = stmts, ename = vh_name, analyze = false, perf_fns = empty_str_array(), inert = vhe_inert, fn_names = vhe_fn_names, statement_indices = Some(vh_statements))
       }
-      edp_refresh_statement_perform_facts(stmts = stmts, facts = vhe_facts, indices = vh_statements, inert = vhe_inert, fn_names = vhe_fn_names)
+      // The erase rewrote statements through edp_mf_set_stmt.
+      edp_mf_refresh(facts = statement_facts, stmts = stmts)
+      edp_mf_refresh_perform_facts(facts = statement_facts, out = vhe_facts, indices = vh_statements, inert = vhe_inert, fn_names = vhe_fn_names)
       edp_performing_graph_refresh(graph = vhe_graph, stmts = stmts, facts = vhe_facts, indices = vh_statements)
     }
     vhi = vhi + 1
@@ -709,7 +731,10 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   // #3370: a row-free closure literal at a row-typed parameter takes that
   // row, so the type-directed sweep gives it the dict its callee passes.
   edp_stamp_slot_rows(stmts = stmts, fn_defs = fn_defs, facts = Some(statement_facts))
-  let keep = dce_keep_flags(stmts = stmts, entry_names = roots)
+  // Reachability from the statement facts (#4040): every write since the
+  // last refresh went through edp_mf_set_stmt or appended.
+  edp_mf_refresh(facts = statement_facts, stmts = stmts)
+  let keep = dce_keep_flags_from_refs(stmts = stmts, entry_names = roots, refs = edp_mf_dce_refs(statement_facts))
   // #3540: an arm's own effects are migrated before the arm is spliced.
   let plan_binders: Array[MutSet[String]] = []
   let plan_base: Array[Array[String]] = []
@@ -1697,7 +1722,7 @@ fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: Str
 /// only if planning computed it. The only write planning makes is the eta
 /// rebuild, after which both are recomputed, so they describe the program
 /// the caller is about to order and migrate.
-fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]], out_binders: Array[MutSet[String]], out_base: Array[Array[String]], facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]], out_binders: Array[MutSet[String]], out_base: Array[Array[String]], facts: Array[EdpStmtFacts]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
@@ -1708,7 +1733,10 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   // self-discharge drop, the three inert-set builders, eligibility) walk
   // the whole merged program per effect. One cheap name collection up
   // front lets those effects skip the loop body entirely.
-  let plan_handle_statements = edp_handle_statement_index(stmts)
+  // From the statement facts (#4040): every write since the last refresh
+  // went through edp_mf_set_stmt or appended.
+  edp_mf_refresh(facts = facts, stmts = stmts)
+  let plan_handle_statements = edp_mf_handle_statement_index(facts)
   let plan_handle_names = empty_str_array()
   for row in plan_handle_statements {
     let (name, _) = row
@@ -1936,7 +1964,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
 /// when there is neither a needing function NOR any proven owner param
 /// (nothing to gain; matches the old behavior for every previously-planned
 /// program exactly).
-fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String], binders: Option[MutSet[String]], handle_statement_indices: Array[Int], facts: Option[Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String], binders: Option[MutSet[String]], handle_statement_indices: Array[Int], facts: Option[Array[EdpStmtFacts]]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   // ADR-0076 追記31 Vertical C (replay 撤去): a handle site EXISTING is
   // itself worth planning for — a self-discharging dispatcher whose body
   // performs the effect directly (lsp_server.vibe's Lsp handler is the
@@ -2405,7 +2433,7 @@ fn edp_ao_marker(_ off: Int) -> String {
 /// answers, and the copied arm's `perform` can no longer reach it, in any
 /// order. A handler this cannot prove that for is left alone and orders the
 /// migrations instead.
-fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt], facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]) -> Unit {
+fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt], facts: Array[EdpStmtFacts]) -> Unit {
   let decls: Array[Stmt] = []
   let names = empty_str_array()
   for s in stmts {
@@ -2417,13 +2445,14 @@ fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt], facts: Array[(Array[Strin
       _ => ()
     }
   }
-  // Which statements hold a handle nested in another effect's handle body:
-  // an allocation-free walk, so a program with none pays nothing more.
+  // Which statements hold a handle nested in another effect's handle body.
+  // Only a statement holding two handles can (the facts count them, #4040);
+  // the allocation-free walk decides for those.
   let needs: Array[Int] = []
   if Array::length(names) >= 2 {
     let mut i = 0
     while i < Array::length(stmts) {
-      let hit = match Array::get(stmts, at = i) {
+      let hit = edp_mf_handle_count(facts = facts, i = i) >= 2 && match Array::get(stmts, at = i) {
         SLet(_, _, _, _, expr) => edp_iso_has_nested_pair(expr = expr, names = names),
         SLetMut(_, _, expr) => edp_iso_has_nested_pair(expr = expr, names = names),
         SExpr(expr) => edp_iso_has_nested_pair(expr = expr, names = names),
@@ -2460,15 +2489,14 @@ fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt], facts: Array[(Array[Strin
         Array::push(edp_iso_taken, value = edp_effect_name_of(label))
       }
     }
-    for st in stmts {
-      match st {
-        SLet(_, _, _, _, expr) => edp_iso_note_effect_names(expr),
-        SLetMut(_, _, expr) => edp_iso_note_effect_names(expr),
-        SExpr(expr) => edp_iso_note_effect_names(expr),
-        STest(_, expr) => edp_iso_note_effect_names(expr),
-        SBench(_, expr) => edp_iso_note_effect_names(expr),
-        _ => ()
-      }
+    // Every handler arm's and `perform`'s effect, from the facts: nothing
+    // has replaced a statement since they were refreshed above.
+    let (site_qnames, site_performs) = edp_mf_effect_sites(facts)
+    for qname in site_qnames {
+      Array::push(edp_iso_taken, value = edp_effect_name_of(qname))
+    }
+    for eff in site_performs {
+      Array::push(edp_iso_taken, value = eff)
     }
     let fresh: Array[Stmt] = []
     for i in needs {
@@ -2507,28 +2535,6 @@ fn edp_iso_fresh_name(_ y: String) -> String {
   }
   Array::push(edp_iso_taken, value = name)
   name
-}
-
-/// Note the effect of every handler arm and `perform` in `expr`.
-fn edp_iso_note_effect_names(_ expr: Expr) -> Unit {
-  match expr {
-    EHandle(_, arms) => for arm in arms {
-      let (p, _) = arm
-      Array::push(edp_iso_taken, value = edp_effect_name_of(edp_pat_qname(p)))
-    },
-    ECall(EIdent(nm, _), _, _, _) => if nm == "perform" {
-      Array::push(edp_iso_taken, value = edp_user_perform_effect_of(expr))
-    } else (),
-    _ => ()
-  }
-  let mark = expr_children_push(expr)
-  let top = expr_children_top()
-  let mut i = mark
-  while i < top {
-    edp_iso_note_effect_names(expr_child_at(i))
-    i = i + 1
-  }
-  expr_children_pop(mark)
 }
 
 /// The one declared effect every arm of a handle names, or "".

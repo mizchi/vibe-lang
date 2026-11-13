@@ -1,11 +1,57 @@
 import @vibe/compiler/core {
-  Subst, Type, TypeEnv, bound_flat_self_add, subst_bounds_for
+  Expr,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  bound_flat_self_add,
+  collect_type_var_ids,
+  subst_apply,
+  subst_bounds_for,
+  typed_negation_operand_key,
+  unify
+}
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+import @vibe/compiler/checker/resume {
+  arm_tail_all_return
+}
+import @vibe/compiler/checker/type_relations {
+  branch_join_widens
 }
 import @vibe/compiler/checker/traits {
   bound_entails_trait
 }
+import ./checker_call_header_flow.vibe {
+  checker_call_header_is_probe
+}
+import ./checker_closure_capture_row.vibe {
+  refine_open_option_branch, tail_expr_off
+}
+import ./checker_deferred_method_rows.vibe {
+  deferred_result_pending, has_deferred_checks
+}
+import ./checker_eq_unbounded_formal_msg.vibe {
+  check_assignable, check_assignable_set_end, string_lit_end
+}
+import ./checker_throw_kind_of_type.vibe {
+  railway_expr_off
+}
+import ./checker_int32.vibe {
+  int32_join_branch, int32_literal_can_adapt, int32_literal_value, int32_tail
+}
 import ./checker_infer_binop_type.vibe {
-  TypedOccurrenceRoleLaneCapture
+  TypedOccurrenceRoleLaneCapture, infer_binop_type, record_float_arith, record_string_binop_operands
+}
+import ./checker_eq_function_operand.vibe {
+  eq_function_operand_refusal, eq_operand_is_nullary_ctor
+}
+import ./checker_int32_rows.vibe {
+  int32_binop_operands, int32_unary, record_int32_binop
+}
+import ./checker_merge_capture_provenance.vibe {
+  join_char_branch, merge_value_effect_provenance, unary_operand_is_definitely_wrong
 }
 import ./checker_lambda_expr.vibe {
   open_formal_name_for_var
@@ -117,5 +163,311 @@ export fn add_formal_for_type(ty: Type, env: TypeEnv, s: Subst) -> String {
       ""
     },
     _ => ""
+  }
+}
+
+/// Type the operands and record lowering rows after their types are available.
+export fn check_binop_operands(op: String, left: Expr, right: Expr, left_ty: Type, right_ty: Type, env: TypeEnv, defs: Array[TypeDef], s2: Subst, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], boff: Int, bin_off: Int) -> (Type, Subst) {
+  let (left_applied, right_applied) = int32_binop_operands(left = left, right = right, left_ty = left_ty, right_ty = right_ty, s = s2, errors = errors, off = bin_off)
+  // #2391 slice 2 / #2435: the typed String-lowering channel. The types
+  // recorded here may still be unresolved variables; the extraction
+  // resolves them against the FINAL substitution, so a binding unified
+  // after this binop still classifies. The recorder anchors on the
+  // binop's OWN operator offset (exact identity), with the operand walk
+  // only as the fallback for desugar-synthesized binops.
+  record_string_binop_operands(capture = capture, op = op, own_off = boff, left = left, right = right, left_ty = left_applied, right_ty = right_applied)
+  let (result_ty, s3) = infer_binop_type(op = op, left_ty = left_applied, right_ty = right_applied, env = env, s = s2, errors = errors, tytab = tytab, off = bin_off)
+  // #3549: a function has no content to compare, so `==` on a value
+  // whose comparator would reach one could only answer by identity.
+  let eq_typed = match result_ty {
+    CtBool => true,
+    _ => false
+  }
+  // A comparison with a payload-less constructor (`x == None`) decides by
+  // the variant alone and never reaches a function.
+  if eq_typed && (op == "==" || op == "!=") && !eq_operand_is_nullary_ctor(e = left, defs = defs) && !eq_operand_is_nullary_ctor(e = right, defs = defs) {
+    match eq_function_operand_refusal(op = op, operand = left_applied, s = s3, defs = defs) {
+      Some(msg) => Array::push(errors, value = String::concat(msg, off_marker(bin_off))),
+      None => ()
+    }
+  } else {
+    ()
+  }
+  let bin_result = subst_apply(s = s3, ty = result_ty)
+  record_int32_binop(capture = capture, op = op, result = bin_result, off = boff, errors = errors)
+  // #3543: an arithmetic result typed `Float` is rounded to f32 after
+  // the checker ran; the row tells the rewrite which operators to wrap.
+  match bin_result {
+    CtFloat => if op == "+" || op == "-" || op == "*" || op == "/" {
+      record_float_arith(capture = capture, off = boff, kind = 9)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  // #3629: a `Double` / `Float` operation whose operands the lowering
+  // may not see as floats (a generic call's result, an index), filed so
+  // the post-check rewrite marks them; see `float_operand_binop`.
+  if float_operand_binop(op = op, result = bin_result, left = subst_apply(s = s3, ty = left_applied), right = subst_apply(s = s3, ty = right_applied)) {
+    record_float_arith(capture = capture, off = boff, kind = 11)
+  } else {
+    ()
+  }
+  if op == "+" {
+    record_add_formal(capture = capture, off = boff, ty = bin_result, env = env, s = s3)
+  }
+  (bin_result, s3)
+}
+
+/// Type a unary operand and record the numeric lowering it requires.
+export fn check_unary_operand(op: String, operand: Expr, operand_ty: Type, defs: Array[TypeDef], s1: Subst, capture: Option[TypedOccurrenceRoleLaneCapture], errors: Array[String]) -> (Type, Subst) {
+  if op == "!" {
+    match operand_ty {
+      CtBool => (CtBool, s1),
+      CtVar(_) => match unify(a = operand_ty, b = CtBool, s = s1) {
+        Some(s2) => (CtBool, s2),
+        None => (CtUnknown, s1)
+      },
+      other => {
+        // `!x` on a concrete non-Bool operand (`!5`) was accepted silently.
+        // A type formal / Unknown operand is tolerated (may resolve to
+        // Bool); #2408 widened "concrete" to the declared, builtin-head and
+        // container routes that `type_is_ground` answers `false` for.
+        let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
+        if flag {
+          Array::push(errors, value = "operand of `!` must be Bool")
+        } else {
+          ()
+        }
+        (CtUnknown, s1)
+      }
+    }
+  } else if op == "-" {
+    match operand_ty {
+      // #3653: a float negation files a float-operand row, so the
+      // post-check rewrite marks its operand and neither lowering reads a
+      // float the syntax does not show (a destructured binder) as an Int.
+      CtDouble => {
+        record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 14)
+        (CtDouble, s1)
+      },
+      // #3543: negating an f32 value is exact, so `-x` stays a Float.
+      CtFloat => {
+        record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 14)
+        record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 15)
+        (CtFloat, s1)
+      },
+      CtInt => (CtInt, s1),
+      // #3730: `-x` of the minimum wraps; `-` on a `UInt32` is refused.
+      CtInt32 => (int32_unary(op = op, ty = CtInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtUInt32 => (int32_unary(op = op, ty = CtUInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
+        Some(s2) => (CtInt, s2),
+        None => (CtUnknown, s1)
+      },
+      other => {
+        // Unary `-` on a concrete non-numeric operand (`-"hi"`) was accepted
+        // silently. A type formal / Unknown operand is tolerated; #2408
+        // widened "concrete" -- `-x` on a `Cell[Int]` used to compile clean
+        // and return -237, the complemented struct pointer.
+        let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
+        if flag {
+          Array::push(errors, value = "operand of unary `-` must be Int or Float64 (or Float32)")
+        } else {
+          ()
+        }
+        (CtUnknown, s1)
+      }
+    }
+  } else if op == "~" {
+    // #2344 slice C. Int only -- unlike unary `-` there is no Double form,
+    // because the value being complemented is the 63-bit two's complement
+    // integer. Typed here rather than after the `x ^ -1` lowering so the
+    // diagnostic names the operator the author actually wrote.
+    match operand_ty {
+      CtInt => (CtInt, s1),
+      CtInt32 => (int32_unary(op = op, ty = CtInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtUInt32 => (int32_unary(op = op, ty = CtUInt32, operand = operand, capture = capture, errors = errors), s1),
+      CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
+        Some(s2) => (CtInt, s2),
+        None => (CtUnknown, s1)
+      },
+      other => {
+        // #2408: the four routes this used to spell out inline are now
+        // the shared predicate, because `!` and unary `-` had the
+        // identical hole and were fixed by pointing at the same one.
+        let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
+        if flag {
+          Array::push(errors, value = "operand of `~` must be Int")
+        } else {
+          ()
+        }
+        (CtUnknown, s1)
+      }
+    }
+  } else (CtUnknown, s1)
+}
+
+/// Join the value-producing branches of an if.
+export fn check_if_branches(cond: Expr, then_e: Expr, else_e: Expr, tt0: Type, et0: Type, s3: Subst, errors: Array[String]) -> (Type, Subst) {
+  // #3730: a literal branch beside an `Int32` / `UInt32` branch takes its
+  // type. A branch that only `return`s yields nothing to the `if`, so its
+  // operand's type must not size the other branch.
+  let (tt, et) = if arm_tail_all_return(then_e) || arm_tail_all_return(else_e) {
+    (tt0, et0)
+  } else {
+    int32_binop_operands(left = then_e, right = else_e, left_ty = subst_apply(s = s3, ty = tt0), right_ty = subst_apply(s = s3, ty = et0), s = s3, errors = errors, off = 0 - 1)
+  }
+  // The two branches must agree when both yield a real value (previously
+  // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
+  // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
+  // discarded, and a statement-position `if` need not have matching arms.
+  let s3 = refine_open_option_branch(result = tt, other = et, s = refine_open_option_branch(result = et, other = tt, s = s3))
+  let rtt = subst_apply(s = s3, ty = tt)
+  let ret = subst_apply(s = s3, ty = et)
+  // When one branch yields Unit (an else-less `if`, whose missing else is
+  // `()`, or an explicit `()` branch), the branches need not agree and the
+  // expression yields Unit as a VALUE — so `let x: Int = if c { 1 }` is
+  // rejected (it returns Unit when c is false) while a statement-position
+  // `if` is harmless (its value is discarded). Only when BOTH branches yield
+  // a real (non-Unit) value must they agree, and the result is that type.
+  // #3012 / #2985 review (Codex P2): a branch whose every tail is a
+  // `return` leaves the function and yields nothing to the `if`, so the
+  // OTHER branch's type is the expression's -- `if flag { return 42 }
+  // else { "abcd" }` is a String, the way a diverging match arm already
+  // does not force the match's type (#635). Before, the return's operand
+  // type was taken as the branch type and `let s: String = ..` and the
+  // implicit-resume arm check both refused it as `got Int`.
+  let (s3b, if_ty) = if arm_tail_all_return(then_e) {
+    (s3, et)
+  } else if arm_tail_all_return(else_e) {
+    (s3, tt)
+  } else {
+    match rtt {
+      CtUnit => (s3, CtUnit),
+      _ => match ret {
+        CtUnit => (s3, CtUnit),
+        _ => match branch_join_widens(anchor = rtt, later = ret, s = s3) {
+          // #3598: a pure then-branch beside an effectful else-branch
+          // joins at the else-branch's (wider) type, as the swapped
+          // spelling always did.
+          Some(widened_s) => (widened_s, join_char_branch(joined = merge_value_effect_provenance(expected = et, actual = tt, s = widened_s), other = tt, s = widened_s)),
+          None => {
+            // #2198: a literal else-branch carries no offset, which left this
+            // diagnostic file-only. Keep the else anchor when it exists (pinned
+            // by diagnostic_anchor_test), else fall back to the then-branch
+            // tail, else to the condition -- coarser, but still on the `if`.
+            let else_off = railway_expr_off(else_e)
+            let branch_off = if else_off >= 0 {
+              else_off
+            } else {
+              let then_off = tail_expr_off(then_e)
+              if then_off >= 0 {
+                then_off
+              } else {
+                railway_expr_off(cond)
+              }
+            }
+            let else_end = string_lit_end(else_e)
+            if else_end > 0 {
+              check_assignable_set_end(else_end)
+            } else {
+              check_assignable_set_end(string_lit_end(then_e))
+            }
+            let joined_s = check_assignable(expected = rtt, actual = ret, s = s3, errors = errors, what = "if branches have incompatible types", off = branch_off)
+            (joined_s, join_char_branch(joined = merge_value_effect_provenance(expected = tt, actual = et, s = joined_s), other = et, s = joined_s))
+          }
+        }
+      }
+    }
+  }
+  (if_ty, s3b)
+}
+
+/// A pending operand can size literals in its peer after resolution.
+export fn deferred_numeric_inputs(left: Expr, right: Expr, left_ty: Type, right_ty: Type, s: Subst) -> Option[Array[Int]] {
+  if !has_deferred_checks() || checker_call_header_is_probe() {
+    return None
+  }
+  let pending_left = pending_type_ids(ty = left_ty, s = s)
+  let pending_right = pending_type_ids(ty = right_ty, s = s)
+  if Array::length(pending_left) > 0 && Array::length(pending_right) > 0 {
+    Some(Array::concat(pending_left, pending_right))
+  } else if Array::length(pending_left) > 0 && int32_literal_can_adapt(e = right, actual = right_ty) {
+    Some(pending_left)
+  } else if Array::length(pending_right) > 0 && int32_literal_can_adapt(e = left, actual = left_ty) {
+    Some(pending_right)
+  } else {
+    None
+  }
+}
+
+/// A literal in a join takes the sized type of another value. Once the
+/// join waits on a value, later joins must wait for that accumulated type.
+export fn deferred_join_inputs(joined: Type, actual: Type, e: Expr, count: Int, earlier_at: (Int) -> Expr, s: Subst, already_deferred: Bool) -> Option[Array[Int]] {
+  if !has_deferred_checks() || checker_call_header_is_probe() {
+    return None
+  }
+  let anchor = subst_apply(s = s, ty = joined)
+  let current = subst_apply(s = s, ty = actual)
+  let pending_anchor = pending_type_ids(ty = anchor, s = s)
+  let pending_current = pending_type_ids(ty = current, s = s)
+  if Array::length(pending_anchor) > 0 && Array::length(pending_current) > 0 {
+    Some(Array::concat(pending_anchor, pending_current))
+  } else if Array::length(pending_anchor) > 0 && (already_deferred || int32_literal_can_adapt(e = int32_tail(e), actual = current)) {
+    Some(pending_anchor)
+  } else if Array::length(pending_current) > 0 && (already_deferred || ((anchor is CtInt) && earlier_values_are_literals(count = count, earlier_at = earlier_at))) {
+    Some(pending_current)
+  } else {
+    None
+  }
+}
+
+fn pending_type_ids(ty: Type, s: Subst) -> Array[Int] {
+  let ids: Array[Int] = []
+  collect_type_var_ids(ty = ty, out = ids)
+  Array::filter(ids, f = (id) -> deferred_result_pending(id = id, s = s))
+}
+
+fn earlier_values_are_literals(count: Int, earlier_at: (Int) -> Expr) -> Bool {
+  let mut i = 0
+  while i < count {
+    let earlier = earlier_at(i)
+    if !arm_tail_all_return(earlier) && (int32_literal_value(int32_tail(earlier)) is None) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Add one value-producing match arm to the result type.
+export fn check_match_arm_result(joined: Type, actual: Type, body: Expr, count: Int, earlier_at: (Int) -> Expr, railway: Int, s: Subst, errors: Array[String]) -> (Type, Subst) {
+  let (adjusted, arm_ty) = int32_join_branch(count = count, earlier_at = earlier_at, e = body, joined = joined, actual = subst_apply(s = s, ty = actual), s = s, errors = errors)
+  let ns = refine_open_option_branch(result = adjusted, other = arm_ty, s = s)
+  let result = join_char_branch(joined = merge_value_effect_provenance(expected = adjusted, actual = arm_ty, s = ns), other = arm_ty, s = ns)
+  let arm = subst_apply(s = ns, ty = arm_ty)
+  // A Unit arm makes the match statement-like. The railway owns its own
+  // type diagnostics for the synthetic arms of let* and ?.
+  if (arm is CtUnit) || railway != 0 || (subst_apply(s = ns, ty = result) is CtUnit) {
+    (result, ns)
+  } else {
+    match branch_join_widens(anchor = result, later = arm, s = ns) {
+      Some(widened) => (join_char_branch(joined = merge_value_effect_provenance(expected = arm_ty, actual = result, s = widened), other = result, s = widened), widened),
+      None => (result, check_assignable(expected = result, actual = arm, s = ns, errors = errors, what = "match arms have incompatible types", off = tail_expr_off(body)))
+    }
+  }
+}
+
+/// Add one array element to the common element type.
+export fn check_array_element_type(joined: Type, actual: Type, item: Expr, count: Int, earlier_at: (Int) -> Expr, s: Subst, errors: Array[String]) -> (Type, Subst) {
+  let (adjusted, elem) = int32_join_branch(count = count, earlier_at = earlier_at, e = item, joined = joined, actual = subst_apply(s = s, ty = actual), s = s, errors = errors)
+  let resolved = subst_apply(s = s, ty = elem)
+  match branch_join_widens(anchor = adjusted, later = resolved, s = s) {
+    Some(widened) => (merge_value_effect_provenance(expected = elem, actual = adjusted, s = widened), widened),
+    None => {
+      let ns = check_assignable(expected = adjusted, actual = resolved, s = s, errors = errors, what = "array elements have incompatible types", off = railway_expr_off(item))
+      (merge_value_effect_provenance(expected = adjusted, actual = elem, s = ns), ns)
+    }
   }
 }

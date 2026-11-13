@@ -132,10 +132,10 @@ fn body_rows_valid(source: String, rows: Array[(Int, Int, Int)]) -> Bool {
 
 /// Trusted in-memory producer: the checker must succeed and the complete
 /// parser-authoritative occurrence walk must remain eligible.
-export fn checked_implementation_body_artifact_from_authority(_ authority: LocatedProgramBinderAuthority) -> Option[CheckedImplementationBodyArtifact] with Exception {
+export fn checked_implementation_body_artifact_from_authority(_ authority: LocatedProgramBinderAuthority, checked_error_row: Bool) -> Option[CheckedImplementationBodyArtifact] with Exception {
   let program = located_program_binder_authority_program(authority)
-  let checked = check_program_result(program)
-  match (check_program_binder_occurrence_observation(authority), checked_exported_interface_artifact_from_checked_program(checked)) {
+  let checked = check_program_result(program, checked_error_row = checked_error_row)
+  match (check_program_binder_occurrence_observation(authority, checked_error_row = checked_error_row), checked_exported_interface_artifact_from_checked_program(checked)) {
     (Some(rows), Some(exported_interface)) => {
       let source = located_program_binder_authority_source(authority)
       if body_rows_valid(source = source, rows = rows) {
@@ -331,10 +331,10 @@ export fn checked_implementation_body_artifact_diagnostic_identity(_ artifact: C
 
 /// Shadow convenience entry: syntax/type failures publish no artifact. The
 /// fixed empty-diagnostic marker exists only after a successful checker.
-export fn shadow_checked_implementation_body_artifact_from_source(_ source: String) -> Option[CheckedImplementationBodyArtifact] {
+export fn shadow_checked_implementation_body_artifact_from_source(_ source: String, checked_error_row: Bool) -> Option[CheckedImplementationBodyArtifact] {
   handle {
     match parse_source_located_with_binder_authority(source) {
-      Some(authority) => checked_implementation_body_artifact_from_authority(authority),
+      Some(authority) => checked_implementation_body_artifact_from_authority(authority, checked_error_row = checked_error_row),
       None => None
     }
   } with { Exception::Throw(_) => None }
@@ -343,8 +343,8 @@ export fn shadow_checked_implementation_body_artifact_from_source(_ source: Stri
 /// Shadow freshness/parity check against one current parser authority. This
 /// deliberately reruns checking and publishes nothing; #1959 may not consume
 /// the result as production reuse authority.
-export fn checked_implementation_body_artifact_matches_authority(text: String, authority: LocatedProgramBinderAuthority) -> Bool with Exception {
-  match (decode_checked_implementation_body_artifact_v1(text), checked_implementation_body_artifact_from_authority(authority)) {
+export fn checked_implementation_body_artifact_matches_authority(text: String, authority: LocatedProgramBinderAuthority, checked_error_row: Bool) -> Bool with Exception {
+  match (decode_checked_implementation_body_artifact_v1(text), checked_implementation_body_artifact_from_authority(authority, checked_error_row = checked_error_row)) {
     (Some(retained), Some(current)) => canonical_checked_implementation_body_artifact_snapshot(retained) == canonical_checked_implementation_body_artifact_snapshot(current),
     _ => false
   }
@@ -402,8 +402,8 @@ fn normalized_leaf_valid(_ artifact: NormalizedCheckedLeafArtifact) -> Bool {
 
 /// Trusted pilot producer. The checker runs first; unsupported statement,
 /// annotation, or expression constructors return None without approximation.
-export fn normalized_checked_leaf_artifact_from_authority(_ authority: LocatedProgramBinderAuthority) -> Option[NormalizedCheckedLeafArtifact] with Exception {
-  let checked = check_program_result(located_program_binder_authority_program(authority))
+export fn normalized_checked_leaf_artifact_from_authority(_ authority: LocatedProgramBinderAuthority, checked_error_row: Bool) -> Option[NormalizedCheckedLeafArtifact] with Exception {
+  let checked = check_program_result(located_program_binder_authority_program(authority), checked_error_row = checked_error_row)
   if Array::length(checked.checked_stmts) != 1 {
     None
   } else match Array::get(checked.checked_stmts, at = 0) {
@@ -1756,8 +1756,8 @@ fn normalized_checked_function_from_stmt(stmt: Stmt, env: TypeEnv) -> Option[Nor
   }
 }
 
-export fn normalized_checked_function_artifact_from_authority(_ authority: LocatedProgramBinderAuthority) -> Option[NormalizedCheckedFunctionArtifact] with Exception {
-  let checked = check_program_result(located_program_binder_authority_program(authority))
+export fn normalized_checked_function_artifact_from_authority(_ authority: LocatedProgramBinderAuthority, checked_error_row: Bool) -> Option[NormalizedCheckedFunctionArtifact] with Exception {
+  let checked = check_program_result(located_program_binder_authority_program(authority), checked_error_row = checked_error_row)
   let mut result = None
   let mut count = 0
   let mut i = 0
@@ -1955,9 +1955,9 @@ fn normalized_join_valid(_ artifact: NormalizedCheckedFunctionJoinArtifact) -> B
   }
 }
 
-export fn normalized_checked_function_join_artifact_from_authority(_ authority: LocatedProgramBinderAuthority) -> Option[NormalizedCheckedFunctionJoinArtifact] with Exception {
+export fn normalized_checked_function_join_artifact_from_authority(_ authority: LocatedProgramBinderAuthority, checked_error_row: Bool) -> Option[NormalizedCheckedFunctionJoinArtifact] with Exception {
   let program = located_program_binder_authority_program(authority)
-  match (check_program_typed_occurrence_expression_path_observation(program), check_program_binder_occurrence_observation(authority)) {
+  match (check_program_typed_occurrence_expression_path_observation(program, checked_error_row = checked_error_row), check_program_binder_occurrence_observation(authority, checked_error_row = checked_error_row)) {
     (Some(observation), Some(binding_rows)) => {
       let checked = observation.checked_program
       if Array::length(checked.checked_stmts) != 1 || Array::length(observation.entries.provenance_entries) != Array::length(checked.typed_occurrences) {
@@ -2139,8 +2139,8 @@ export fn decode_normalized_checked_function_join_artifact_v1(_ text: String) ->
   }
 }
 
-export fn normalized_checked_function_join_artifact_matches_authority(text: String, authority: LocatedProgramBinderAuthority) -> Bool with Exception {
-  match (decode_normalized_checked_function_join_artifact_v1(text), normalized_checked_function_join_artifact_from_authority(authority)) {
+export fn normalized_checked_function_join_artifact_matches_authority(text: String, authority: LocatedProgramBinderAuthority, checked_error_row: Bool) -> Bool with Exception {
+  match (decode_normalized_checked_function_join_artifact_v1(text), normalized_checked_function_join_artifact_from_authority(authority, checked_error_row = checked_error_row)) {
     (Some(retained), Some(current)) => encode_normalized_checked_function_join_artifact_v1(retained) == encode_normalized_checked_function_join_artifact_v1(current),
     _ => false
   }
@@ -2900,8 +2900,8 @@ export fn normalized_value_type_env_artifact_from_env(_ env: TypeEnv) -> Option[
   }
 }
 
-export fn normalized_value_type_env_artifact_from_authority(_ authority: LocatedProgramBinderAuthority) -> Option[NormalizedValueTypeEnvArtifact] with Exception {
-  normalized_value_type_env_artifact_from_env(check_program_result(located_program_binder_authority_program(authority)).final_env)
+export fn normalized_value_type_env_artifact_from_authority(_ authority: LocatedProgramBinderAuthority, checked_error_row: Bool) -> Option[NormalizedValueTypeEnvArtifact] with Exception {
+  normalized_value_type_env_artifact_from_env(check_program_result(located_program_binder_authority_program(authority), checked_error_row = checked_error_row).final_env)
 }
 
 export fn encode_normalized_value_type_env_artifact_v1(_ artifact: NormalizedValueTypeEnvArtifact) -> String {

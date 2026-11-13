@@ -29,7 +29,7 @@ fn desugared_constructor_map(check_first: Bool, with_calls: Bool) -> String with
   }
   let stmts = parse_program(lex(source))
   if check_first {
-    let _ = check_program(stmts)
+    let _ = check_program(stmts, checked_error_row = false)
   } else {
     ()
   }
@@ -71,7 +71,7 @@ test "#2357: a subtrait namespace includes inherited operations" {
 test "#2357: an inherited-only subtrait materializes a witness dictionary" {
   let source = "trait Measurable { measure(Self) -> Int }\ntrait InheritedOnly: Measurable {}\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl InheritedOnly for Int {}\nlet answer = InheritedOnly::measure(42)"
   let stmts = parse_program(lex(source))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   let out = print_program(stmts)
   inspect(String::contains(out, needle = "struct InheritedOnlyDict"), content = "true")
@@ -96,7 +96,7 @@ test "#2357: marker supertrait cycles do not recurse during namespace derivation
 test "#2357: lowered generated operations are not source conflicts" {
   let source = "trait Measurable { measure(Self) -> Int }\ntrait Sized: Measurable { bump(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }\nlet answer = Sized::measure(20) + Sized::bump(20)"
   let stmts = parse_program(lex(source))
-  let env = check_program(stmts)
+  let env = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   inspect(Array::length(collect_trait_namespace_conflict_errors(stmts = stmts, env = env)), "0")
   inspect(Array::length(collect_undispatchable_trait_method_errors(stmts = stmts, env = env)), "0")
@@ -189,7 +189,7 @@ test "#2357: user Iterator operations retain one generic witness" {
 test "#2338: unresolved shadows do not reuse an outer constructor witness" {
   let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = [1]; let _ = Mappable::map({ let xs = ((x) -> { x })(Some(3)); xs }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   let out = print_program(stmts)
   inspect(String::contains(out, needle = "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
@@ -198,7 +198,7 @@ test "#2338: unresolved shadows do not reuse an outer constructor witness" {
 test "#2338: parameterized loop break values select the outer constructor witness" {
   let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nfn probe() -> Unit { let _ = Mappable::map(loop (i = 0) { let _ = loop (j = 0) { break Some(j) }; break [i] }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   let out = print_program(stmts)
   inspect(String::contains(out, needle = "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
@@ -207,7 +207,7 @@ test "#2338: parameterized loop break values select the outer constructor witnes
 test "#2338: parameterized loop break values use lexical binding constructors" {
   let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { let xs = [i]; break xs }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   let out = print_program(stmts)
   inspect(String::contains(out, needle = "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
@@ -217,7 +217,7 @@ test "#2338: parameterized loop break values use lexical binding constructors" {
 test "#2338: parameterized loop match binders use arm constructors" {
   let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { match [i] { xs => break xs } }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   let out = print_program(stmts)
   inspect(String::contains(out, needle = "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
@@ -227,7 +227,7 @@ test "#2338: parameterized loop match binders use arm constructors" {
 test "#2338: handler result bindings mask unresolved outer constructors" {
   let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(handle { throw(\"fail\"); [0] } with { Exception::Throw(_) => { let xs = ((u) -> { [1] })(()); xs } }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   let out = print_program(stmts)
   inspect(String::contains(out, needle = "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
@@ -321,7 +321,7 @@ fn mappable_program(_ body: String) -> String {
 
 fn desugar_mappable_program(_ body: String) -> String with Exception {
   let stmts = parse_program(lex(mappable_program(body)))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   print_program(stmts)
 }
@@ -501,7 +501,7 @@ test "#2338: recursive helper return aliases expand to the constructor" {
 fn desugar_checked_source(_ source: String) -> String {
   handle {
     let stmts = parse_program(lex(source))
-    let _ = check_program(stmts)
+    let _ = check_program(stmts, checked_error_row = false)
     desugar_trait_dicts(stmts)
     print_program(stmts)
   } with { Exception::Throw(msg) => String::concat("THREW:", __to_string(msg)) }
@@ -517,7 +517,7 @@ test "#2338: applied bounds through aliases specialize to the constructor" {
 test "#2338: constructor tracking preserves structural equality bindings" {
   let source = "enum Item { Item(Int) }\nfn same() -> Bool { let a: Item = Item(1); let b: Item = Item(1); a == b }\n"
   let stmts = parse_program(lex(source))
-  let _ = check_program(stmts)
+  let _ = check_program(stmts, checked_error_row = false)
   desugar_trait_dicts(stmts)
   let out = print_program(stmts)
   inspect(String::contains(out, needle = "Item::equals(a, b)"), content = "true")
