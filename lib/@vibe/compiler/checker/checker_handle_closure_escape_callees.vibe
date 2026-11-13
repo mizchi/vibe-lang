@@ -1,0 +1,319 @@
+//# The callees and expression shapes the handle-escape check
+// (#3540, checker_handle_closure_escape.vibe) reads from syntax and the
+// declarations alone: constructors, effect operations, the container and
+// call-only builtins, the getters a stored-into argument is read through,
+// and whether a parameter is only ever called.
+
+import @vibe/compiler/core {
+  Expr,
+  Type,
+  TypeDef,
+  TypeEnv,
+  canonical_exception_effect_name,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  resolved_builtin_operation_from_source
+}
+
+import @vibe/compiler/checker/effects {
+  call_callee_spelling, effect_name_of_op, label_is_effect_var, row_label_base
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  builtin_resolves_at
+}
+
+import ./checker_retaining_write.vibe {
+  retaining_write_argument_mask
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  ascription_lambda_ann
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_decl_value
+}
+
+/// Is `e` a parenthesized expression (`$source_span(inner, ..)`)?
+export fn hce_is_paren(_ e: Expr) -> Bool {
+  match e {
+    ECall(EIdent(wrapper, _), wargs, _, _) => wrapper == "$source_span" && Array::length(wargs) > 0,
+    _ => false
+  }
+}
+
+/// Is `pt` a function type whose row names `label` or a row variable?
+export fn hce_param_takes_row(pt: Type, label: String) -> Bool {
+  match pt {
+    CtForAll(_, _, inner) => hce_param_takes_row(pt = inner, label = label),
+    CtFn(_, _, Some(row)) => {
+      let mut found = false
+      for raw in String::split(row, sep = ",") {
+        let l = String::trim(raw)
+        if String::length(l) > 0 && !String::starts_with(l, prefix = "#") {
+          if label_is_effect_var(l) || canonical_exception_effect_name(row_label_base(effect_name_of_op(l))) == label {
+            found = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// The route a call that may keep its argument names.
+export fn hce_keep_route(_ callee: Expr) -> String {
+  let spelling = call_callee_spelling(callee)
+  if spelling == "perform" {
+    "handing it to an effect operation, whose handler may keep it past the handle,"
+  } else if spelling == "" {
+    "handing it to a function that may keep it past the handle,"
+  } else {
+    String::concat("handing it to `", String::concat(spelling, "`, which may keep it past the handle,"))
+  }
+}
+
+/// A constructor, read from the declarations: `Some` / `Ok` / `Err`, or a
+/// variant of a declared enum (`Wrap`, `W::Wrap`) -- unless this module
+/// declares a function of that spelling. The spelling's case decides nothing:
+/// `fn Keep(f: () -> Int)` is an ordinary function.
+export fn hce_is_ctor(name: String, defs: Array[TypeDef]) -> Bool {
+  match retention_decl_value(name) {
+    Some(_) => false,
+    None => if name == "Some" || name == "Ok" || name == "Err" {
+      true
+    } else {
+      let at = String::last_index_of(name, needle = "::")
+      let (qual, variant) = if at >= 0 {
+        (name[0: at], name[at + 2: String::length(name)])
+      } else {
+        ("", name)
+      }
+      let mut found = false
+      for d in defs {
+        match d {
+          TDEnum(ename, _, variants) => if !found && (qual == "" || qual == ename) {
+            for v in variants {
+              let (vname, _) = v
+              if vname == variant || vname == name {
+                found = true
+              } else {
+                ()
+              }
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+      found
+    }
+  }
+}
+
+/// An operation of a declared effect (`Store::Put`): it is only ever the
+/// operand of `perform`, which is the call judged as handing the value to
+/// a handler.
+export fn hce_is_effect_op(name: String, defs: Array[TypeDef]) -> Bool {
+  let at = String::last_index_of(name, needle = "::")
+  if at < 0 {
+    false
+  } else {
+    let qual = name[0: at]
+    let op = name[at + 2: String::length(name)]
+    let mut found = false
+    for d in defs {
+      match d {
+        TDEffect(ename, ops, _, _, _) => if !found && ename == qual {
+          for o in ops {
+            let (oname, _, _) = o
+            if oname == op {
+              found = true
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    found
+  }
+}
+
+/// A builtin of a container namespace (`Array::push`, `MutMap::set`): it
+/// keeps a value only in its own arguments, which the write routes and
+/// `hce_beside_local` judge.
+export fn hce_container_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
+  (String::starts_with(name, prefix = "Array::") || String::starts_with(name, prefix = "MutMap::") || String::starts_with(name, prefix = "Map::") || String::starts_with(name, prefix = "FixedArray::") || String::starts_with(name, prefix = "Option::")) && builtin_resolves_at(env = env, name = name, ident_off = noff)
+}
+
+/// The builtins that call the function they are handed and keep nothing,
+/// where the call at `noff` reaches the builtin (#3255). A program's own
+/// `fn Array::map` is a function like any other: it may push the callback
+/// into a module-level array, and the spelling alone used to wave the
+/// handle-bound closure through -- measured, the kept closure later answered
+/// `6` from the dead handler after `vibe check` was clean. Such a callee falls
+/// to the declaration check below, as `keep` does.
+export fn hce_calls_only_builtin(env: TypeEnv, name: String, noff: Int) -> Bool {
+  (name == "Array::map" || name == "Array::filter" || name == "Array::fold" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "__region_run") && builtin_resolves_at(env = env, name = name, ident_off = noff)
+}
+
+export fn hce_fn_params(_ ty: Type) -> Option[Array[Type]] {
+  match ty {
+    CtForAll(_, _, inner) => hce_fn_params(inner),
+    CtFn(params, _, _) => Some(params),
+    _ => None
+  }
+}
+
+/// Is every use of `name` in `e` a call of it, none inside a closure? An
+/// inner binding of the same spelling is not told apart, which can only
+/// answer no.
+export fn hce_only_called(name: String, e: Expr) -> Bool {
+  match e {
+    EIdent(n, _) => n != name,
+    EFn(_, _, _, _, _, fbody) => !hce_names_anywhere(e = fbody, name = name),
+    ECall(callee, args, _, _) => if hce_is_paren(e) {
+      hce_only_called_children(name = name, e = e)
+    } else {
+      let mut ok = match callee {
+        EIdent(n, _) => n == name || hce_only_called(name = name, e = callee),
+        _ => hce_only_called(name = name, e = callee)
+      }
+      for arg in args {
+        if ok && !hce_only_called(name = name, e = arg) {
+          ok = false
+        } else {
+          ()
+        }
+      }
+      ok
+    },
+    _ => hce_only_called_children(name = name, e = e)
+  }
+}
+
+fn hce_only_called_children(name: String, e: Expr) -> Bool {
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut ok = true
+  let mut i = mark
+  while ok && i < top {
+    if !hce_only_called(name = name, e = expr_child_at(i)) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  expr_children_pop(mark)
+  ok
+}
+
+/// Does `name` occur anywhere in `e`?
+export fn hce_names_anywhere(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    _ => {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut found = false
+      let mut i = mark
+      while !found && i < top {
+        if hce_names_anywhere(e = expr_child_at(i), name = name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+/// #4064: a builtin that reads an element out of its first argument
+/// (`Array::get(rows, at = 0)`, `xs[i]`, `MutMap::get`), so a value stored
+/// into what it answers is stored into that argument.
+export fn hce_store_getter(env: TypeEnv, name: String, noff: Int) -> Bool {
+  name == "__index" || (String::ends_with(name, suffix = "::get") || String::ends_with(name, suffix = "::unwrap")) && hce_container_builtin(env = env, name = name, noff = noff)
+}
+
+/// Retaining builtins write only into their receiver.
+export fn hce_retained_argument_mask(env: TypeEnv, name: String, noff: Int) -> Int {
+  if builtin_resolves_at(env = env, name = name, ident_off = noff) {
+    retaining_write_argument_mask(source_name = name, operation = resolved_builtin_operation_from_source(name))
+  } else {
+    0
+  }
+}
+
+/// Storage names flowing into a value. A slice has fresh storage, but a
+/// getter or for-binder can still take a shared element out of that slice.
+export fn hce_storage_sources(e: Expr, env: TypeEnv, out: Array[String], element: Bool) -> Unit {
+  match e {
+    EIdent(name, _) => Array::push(out, value = name),
+    EIf(_, a, b) => {
+      hce_storage_sources(e = a, env = env, out = out, element = element)
+      hce_storage_sources(e = b, env = env, out = out, element = element)
+    },
+    ESeq(_, tail) => hce_storage_sources(e = tail, env = env, out = out, element = element),
+    EDot(base, _, _, _) => hce_storage_sources(e = base, env = env, out = out, element = true),
+    ELabeledArg(_, _, inner) => hce_storage_sources(e = inner, env = env, out = out, element = element),
+    EArray(_)|ETuple(_)|ERecord(_, _, _) => if element {
+      hce_storage_children(e = e, env = env, out = out, element = false)
+    } else {
+      ()
+    },
+    EFn(_, _, _, _, _, _) => (),
+    ECall(callee, args, _, _) => if Array::length(args) > 0 {
+      match callee {
+        EIdent(name, off) => if hce_is_paren(e) {
+          hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = element)
+        } else if hce_store_getter(env = env, name = name, noff = off) {
+          hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = true)
+        } else if (name == "Array::slice" || name == "__slice") && builtin_resolves_at(env = env, name = name, ident_off = off) {
+          if element {
+            hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = true)
+          }
+        } else {
+          for arg in args {
+            hce_storage_sources(e = arg, env = env, out = out, element = element)
+          }
+        },
+        _ => if Array::length(args) == 1 && ascription_lambda_ann(callee) is Some(_) {
+          hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = element)
+        } else {
+          hce_storage_children(e = e, env = env, out = out, element = element)
+        }
+      }
+    } else {
+      ()
+    },
+    _ => hce_storage_children(e = e, env = env, out = out, element = element)
+  }
+}
+
+fn hce_storage_children(e: Expr, env: TypeEnv, out: Array[String], element: Bool) -> Unit {
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    hce_storage_sources(e = expr_child_at(i), env = env, out = out, element = element)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}

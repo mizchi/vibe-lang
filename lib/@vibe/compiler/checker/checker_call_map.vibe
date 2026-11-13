@@ -153,7 +153,7 @@ export fn map_receiver_key(s: Subst, m_ty: Type, head: String) -> Type {
 
 /// Whether `arm` is one of the map arms `checker_map_call_arm` answers.
 export fn checker_map_call_arm_handles(_ arm: String) -> Bool {
-  arm == "Map::set" || arm == "Map::get" || arm == "Map::has_key" || arm == "Map::has" || arm == "map_has" || arm == "Map::delete" || arm == "Map::keys" || arm == "Map::values" || arm == "MapBuilder::new" || arm == "MapBuilder::get" || arm == "MapBuilder::freeze"
+  arm == "Map::set" || arm == "Map::get" || arm == "Map::has_key" || arm == "Map::has" || arm == "map_has" || arm == "Map::delete" || arm == "Map::keys" || arm == "Map::values" || arm == "MapBuilder::new" || arm == "MapBuilder::get" || arm == "MapBuilder::set" || arm == "MapBuilder::has_key" || arm == "MapBuilder::freeze"
 }
 
 /// The map call arms, selected by `arm` (#3179). `call_off` is the call's own
@@ -263,20 +263,49 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     (tab_call_ty(tytab = tytab, call_off = call_off, ty = result, capture = capture, lane = lane), s1, c1)
   } else if arm == "MapBuilder::new" {
     // As `StringBuilder::new`. The value slot stays open (`CtUnknown`), as
-    // `MapBuilder::set`'s row leaves it. A builder is still String-keyed:
-    // its `set` row takes a `String` key.
+    // `MapBuilder::set`'s row leaves it. #2334: the key slot is open too, as
+    // `Map::new()`'s is, so the first keyed call decides it: a `String`, or
+    // an `Int` / `Char` / `Bool` key the scalar builder operations take.
+    let (k, c1) = fresh_var(c)
     (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtNamed("MapBuilder", [
-      CtString,
+      k,
       CtUnknown
-    ]), capture = capture, lane = lane), s, c)
+    ]), capture = capture, lane = lane), s, c1)
+  } else if arm == "MapBuilder::set" {
+    // #2334: the key is checked against the builder's key slot, as
+    // `Map::set`'s is, and the call files a map-key row when that key is a
+    // scalar. The value slot stays as the builder's row left it.
+    let (mb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let (v_ty, s3, c3) = check_child(Array::get(args, at = 2), env, defs, s2, c2, errors, tytab, capture, lane)
+    let s4 = check_assignable(expected = map_receiver_key(s = s3, m_ty = mb_ty, head = "MapBuilder"), actual = subst_apply(s = s3, ty = k_ty), s = s3, errors = errors, what = "argument type mismatch for MapBuilder::set", off = call_off)
+    map_key_site_record(call_off = call_off, key = k_ty)
+    let s5 = match subst_apply(s = s4, ty = mb_ty) {
+      CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
+        check_assignable(expected = subst_apply(s = s4, ty = Array::get(margs, at = 1)), actual = subst_apply(s = s4, ty = v_ty), s = s4, errors = errors, what = "MapBuilder::set value type mismatch", off = call_off)
+      } else {
+        s4
+      },
+      _ => s4
+    }
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtUnit, capture = capture, lane = lane), s5, c3)
+  } else if arm == "MapBuilder::has_key" {
+    // #2334: as `Map::has_key`, against the builder's key slot.
+    let (mb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = mb_ty, head = "MapBuilder"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for MapBuilder::has_key", off = call_off)
+    map_key_site_record(call_off = call_off, key = k_ty)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtBool, capture = capture, lane = lane), s3, c2)
   } else if arm == "MapBuilder::get" {
     // #1310: mirror Map::get's #983 refinement -- an annotated/parameter
     // receiver `MapBuilder[K, V]` refines the direct-call fast path's bare
     // `Option[CtUnknown]` to `Option[V]`. Untyped receivers keep the
-    // conservative Option[CtUnknown].
+    // conservative Option[CtUnknown]. #2334: the key is checked against the
+    // builder's key slot.
     let (mb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
     let (mbk_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
-    let s3 = check_assignable(expected = CtString, actual = subst_apply(s = s2, ty = mbk_ty), s = s2, errors = errors, what = "argument type mismatch for MapBuilder::get", off = call_off)
+    let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = mb_ty, head = "MapBuilder"), actual = subst_apply(s = s2, ty = mbk_ty), s = s2, errors = errors, what = "argument type mismatch for MapBuilder::get", off = call_off)
+    map_key_site_record(call_off = call_off, key = mbk_ty)
     let mbresult = match subst_apply(s = s3, ty = mb_ty) {
       CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
         CtOption(subst_apply(s = s3, ty = Array::get(margs, at = 1)))
@@ -287,14 +316,17 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     }
     (tab_call_ty(tytab = tytab, call_off = call_off, ty = mbresult, capture = capture, lane = lane), s3, c2)
   } else {
-    // MapBuilder::freeze: the frozen map carries the builder's value slot,
-    // in the shape a map literal has (`Map[String, V]`); an untyped builder
-    // gives an open slot.
+    // MapBuilder::freeze: the frozen map carries the builder's key and value
+    // slots; an untyped builder gives a String-keyed map with an open value
+    // slot. #2334: a builder whose key resolves to a scalar files a map-key
+    // row here too, so the frozen map is marked scalar-keyed.
     let (fb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
     let frozen = match subst_apply(s = s1, ty = fb_ty) {
       CtNamed(fbn, fbargs) => if fbn == "MapBuilder" && Array::length(fbargs) == 2 {
+        let key = Array::get(fbargs, at = 0)
+        map_key_site_record(call_off = call_off, key = key)
         CtNamed("Map", [
-          CtString,
+          subst_apply(s = s1, ty = key),
           subst_apply(s = s1, ty = Array::get(fbargs, at = 1))
         ])
       } else {

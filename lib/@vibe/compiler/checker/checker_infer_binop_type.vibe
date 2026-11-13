@@ -40,7 +40,9 @@ import @vibe/compiler/core {
   hkt_apply_ctor,
   instantiate,
   is_exception_label,
+  row_items,
   row_may_have_effect_inst,
+  split_top_level_commas,
   strip_published_formal_suffixes,
   strip_published_row_marks,
   subst_add_bound,
@@ -86,7 +88,7 @@ import @vibe/compiler/checker/traits {
 }
 
 import @vibe/compiler/checker/effects {
-  row_items_top_level, row_label_args_differ
+  row_label_args_differ
 }
 
 import ./checker_escape.vibe {
@@ -653,7 +655,7 @@ export fn callback_row_unreadable(_ targs: Array[Type]) -> Option[(String, Strin
 /// not: a constructor is read through a declaration this module lacks.
 export fn callback_row_unreadable_labels(row: String, defs: Array[TypeDef], formals: Array[String], vouched: Array[String]) -> Array[(String, String, String)] {
   let out: Array[(String, String, String)] = []
-  for label in split_row_top_level(row) {
+  for label in row_items(row) {
     let bi = String::index_of(label, needle = "[")
     if bi > 0 && String::ends_with(label, suffix = "]") {
       let base = label[0: bi]
@@ -1054,11 +1056,11 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
             Array::push(row_formals, value = strip_published_formal_suffixes(word))
           }
           let parameter_row = match env_lookup(env = env, name = String::concat("__param_marker__", cname)) {
-            Some(CtNamed(marker, _)) => checker_string_array_has(items = split_row_top_level(rtext), wanted = marker),
+            Some(CtNamed(marker, _)) => checker_string_array_has(items = row_items(rtext), wanted = marker),
             _ => false
           }
           let lexical_row = String::length(local_row) > 0 || row_may_have_effect_inst(rtext) || parameter_row
-          let items = split_row_top_level(rtext)
+          let items = row_items(rtext)
           let mut ii = 0
           while ii < Array::length(items) {
             let item = String::trim(Array::get(items, at = ii))
@@ -1076,7 +1078,7 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
                   // formals (`fn get[S]() -> S with State[S]`) means what that
                   // formal is instantiated to at THIS call, read through the
                   // declaration of the scheme the call instantiated.
-                  let wants = resolve_callee_formal_args(wants = split_row_top_level(arg_text), env_scheme = env_lookup(env = env, name = cname), coff = coff, defs = defs, s = s)
+                  let wants = resolve_callee_formal_args(wants = split_top_level_commas(arg_text), env_scheme = env_lookup(env = env, name = cname), coff = coff, defs = defs, s = s)
                   let have_text = if Array::length(haves) == 1 {
                     type_to_string(Array::get(haves, at = 0))
                   } else {
@@ -1643,7 +1645,7 @@ fn expand_alias_words(t: String, defs: Array[TypeDef], depth: Int) -> String {
             // `type Id[T] = T`) is its target with each parameter replaced
             // by the matching argument.
             let close = matching_bracket(t = t, open_at = i)
-            let args = split_row_top_level(String::substring(t, start = i + 1, end = close))
+            let args = split_top_level_commas(String::substring(t, start = i + 1, end = close))
             if close > i && Array::length(args) == Array::length(aparams) {
               Array::push(parts, value = String::concat("(", String::concat(substitute_type_words(t = type_to_string(target), params = aparams, args = args), ")")))
               i = close + 1
@@ -1763,29 +1765,6 @@ fn declared_nominal(defs: Array[TypeDef], name: String) -> Bool {
     Some(TDEnum(_, _, _)) => true,
     _ => false
   }
-}
-
-/// A row's items split at commas outside brackets and parentheses, trimmed.
-fn split_row_top_level(_ row: String) -> Array[String] {
-  let out = array_empty()
-  let mut depth = 0
-  let mut start = 0
-  let mut i = 0
-  let n = String::length(row)
-  while i < n {
-    let c = String::char_code_at(row, at = i)
-    if c == '[' || c == '(' {
-      depth = depth + 1
-    } else if c == ']' || c == ')' {
-      depth = depth - 1
-    } else if c == ',' && depth == 0 {
-      Array::push(out, value = String::trim(String::substring(row, start = start, end = i)))
-      start = i + 1
-    }
-    i = i + 1
-  }
-  Array::push(out, value = String::trim(String::substring(row, start = start, end = n)))
-  out
 }
 
 fn strip_spaces(_ t: String) -> String {

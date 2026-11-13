@@ -3245,9 +3245,11 @@ codegen. Write `for x in xs { .. }`.
 
 **Builder**: `ArrayBuilder::new() -> ArrayBuilder[T]`,
 `push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`.
-`MapBuilder::new() -> MapBuilder[String, V]`,
-`set(MapBuilder[String, V], String, V) -> Unit`,
-`freeze(MapBuilder[String, V]) -> Map[String, V]` — a builder is String-keyed.
+`MapBuilder::new() -> MapBuilder[K, V]`,
+`set(MapBuilder[K, V], K, V) -> Unit`,
+`has_key(MapBuilder[K, V], K) -> Bool`, `get(MapBuilder[K, V], K) -> Option[V]`,
+`freeze(MapBuilder[K, V]) -> Map[K, V]` — the key is any key the builtin
+`Map` takes (below), and the first keyed call decides it.
 A `for-in` comprehension desugars to these builder operations internally.
 
 **Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Int32`,
@@ -3275,7 +3277,8 @@ for `Map[Int, V]`, or key the map by `String`. Such a function is also refused
 when it is exported or passed as a value, where its calls cannot be checked;
 call it directly, inside its own module. A key the checker only inferred
 (`Map::set(Map::new(), 1.5, v)`) is refused like a written one.
-`MapBuilder` is String-keyed.
+`MapBuilder` follows the same rules, and `freeze` gives a `Map` with the
+builder's key type.
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
