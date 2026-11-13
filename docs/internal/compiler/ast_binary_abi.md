@@ -205,7 +205,7 @@ so the **order** is what the format fixes.
 | 0x09 | `POr(Pat, Pat)` | `Pat(left) Pat(right)` |
 | 0x0A | `PStruct(String, Array[(String, Pat)])` | `string(name) array<(string, Pat)>(fields)` |
 
-### ImportKind tags (5 variants)
+### ImportKind tags (6 variants)
 
 | Tag  | Variant |
 |------|---------|
@@ -214,6 +214,7 @@ so the **order** is what the format fixes.
 | 0x03 | `ImportEnum` |
 | 0x04 | `ImportEffect` |
 | 0x05 | `ImportTrait` |
+| 0x06 | `ImportOpaque` |
 
 `ImportItem` is a struct, not an enum, so it carries no tag of its own:
 
