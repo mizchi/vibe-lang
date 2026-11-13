@@ -820,6 +820,157 @@ fn struct_layout_self_test(vibe: String) -> Int with Fs + Process + Stderr {
   }
 }
 
+// #4041: in the suspend CPS and evidence passes, a statement's output is to be
+// a function of that statement and a program summary, so that #4042 can keep
+// it across builds for a statement an edit did not touch. A function that
+// enumerates the program -- its `Array[Stmt]` parameter -- makes the answer
+// for one statement depend on every other one, behind no summary to compare.
+//
+// The question "does this read the program?" is replaced by one a scanner can
+// answer: does a function in those packages enumerate (`Array::length`, a
+// `for` over it, `Array::slice`) a parameter its own header declares
+// `Array[Stmt]`? A block walker takes its statements from a pattern, not from
+// its header, so it is not matched. What legitimately enumerates -- a builder
+// of per-statement facts or of a summary -- says so above its header with
+// `// review-lint: allow-program-walk (<what it builds>)`.
+fn program_walk_patterns() -> Array[String] {
+  [
+    "Array::length($(x:id))",
+    "for $(p:id) in $(x:id) { $(b:exp) }",
+    "Array::slice($(x:id), $(rest:args))"
+  ]
+}
+
+fn is_summary_pass_source(path: String) -> Bool {
+  let dir = "/compiler/lowering/effects/"
+  is_production_compiler_path(path = path) && (String::contains(path, needle = dir + "evidence/") || String::contains(path, needle = dir + "suspend/") || String::contains(path, needle = dir + "queries/"))
+}
+
+fn starts_top_level_fn(_ line: String) -> Bool {
+  String::starts_with(line, prefix = "fn ") || String::starts_with(line, prefix = "export fn ")
+}
+
+/// The line index (0-based) of the top-level `fn` that encloses `line`
+/// (1-based), or -1.
+fn enclosing_fn_line(lines: Array[String], line: Int) -> Int {
+  let mut k = line - 1
+  if k >= Array::length(lines) {
+    k = Array::length(lines) - 1
+  }
+  while k >= 0 && !starts_top_level_fn(Array::get(lines, at = k)) {
+    k = k - 1
+  }
+  k
+}
+
+/// A function header from its `fn` line through the line that opens the body.
+fn fn_header_at(lines: Array[String], start: Int) -> String {
+  let mut out = ""
+  let mut j = start
+  let mut done = false
+  while !done && j < Array::length(lines) {
+    let l = Array::get(lines, at = j)
+    out = out + l + "\n"
+    done = String::ends_with(l, suffix = "{")
+    j = j + 1
+  }
+  out
+}
+
+/// Whether `header` declares `name: Array[Stmt]` -- as the first parameter,
+/// a later one, or a positional one (`_ name`).
+fn header_declares_stmts(header: String, name: String) -> Bool {
+  let decl = name + ": Array[Stmt]"
+  String::contains(header, needle = "(" + decl) || String::contains(header, needle = " " + decl)
+}
+
+/// Whether the comment lines directly above the `fn` line at `start` carry
+/// the marker.
+fn program_walk_marked(lines: Array[String], start: Int) -> Bool {
+  let marker = "review-lint: allow-program-walk"
+  let mut k = start - 1
+  let mut found = false
+  while !found && k >= 0 && String::starts_with(Array::get(lines, at = k), prefix = "//") {
+    found = String::contains(Array::get(lines, at = k), needle = marker)
+    k = k - 1
+  }
+  found
+}
+
+fn first_line(_ text: String) -> String {
+  Array::get(String::split(text, sep = "\n"), at = 0)
+}
+
+fn report_program_walk_hits(raw: String, emit: Bool) -> Int with Fs + Stderr {
+  let hits = Json::parse(raw)
+  let mut count = 0
+  let mut i = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, idx = i)
+    let path = Json::string(Json::field(hit, key = "path"))
+    if is_summary_pass_source(path = path) && Fs::exists(path) {
+      let line = Float64::to_int(Json::number(Json::field(hit, key = "line")))
+      let name = Json::string(Json::field(Json::field(Json::field(hit, key = "captures"), key = "x"), key = "text"))
+      let lines = String::split(Fs::read_file(path), sep = "\n")
+      let start = enclosing_fn_line(lines = lines, line = line)
+      if start >= 0 && header_declares_stmts(header = fn_header_at(lines = lines, start = start), name = name) && !program_walk_marked(lines = lines, start = start) {
+        count = count + 1
+        if emit {
+          // The head line only: an edit inside an existing loop's body is
+          // not a new walk of the program.
+          report_finding(path = path, line = line, text = first_line(Json::string(Json::field(hit, key = "text"))), message = "this function enumerates the program (`" + name + "`): in the suspend CPS and evidence passes a statement's output must depend only on that statement and a program summary (#4041), so read the statement facts or a summary member (edp_mf_*, scps_census_*) instead. A function that BUILDS per-statement facts or a summary says so above its header: `// review-lint: allow-program-walk (<what it builds>)`")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn program_walk_count(vibe: String, path: String) -> Int with Fs + Process + Stderr {
+  let mut total = 0
+  for pattern in program_walk_patterns() {
+    let (code, out) = run_grep(vibe = vibe, root = path, pattern = pattern)
+    total = total + if code != 0 {
+      1000
+    } else {
+      report_program_walk_hits(raw = out, emit = false)
+    }
+  }
+  total
+}
+
+fn program_walk_self_test(vibe: String) -> Int with Fs + Process + Stderr {
+  let path = "_build/_review_lint_program_walk/compiler/lowering/effects/evidence/walk.vibe"
+  // One hit per pattern, a positional and a later parameter, and a header
+  // that spans two lines.
+  Fs::write_file(path, contents = "fn count(stmts: Array[Stmt]) -> Int {\n  Array::length(stmts)\n}\n\nfn names(k: Int, _ decls: Array[Stmt]) -> Int {\n  let mut n = k\n  for s in decls {\n    n = n + 1\n  }\n  n\n}\n\nfn tail(\n  prog: Array[Stmt],\n  from: Int\n) -> Array[Stmt] {\n  Array::slice(prog, start = from, end = 3)\n}\n")
+  let bad = program_walk_count(vibe = vibe, path = path)
+  if bad != 3 {
+    Stderr::write_stream("review-lint self-test: a program walk was not reported (" + Int::to_string(bad) + " of 3)\n")
+    1
+  } else {
+    // A block's own statements, a non-statement array, a marked builder, a
+    // comment, and the same walk outside the two passes' packages.
+    Fs::write_file(path, contents = "fn block(e: Expr) -> Int {\n  match e {\n    EBlock(ss, _) => Array::length(ss),\n    _ => 0\n  }\n}\n\nfn ints(stmts: Array[Int]) -> Int {\n  Array::length(stmts)\n}\n\n// Builds the per-statement facts.\n// review-lint: allow-program-walk (statement facts)\nfn facts(stmts: Array[Stmt]) -> Int {\n  // for s in stmts { }\n  Array::length(stmts)\n}\n")
+    let elsewhere = "_build/_review_lint_program_walk/compiler/lowering/inline/walk.vibe"
+    Fs::write_file(elsewhere, contents = "fn count(stmts: Array[Stmt]) -> Int {\n  Array::length(stmts)\n}\n")
+    let good = program_walk_count(vibe = vibe, path = path) + program_walk_count(vibe = vibe, path = elsewhere)
+    if good != 0 {
+      Stderr::write_stream("review-lint self-test: a block walk, a marked builder or a walk outside the passes was reported\n")
+      1
+    } else {
+      0
+    }
+  }
+}
+
 // Exercise the real AST matcher: a future broken pattern cannot be certified
 // by a hand-written JSON result that happens to look like a match.
 fn function_header_bind_self_test(vibe: String) -> Int with Fs + Process + Stderr {
@@ -869,9 +1020,13 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
     Array::push(patterns, value = Array::get(string_patterns, at = sp))
     sp = sp + 1
   }
-  // Last: struct_layout_patterns(), reported by the final branch below.
   for lp in struct_layout_patterns() {
     Array::push(patterns, value = lp)
+  }
+  // Last: program_walk_patterns(), reported by the final branch below.
+  let walk_start = Array::length(patterns)
+  for wp in program_walk_patterns() {
+    Array::push(patterns, value = wp)
   }
   let mut i = 0
   let mut violations = 0
@@ -923,8 +1078,10 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
         violations = violations + report_migration_write_hits(raw = output, emit = true)
       } else if i < 11 + Array::length(effect_patterns) + Array::length(string_patterns) {
         violations = violations + report_string_address_hits(raw = output, emit = true)
-      } else {
+      } else if i < walk_start {
         violations = violations + report_struct_layout_hits(raw = output, emit = true)
+      } else {
+        violations = violations + report_program_walk_hits(raw = output, emit = true)
       }
     }
     i = i + 1
@@ -1002,6 +1159,7 @@ fn self_test(vibe: String) -> Int with Fs + Process + Stderr {
   let migration_code = migration_write_self_test(vibe = vibe)
   let string_code = string_address_self_test(vibe = vibe)
   let struct_code = struct_layout_self_test(vibe = vibe)
+  let walk_code = program_walk_self_test(vibe = vibe)
   let stale_restore = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/parse.vibe\",\"line\":1,\"text\":\"match path_only { Some(rows) => restore_resolved_callees(stmts, rows), None => () }\"}]"
   let restore_test = "[{\"path\":\"/repo/lib/@vibe/compiler/tests/restore_test.vibe\",\"line\":1,\"text\":\"stale restore regression\"}]"
   let raw = "[{\"path\":\"/repo/lib/@vibe/compiler/normalize/pass.vibe\",\"line\":1,\"text\":\"ELet(\\\"__tmp\\\", e, e, -1)\",\"captures\":{\"name\":{\"text\":\"\\\"__tmp\\\"\"}}}]"
@@ -1028,6 +1186,8 @@ fn self_test(vibe: String) -> Int with Fs + Process + Stderr {
     string_code
   } else if struct_code != 0 {
     struct_code
+  } else if walk_code != 0 {
+    walk_code
   } else if report_path_only_callee_restore_hits(raw = stale_restore, emit = false) != 1 || report_path_only_callee_restore_hits(raw = "[]", emit = false) != 0 || report_path_only_callee_restore_hits(raw = restore_test, emit = false) != 0 {
     Stderr::write_stream("review-lint self-test: a path-only callee restore was missed or a regression fixture was flagged\n")
     1
