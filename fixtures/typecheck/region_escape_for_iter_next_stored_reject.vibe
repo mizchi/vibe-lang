@@ -1,0 +1,51 @@
+// #4093: a `for` over a declared collection driven through `C::iter` binds
+// what the returned iterator's `next` hands out. When that is a stored
+// element of the `self.items` that `Bag::iter` passed along, the binder is a
+// part of `outer`, and the write keeps the region value past the region
+// (main printed `kept=true`).
+trait Iterator[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+trait Iterable[T] {
+  iter(Self) -> Gen
+}
+
+struct Bag {
+  items: Array[Array[MutList[Int]]]
+}
+
+struct Gen {
+  items: Array[Array[MutList[Int]]];
+  at: Int
+}
+
+impl Iterator for Gen {
+  next(self) -> Option[(T, Gen)] {
+    if self.at < Array::length(self.items) {
+      Some((Array::get(self.items, at = self.at), Gen::{ items: self.items, at: self.at + 1 }))
+    } else {
+      None
+    }
+  }
+}
+
+impl Iterable for Bag {
+  iter(self) -> Gen {
+    Gen::{ items: self.items, at: 0 }
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let outer: Array[MutList[Int]] = []
+  let bag = Bag::{ items: [outer] }
+  let v = region r {
+    let cell = MutList::empty(r)
+    MutList::push(cell, 3)
+    for a in bag {
+      Array::push(a, value = cell)
+    }
+    1
+  }
+  println("v=\{v} kept=\{Array::length(outer) > 0}")
+}

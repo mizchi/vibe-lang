@@ -1,0 +1,40 @@
+// Codex on #4100: `next` builds a fresh array, publishes it into a
+// module-level array, and then hands it out. The element is built in the
+// body, but it is no longer fresh, so the write keeps the region value in
+// `kept` (the positive-evidence rule alone accepted it and printed
+// `kept=true`). A protocol body that does anything but bind, branch and
+// construct does not count as building a fresh element.
+trait Iterator[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+let kept: Array[Array[MutList[Int]]] = []
+
+struct Gen {
+  left: Int
+}
+
+impl Iterator for Gen {
+  next(self) -> Option[(T, Gen)] {
+    if self.left > 0 {
+      let fresh: Array[MutList[Int]] = []
+      Array::push(kept, value = fresh)
+      Some((fresh, Gen::{ left: self.left - 1 }))
+    } else {
+      None
+    }
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let xs = Gen::{ left: 1 }
+  let v = region r {
+    let cell = MutList::empty(r)
+    MutList::push(cell, 3)
+    for a in xs {
+      Array::push(a, value = cell)
+    }
+    1
+  }
+  println("v=\{v} kept=\{Array::length(Array::get(kept, at = 0)) > 0}")
+}
