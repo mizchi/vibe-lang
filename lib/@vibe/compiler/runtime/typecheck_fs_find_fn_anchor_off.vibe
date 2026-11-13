@@ -1060,12 +1060,12 @@ fn typing_reuse_stored_text(digest: String, namespace: String) -> Option[String]
   let path = persistent_typing_dependency_env_reuse_text_path_in_namespace(digest, namespace = namespace)
   match MutMap::get(typing_reuse_text_memo(), k = path) {
     Some(text) => Some(text),
-    None => if Fs::exists(path) {
-      let text = Fs::read_file(path)
-      MutMap::set(typing_reuse_text_memo(), k = path, v = text)
-      Some(text)
-    } else {
-      None
+    None => match typing_reuse_read_quietly(path) {
+      Some(text) => {
+        MutMap::set(typing_reuse_text_memo(), k = path, v = text)
+        Some(text)
+      },
+      None => None
     }
   }
 }
@@ -1234,7 +1234,7 @@ fn typing_dependency_env_reuse_witness_text_in_namespace(_ fingerprint: String, 
   if !Fs::exists(witness_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(text = Fs::read_file(witness_path), tag = typing_dependency_env_reuse_witness_v10_tag) {
+    match parse_typing_dependency_reuse_binding(text = typing_reuse_read_or_empty(witness_path), tag = typing_dependency_env_reuse_witness_v10_tag) {
       Some((input_key, target_fingerprint, target_text)) => if target_fingerprint != fingerprint {
         None
       } else {
@@ -1255,7 +1255,7 @@ fn typing_dependency_env_reuse_witness_binding_in_namespace(_ fingerprint: Strin
   if !Fs::exists(witness_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(text = Fs::read_file(witness_path), tag = typing_dependency_env_reuse_witness_v10_tag) {
+    match parse_typing_dependency_reuse_binding(text = typing_reuse_read_or_empty(witness_path), tag = typing_dependency_env_reuse_witness_v10_tag) {
       Some((input_key, target_fingerprint, target_text)) =>
       if target_fingerprint != fingerprint {
         None
@@ -1365,7 +1365,7 @@ export fn load_typing_dependency_env_reuse_target_in_namespace(path: String, inp
   if !Fs::exists(sidecar_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_alias(Fs::read_file(sidecar_path)) {
+    match parse_typing_dependency_reuse_alias(typing_reuse_read_or_empty(sidecar_path)) {
       Some(target_fingerprint) => {
         // Only an exact binding reuses: the witness the alias names carries
         // this verbatim input key, and its target text is the raw record.
@@ -1438,6 +1438,17 @@ fn typing_reuse_read_quietly(_ path: String) -> Option[String] with Fs {
     handle {
       Some(Fs::read_file(path))
     } with { Exception::Throw(_) => None }
+  }
+}
+
+/// A record's text, or `""` when it is missing or cannot be read. Another
+/// invocation sharing the cache may retire a record between `Fs::exists` and
+/// the read (#2825); that must read as a miss, never abort the build. `""`
+/// parses as no record.
+fn typing_reuse_read_or_empty(_ path: String) -> String with Fs {
+  match typing_reuse_read_quietly(path) {
+    Some(text) => text,
+    None => ""
   }
 }
 
