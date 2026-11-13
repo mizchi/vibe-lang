@@ -2689,8 +2689,20 @@ vibe run --provide Kv=./kv.component.wasm main.vibex
 On viberun, with no provider bound the program is refused before `main`
 starts, naming the effect, its operations and the flag. A provider whose
 export has another signature is refused at link time. The node runner cannot
-instantiate a component and refuses such a program. A `test` cannot bind a
-provider yet.
+instantiate a component and refuses such a program.
+
+A `test` block mocks a host effect the same way: it may require the effect
+(`test "x" allows Kv { .. }`), and `vibe test` binds the provider for every
+test it runs:
+
+```sh
+vibe test --provide Kv=./kv_mock.component.wasm kv_test.vibe
+```
+
+With none bound, the test fails before it runs with the same refusal, naming
+`vibe test --provide`. The wasm-gc backend (`VIBE_TEST_BACKEND=gc`) does not
+compile an extern effect's operations yet; it refuses the program at build
+time.
 
 ## Module System
 

@@ -44,7 +44,9 @@
 #      is refused before `main`, naming the effect, its operations and the
 #      flag; the node runner refuses it; a provider whose export has another
 #      signature is refused at link time; and an extern effect imported from
-#      another module runs the same way (extern_greeter_*.vibex).
+#      another module runs the same way (extern_greeter_*.vibex), and a
+#      `test` block binds one with `vibe test --provide`
+#      (extern_greeter_test.vibe).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -268,6 +270,30 @@ out="$(vibe "$VIBERUN" run "$FX/extern_greeter_main.vibex" 2>"$WORK/err")" || st
 grep -qF 'no host provider is bound for the extern effect(s) this program needs, so it was not started' "$WORK/err" \
   && grep -qF '`Greeter` (Greeter::greet): bind one with `vibe run --provide Greeter=<component.wasm>`' "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "[viberun] the missing-provider refusal does not name the effect, its operation and the flag"; }
+# A `test` block binds a provider the same way: `vibe test --provide` is how
+# a test mocks a host effect, and with none bound the refusal names the flag
+# on `vibe test`, the command that was run.
+status=0
+out="$(vibe "$VIBERUN" test --provide "Greeter=$FX/greeter.component.wasm" "$FX/extern_greeter_test.vibe" 2>&1)" || status=$?
+[ "$status" = 0 ] || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_test failed with a provider bound"; }
+printf '%s\n' "$out" | grep -qF '1 passed, 0 failed' || { printf '%s\n' "$out" >&2; fail "[viberun] extern_greeter_test did not pass its test block"; }
+status=0
+out="$(vibe "$VIBERUN" test "$FX/extern_greeter_test.vibe" 2>&1)" || status=$?
+[ "$status" != 0 ] || fail "[viberun] a test calling an extern effect passed with no provider bound"
+printf '%s\n' "$out" | grep -qF '`Greeter` (Greeter::greet): bind one with `vibe test --provide Greeter=<component.wasm>`' \
+  || { printf '%s\n' "$out" >&2; fail "[viberun] the test missing-provider refusal does not name \`vibe test --provide\`"; }
+status=0
+out="$(vibe "$VIBERUN" test --provide Greeter "$FX/extern_greeter_test.vibe" 2>&1)" || status=$?
+[ "$status" != 0 ] || fail "[viberun] vibe test accepted --provide without <Effect>=<component.wasm>"
+printf '%s\n' "$out" | grep -qF 'test: --provide takes <Effect>=<component.wasm>, got `Greeter`' \
+  || { printf '%s\n' "$out" >&2; fail "[viberun] a malformed vibe test --provide is not refused with the spelling that works"; }
+# A trailing `--provide` with no value is refused on the parallel path too
+# (`--jobs 2` with two files splits into shares, which must not drop it).
+status=0
+out="$(vibe "$VIBERUN" test --jobs 2 "$FX/extern_greeter_test.vibe" "$FX/extern_greeter_test.vibe" --provide 2>&1)" || status=$?
+[ "$status" != 0 ] || fail "[viberun] vibe test --jobs 2 accepted a trailing --provide with no value"
+printf '%s\n' "$out" | grep -qF 'test: missing value after --provide' \
+  || { printf '%s\n' "$out" >&2; fail "[viberun] a trailing --provide is not refused by name"; }
 # The node runner cannot instantiate the provider, and says so instead of
 # answering every operation with its fallback stub.
 status=0
@@ -281,4 +307,4 @@ out="$(vibe "$VIBERUN" run --provide "Greeter=$FX/greeter.component.wasm" "$FX/e
 grep -qF "'greet' is now (string->string) but the program was compiled against (s64->s64)" "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "[viberun] the provider-signature refusal does not say why"; }
 
-echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal; extern effect: provider, missing-provider refusal, node refusal, signature refusal)"
+echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal; extern effect: provider, missing-provider refusal, vibe test --provide, node refusal, signature refusal)"

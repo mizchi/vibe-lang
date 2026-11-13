@@ -261,7 +261,8 @@ fn main allows Console + Kv {
   existing WIT generator derives from the declaration (it already
   maps a declared effect to `import <kebab E>: interface { <kebab op>:
   func(..) }`; [effect-wit-mapping.md](effect-wit-mapping.md)), bound at
-  launch: `vibe run --provide Kv=./kv_provider.component.wasm`. viberun links it
+  launch: `vibe run --provide Kv=./kv_provider.component.wasm`, or `vibe test
+  --provide` for the test binaries a test run starts. viberun links it
   through the component bridge it has for `vibe:component:<path>`, range checks
   included. That is ADR-0113's "host capabilities are the same mechanism with
   the runner as provider", and it lets the provider itself be a vibe component.
