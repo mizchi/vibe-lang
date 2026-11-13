@@ -282,3 +282,30 @@ export fn type_at_fs_session_answer(session: TypeAtFsSession, path: String, sour
     None => None
   }
 }
+
+/// What the import-resolving lane reports about `source`, the buffer of
+/// `path`: the walk's raised text -- every diagnostic of the file and of the
+/// dependencies it could not type, `\n`-joined as `vibe check` raises them --
+/// or `""` when the file checks with its imports (#4013).
+///
+/// The walk is the session's own: a revision whose typing is kept, with no
+/// file event since and every dependency's stat token unchanged, walked clean
+/// and is answered without walking; any other revision is walked, and a
+/// clean walk keeps its typing for the hovers that follow. A failed walk keeps
+/// nothing, so the next request walks again.
+///
+/// The verdict is the walk's, not the hover typing's: the walk checks the
+/// entry as a module of its project, which is the check `vibe check` makes.
+export fn type_at_fs_session_errors(session: TypeAtFsSession, path: String, source: String, checked_error_row: Bool) -> String with Env + Fs {
+  match type_at_fs_session_current(session = session, path = path, source = source, checked_error_row = checked_error_row) {
+    Some(_) => "",
+    None => handle {
+      let _ = type_at_fs_session_walk(session = session, path = path, source = source, checked_error_row = checked_error_row)
+      ""
+    } with { Exception::Throw(message) => if message == "" {
+      "the import-resolving check failed without a message"
+    } else {
+      message
+    } }
+  }
+}

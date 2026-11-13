@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   builtin_registry,
   builtin_shadow_entry_name,
   dce_stmts,
+  executable_export_kept,
   fold_const_bool_params_signed,
   is_exception_effect_name,
   merged_offset_locations_snapshot,
@@ -48,9 +49,11 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  borrow_owned_value_thunks,
   compute_borrow_param_user_fns,
   compute_float_returning_names,
   compute_may_return_view_fns,
+  direct_known_fn_params,
   stmts_contain_exceptions,
   unique_typed_lowering_offsets_in_stmts
 }
@@ -213,6 +216,55 @@ export fn compile_wasi_module_linked_with_cache_policy(stmts: Array[Stmt], entry
 /// The returned value is instance-local and owns the state needed by the executor.
 export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)], exports_stripped: Bool) -> LinkedModulePreparation with Exception {
   lc_prepare_module_with_cache_policy(stmts = stmts, entry_name_in = entry_name_in, srcs = srcs, linked_imports = linked_imports, library_mode = library_mode, enable_rc = enable_rc, coverage = coverage, debug_trace = debug_trace, debug_break = debug_break, rc_shadow = rc_shadow, enable_late_dce = enable_late_dce, prov = prov, body_cache_in = body_cache_in, body_cache_out = body_cache_out, slice_lo = slice_lo, slice_hi = slice_hi, checker_float_call_offsets = checker_float_call_offsets, checker_int_render_offsets = checker_int_render_offsets, checker_bool_render_offsets = checker_bool_render_offsets, checker_eq_offsets = checker_eq_offsets, checker_eq_type_keys = checker_eq_type_keys, split = split, render = render, grants = grants, body_cache_enabled = true, exports_stripped = exports_stripped)
+}
+
+/// Append the exact callback rewrites to each affected function's body-cache
+/// signature. The length prefix keeps target names unambiguous.
+fn lc_merge_callback_signatures(names: Array[String], sigs: Array[String], rewrites: Array[(String, Int, String)]) -> (Array[String], Array[String]) {
+  if Array::length(rewrites) == 0 {
+    return (names, sigs)
+  }
+  let merged = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(names) {
+    MutMap::set(merged, k = Array::get(names, at = i), v = Array::get(sigs, at = i))
+    i = i + 1
+  }
+  for row in rewrites {
+    let (name, slot, target) = row
+    let previous = match MutMap::get(merged, k = name) {
+      Some(value) => value,
+      None => ""
+    }
+    MutMap::set(merged, k = name, v = previous + "#cb:" + __to_string(slot) + ":" + __to_string(String::length(target)) + ":" + target)
+  }
+  let sorted = sorted_names_of(MutMap::keys(merged))
+  (sorted, for name in sorted {
+    match MutMap::get(merged, k = name) {
+      Some(value) => value,
+      None => ""
+    }
+  })
+}
+
+/// The functions `direct_known_fn_params` must not specialize: the analysis
+/// exclude list, plus every function a caller outside `stmts` can reach. The
+/// pass rewrites a callback parameter from the calls it sees, so it is sound
+/// only when those are all the calls there are. A library build exports every
+/// function; otherwise an `export fn` stays a wasm export unless the
+/// executable strip drops it (`executable_export_kept`), and a host may call
+/// one with a callback no call in `stmts` passes.
+fn lc_known_fn_param_exclude(stmts: Array[Stmt], entry_name: String, library_mode: Bool, exports_stripped: Bool) -> Array[String] {
+  let out = lc_analysis_exclude(entry_name)
+  for stmt in stmts {
+    match stmt {
+      SLet(exported, _, name, _, EFn(_, _, _, _, _, _)) => if library_mode || (exported && (!exports_stripped || executable_export_kept(name = name, entry_name = entry_name))) {
+        Array::push(out, value = name)
+      } else (),
+      _ => ()
+    }
+  }
+  out
 }
 
 /// Explicit cache policy stays a direct Bool so executable specialization can
@@ -428,11 +480,6 @@ export fn lc_prepare_module_with_cache_policy(stmts: Array[Stmt], entry_name_in:
   } else {
     ()
   }
-  // Before the body phase, so `codegen_body_cache_record` stamps each entry --
-  // here and in a function worker, whose template is this cache.
-  if body_cache_enabled {
-    codegen_body_cache_set_fold_table(cache = body_cache_out, names = fold_sig_names, sigs = fold_sig_values)
-  } else ()
   // #3150 / #3189 review: whether a host STREAM read survived is a fact about
   // the program the prune LEFT, like the host-future half below
   // (`lc_stmts_call_host_future`). Asked before the prune it over-counts: the
@@ -459,6 +506,27 @@ export fn lc_prepare_module_with_cache_policy(stmts: Array[Stmt], entry_name_in:
   // PR #2708 review: the String length-view runtime prelude (WHATWG
   // replacement decoding), appended under the same rules.
   append_string_views_runtime(stmts)
+  // #2827: a function used as a value keeps the borrowed ABI for its direct
+  // calls; its value uses move to an owning thunk. Before the passthrough and
+  // owning-return rewrites, so the thunk is classified like any callback.
+  // A function-typed parameter that is always one function is called as that
+  // function directly, first: the thunk renames the value uses of a callback.
+  // A function the module exports is called from outside `stmts` too, so its
+  // parameters are left alone (`lc_known_fn_param_exclude`).
+  let callback_rewrites: Array[(String, Int, String)] = []
+  if enable_rc {
+    let _ = direct_known_fn_params(stmts = stmts, exclude = lc_known_fn_param_exclude(stmts = stmts, entry_name = entry_name, library_mode = library_mode, exports_stripped = exports_stripped), rewrites = if body_cache_enabled {
+      Some(callback_rewrites)
+    } else {
+      None
+    })
+    let _ = borrow_owned_value_thunks(stmts = stmts, exclude = lc_analysis_exclude(entry_name))
+  } else ()
+  let (body_sig_names, body_sig_values) = lc_merge_callback_signatures(names = fold_sig_names, sigs = fold_sig_values, rewrites = callback_rewrites)
+  // Stamp each harvested body, including bodies emitted by function workers.
+  if body_cache_enabled {
+    codegen_body_cache_set_fold_table(cache = body_cache_out, names = body_sig_names, sigs = body_sig_values)
+  } else ()
   // Named and anonymous callbacks share the owning return ABI. Rewrite named
   // bodies before the analyses so direct calls receive that same contract.
   // Read direct parameter passthroughs before cl_own_return_stmts can wrap
@@ -1536,15 +1604,15 @@ export fn lc_prepare_module_with_cache_policy(stmts: Array[Stmt], entry_name_in:
     lc_ufn_i = lc_ufn_i + 1
   }
   let lc_name_unique = unique_name_flags(lc_user_fn_names)
-  // #2818: drop exactly the cached entries whose function this compile folds
-  // differently from the compile that recorded them. Not under
+  // Drop cached entries when a Boolean fold or known callback rewrite
+  // differs from the compile that recorded them. Not under
   // `pin_region_capacity < 0`, for the reason `body_cache_in_ok` gives below:
   // that compile re-feeds stmts an earlier compile in this process already
   // lowered AND folded, so its own fold sees no parameter read left to
   // substitute and reports different rounds for the same bodies. The verify
   // lane, which takes that path, filters against the fresh harvest instead.
   let body_cache_in_fold = if body_cache_enabled && pin_region_capacity >= 0 {
-    codegen_body_cache_filter_fold_sigs(cache = body_cache_in, names = fold_sig_names, sigs = fold_sig_values)
+    codegen_body_cache_filter_fold_sigs(cache = body_cache_in, names = body_sig_names, sigs = body_sig_values)
   } else {
     body_cache_in
   }

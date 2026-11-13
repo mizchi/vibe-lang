@@ -1623,6 +1623,63 @@ export fn expand_constructor_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int)
   }
 }
 
+/// An identifier-impossible prefix that hides a binder's own formal from
+/// alias lookup while `applied_formal_head` expands a type.
+let formal_head_mask_prefix: String = "$formal_head$"
+
+fn formal_names_contain(formals: Array[String], name: String) -> Bool {
+  Array::any(formals, f = (key) -> type_param_name(key) == name)
+}
+
+fn mask_formal_heads(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(name) => if formal_names_contain(formals = formals, name = name) {
+      TyName(String::concat(formal_head_mask_prefix, name))
+    } else {
+      ty
+    },
+    TyApp(head, args) => {
+      let masked_args = for arg in args {
+        mask_formal_heads(ty = arg, formals = formals)
+      }
+      if formal_names_contain(formals = formals, name = head) {
+        TyApp(String::concat(formal_head_mask_prefix, head), masked_args)
+      } else {
+        TyApp(head, masked_args)
+      }
+    },
+    TyFn(params, result, effect) => TyFn(for param in params {
+      mask_formal_heads(ty = param, formals = formals)
+    }, mask_formal_heads(ty = result, formals = formals), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      mask_formal_heads(ty = item, formals = formals)
+    }),
+    TyUnit => ty
+  }
+}
+
+/// #4070: the binder formal that heads `ty` once aliases are expanded, or ""
+/// when the expanded head is not one of `formals` (the binder's own type
+/// parameters, as keys). A formal shadows a top-level alias of the same name:
+/// under a kinded `F[_]`, `xs: F[Int]` is headed by the binder even when the
+/// program also declares `type F[T] = (T, T)`, and so is `xs: Lift[F, Int]`
+/// with `type Lift[G[_], X] = G[X]`. Before, `expand_constructor_alias`
+/// expanded the binder through the alias, so the parameter stopped carrying
+/// the binder's witness. The formals are masked before expansion rather than
+/// skipped by name during it, so a name an alias's own target mentions still
+/// refers to the top level.
+export fn applied_formal_head(ty: TypeExpr, stmts: Array[Stmt], formals: Array[String]) -> String {
+  let masked = mask_formal_heads(ty = ty, formals = formals)
+  match expand_constructor_alias(ret = masked, stmts = stmts, fuel = Array::length(stmts) + 1) {
+    TyApp(head, _) => if String::starts_with(head, prefix = formal_head_mask_prefix) {
+      String::substring(head, start = String::length(formal_head_mask_prefix), end = String::length(head))
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
 fn str_arrays_equal(a: Array[String], b: Array[String]) -> Bool {
   if Array::length(a) != Array::length(b) {
     false

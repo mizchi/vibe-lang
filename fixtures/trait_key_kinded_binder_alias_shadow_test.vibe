@@ -1,0 +1,44 @@
+//# #4070: a kinded binder `F[_]` shadows a top-level alias of the same name
+//# when the lowering looks for the parameter that carries its witness.
+//# `xs: F[Int]` is headed by the binder, not expanded through `type F[T] =
+//# (T, T)` into `(Int, Int)`, and so is `xs: Lift[F, Int]`, whose alias
+//# substitutes the binder for its own `G[_]`. Both used to be refused: the
+//# first with "no parameter of `take_it` carries the witness", the second
+//# with "annotate the argument this call reads `F` from".
+type F[T] = (T, T)
+type Lift[G[_], X] = G[X]
+
+trait Takes[A] {
+  take(A) -> Int
+}
+
+impl Takes[Array[Int]] for Array {
+  take(xs: Array[Int]) -> Int {
+    Array::length(xs)
+  }
+}
+
+fn take_it[F[_]: Takes[F[Int]]](_ xs: F[Int]) -> Int {
+  F::take(xs)
+}
+
+fn take_lifted[F[_]: Takes[F[Int]]](_ xs: Lift[F, Int]) -> Int {
+  F::take(xs)
+}
+
+/// The global alias still expands where no binder shadows it.
+fn pair_sum(_ p: F[Int]) -> Int {
+  p.0 + p.1
+}
+
+test "binder shadows the alias in a direct parameter" {
+  inspect(take_it([1, 2, 3]), content = "3")
+}
+
+test "binder shadows the alias through an alias argument" {
+  inspect(take_lifted([1, 2, 3, 4]), content = "4")
+}
+
+test "alias outside the binder" {
+  inspect(pair_sum((5, 6)), content = "11")
+}
