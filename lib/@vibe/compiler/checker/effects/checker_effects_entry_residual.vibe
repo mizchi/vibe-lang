@@ -10,7 +10,7 @@
 // them must be discharged by a `handle` inside the entry.
 
 import @vibe/compiler/core {
-  Expr, expr_children_into, is_entry_admitted_effect
+  Expr, TypeEnv, TypeDef, env_type_defs, expr_children_into, is_entry_admitted_effect
 }
 
 import @vibe/core {
@@ -29,9 +29,68 @@ import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects, effect_name_of_op, entry_declared_effect_kinds, entry_host_provided_effects
 }
 
+// The effects an imported module declares without `extern` and without a
+// resource parameter, each with its operation names: the entry row may name
+// one exactly as it names a local declaration. Filled per check from the
+// checked environment (`note_env_algebraic_effects`).
+let entry_env_algebraic_effects: Array[(String, Array[String])] = []
+
+/// Record the program-handled effects the checked environment imports
+/// (`TDEffect(.., ProgramHandled)` without a resource parameter), replacing
+/// the previous check's. A local declaration is read from the statements
+/// (`entry_declared_effect_kinds`); this covers `import ./db.vibe { Db }`.
+export fn note_env_algebraic_effects(_ env: TypeEnv) -> Unit {
+  Array::truncate(entry_env_algebraic_effects, length = 0)
+  for def in env_type_defs(env) {
+    match def {
+      TDEffect(name, ops, _, kinds, ProgramHandled) => {
+        let mut kindless = true
+        for k in kinds {
+          if k != "" {
+            kindless = false
+          }
+        }
+        if kindless {
+          let names: Array[String] = []
+          for op in ops {
+            let (op_name, _, _) = op
+            Array::push(names, value = op_name)
+          }
+          Array::push(entry_env_algebraic_effects, value = (name, names))
+        }
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// Whether the imported effect `base` is program-handled, and, for an
+/// operation label, whether it declares that operation. `""` asks about the
+/// effect alone.
+fn env_algebraic_label(base: String, op: String) -> Bool {
+  let mut found = false
+  for entry in entry_env_algebraic_effects {
+    let (name, ops) = entry
+    if name == base {
+      if op == "" {
+        found = true
+      } else {
+        for o in ops {
+          if o == op {
+            found = true
+          }
+        }
+      }
+    }
+  }
+  found
+}
+
 /// Whether `label`, written on an entry row, names an ALGEBRAIC effect: one
 /// the program declares without `extern` and without a resource parameter
-/// (`Db`), or an operation it declares (`Db::Get`). A label with the optional
+/// (`Db`), locally or in a module it imports, or an operation it declares
+/// (`Db::Get`). A label with the optional
 /// grade, a row variable, an `extern effect`, an effect that acts on a
 /// resource (a capability by its declaration, #3143), a bare label the host
 /// policy admits, and an operation the effect does not declare are not
@@ -53,9 +112,18 @@ export fn entry_label_is_algebraic(_ label: String) -> Bool {
         host = true
       }
     }
-    if !declared || host {
+    let sep = String::index_of(label, needle = "::")
+    let op = if sep > 0 {
+      String::substring(label, start = sep + 2, end = String::length(label))
+    } else {
+      ""
+    }
+    if host {
       false
-    } else if String::index_of(label, needle = "::") > 0 {
+    } else if !declared {
+      // Declared in an imported module: the environment carries it.
+      env_algebraic_label(base = base, op = op) && (op != "" || !is_entry_admitted_effect(label))
+    } else if sep > 0 {
       entry_user_operation_requires_handler(label)
     } else {
       // A bare label the host policy admits (`Profiler`, which the CLI also
