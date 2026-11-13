@@ -55,6 +55,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_ne,
   emit_i64_store,
   emit_rc_dup_guarded,
+  emit_rc_path_drop,
   expr_tag,
   find_local_slot,
   float_to_string_expr,
@@ -522,6 +523,9 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             let ek = Array::get(info, at = i * 3)
             let local = Array::get(info, at = i * 3 + 1)
             let flag = Array::get(info, at = i * 3 + 2)
+            // #1980: a counted row's release, done by the path flag's count
+            // below rather than by `count`.
+            let mut counted = 0
             let conditional_rec = exit_result.0 >= 0 && ek == 6 && !rc_exit_name_shared(names = names, info = info, lo = lo, i = i) && find_local_slot(names = local_names, name = n) == local && rc_exit_conditional_rec_transfer(e = exit_result.1, name = n, local_names = local_names, ctx = ctx)
             let count = if conditional_rec {
               1
@@ -532,15 +536,19 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             } else {
               let planned = rc_exit_plan_count(ctx = ctx, ord = ord, n = n)
               if planned < 0 {
-                // #3175: a split binding's row -- release once, and only
-                // under the path flag its scope-end drop is guarded on. With
-                // no such flag the path that consumed it would release it
-                // again, so the exit releases nothing.
+                // A counted row (`-k`): release `k` less the consume marks
+                // the path ran, and only under the path flag its scope-end
+                // drop is guarded on. With no such flag nothing counts what
+                // the path consumed, so the exit releases nothing. A #3175
+                // split binding's row is `-1`: release once on a path that
+                // did not consume it; #1980 a merged binding's is its
+                // initial reference and every dup.
                 if ek == 0 && flag >= 0 && rc_exit_is_path_flag(ctx = ctx, flag = flag) {
-                  1
+                  counted = 0 - planned
                 } else {
-                  0
+                  ()
                 }
+                0
               } else if ek == 2 {
                 planned - 1
               } else if ek == 6 && planned > 1 {
@@ -584,6 +592,11 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
               } else {
                 ()
               }
+            } else {
+              ()
+            }
+            if counted > 0 {
+              emit_rc_path_drop(buf = buf, flag = flag, local_idx = local, count = counted, drop_fn_idx = ctx.rc_drop_func_idx)
             } else {
               ()
             }

@@ -284,12 +284,18 @@ shapes and runs controls that keep the consumed values under shadow.
 An early exit's row is resolved after the redundant rows are dropped, so it
 reads the merged budget `B`: it releases at most `1 + B - cons`, `cons` the
 most any path reaching the exit consumed, which no path holds less than. A
-`let`'s exit release is also guarded on its path flag, so a path that ran a
-mark releases nothing there; the whole binding declines when an exit row is
-taken after an occurrence its dups were planned for (`pf_exit_late`), where
-the declined plan released the row's count. An exit before every such
-occurrence -- the guard clause `if bad { return d }` ahead of the branch --
-is reached by no path that ran a mark, and merges.
+`let`'s exit release is also guarded on its path flag. An exit before every
+occurrence its dups were planned for -- the guard clause `if bad { return d
+}` ahead of the branch -- is reached by no path that ran a mark, and merges.
+An exit after such an occurrence merges when the walk saw nothing but marks
+consume the binding before it (no last use, capture or alias transfer --
+`pf_cons_unmarked`) and the exit is not inside a loop the binding is
+declared outside of. Its row is then counted: `-k`, `k` the initial
+reference plus every dup row, and codegen releases `k` less the flag's
+count under the flag, exactly what the path holds, or nothing where the
+binding got no flag (`rc_exit_release`). A #2389 split binding's `-1` row is
+the same rule. Any other exit after an occurrence declines the merge
+(`pf_exit_late`), and the declined plan releases the row's count.
 
 A parameter is the same case: its planned dups are taken at function entry
 (`pf_param`), so `fn f(v) { if c { keep(v) }; use(v) }` leaked one per call

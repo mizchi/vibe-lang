@@ -51,9 +51,10 @@
 // innermost `let`), the test codegen applies before it trusts an exit's
 // rows. A `throw` outside every `handle` body leaves like a `return`.
 // A path that leaves the scope that way releases its consuming
-// occurrences plus the `PaExitDrop` count for it (a guarded `-1` row: once,
-// for a plain `let` with a path drop, when no consume mark ran; a borrowed
-// parameter: one fewer, as codegen gives it), and not the scope-end drops.
+// occurrences plus the `PaExitDrop` count for it (a counted `-k` row: `k`
+// less the consume marks the path ran, for a plain `let` with a path drop;
+// a borrowed parameter: one fewer, as codegen gives it), and not the
+// scope-end drops.
 // Codegen may keep a binding the exit operand reads through
 // (`rc_exit_operand_ok`), which only releases less than the plan says, so
 // a balanced exit cannot hide an over-release. An exit numbered apart from
@@ -129,7 +130,7 @@ import ./perceus_pctx.vibe {
 /// the function), how many references a store into a loop-result slot gave
 /// the binding (`acq`), what the early exit it left the binding's scope by
 /// releases of it (`xr`, the exit's `PaExitDrop` count, and `xg`, the row is
-/// the guarded `-1` one), and the branch choices that lead there
+/// a counted `-xr` one), and the branch choices that lead there
 /// (`if1:then,loop1:twice`; empty when no branch decided anything).
 struct RvOut {
   c: Int;
@@ -802,7 +803,7 @@ fn rv_number_exit(st: RvState, kind: Int, operand: Expr) -> Int {
   ord
 }
 
-/// `x`'s `PaExitDrop` count at exit `ord` (-1: the guarded row); 0 when the
+/// `x`'s `PaExitDrop` count at exit `ord` (`-k`: a counted row); 0 when the
 /// exit has no row for it.
 fn rv_exit_count(st: RvState, ord: Int) -> Int {
   let mut out = 0
@@ -836,7 +837,7 @@ fn rv_exit(st: RvState, kind: Int, operand: Expr, brk: Int) -> Array[RvOut] {
     let xr = if n > 0 {
       n
     } else {
-      0
+      0 - n
     }
     [
       rv_out_x(c = 0, marked = 0, brk = brk, acq = 0, xr = xr, xg = n < 0, path = "")
@@ -1396,8 +1397,8 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
 /// occurrences, the scope-end drop, and the path drop: one per row, less the
 /// marked occurrences the path ran). A path that left the scope by an early exit releases
 /// its consuming occurrences and the exit's row instead of the scope-end
-/// drops: the count, or for the guarded `-1` row one when no marked
-/// occurrence ran -- codegen releases that one only for a `let` whose scope
+/// drops: the count, or for a counted `-k` row `k` less the marked
+/// occurrences the path ran -- codegen releases that one only for a `let` whose scope
 /// end is guarded on a path flag (`rc_exit_release`), so not for a
 /// parameter (`param`) or a binding with no path drop. A borrowed parameter
 /// releases one fewer than its row says, as codegen gives it. A loop-result slot holds what its store gave it, with
@@ -1461,16 +1462,19 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, param: Bool, 
     } else {
       0
     }
-    // The guarded `-1` exit row releases once, as codegen does: only a
-    // #2389 split binding gets one, and its path drop is a single row. A
-    // count of rows here would model a release codegen never emits.
-    let guarded = if o.xg && o.marked == 0 && !param && path_drop > 0 {
-      1
-    } else {
-      0
-    }
-    let exit_release = if !borrowed {
-      o.xr + guarded
+    // A counted `-k` exit row releases `k` less the consume marks the path
+    // ran, under the path flag, as codegen does (`rc_exit_release`): a
+    // #2389 split binding's is `-1`, a #1980 merged binding's its initial
+    // reference and every dup. Without a path drop codegen has no flag and
+    // releases nothing there, and neither does a parameter's exit.
+    let exit_release = if o.xg {
+      if !param && path_drop > 0 && o.xr > o.marked {
+        o.xr - o.marked
+      } else {
+        0
+      }
+    } else if !borrowed {
+      o.xr
     } else if o.xr > 1 {
       o.xr - 1
     } else {

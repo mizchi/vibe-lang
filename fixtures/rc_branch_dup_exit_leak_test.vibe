@@ -12,7 +12,15 @@
 // An exit taken before every occurrence the dups were planned for leaves on a
 // path that ran no mark, so it holds the initial reference plus the merged
 // budget, which is what its row releases (`pe_dsplit_ok`, `pf_exit_late`).
-// An exit after such an occurrence still declines.
+//
+// A `let`'s exit AFTER such an occurrence declined the merge, because its
+// release was guarded on a path flag that only said whether a mark ran. The
+// flag counts the marks a path ran now, so when nothing but marks consumed
+// the binding before the exit, the exit's row releases the initial reference
+// and every dup less that count -- exactly what the path holds -- and the
+// merge stands (`pe_exit`, `pe_emit_exit_rows`). An exit after another
+// consume (the last use, a capture, an alias transfer), or inside a loop the
+// binding is declared outside of, still declines.
 //
 // Measured at N=20000 on the compiler before this change:
 //
@@ -21,6 +29,16 @@
 //   | `let`, guard return, consume on one branch     |   754,356 B | 112 B |
 //   | parameter, guard return, the same              |   754,356 B | 112 B |
 //   | loop `let`, `continue` before the consume      | 2,640,020 B | 112 B |
+//
+// and, on the compiler before the counted exit row, each shape alone:
+//
+//   | shape                                          |      before | after |
+//   |------------------------------------------------|------------:|------:|
+//   | `let`, exit after the merge that consumes      |   880,020 B | 112 B |
+//   | `let`, exit inside the consuming arm           |   880,020 B | 112 B |
+//   | `let`, exit between two consuming merges       | 1,349,324 B | 112 B |
+//   | `let`, exit that reads the binding             |   880,020 B | 112 B |
+//   | loop `let`, `break` after the consume          | 1,760,108 B | 112 B |
 //
 // A parameter whose exit comes AFTER the consume merges too, but is not in
 // the bounded loop: a path that exits without consuming holds one reference
@@ -162,7 +180,8 @@ fn kept_param_exit_after(ks: Array[Array[Int]], v: Array[Int], i: Int) -> Int {
   Array::get(v, at = 2) - (i + 12)
 }
 
-// The exit comes after the consume, so a `let`'s merge still declines.
+// The exit comes after the consume, which only a mark consumed: the exit's
+// counted row releases what the path still holds.
 fn kept_exit_after(ks: Array[Array[Int]], i: Int) -> Int {
   let v = mka(i)
   if i % 2 == 0 {
@@ -176,28 +195,153 @@ fn kept_exit_after(ks: Array[Array[Int]], i: Int) -> Int {
   Array::get(v, at = 2) - (i + 2)
 }
 
+// A `let`'s exit after the merge that consumes it on one arm.
+fn let_exit_after(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  if i % 7 == 0 {
+    return 0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// The exit is inside the consuming arm, after the consume.
+fn exit_in_arm(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    let s = sink(v) - i
+    if i % 3 == 0 {
+      return s
+    }
+    s
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// Two merges, the exit between them.
+fn exit_between(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  if i % 5 == 0 {
+    return a
+  }
+  let b = if i % 3 == 0 {
+    sink(v) + sink(v) - 2 * i
+  } else {
+    0
+  }
+  (a + b + Array::get(v, at = 1) - (i + 1)) * 0
+}
+
+// The exit reads the binding.
+fn exit_reads(_ i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  if i % 7 == 0 {
+    return Array::get(v, at = 0) - i + a
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// A `break` out of the loop body the binding is declared in.
+fn exit_break(_ i: Int) -> Int {
+  let mut k = 0
+  let mut s = 0
+  while k < 3 {
+    let v = mka(i + k)
+    let a = if (i + k) % 2 == 0 {
+      sink(v) - (i + k)
+    } else {
+      0
+    }
+    if k == 1 {
+      break
+    }
+    s = s + (a + Array::get(v, at = 2) - (i + k + 2)) * 0
+    k = k + 1
+  }
+  s
+}
+
+fn keep_into(ks: Array[Array[Int]], v: Array[Int]) -> Int {
+  Array::push(ks, value = v)
+  0
+}
+
+fn kept_exit_in_arm(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    let s = keep_into(ks = ks, v = v) + keep_into(ks = ks, v = v)
+    if i % 3 == 0 {
+      return s
+    }
+    s
+  } else {
+    keep_into(ks = ks, v = v)
+  }
+  a + Array::get(v, at = 2) - (i + 2)
+}
+
+fn kept_exit_between(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    keep_into(ks = ks, v = v)
+  } else {
+    0
+  }
+  if i % 5 == 0 {
+    return a
+  }
+  let b = if i % 3 == 0 {
+    keep_into(ks = ks, v = v) + keep_into(ks = ks, v = v)
+  } else {
+    0
+  }
+  a + b + Array::get(v, at = 1) - (i + 1)
+}
+
 fn main() -> Int {
   let mut acc = 0
   let mut i = 0
   while i < 20000 {
     acc = acc + let_guard(i) + param_guard(mka(i), i) + loop_continue(i) + exit_arm(i)
+    acc = acc + let_exit_after(i) + exit_in_arm(i) + exit_between(i) + exit_reads(i) + exit_break(i)
     i = i + 1
   }
   let ks: Array[Array[Int]] = []
   let mut j = 0
   while j < 6 {
     acc = acc + kept_guard(ks = ks, i = j) + kept_param_guard(ks = ks, v = mka(j + 10), i = j) + kept_exit_arm(ks = ks, i = j + 20) + kept_exit_after(ks = ks, i = j + 30) + kept_param_exit_after(ks = ks, v = mka(j + 40), i = j + 30)
+    acc = acc + kept_exit_in_arm(ks = ks, i = j + 50) + kept_exit_between(ks = ks, i = j + 60)
     j = j + 1
   }
   // Kept: the even calls that take no exit -- 0, 4 (kept_guard), 10, 14
   // (kept_param_guard), 22, 24 (kept_exit_arm) -- and every even call of the
   // two that push before their exit: 30, 32, 34 (kept_exit_after) and 40, 42,
-  // 44 (kept_param_exit_after). 12 arrays.
+  // 44 (kept_param_exit_after); two of each even call of kept_exit_in_arm and
+  // one of each odd one -- two of 50, 52 and 54, one of 51, 53 and 55; and of
+  // kept_exit_between one of each even call and two of each multiple of 3
+  // that takes no exit -- 60, 62, 64 and two of 63. 26 arrays, first
+  // elements summing to 296 + 471 + 312.
   let mut s = 0
   let mut m = 0
   while m < Array::length(ks) {
     s = s + Array::get(Array::get(ks, at = m), at = 0)
     m = m + 1
   }
-  acc + s - 296 + Array::length(ks) - 12
+  acc + s - 1079 + Array::length(ks) - 26
 }

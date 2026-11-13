@@ -46,9 +46,12 @@ test "a returned binding is not released, the one beside it is" {
 }
 
 test "a returned binding with a later use keeps the returned reference" {
-  // The return takes the dup; the reference kept for `keep(d)` is released.
+  // The return takes the dup, a consume mark the path flag counts; the exit's
+  // counted row (`-2`) releases the reference kept for `keep(d)`, and the
+  // fall-through's path drop the dup it did not spend (#1980).
   let plan = plan_of(program("let run: (Int) -> D = (n) -> {\n  let d = A([n])\n  if n > 0 {\n    return d\n  }\n  keep(d)\n}"))
-  assert(String::contains(plan, needle = "run d exit_drop:0:1 1"))
+  assert(String::contains(plan, needle = "run d exit_drop:0:-2 1"))
+  assert(String::contains(plan, needle = "run d path_drop 1"))
 }
 
 test "a break leaves the loop body only" {
@@ -103,13 +106,15 @@ test "a binding a break consumes is released under its path flag by a continue" 
   assert(String::contains(plan, needle = "run d exit_drop:1:-1 1"))
 }
 
-test "a binding consumed on a branch and used after the merge gets no path row" {
-  // The later use keeps a reference through the merge (a dup), so the exit
-  // gets an ordinary row and no path drop is planned.
+test "a binding consumed on a branch and used after the merge gets a counted row" {
+  // The later use keeps a reference through the merge (a dup). The branch's
+  // consume is a mark the path flag counts, so the exit releases the initial
+  // reference and the dup less that count (`-2`), and the paths that skip
+  // the branch get the path drop (#1980).
   let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  if n > 5 {\n    let e = keep(d)\n    0\n  } else {\n    0\n  }\n  if n > 0 {\n    return 1\n  }\n  let f = keep(d)\n  0\n}"))
-  assert(!String::contains(plan, needle = "run d path_drop"))
-  assert(!String::contains(plan, needle = "run d exit_drop:0:-1"))
-  assert(String::contains(plan, needle = "run d exit_drop:0:1 1"))
+  assert(String::contains(plan, needle = "run d path_drop 1"))
+  assert(String::contains(plan, needle = "run d exit_drop:0:-2 1"))
+  assert(!String::contains(plan, needle = "run d exit_drop:0:1 1"))
 }
 
 test "a discarded parameterized loop drops what its break stored" {
