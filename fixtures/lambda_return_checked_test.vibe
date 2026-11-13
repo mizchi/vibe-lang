@@ -1,0 +1,157 @@
+//# A lambda with no written result type: its explicit `return`s and the value
+//# its body ends with must have one type, which is the lambda's result (#4062).
+//# These are the legitimate shapes, which keep compiling and answering as
+//# before: an early return of the right type, a body that only returns, a
+//# `return` whose type unifies with the tail (`[]` beside `["a"]`, `None`
+//# beside `Some(..)`), a nested lambda's own `return`, a lambda generalized by
+//# `let` and used at two types, an integer-literal `return` beside an `Int32`
+//# tail, and a bare `return` in a lambda that returns `Unit`. The shapes that
+//# disagree are the `err_type_lambda_return_*` typecheck fixtures.
+
+fn ap(f: (Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+fn make() -> (Int) -> Int {
+  (k) -> {
+    if k == 0 {
+      return 100
+    }
+    k + 1
+  }
+}
+
+test "an early return of the result type" {
+  inspect(ap(f = (k) -> {
+    if k == 0 {
+      return 42
+    }
+    k * 3
+  }, x = 0), content = "42")
+  inspect(ap(f = (k) -> {
+    if k == 0 {
+      return 42
+    }
+    k * 3
+  }, x = 2), content = "6")
+  inspect(make()(0), content = "100")
+  inspect(make()(5), content = "6")
+}
+
+test "a body that only returns" {
+  let f = (k: Int) -> {
+    if k == 0 {
+      return 10
+    }
+    return k * 2
+  }
+  inspect(f(0), content = "10")
+  inspect(f(4), content = "8")
+  let g = (b: Bool) -> {
+    if b {
+      return 1
+    }
+    return 2
+  }
+  inspect(g(true) + g(false), content = "3")
+}
+
+test "a return that unifies with the tail" {
+  let f = (b: Bool) -> {
+    if b {
+      return []
+    }
+    ["a", "b"]
+  }
+  inspect(Array::length(f(true)), content = "0")
+  inspect(Array::get(f(false), at = 1), content = "b")
+  let g = (k: Int) -> {
+    if k == 0 {
+      return None
+    }
+    Some(k)
+  }
+  inspect(g(0) is None, content = "true")
+  inspect(g(2) == Some(2), content = "true")
+  let h = (o: Option[Int]) -> {
+    let v = o?
+    Some(v + 1)
+  }
+  inspect(h(Some(1)) == Some(2), content = "true")
+  inspect(h(None) is None, content = "true")
+}
+
+test "a nested lambda's return is its own" {
+  let outer = (n: Int) -> {
+    let inner = (s: String) -> {
+      if s == "" {
+        return "empty"
+      }
+      s
+    }
+    if n == 0 {
+      return inner("")
+    }
+    inner("x")
+  }
+  inspect(outer(0), content = "empty")
+  inspect(outer(1), content = "x")
+}
+
+test "a let-generalized lambda with a return is used at two types" {
+  let id = (x) -> {
+    return x
+  }
+  let a: Int = id(5)
+  let b: String = id("s")
+  inspect(a, content = "5")
+  inspect(b, content = "s")
+  let pick = (a, b, first) -> {
+    if first {
+      return a
+    }
+    b
+  }
+  inspect(pick(1, 2, false), content = "2")
+  inspect(pick("x", "y", true), content = "x")
+}
+
+test "an integer-literal return beside an Int32 tail is an Int32" {
+  let f = (k: Int32) -> {
+    if k == 0 {
+      return 0
+    }
+    k + 2147483647
+  }
+  let z: Int32 = 0
+  let one: Int32 = 1
+  inspect(Int32::to_int(f(z)), content = "0")
+  inspect(Int32::to_int(f(one)), content = "-2147483648")
+}
+
+test "a bare return in a lambda that returns Unit" {
+  let mut n = 0
+  let add = (k: Int) -> {
+    if k == 0 {
+      return
+    }
+    n = n + k
+  }
+  add(0)
+  add(5)
+  inspect(n, content = "5")
+}
+
+test "returns inside a loop" {
+  let root = (n: Int) -> {
+    let mut i = 0
+    while true {
+      if i * i >= n {
+        return i
+      }
+      i = i + 1
+    }
+    -1
+  }
+  inspect(root(10), content = "4")
+}
