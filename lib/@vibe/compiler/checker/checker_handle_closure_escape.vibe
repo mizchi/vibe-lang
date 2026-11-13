@@ -150,6 +150,8 @@ import ./checker_handle_closure_escape_callees.vibe {
   hce_names_anywhere,
   hce_only_called,
   hce_param_takes_row,
+  hce_retained_argument_mask,
+  hce_storage_sources,
   hce_store_getter
 }
 
@@ -1185,13 +1187,13 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
     // from then on (`let mut x = plain; x = g; keep(f = x)`).
     EAssign(name, val, rest, off) => {
       hce_assign(st = st, name = name, held = hce_walk_source(e = val, st = st, env = env, defs = defs, s = s))
-      hce_link_name(st = st, name = name, e = val)
+      hce_link_name(st = st, name = name, e = val, env = env)
       hce_note_outer_write(st = st, name = name, off = off, env = env, defs = defs, s = s)
       hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
     },
     EAssignOp(name, _, val, rest, off) => {
       hce_assign(st = st, name = name, held = hce_walk_source(e = val, st = st, env = env, defs = defs, s = s))
-      hce_link_name(st = st, name = name, e = val)
+      hce_link_name(st = st, name = name, e = val, env = env)
       hce_note_outer_write(st = st, name = name, off = off, env = env, defs = defs, s = s)
       hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
     },
@@ -1223,7 +1225,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       let parts: Array[(String, Bool)] = array_empty()
       let held = hce_match_parts(e = scrutinee, parts = parts, st = st, env = env, defs = defs, s = s)
       let fresh = Array::length(st.producers) > producers_before
-      let srcs = hce_source_ids(st = st, e = scrutinee)
+      let srcs = hce_source_ids(st = st, e = scrutinee, env = env)
       for arm in marms {
         let (pat, abody) = arm
         let mark = Array::length(st.scope)
@@ -1242,7 +1244,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       let held = hce_walk_source(e = iter, st = st, env = env, defs = defs, s = s)
       let mark = Array::length(st.scope)
       hce_bind(st = st, name = name, label = held)
-      hce_link_from(st = st, from = mark, srcs = hce_source_ids(st = st, e = iter))
+      hce_link_from(st = st, from = mark, srcs = hce_source_ids(st = st, e = iter, env = env, element = true))
       match index_name {
         Some(n) => hce_bind(st = st, name = n, label = ""),
         None => ()
@@ -1262,7 +1264,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       let mut pi = 0
       for p in lparams {
         let (pname, init) = p
-        let srcs = hce_source_ids(st = st, e = init)
+        let srcs = hce_source_ids(st = st, e = init, env = env)
         hce_declare(st = st, name = pname, label = Array::get(held, at = pi), decls = "")
         hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = srcs)
         Array::push(names, value = pname)
@@ -1281,7 +1283,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         let held = hce_walk_source(e = call_arg_value(a), st = st, env = env, defs = defs, s = s)
         if depth > 0 && ci < Array::length(Array::get(st.loops, at = depth - 1)) {
           hce_assign(st = st, name = Array::get(Array::get(st.loops, at = depth - 1), at = ci), held = held)
-          hce_link_name(st = st, name = Array::get(Array::get(st.loops, at = depth - 1), at = ci), e = call_arg_value(a))
+          hce_link_name(st = st, name = Array::get(Array::get(st.loops, at = depth - 1), at = ci), e = call_arg_value(a), env = env)
         } else {
           ()
         }
@@ -1317,22 +1319,27 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         Array::push(marks, value = producers_before)
         st.pos = hce_beside_local(reach = arg_reach, args = args, ai = ai, st = st, env = env)
         hce_walk(e = arg, st = st, env = env, defs = defs, s = s)
-        Array::push(arg_held, value = hce_arg_bound_label(arg = arg, producers_before = producers_before, st = st, env = env, defs = defs, s = s))
-        // A closure handed to a parameter whose row names its effect (or a
-        // row variable) takes that row there, and so does every closure
-        // written inside it: whoever calls them passes the handler.
-        if Array::length(st.producers) > producers_before {
-          match hce_param_type(callee = callee, off = off, arg = arg, ai = ai, nargs = Array::length(args), st = st, env = env, s = s) {
-            Some(pt) => hce_drop_row_taken(st = st, from = producers_before, pt = pt),
-            None => ()
-          }
-        } else {
-          ()
+        // A closure passed to a parameter that carries its row gets that
+        // handler from its eventual caller. Filter literals and local names
+        // before propagating the remaining handle-bound labels into storage.
+        let pt = hce_param_type(callee = callee, off = off, arg = arg, ai = ai, nargs = Array::length(args), st = st, env = env, s = s)
+        match pt {
+          Some(t) => if Array::length(st.producers) > producers_before {
+            hce_drop_row_taken(st = st, from = producers_before, pt = t)
+          } else {
+            ()
+          },
+          None => ()
         }
+        let arg_label = hce_arg_bound_label(arg = arg, producers_before = producers_before, st = st, env = env, defs = defs, s = s)
+        Array::push(arg_held, value = match pt {
+          Some(t) => hce_set_untaken(set = arg_label, pt = t),
+          None => arg_label
+        })
         // #3594: reading a declaration for a row variable, a call handed a
         // parameter that performs it (`() -> apply(g)`) may call it.
         if hce_poly_walk(st) && !hce_callee_is_ctor(callee = callee, defs = defs) {
-          let handed = hce_arg_bound_label(arg = arg, producers_before = producers_before, st = st, env = env, defs = defs, s = s)
+          let handed = arg_label
           if handed != "" {
             hce_count_perform(st = st, label = handed, off = railway_expr_off(arg))
           } else {
@@ -1342,9 +1349,9 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
           ()
         }
         if st.find_routes {
-          let label = hce_arg_bound_label(arg = arg, producers_before = producers_before, st = st, env = env, defs = defs, s = s)
+          let label = arg_label
           if label != "" && hce_callee_may_keep(callee = callee, off = off, arg = arg, ai = ai, nargs = Array::length(args), label = label, st = st, env = env, defs = defs, s = s) {
-            let left = match hce_param_type(callee = callee, off = off, arg = arg, ai = ai, nargs = Array::length(args), st = st, env = env, s = s) {
+            let left = match pt {
               Some(pt) => hce_set_untaken(set = label, pt = pt),
               None => label
             }
@@ -1477,7 +1484,7 @@ fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env:
   } else {
     ""
   }
-  let srcs = hce_source_ids(st = st, e = val)
+  let srcs = hce_source_ids(st = st, e = val, env = env)
   hce_declare(st = st, name = name, label = bound, decls = decls)
   hce_link_from(st = st, from = Array::length(st.scope) - 1, srcs = srcs)
   hce_walk(e = rest, st = st, env = env, defs = defs, s = s)
@@ -1556,40 +1563,21 @@ fn hce_note_assigned(st: HceWalk, id: Int, held: String) -> Unit {
   }
 }
 
-/// #4064: the declarations of the body's bindings `e` names, wherever in it
-/// (see `HceWalk.links`).
-fn hce_source_ids(st: HceWalk, e: Expr) -> Array[Int] {
+/// Declarations that can supply storage to this value.
+fn hce_source_ids(st: HceWalk, e: Expr, env: TypeEnv, element: Bool = false) -> Array[Int] {
+  let names: Array[String] = array_empty()
+  hce_storage_sources(e = e, env = env, out = names, element = element)
   let out: Array[Int] = array_empty()
-  hce_source_ids_into(st = st, e = e, out = out)
-  out
-}
-
-fn hce_source_ids_into(st: HceWalk, e: Expr, out: Array[Int]) -> Unit {
-  match e {
-    EIdent(name, _) => {
-      let i = hce_scope_index(st = st, name = name)
-      if i >= 0 {
-        let (_, _, _, id) = Array::get(st.scope, at = i)
-        if id >= 0 && !hce_has_int(items = out, n = id) {
-          Array::push(out, value = id)
-        } else {
-          ()
-        }
-      } else {
-        ()
+  for name in names {
+    let i = hce_scope_index(st = st, name = name)
+    if i >= 0 {
+      let (_, _, _, id) = Array::get(st.scope, at = i)
+      if id >= 0 && !hce_has_int(items = out, n = id) {
+        Array::push(out, value = id)
       }
-    },
-    _ => {
-      let mark = expr_children_push(e)
-      let top = expr_children_top()
-      let mut i = mark
-      while i < top {
-        hce_source_ids_into(st = st, e = expr_child_at(i), out = out)
-        i = i + 1
-      }
-      expr_children_pop(mark)
     }
   }
+  out
 }
 
 fn hce_has_int(items: Array[Int], n: Int) -> Bool {
@@ -1647,21 +1635,10 @@ fn hce_link_one(st: HceWalk, i: Int, srcs: Array[Int]) -> Unit {
 
 /// #4064: the body's binding `name` was assigned `e` and now shares the
 /// storage of the bindings `e` names.
-fn hce_link_name(st: HceWalk, name: String, e: Expr) -> Unit {
+fn hce_link_name(st: HceWalk, name: String, e: Expr, env: TypeEnv) -> Unit {
   let i = hce_scope_index(st = st, name = name)
   if i >= 0 {
-    let srcs = hce_source_ids(st = st, e = e)
-    let (_, _, _, id) = Array::get(st.scope, at = i)
-    let mut k = 0
-    while k < Array::length(srcs) {
-      if Array::get(srcs, at = k) == id {
-        Array::set(srcs, at = k, value = 0 - 1)
-      } else {
-        ()
-      }
-      k = k + 1
-    }
-    hce_link_one(st = st, i = i, srcs = srcs)
+    hce_link_one(st = st, i = i, srcs = hce_source_ids(st = st, e = e, env = env))
   } else {
     ()
   }
@@ -1755,6 +1732,29 @@ fn hce_store_root(e: Expr, st: HceWalk, env: TypeEnv) -> Option[String] {
 /// of them. A constructor, an effect operation and a builtin that only
 /// calls its function store nothing. `held` is what each argument holds.
 fn hce_note_stores(callee: Expr, args: Array[Expr], held: Array[String], st: HceWalk, env: TypeEnv, defs: Array[TypeDef]) -> Unit {
+  let mask = match callee {
+    EIdent(name, noff) => if hce_scope_index(st = st, name = name) < 0 {
+      hce_retained_argument_mask(env = env, name = name, noff = noff)
+    } else {
+      0
+    },
+    _ => 0
+  }
+  if mask != 0 && Array::length(args) > 0 {
+    let mut stored = ""
+    let mut i = 1
+    while i < Array::length(held) {
+      if (i == 1 && mask % 2 == 1) || (i == 2 && mask >= 2) {
+        stored = hce_set_union(a = stored, b = Array::get(held, at = i))
+      }
+      i = i + 1
+    }
+    match hce_store_root(e = Array::get(args, at = 0), st = st, env = env) {
+      Some(root) => hce_store(st = st, name = root, held = stored),
+      None => ()
+    }
+    return ()
+  }
   let (stores, by_callee) = match callee {
     EIdent(name, noff) => if hce_scope_index(st = st, name = name) >= 0 {
       (true, hce_local_label(st = st, name = name))

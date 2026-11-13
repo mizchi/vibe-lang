@@ -5,7 +5,16 @@
 // and whether a parameter is only ever called.
 
 import @vibe/compiler/core {
-  Expr, Type, TypeDef, TypeEnv, canonical_exception_effect_name, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+  Expr,
+  Type,
+  TypeDef,
+  TypeEnv,
+  canonical_exception_effect_name,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  resolved_builtin_operation_from_source
 }
 
 import @vibe/compiler/checker/effects {
@@ -14,6 +23,14 @@ import @vibe/compiler/checker/effects {
 
 import @vibe/compiler/checker/builtin_sigs {
   builtin_resolves_at
+}
+
+import ./checker_retaining_write.vibe {
+  retaining_write_argument_mask
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  ascription_lambda_ann
 }
 
 import ./checker_region_retention_arms.vibe {
@@ -233,4 +250,65 @@ export fn hce_names_anywhere(e: Expr, name: String) -> Bool {
 /// into what it answers is stored into that argument.
 export fn hce_store_getter(env: TypeEnv, name: String, noff: Int) -> Bool {
   name == "__index" || (String::ends_with(name, suffix = "::get") || String::ends_with(name, suffix = "::unwrap")) && hce_container_builtin(env = env, name = name, noff = noff)
+}
+
+/// Retaining builtins write only into their receiver.
+export fn hce_retained_argument_mask(env: TypeEnv, name: String, noff: Int) -> Int {
+  if builtin_resolves_at(env = env, name = name, ident_off = noff) {
+    retaining_write_argument_mask(source_name = name, operation = resolved_builtin_operation_from_source(name))
+  } else {
+    0
+  }
+}
+
+/// Storage names flowing into a value. A slice has fresh storage, but a
+/// getter or for-binder can still take a shared element out of that slice.
+export fn hce_storage_sources(e: Expr, env: TypeEnv, out: Array[String], element: Bool) -> Unit {
+  match e {
+    EIdent(name, _) => Array::push(out, value = name),
+    EIf(_, a, b) => {
+      hce_storage_sources(e = a, env = env, out = out, element = element)
+      hce_storage_sources(e = b, env = env, out = out, element = element)
+    },
+    ESeq(_, tail) => hce_storage_sources(e = tail, env = env, out = out, element = element),
+    EDot(base, _, _, _) => hce_storage_sources(e = base, env = env, out = out, element = true),
+    ELabeledArg(_, _, inner) => hce_storage_sources(e = inner, env = env, out = out, element = element),
+    EFn(_, _, _, _, _, _) => (),
+    ECall(callee, args, _, _) => if Array::length(args) > 0 {
+      match callee {
+        EIdent(name, off) => if hce_is_paren(e) {
+          hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = element)
+        } else if hce_store_getter(env = env, name = name, noff = off) {
+          hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = true)
+        } else if (name == "Array::slice" || name == "__slice") && builtin_resolves_at(env = env, name = name, ident_off = off) {
+          if element {
+            hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = true)
+          }
+        } else {
+          for arg in args {
+            hce_storage_sources(e = arg, env = env, out = out, element = element)
+          }
+        },
+        _ => if Array::length(args) == 1 && ascription_lambda_ann(callee) is Some(_) {
+          hce_storage_sources(e = Array::get(args, at = 0), env = env, out = out, element = element)
+        } else {
+          hce_storage_children(e = e, env = env, out = out, element = element)
+        }
+      }
+    } else {
+      ()
+    },
+    _ => hce_storage_children(e = e, env = env, out = out, element = element)
+  }
+}
+
+fn hce_storage_children(e: Expr, env: TypeEnv, out: Array[String], element: Bool) -> Unit {
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    hce_storage_sources(e = expr_child_at(i), env = env, out = out, element = element)
+    i = i + 1
+  }
+  expr_children_pop(mark)
 }

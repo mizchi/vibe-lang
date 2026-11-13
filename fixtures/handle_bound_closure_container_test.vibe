@@ -94,3 +94,51 @@ test "a container holding a handle-bound closure may be read inside the handle" 
 test "a container beside one holding a handle-bound closure keeps its own fact" {
   inspect(beside_plain_container_kept(), content = "34")
 }
+
+fn keep(f: () -> Int) -> Int {
+  Array::push(saved, value = f)
+  0
+}
+
+test "push does not store the receiver's closures into the value argument" {
+  handle {
+    let arr: Array[() -> Int] = []
+    let g = () -> perform Ask::Get() + 1
+    let plain = () -> 41
+    Array::push(arr, value = g)
+    Array::push(arr, value = plain)
+    let _ = keep(f = plain)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "41")
+}
+
+test "push into an array slice leaves the source array unchanged" {
+  handle {
+    let plain = () -> 42
+    let arr = [plain]
+    let copy = Array::slice(arr, start = 0, end = 1)
+    let g = () -> perform Ask::Get() + 1
+    Array::push(copy, value = g)
+    let _ = keep_arr(xs = arr)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "42")
+}
+
+fn use_row_callback(xs: Array[() -> Int], f: () -> Int with Ask) -> Int with Ask {
+  Array::length(xs) + f()
+}
+
+test "an explicit callback row does not taint a sibling container" {
+  handle {
+    let arr = [() -> 43]
+    let private: Array[() -> Int] = []
+    let g = () -> perform Ask::Get() + 1
+    Array::push(private, value = g)
+    let _ = use_row_callback(xs = arr, f = () -> perform Ask::Get())
+    let _ = keep_arr(xs = arr)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "43")
+}
