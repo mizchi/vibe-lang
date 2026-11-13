@@ -1179,7 +1179,10 @@ fn engine_typedef_identity(_ def: TypeDef) -> Type {
     TDEffectSet(name, members) => CtNamed(String::concat("#typeid.effectset.", name), for m in engine_interface_sorted_unique(members) {
       CtNamed(m, array_empty())
     }),
-    TDOpaque(name, params, _, origin) => CtTuple([CtNamed("#typeid.opaque." + name, engine_identity_formals(params)), CtNamed(origin, [])])
+    TDOpaque(name, params, _, origin) => CtTuple([
+      CtNamed("#typeid.opaque." + name, engine_identity_formals(params)),
+      CtNamed(origin, [])
+    ])
   }
 }
 /// The bare names `ty` may refer to a declaration by: every nominal head, and
@@ -1410,7 +1413,7 @@ fn engine_any_unwalked(roots: Array[String], walked: Array[String]) -> Bool {
   }
   found
 }
-fn engine_note_identity_closure(roots: Array[String], route: String, defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String], keep: Array[String], carried: Array[(String, Type)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String], opaque_defs: Array[TypeDef] = []) -> Unit {
+fn engine_note_identity_closure(roots: Array[String], route: String, defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String], keep: Array[String], carried: Array[(String, Type)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Unit {
   let reached = engine_identity_closure(roots = roots, defs = defs, markers = markers, walked = walked)
   let mut i = 0
   while i < Array::length(reached) {
@@ -1422,12 +1425,6 @@ fn engine_note_identity_closure(roots: Array[String], route: String, defs: Array
     }
     engine_note_imported_type_identity(name = n, def = def, ty = ty, what = what, seen = seen, unresolved = unresolved)
     if !contains_str(arr = keep, target = n) {
-      match def {
-        Some(sealed) => if sealed is TDOpaque(_, _, _, _) {
-          Array::push(opaque_defs, value = sealed)
-        } else (),
-        _ => ()
-      }
       Array::push(carried, value = (n, engine_identity_definition_type(def = def, ty = ty)))
     } else {
       ()
@@ -1897,7 +1894,6 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   // member is carried on as a reference marker.
   let id_keep: Array[String] = []
   let carried_references: Array[(String, Type)] = []
-  let opaque_signature_defs: Array[TypeDef] = []
   // Kind advice is useful only for names the module actually publishes. A
   // private declaration may remain in the TypeDef closure solely to describe
   // a public type; suggesting a different qualifier cannot make it importable.
@@ -1968,7 +1964,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           // Most imported signatures name only types an earlier one already
           // walked; the route text is built only when needed.
           if engine_any_unwalked(roots = roots, walked = id_walked) {
-            engine_note_identity_closure(roots = roots, route = String::concat("used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))), defs = id_defs, markers = id_markers, walked = id_walked, keep = id_keep, carried = carried_references, seen = seen_types, unresolved = unresolved, opaque_defs = opaque_signature_defs)
+            engine_note_identity_closure(roots = roots, route = String::concat("used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))), defs = id_defs, markers = id_markers, walked = id_walked, keep = id_keep, carried = carried_references, seen = seen_types, unresolved = unresolved)
           } else {
             ()
           }
@@ -2118,19 +2114,41 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   engine_foreign_trait_impl_collisions(dep_env = dep_env, mappings = declaration_trait_mappings, raw_path = raw_path, resolved = resolved, dep_types = dep_types, local_types = local_types, unresolved = unresolved, reported = collision_reported)
   engine_note_trait_identities(dep_env = dep_env, mappings = declaration_trait_mappings, raw_path = raw_path, defs = id_defs, markers = id_markers, walked = id_walked, keep = id_keep, carried = carried_references, seen = seen_types, unresolved = unresolved)
   let bound = bind_names(0, engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = declaration_trait_mappings, tail = engine_prepend_dependency_type_defs(view = view, names = declaration_names, tail = acc, resolved = resolved), origin_path = raw_path))
-  let mut with_references = bound
-  let mut ci = 0
-  while ci < Array::length(carried_references) {
-    let (tn, def) = Array::get(carried_references, at = ci)
-    with_references = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), with_references)
-    ci = ci + 1
+  engine_prepend_type_references(env = bound, carried = carried_references, defs = id_defs)
+}
+
+fn engine_prepend_type_references(env: TypeEnv, carried: Array[(String, Type)], defs: Array[TypeDef]) -> TypeEnv {
+  let mut out = env
+  let opaque_defs: Array[TypeDef] = []
+  for row in carried {
+    let (name, identity) = row
+    let opaque = match identity {
+      CtTuple(items) => if Array::length(items) == 2 {
+        match Array::get(items, at = 0) {
+          CtNamed(tag, _) => String::starts_with(tag, prefix = "#typeid.opaque."),
+          _ => false
+        }
+      } else {
+        false
+      },
+      _ => false
+    }
+    if opaque {
+      match find_typedef(defs = defs, name = name) {
+        Some(def) => Array::push(opaque_defs, value = def),
+        None => out = EnvBind(engine_type_reference_definition_marker(name), env_value_binding(identity), out)
+      }
+    } else {
+      out = EnvBind(engine_type_reference_definition_marker(name), env_value_binding(identity), out)
+    }
   }
-  if Array::length(opaque_signature_defs) == 0 {
-    with_references
+  if Array::length(opaque_defs) == 0 {
+    out
   } else {
-    EnvTypeDefs(opaque_signature_defs, [], with_references)
+    EnvTypeDefs(opaque_defs, [], out)
   }
 }
+
 fn engine_reexport_items_with_alias(items: Array[ImportItem], want_alias: Bool) -> Array[ImportItem] {
   let out = array_empty()
   let mut i = 0
@@ -2195,17 +2213,10 @@ fn engine_prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, na
   let dep_upper_slots = view.upper_slots
   let ignored = array_empty()
   let mappings = engine_dependency_trait_projection_mappings(dep_env = dep_env, dep_bindings = dep_bindings, dep_traits = dep_traits, upper_slots = dep_upper_slots, names = names, unresolved = ignored)
-  let mut out = engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = mappings, tail = engine_prepend_dependency_type_defs(view = view, names = names, tail = acc, resolved = resolved), origin_path = "")
-  // #3036: the published surface names each carried type's declaration, so
-  // an importer of the alias checks it against its other imports.
-  let mut ci = 0
-  while ci < Array::length(carried) {
-    let (tn, def) = Array::get(carried, at = ci)
-    out = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), out)
-    ci = ci + 1
-  }
-  out
+  let projected = engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = mappings, tail = engine_prepend_dependency_type_defs(view = view, names = names, tail = acc, resolved = resolved), origin_path = "")
+  engine_prepend_type_references(env = projected, carried = carried, defs = view.defs)
 }
+
 /// #2378: the marker a checked module's PUBLISHED environment carries for
 /// each `fn` (or bound lambda) it defines at a qualified name the builtin
 /// registry owns (`collect_builtin_shadowing_names`, checker_stmt.vibe). It
