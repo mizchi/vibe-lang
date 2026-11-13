@@ -23,6 +23,10 @@ import @vibe/core {
   array_empty, struct MutMap, struct MutSet
 }
 
+import ./prelude_reuse.vibe {
+  prelude_reuse_passes
+}
+
 import ./prelude_module_batch.vibe {
   PreludeModuleBatch,
   enter_module_executor_scope,
@@ -751,33 +755,12 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
     if async_sleep_boundary_err != "" {
       Array::push(errs, value = async_sleep_boundary_err)
     } else {
-      // ADR-0076 Phase 3a (#817, docs/internal/design/effect-evidence-passing.md 追記27):
-      // depth-0 suspend CPS for handle sites whose arms capture `resume` as a
-      // first-class value (the suspend class -- ADR-0068's Async::suspend
-      // shape). Runs BEFORE the evidence pass below so it only
-      // ever sees the sites this pass left alone (a transformed site has no
-      // EHandle left at all). A triggered-but-ineligible site is a hard
-      // compile error -- a value-referencing arm cannot compile on the replay
-      // path, so silent fallback is not an option.
-      let scps_errs = suspend_cps_pass(stmts)
-      if Array::length(scps_errs) > 0 {
-        Array::push(errs, value = Array::get(scps_errs, at = 0))
-      } else {
-        // ADR-0076 (#817) Phase 3: evidence-dict threading for every handle the
-        // suspend pass left -- including a handle body that calls a named
-        // top-level function which itself performs the handled effect (docs/internal/design/effect-evidence-passing.md "追記 2", evidence_dict_pass's
-        // own doc comment in common_base/inline_direct_perform.vibe -- appended to
-        // that existing cross-file-registered file rather than a new one, to
-        // avoid the bootstrap flatten gotcha documented in docs/internal/design/effectset.md).
-        // Whole-program-conservative and per-effect all-or-nothing, so it never
-        // touches a handle or function this pass cannot prove safe; the Phase 2
-        // direct-perform inliner that used to run first was deleted in #2500.
-        let edp_errs = evidence_dict_pass_with_roots(stmts = stmts, roots = lc_late_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = false, exports_stripped = exports_stripped))
-        if Array::length(edp_errs) > 0 {
-          Array::push(errs, value = Array::get(edp_errs, at = 0))
-        } else {
-          ()
-        }
+      // Suspend CPS, then the evidence pass (lc_run_effect_passes).
+      // #4042: opt-in, a build armed with the previous build's record
+      // replays what these two passes did when their input is the same up to
+      // positions (prelude_reuse.vibe).
+      for e in prelude_reuse_passes(stmts = stmts, row_offsets = checker_eq_offsets, row_keys = checker_eq_type_keys, header = prelude_reuse_header(entry_name = entry_name, exports_stripped = exports_stripped), run = () -> lc_run_effect_passes(stmts = stmts, entry_name = entry_name, exports_stripped = exports_stripped)) {
+        Array::push(errs, value = e)
       }
     }
   }
@@ -794,6 +777,53 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
   // spelling by computing it (see rename_builtin_shadow_defs).
   rename_builtin_shadow_defs(stmts)
   errs
+}
+
+/// The prelude's two whole-program effect passes, suspend CPS then the
+/// evidence pass, over `stmts`; the first error of the first pass that
+/// refuses, if one does.
+fn lc_run_effect_passes(stmts: Array[Stmt], entry_name: String, exports_stripped: Bool) -> Array[String] with Exception {
+  let errs: Array[String] = []
+  // ADR-0076 Phase 3a (#817, docs/internal/design/effect-evidence-passing.md 追記27):
+  // depth-0 suspend CPS for handle sites whose arms capture `resume` as a
+  // first-class value (the suspend class -- ADR-0068's Async::suspend
+  // shape). Runs BEFORE the evidence pass below so it only
+  // ever sees the sites this pass left alone (a transformed site has no
+  // EHandle left at all). A triggered-but-ineligible site is a hard
+  // compile error -- a value-referencing arm cannot compile on the replay
+  // path, so silent fallback is not an option.
+  let scps_errs = suspend_cps_pass(stmts)
+  if Array::length(scps_errs) > 0 {
+    Array::push(errs, value = Array::get(scps_errs, at = 0))
+  } else {
+    // ADR-0076 (#817) Phase 3: evidence-dict threading for every handle the
+    // suspend pass left -- including a handle body that calls a named
+    // top-level function which itself performs the handled effect (docs/internal/design/effect-evidence-passing.md "追記 2", evidence_dict_pass's
+    // own doc comment in common_base/inline_direct_perform.vibe -- appended to
+    // that existing cross-file-registered file rather than a new one, to
+    // avoid the bootstrap flatten gotcha documented in docs/internal/design/effectset.md).
+    // Whole-program-conservative and per-effect all-or-nothing, so it never
+    // touches a handle or function this pass cannot prove safe; the Phase 2
+    // direct-perform inliner that used to run first was deleted in #2500.
+    let edp_errs = evidence_dict_pass_with_roots(stmts = stmts, roots = lc_late_dce_roots(stmts = stmts, entry_name = entry_name, keep_source_defs = false, exports_stripped = exports_stripped))
+    if Array::length(edp_errs) > 0 {
+      Array::push(errs, value = Array::get(edp_errs, at = 0))
+    } else {
+      ()
+    }
+  }
+  errs
+}
+
+/// What a prelude-reuse record must have been made under, beside the input
+/// statements and rows its keys cover: the entry the passes keep, and whether
+/// the executable's exports are stripped (both reach `lc_late_dce_roots`).
+fn prelude_reuse_header(entry_name: String, exports_stripped: Bool) -> String {
+  "v1 entry=" + entry_name + " stripped=" + (if exports_stripped {
+    "1"
+  } else {
+    "0"
+  })
 }
 
 /// `first_pass` is 0 for the ORACLE and 1 for the production split entry

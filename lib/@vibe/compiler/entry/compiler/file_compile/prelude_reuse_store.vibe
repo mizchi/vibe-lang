@@ -1,0 +1,154 @@
+import @vibe/compiler/cache {
+  AstBinaryReader,
+  ast_binary_read_stmt,
+  ast_binary_read_string_checked,
+  ast_binary_read_svarint_checked,
+  ast_binary_read_varint_checked,
+  ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_write_stmt,
+  ast_binary_write_string,
+  ast_binary_write_svarint,
+  ast_binary_write_varint,
+  compact_string_fingerprint,
+  load_persistent_artifact,
+  store_persistent_artifact
+}
+
+import @vibe/compiler/codegen/wasi {
+  PreludeReuseRecord, prelude_reuse_arm, prelude_reuse_record_new, prelude_reuse_record_parts, prelude_reuse_take
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+//# Storing the prelude-reuse record between builds (#4042)
+//
+// `VIBE_PRELUDE_REUSE=on` arms a compile with the record the previous build
+// of the same entry left (`codegen/wasi/prelude_reuse.vibe` says what the
+// record holds and when it replays), and stores the record the compile made.
+// One slot per entry path, replaced by each store, as the body cache keeps
+// one. Unset or `off` does neither, and the compile is exactly as without
+// the feature. A record that does not decode is treated as absent.
+
+/// `VIBE_PRELUDE_REUSE`: `on` or `off` (also when unset).
+export fn prelude_reuse_mode() -> String with Env + Exception {
+  let raw = Env::get("VIBE_PRELUDE_REUSE")
+  if raw == "" || raw == "off" {
+    "off"
+  } else if raw == "on" {
+    raw
+  } else {
+    throw(String::concat("VIBE_PRELUDE_REUSE must be on or off, got: ", raw))
+  }
+}
+
+/// `compile`, armed with this entry's stored record when the mode is on, and
+/// storing the record it made.
+export fn prelude_reuse_around(entry_path: String, entry_name: String, checked_error_row: Bool, compile: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
+  if prelude_reuse_mode() != "on" {
+    compile()
+  } else {
+    let slot = compact_string_fingerprint(entry_path)
+    let previous = match load_persistent_artifact(kind = "prelude-reuse", entry_name = entry_name, fingerprint = slot, checked_error_row = checked_error_row) {
+      Some(bytes) => prelude_reuse_decode(bytes),
+      None => None
+    }
+    prelude_reuse_arm(previous = previous)
+    let out = compile()
+    match prelude_reuse_take() {
+      Some(made) => store_persistent_artifact(kind = "prelude-reuse", entry_name = entry_name, fingerprint = slot, bytes = prelude_reuse_encode(made), checked_error_row = checked_error_row),
+      None => ()
+    }
+    out
+  }
+}
+
+fn prelude_reuse_magic() -> String {
+  "vibe-prelude-reuse-v2"
+}
+
+fn prelude_reuse_write_stmts(buf: Bytes, items: Array[Stmt]) -> Unit {
+  ast_binary_write_varint(buf = buf, v = Array::length(items))
+  for item in items {
+    ast_binary_write_stmt(buf = buf, st = item)
+  }
+  ()
+}
+
+fn prelude_reuse_write_ints(buf: Bytes, items: Array[Int]) -> Unit {
+  ast_binary_write_varint(buf = buf, v = Array::length(items))
+  for item in items {
+    ast_binary_write_svarint(buf = buf, v = item)
+  }
+  ()
+}
+
+/// A record as bytes.
+export fn prelude_reuse_encode(_ record: PreludeReuseRecord) -> Bytes {
+  let (header, keys, plain, kinds, refs, outs) = prelude_reuse_record_parts(record)
+  let buf = Bytes::new()
+  ast_binary_write_string(buf = buf, s = prelude_reuse_magic())
+  ast_binary_write_string(buf = buf, s = header)
+  ast_binary_write_varint(buf = buf, v = Array::length(keys))
+  for key in keys {
+    ast_binary_write_string(buf = buf, s = key)
+  }
+  prelude_reuse_write_stmts(buf = buf, items = plain)
+  prelude_reuse_write_ints(buf = buf, items = kinds)
+  prelude_reuse_write_ints(buf = buf, items = refs)
+  prelude_reuse_write_stmts(buf = buf, items = outs)
+  buf
+}
+
+fn prelude_reuse_read_stmts(_ r: AstBinaryReader) -> Array[Stmt] with Exception {
+  let n = ast_binary_read_varint_checked(r)
+  let out: Array[Stmt] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, value = ast_binary_read_stmt(r))
+    i = i + 1
+  }
+  out
+}
+
+fn prelude_reuse_read_ints(_ r: AstBinaryReader) -> Array[Int] with Exception {
+  let n = ast_binary_read_varint_checked(r)
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, value = ast_binary_read_svarint_checked(r))
+    i = i + 1
+  }
+  out
+}
+
+/// A record from bytes, or None when they are not one: a different format,
+/// a truncated slot, or a trailing byte.
+export fn prelude_reuse_decode(_ bytes: Bytes) -> Option[PreludeReuseRecord] {
+  let r = ast_binary_reader_new(bytes)
+  handle {
+    if ast_binary_read_string_checked(r) != prelude_reuse_magic() {
+      None
+    } else {
+      let header = ast_binary_read_string_checked(r)
+      let n = ast_binary_read_varint_checked(r)
+      let keys: Array[String] = []
+      let mut i = 0
+      while i < n {
+        Array::push(keys, value = ast_binary_read_string_checked(r))
+        i = i + 1
+      }
+      let plain = prelude_reuse_read_stmts(r)
+      let kinds = prelude_reuse_read_ints(r)
+      let refs = prelude_reuse_read_ints(r)
+      let outs = prelude_reuse_read_stmts(r)
+      if ast_binary_reader_remaining(r) == 0 && Array::length(kinds) == Array::length(refs) && Array::length(kinds) == Array::length(outs) {
+        Some(prelude_reuse_record_new(header = header, keys = keys, plain = plain, kinds = kinds, refs = refs, outs = outs))
+      } else {
+        None
+      }
+    }
+  } with { Exception::Throw(_msg) => None }
+}

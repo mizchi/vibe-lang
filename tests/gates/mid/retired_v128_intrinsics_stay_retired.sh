@@ -807,6 +807,67 @@ done
 rm -rf "$pbdir"
 echo "[compiler-gate] field-reading parameter borrow guard ok (8349000 on bump/rc/shadow/gc, rc heap_used=$pb_used B)"
 
+# 40f-b7. #2827: a function used as a value keeps the borrowed ABI for its
+#         direct calls. Borrow inference zeroed the mask of any function named
+#         in a value position, so `three` owned `ctx`, took three dups at
+#         entry on every path, and leaked two on the arm that runs none of its
+#         uses. The RC codegen points the value uses at an owning thunk
+#         (`three$owned`) instead. Unfixed, the bounded fixture grew
+#         __heap_ptr by 320,216 B over its 2000 rounds. The answer is checked
+#         on bump, rc, shadow and gc; the shadow lane traps on a double
+#         release, which is what a thunk that released a parameter its callee
+#         had already dropped would hit.
+echo "[compiler-gate] 40f-b7/40 a function used as a value borrows on its direct calls (#2827)"
+gate_workdir fvdir "_build/_gate_rc_fn_value_borrow_thunk"
+for fv_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$fv_lane" "fixtures/rc_fn_value_borrow_thunk_bounded_test.vibe" "$fvdir/fv.wasm" main
+  gate_require_artifact "$fvdir/fv.wasm" "rc_fn_value_borrow_thunk_bounded fixture did not compile on the $fv_lane lane (#2827)"
+  gate_run fv_out last "$fvdir/fv.wasm"
+  gate_require_eq "$fv_out" "7696998" "rc_fn_value_borrow_thunk_bounded got '$fv_out' on the $fv_lane lane (want 7696998). A trap means an owning thunk released a parameter its borrowed callee also released (#2827)."
+  if [ "$fv_lane" = rc ]; then
+    fv_json="$(node scripts/measure_heap.mjs "$fvdir/fv.wasm" main 2>/dev/null)"
+    fv_used="$(printf '%s' "$fv_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$fv_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_fn_value_borrow_thunk_bounded heap ($fv_json)" >&2; exit 1
+    fi
+    if [ "$fv_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_fn_value_borrow_thunk_bounded heap_used=$fv_used >= 20000 (#2827 regressed: a function used as a value is owned again on its direct calls and leaks its entry dups; unfixed, this fixture measured 320,216 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$fvdir"
+echo "[compiler-gate] function-value borrow thunk guard ok (7696998 on bump/rc/shadow/gc, rc heap_used=$fv_used B)"
+
+# 40f-b8. #2827: a function-typed parameter that every call binds to the same
+#         function is called as that function directly on the RC lanes
+#         (`direct_known_fn_params`). An indirect call owns its arguments, so
+#         `step` owned the `ctx` it handed its callback, `walk` owned the `ctx`
+#         it handed `step`, and each took dups at entry that the arm running
+#         none of its uses leaked. Unfixed, the bounded fixture grew
+#         __heap_ptr by 239,996 B over its 2000 rounds. The answer is checked
+#         on bump, rc, shadow and gc; `pick` is handed two callbacks and keeps
+#         its indirect call, and the shadow lane traps on a double release.
+echo "[compiler-gate] 40f-b8/40 a callback parameter that is always one function is called directly (#2827)"
+gate_workdir kcdir "_build/_gate_rc_known_callback_direct"
+for kc_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$kc_lane" "fixtures/rc_known_callback_direct_bounded_test.vibe" "$kcdir/kc.wasm" main
+  gate_require_artifact "$kcdir/kc.wasm" "rc_known_callback_direct_bounded fixture did not compile on the $kc_lane lane (#2827)"
+  gate_run kc_out last "$kcdir/kc.wasm"
+  gate_require_eq "$kc_out" "109964" "rc_known_callback_direct_bounded got '$kc_out' on the $kc_lane lane (want 109964). A wrong answer means a callback call was rewritten to a function it does not hold; a trap means a borrowed parameter was released by its callee (#2827)."
+  if [ "$kc_lane" = rc ]; then
+    kc_json="$(node scripts/measure_heap.mjs "$kcdir/kc.wasm" main 2>/dev/null)"
+    kc_used="$(printf '%s' "$kc_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$kc_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_known_callback_direct_bounded heap ($kc_json)" >&2; exit 1
+    fi
+    if [ "$kc_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_known_callback_direct_bounded heap_used=$kc_used >= 20000 (#2827 regressed: a callback parameter that is always one function is called indirectly again, so the context it is handed is owned and leaks its entry dups; unfixed, this fixture measured 239,996 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$kcdir"
+echo "[compiler-gate] known-callback direct-call guard ok (109964 on bump/rc/shadow/gc, rc heap_used=$kc_used B)"
+
 # 40f-b5. #3129: `MutList::*` / `MutBytes::*` lower to the builtin
 #         `Array::*` / `ArrayBuilder::push` / `Bytes::*`. A program that
 #         defines its own function under the target spelling must not capture

@@ -1,0 +1,22 @@
+// #4050: a `TaskGroup::run` body inside `region r1` may keep an r1 value in
+// an r1-local container through a loop variable: the container predates only
+// the group's nursery.
+// `main` answers 10 * the group's value + the r1-local array's length.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+fn main() -> Int allows Exception {
+  let v = region r1 {
+    let cell1 = MutList::empty(r1)
+    MutList::push(cell1, 3)
+    let inner: Array[MutList[Int]] = []
+    let boxes = [inner]
+    let w = TaskGroup::run((n) -> {
+      for a in boxes {
+        Array::push(a, value = cell1)
+      }
+      1
+    })
+    w * 10 + Array::length(inner)
+  }
+  v
+}

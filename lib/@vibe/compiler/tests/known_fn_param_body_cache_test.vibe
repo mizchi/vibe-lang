@@ -1,0 +1,88 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+// #2827: `direct_known_fn_params` compiles `cb(x)` in `apply(cb, x)` as a
+// direct call when every call of `apply` passes the same function. Those
+// calls can sit in another file, so `apply`'s body depends on code its own
+// file does not contain, and an edit there leaves `apply`'s file -- the
+// unchanged prefix the body cache replays -- as it was. These builds edit
+// only the entry file and require the cached rebuild to be byte-identical to
+// a fresh compile, with some body replayed so the cache is really in play.
+//
+// body_cache_pruned_test.vibe pins a changed target (`inc` -> `dec`). These
+// pin the two directions where the specialization appears or disappears:
+// the body cached rewritten must not replay into a build that leaves the
+// call indirect, nor the indirect one into a build that rewrites it.
+
+fn kc_bytes(_ s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, value = String::char_code_at(s, at = i))
+    i = i + 1
+  }
+  out
+}
+
+fn kc_equal(a: Bytes, b: Bytes) -> Bool {
+  let mut same = Bytes::length(a) == Bytes::length(b)
+  let mut i = 0
+  while same && i < Bytes::length(a) {
+    same = Bytes::get(a, at = i) == Bytes::get(b, at = i)
+    i = i + 1
+  }
+  same
+}
+
+/// `apply` and its two possible callbacks, in the dependency file.
+fn kc_dep() -> String {
+  "export let same: () -> Bool = () -> { [1] == [1] }\n\nexport fn inc(x: Int) -> Int {\n  x + 1\n}\n\nexport fn dec(x: Int) -> Int {\n  x - 1\n}\n\nexport fn apply(cb: (Int) -> Int, x: Int) -> Int {\n  if same() {\n    cb(x) * 10\n  } else {\n    0\n  }\n}\n"
+}
+
+/// Compile `before`, rebuild it from the cache, then edit the entry file to
+/// `after` and rebuild it from the cache. Answers whether the warm rebuild
+/// replayed a body, whether the edited rebuild replayed one, and whether the
+/// edited rebuild equals a fresh compile of `after`.
+fn kc_edit(tag: String, before: String, after: String) -> Array[Bool] with Exception + Fs + Env {
+  let dep = "/tmp/vibe_kc_cache_dep_\{tag}.vibe"
+  let entry = "/tmp/vibe_kc_cache_entry_\{tag}.vibe"
+  let artifact = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "main", fingerprint = String::concat("self-describing-", compact_string_fingerprint(entry)), checked_error_row = false)
+  if Fs::exists(artifact) {
+    Fs::remove(artifact)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_kc_cache_dep_\{tag}.vibe { apply, dec, inc }\n"
+  Fs::write_bytes(dep, bytes = kc_bytes(kc_dep()))
+  Fs::write_bytes(entry, bytes = kc_bytes(String::concat(head, before)))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = cold_counts, exports_stripped = true, checked_error_row = false)
+  let warm_counts: Array[Int] = []
+  let _warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = warm_counts, exports_stripped = true, checked_error_row = false)
+  Fs::write_bytes(entry, bytes = kc_bytes(String::concat(head, after)))
+  let edited_counts: Array[Int] = []
+  let edited = compile_file_fs_mode_rc_body_cached_counted(entry_path = entry, entry_name = "main", cache_mode = "on", counts_out = edited_counts, exports_stripped = true, checked_error_row = false)
+  let fresh = compile_file_fs_mode_rc(entry_path = entry, entry_name = "main", exports_stripped = true, checked_error_row = false)
+  [
+    Array::get(warm_counts, at = 0) > 0,
+    Array::get(edited_counts, at = 0) > 0,
+    kc_equal(a = edited, b = fresh)
+  ]
+}
+
+test "a second callback in another file recompiles the once-specialized body" {
+  // Before: `apply` only ever gets `inc`. After: it gets `inc` and `dec`, so
+  // it is no longer specialized. A replayed `apply` would call `inc` for both.
+  inspect(kc_edit(tag = "widen", before = "fn main() -> Int {\n  apply(cb = inc, x = 4) + dec(x = 0)\n}\n", after = "fn main() -> Int {\n  apply(cb = inc, x = 4) + apply(cb = dec, x = 4)\n}\n"), content = "[true, true, true]")
+}
+
+test "a callback that becomes the only one recompiles the indirect body" {
+  // Before: `apply` gets `inc` and `dec` and keeps its indirect call. After:
+  // only `inc`, so it is specialized. The cached indirect body is correct but
+  // not the body a fresh compile emits.
+  inspect(kc_edit(tag = "narrow", before = "fn main() -> Int {\n  apply(cb = inc, x = 4) + apply(cb = dec, x = 4)\n}\n", after = "fn main() -> Int {\n  apply(cb = inc, x = 4) + dec(x = 0)\n}\n"), content = "[true, true, true]")
+}

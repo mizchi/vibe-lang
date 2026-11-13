@@ -1,0 +1,112 @@
+// #2827: a function used as a value keeps the borrowed ABI for its direct
+// calls; its value uses go through an owning thunk.
+//
+// Borrow inference zeroed the mask of any function named in a value position,
+// because an indirect call cannot read a mask: it hands over owned references
+// and expects the callee to release them. So the whole function was owned and
+// every DIRECT call consumed too. `three` below passes `ctx` to three owning
+// calls on one branch, so its plan took three dups at entry on every path and
+// the `false` arm, which runs none of them, gave back two. The RC codegen now
+// emits `three$owned(ctx, c) { three(ctx, c) }` and points every value use at
+// it: `three` itself is borrowed again, and the thunk owns what an indirect
+// call hands it and releases it after the borrowed call returns.
+//
+// Measured on a stage2 built from main at 2048235ce, this fixture grew
+// __heap_ptr by 320,216 B over its 2000 rounds under VIBE_RC=1; with the thunk
+// it is bounded. The gate (tests/gates/mid, 40f-b7) bounds the growth and
+// checks the answer on the bump, rc, shadow and gc lanes; the shadow lane traps
+// on a double release, which is what a thunk that released a parameter its
+// borrowed callee had already dropped would hit.
+//
+// The value uses: a function argument (`apply(f = three, ..)`), a struct field
+// returned from a function (`holder`), a value captured by a closure that
+// outlives its frame (`later`), and a generic function (`count`). `keep`
+// stores its parameter, so that position stays owned and the thunk moves it.
+//
+// `main` sums `round(i)` over 2000 rounds: 7696998.
+
+struct Ctx {
+  n: Int;
+  xs: Array[Int]
+}
+
+struct Holder {
+  f: (Ctx, Bool) -> Int
+}
+
+fn mk(_ i: Int) -> Ctx {
+  Ctx::{ n: i, xs: [i, i + 1, i + 2] }
+}
+
+fn use1(ctx: Ctx) -> Int {
+  ctx.n + Array::length(ctx.xs)
+}
+
+fn three(ctx: Ctx, c: Bool) -> Int {
+  if c {
+    three(ctx = ctx, c = false) + use1(ctx = ctx) + three(ctx = ctx, c = false) + three(ctx = ctx, c = false)
+  } else {
+    0
+  }
+}
+
+fn keep(ctx: Ctx, c: Bool) -> Int {
+  let box: Array[Ctx] = []
+  if c {
+    Array::push(box, value = ctx)
+  } else ()
+  Array::length(box) + use1(ctx = ctx)
+}
+
+fn count[T](xs: Array[T], k: Int) -> Int {
+  if k > 0 {
+    Array::length(xs) + count(xs = xs, k = k - 1) + count(xs = xs, k = 0)
+  } else {
+    0
+  }
+}
+
+fn apply(f: (Ctx, Bool) -> Int, ctx: Ctx, c: Bool) -> Int {
+  f(ctx, c)
+}
+
+fn holder() -> Holder {
+  Holder::{ f: three }
+}
+
+fn later(ctx: Ctx) -> () -> Int {
+  let f = three
+  () -> f(ctx, true)
+}
+
+fn round(_ i: Int) -> Int {
+  let c = mk(i)
+  let even = i % 2 == 0
+  let a = three(ctx = c, c = even)
+  let b = apply(f = three, ctx = c, c = even)
+  let h = holder()
+  let g = h.f
+  let d = g(c, !even)
+  let e = keep(ctx = c, c = even)
+  let k = apply(f = keep, ctx = c, c = !even)
+  let l = later(ctx = mk(i + 1))
+  let m = if i % 3 == 0 {
+    l()
+  } else {
+    0
+  }
+  let cf = count
+  let xs = c.xs
+  let n = cf(xs, i % 2) + count(xs = xs, k = i % 3)
+  a + b + d + e + k + m + n
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

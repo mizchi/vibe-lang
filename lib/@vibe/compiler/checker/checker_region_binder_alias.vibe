@@ -1,0 +1,443 @@
+// lib/@vibe/compiler/checker -- a binder whose value is read out of a
+// location declared before an active region (#4050).
+
+//# Inside `region r { .. }` or a `TaskGroup::run` body, a write is refused
+//# when it stores a value of a region into a location that outlives that
+//# region (`container_write_crosses_region`). A binding declared inside the
+//# body may still BE such a location: `let a = boxes`, `for a in boxes`,
+//# `match Some(boxes) { Some(a) => .. }` and `let (a, _) = (boxes, 1)` all
+//# bind `a` to a part of `boxes`. Each such binder is marked
+//# `__region_outer_alias__a` with the regions its source location was
+//# declared before -- the same `CtTuple` of region names a re-checked
+//# parameter carries -- so a write into it is judged against exactly those
+//# regions. With nested regions that matters: a container declared inside
+//# `region r1` and iterated inside a nested `region r2` predates `r2` only,
+//# so it may hold an `r1` value but not an `r2` one.
+
+import @vibe/compiler/core {
+  Expr, Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, expr_children, find_typedef, type_name_has_iterator_impl
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  arg_is_region_token, expression_aliases_outer_binding, held_result_param_indices, literal_item_is_inert
+}
+
+import ./checker_region_retention.vibe {
+  retention_active_region_names, retention_arg_predates
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_decl_value, retention_pat_names_into
+}
+
+/// #4050: the active regions that the location `value` reads from was
+/// declared before, as seen from `scope` -- the regions a binder holding
+/// `value`, or a part of it, may not keep a value of. Empty when `active` is
+/// false (no region is open) or `value` is fresh. A name answers the regions
+/// opened since its binding, plus those its own alias marker records; a
+/// field, element, literal, block or conditional answers what its parts do;
+/// a constructor or builtin call (`Some(boxes)`, `Map::values(m)`) answers
+/// what its arguments do, since its result holds only them. Any other call
+/// the checker knows returns an outer location answers every active region,
+/// and so does a value `expression_aliases_outer_binding` says aliases one
+/// when no narrower answer was found, so the answer is never smaller than
+/// the one that test gives.
+export fn region_outer_alias_regions(value: Expr, scope: TypeEnv, active: Bool) -> Array[String] {
+  if active {
+    let found = binder_source_predates(value = value, scope = scope)
+    if Array::length(found) == 0 && expression_aliases_outer_binding(expr = value, env = scope) {
+      retention_active_region_names(scope)
+    } else {
+      found
+    }
+  } else {
+    []
+  }
+}
+
+/// Mark `name` an alias of a location declared before `regions`, so a write
+/// into it is judged as a write into that location for those regions. No
+/// regions, no mark.
+export fn region_outer_alias_mark(env: TypeEnv, name: String, regions: Array[String]) -> TypeEnv {
+  if Array::length(regions) > 0 {
+    env_bind(env = env, name = String::concat("__region_outer_alias__", name), ty = CtTuple(for rname in regions {
+      CtNamed(rname, [])
+    }))
+  } else {
+    env
+  }
+}
+
+/// #4050: mark each name `pat` binds -- a `for` element (`PBind(name)`), a
+/// `match` arm's pattern, which a destructuring `let` and `if .. is` lower
+/// to -- with the regions the part of `value` it reads predates
+/// (`binder_alias_bind_parts`). `env` is the binders'
+/// environment, `scope` the one `value` is read in. Before, the binder was
+/// judged as a binding of the region body, so `for a in boxes {
+/// Array::push(a, value = cell) }` kept a region value in an outer array.
+export fn region_outer_alias_bind(env: TypeEnv, pat: Pat, value: Expr, scope: TypeEnv) -> TypeEnv {
+  let active = match env_lookup(env = scope, name = "#active_region") {
+    Some(CtNamed(_, _)) => true,
+    _ => false
+  }
+  if active {
+    binder_alias_bind_parts(env = env, pat = pat, value = value, scope = scope)
+  } else {
+    env
+  }
+}
+
+/// `region_outer_alias_bind` for one pattern against the expression it
+/// matches. A tuple pattern against a tuple literal, and a constructor
+/// pattern against a call of that constructor, pair component with
+/// component, so in `match (outer, inner) { (_, a) => .. }` the binder `a`
+/// is marked only with what `inner` predates (Codex on #4061). Anything
+/// that cannot be paired marks every name it binds with what the whole
+/// value predates.
+fn binder_alias_bind_parts(env: TypeEnv, pat: Pat, value: Expr, scope: TypeEnv) -> TypeEnv {
+  let paired: Option[(Array[Pat], Array[Expr])] = match pat {
+    PTuple(ps) => match value {
+      ETuple(es) => if Array::length(ps) == Array::length(es) {
+        Some((ps, es))
+      } else {
+        None
+      },
+      _ => None
+    },
+    PCtor(pname, ps) => match value {
+      ECall(EIdent(callee, _), args, _, _) => if pname == callee && Array::length(ps) == Array::length(args) {
+        Some((ps, args))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+  match paired {
+    Some((ps, es)) => binder_alias_bind_pairs(env = env, ps = ps, es = es, scope = scope),
+    None => {
+      let names: Array[String] = []
+      retention_pat_names_into(p = pat, out = names)
+      if Array::length(names) > 0 {
+        let regions = region_outer_alias_regions(value = value, scope = scope, active = true)
+        let mut out = env
+        for name in names {
+          out = region_outer_alias_mark(env = out, name = name, regions = regions)
+        }
+        out
+      } else {
+        env
+      }
+    }
+  }
+}
+
+fn binder_alias_bind_pairs(env: TypeEnv, ps: Array[Pat], es: Array[Expr], scope: TypeEnv) -> TypeEnv {
+  let mut out = env
+  let mut i = 0
+  while i < Array::length(ps) {
+    out = binder_alias_bind_parts(env = out, pat = Array::get(ps, at = i), value = Array::get(es, at = i), scope = scope)
+    i = i + 1
+  }
+  out
+}
+
+/// #4050 (Codex on #4061): `for name in iterable` -- the loop's element is
+/// what the iteration hands out, not `iterable` itself. An `Array` hands out
+/// its stored elements, so the binder reads `iterable`. A declared type
+/// iterated through its own protocol hands out what the protocol call the
+/// `for` desugar selects returns -- `C::next(iterable)`, `C::iter(iterable)`
+/// or `C::iter_get(iterable, i)` (`for_binder_protocols`) -- so the binder is
+/// judged as that call would be, and is marked with the regions it
+/// predates. A method whose body returns a fresh value marks nothing: an
+/// iterator built before the region may hand out a new array to write into.
+/// A method returning a stored part of `iterable`, or one whose body is not
+/// readable here, answers what `iterable` does.
+export fn region_for_binder_bind(env: TypeEnv, name: String, iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  let active = match env_lookup(env = scope, name = "#active_region") {
+    Some(CtNamed(_, _)) => true,
+    _ => false
+  }
+  if active {
+    let regions: Array[String] = []
+    for src in for_binder_sources(iterable = iterable, iter_ty = iter_ty, scope = scope, defs = defs) {
+      for r in for_binder_source_regions(source = src, iterable = iterable, scope = scope) {
+        if !binder_region_listed(names = regions, rname = r) {
+          Array::push(regions, value = r)
+        } else {
+          ()
+        }
+      }
+      ()
+    }
+    region_outer_alias_mark(env = env, name = name, regions = regions)
+  } else {
+    env
+  }
+}
+
+/// The expressions a `for` element over `iterable` is read from: the
+/// protocol calls a declared type binds, else `iterable` itself.
+fn for_binder_sources(iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> Array[Expr] {
+  let head = match iter_ty {
+    CtStruct(nm) => nm,
+    CtNamed(nm, _) => nm,
+    _ => ""
+  }
+  let declared = head != "" && head != "Array" && head != "String" && head != "Map" && head != "HostStream" && match find_typedef(defs = defs, name = head) {
+    Some(_) => true,
+    None => false
+  }
+  let methods = if declared {
+    for_binder_protocols(head = head, scope = scope)
+  } else {
+    []
+  }
+  if Array::length(methods) > 0 {
+    for method in methods {
+      let callee = String::concat(head, String::concat("::", method))
+      let args = if method == "iter_get" {
+        [iterable, EInt(0)]
+      } else {
+        [iterable]
+      }
+      ECall(EIdent(callee, -1), args, -1, [])
+    }
+  } else {
+    [iterable]
+  }
+}
+
+/// The regions one source of a `for` element predates. A `C::next(xs)` call
+/// returns `Some((element, rest))`, and the desugar binds only `element`
+/// (`Some((x, __iter_rest))`), so when every result of `next`'s declaration
+/// is spelled `Some((e, rest))` or `None` the element is judged alone: it
+/// holds `xs` when some `e` holds `next`'s parameter, and nothing otherwise
+/// -- a continuation that keeps `self.items` does not make a fresh element
+/// an alias (Codex on #4061). A body that cannot be split that way (a
+/// `return`, a result held in a name or returned by a call) is judged as the
+/// whole call, as any other source is.
+fn for_binder_source_regions(source: Expr, iterable: Expr, scope: TypeEnv) -> Array[String] {
+  let split = match source {
+    ECall(EIdent(callee, _), _, _, _) => if String::ends_with(callee, suffix = "::next") {
+      for_next_element_holds_self(callee = callee)
+    } else {
+      None
+    },
+    _ => None
+  }
+  match split {
+    Some(holds) => if holds {
+      region_outer_alias_regions(value = iterable, scope = scope, active = true)
+    } else {
+      []
+    },
+    None => region_outer_alias_regions(value = source, scope = scope, active = true)
+  }
+}
+
+/// Whether the element component of `callee`'s results holds one of its
+/// parameters; None when its declaration is not readable here or a result
+/// is not spelled `Some((e, rest))` / `None`.
+fn for_next_element_holds_self(callee: String) -> Option[Bool] {
+  match retention_decl_value(callee) {
+    Some(EFn(_, _, params, _, _, body)) => if Array::length(params) > 0 && !for_body_has_return(body) {
+      match for_next_element_body(body) {
+        Some(element) => Some(Array::length(held_result_param_indices(body = element, params = params)) > 0),
+        None => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// `body` with each result `Some((e, rest))` replaced by `e` and each `None`
+/// by `()`, through `if`, `match`, `let` and sequencing; None at any other
+/// result.
+fn for_next_element_body(_ body: Expr) -> Option[Expr] {
+  match body {
+    ECall(EIdent(ctor, _), args, _, _) => if (ctor == "Some" || ctor == "Option::Some") && Array::length(args) == 1 {
+      match Array::get(args, at = 0) {
+        ETuple(items) => if Array::length(items) == 2 {
+          Some(Array::get(items, at = 0))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    EIdent(n, _) => if n == "None" || n == "Option::None" {
+      Some(EUnit)
+    } else {
+      None
+    },
+    EIf(c, a, b) => match for_next_element_body(a) {
+      Some(ra) => match for_next_element_body(b) {
+        Some(rb) => Some(EIf(c, ra, rb)),
+        None => None
+      },
+      None => None
+    },
+    EMatch(scrutinee, arms) => {
+      let out: Array[(Pat, Expr)] = []
+      let mut ok = true
+      for arm in arms {
+        let (pat, arm_body) = arm
+        match for_next_element_body(arm_body) {
+          Some(r) => Array::push(out, value = (pat, r)),
+          None => ok = false
+        }
+      }
+      if ok {
+        Some(EMatch(scrutinee, out))
+      } else {
+        None
+      }
+    },
+    ELet(x, v, rest, off) => match for_next_element_body(rest) {
+      Some(r) => Some(ELet(x, v, r, off)),
+      None => None
+    },
+    ELetMut(x, v, rest, off) => match for_next_element_body(rest) {
+      Some(r) => Some(ELetMut(x, v, r, off)),
+      None => None
+    },
+    ESeq(a, rest) => match for_next_element_body(rest) {
+      Some(r) => Some(ESeq(a, r)),
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn for_body_has_return(_ body: Expr) -> Bool {
+  let stack: Array[Expr] = [body]
+  let mut found = false
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
+    match cur {
+      EReturn(_) => found = true,
+      _ => {
+        for child in expr_children(cur) {
+          Array::push(stack, value = child)
+        }
+        ()
+      }
+    }
+  }
+  found
+}
+
+/// The protocol method(s) the `for` desugar may draw `head`'s elements
+/// from, mirroring `normalize/desugar/iteration.vibe` (Codex on #4061). With
+/// a method-bearing trait in the program, `classify_sync_for_loop` takes
+/// `C::next`, else `C::iter`, else the indexed `C::iter_length` +
+/// `C::iter_get`. Without one, `classify_trait_free_for_loop` takes `C::next`
+/// only when it returns a `Future`, else the indexed protocol. An `impl` of an
+/// iterator trait for `head` puts such a trait in the program, so only the
+/// first lane can run; otherwise the lane is not known here, and both lanes'
+/// choices are returned, so the binder is marked with what either predates.
+/// Empty when neither lane finds a protocol (the loop does not iterate a
+/// protocol, and the binder reads the iterand).
+fn for_binder_protocols(head: String, scope: TypeEnv) -> Array[String] {
+  let has_next = for_binder_has(head = head, method = "next", scope = scope)
+  let has_indexed = for_binder_has(head = head, method = "iter_length", scope = scope) && for_binder_has(head = head, method = "iter_get", scope = scope)
+  let sync_choice = if has_next {
+    "next"
+  } else if for_binder_has(head = head, method = "iter", scope = scope) {
+    "iter"
+  } else if has_indexed {
+    "iter_get"
+  } else {
+    ""
+  }
+  let next_is_future = has_next && match env_lookup(env = scope, name = String::concat(head, "::next")) {
+    Some(t) => for_binder_returns_future(t),
+    None => false
+  }
+  let free_choice = if next_is_future {
+    "next"
+  } else if has_indexed {
+    "iter_get"
+  } else {
+    ""
+  }
+  let out: Array[String] = []
+  if sync_choice != "" {
+    Array::push(out, value = sync_choice)
+  } else {
+    ()
+  }
+  if !type_name_has_iterator_impl(env = scope, type_name = head) && free_choice != "" && free_choice != sync_choice {
+    Array::push(out, value = free_choice)
+  } else {
+    ()
+  }
+  out
+}
+
+fn for_binder_has(head: String, method: String, scope: TypeEnv) -> Bool {
+  match env_lookup(env = scope, name = String::concat(head, String::concat("::", method))) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn for_binder_returns_future(_ t: Type) -> Bool {
+  match t {
+    CtFn(_, ret, _) => match ret {
+      CtNamed(n, _) => n == "Future",
+      _ => false
+    },
+    CtForAll(_, _, body) => for_binder_returns_future(body),
+    _ => false
+  }
+}
+
+/// The regions `value`'s location predates; a constructor or builtin call
+/// is read through its arguments rather than answered by every region.
+fn binder_source_predates(value: Expr, scope: TypeEnv) -> Array[String] {
+  match value {
+    ECall(EIdent(callee, _), args, _, _) => match env_lookup(env = scope, name = callee) {
+      None => {
+        let out: Array[String] = []
+        for a in args {
+          if !literal_item_is_inert(item = a, env = scope) && !arg_is_region_token(arg = a, env = scope) {
+            for r in binder_source_predates(value = a, scope = scope) {
+              if !binder_region_listed(names = out, rname = r) {
+                Array::push(out, value = r)
+              } else {
+                ()
+              }
+            }
+            ()
+          } else {
+            ()
+          }
+        }
+        out
+      },
+      Some(_) => retention_arg_predates(arg = value, env = scope)
+    },
+    _ => retention_arg_predates(arg = value, env = scope)
+  }
+}
+
+fn binder_region_listed(names: Array[String], rname: String) -> Bool {
+  let mut found = false
+  for n in names {
+    if n == rname {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}

@@ -1,0 +1,185 @@
+// #4042: a record of what the prelude's two passes did replays onto the same
+// statements at other positions, and onto nothing else.
+//
+// Each program is parsed from its own text, so a comment in front shifts every
+// offset as an edit earlier in the merged closure does. The "passes" here are
+// stand-ins built from the input: a rewrite that drops a type annotation, and
+// an appended copy of a statement under another name -- the two shapes the
+// record has to carry.
+import @vibe/compiler/codegen/wasi {
+  prelude_reuse_key_digest, prelude_reuse_record_of, prelude_reuse_record_parts, prelude_reuse_replay
+}
+
+import @vibe/compiler/entry/compiler/file_compile {
+  prelude_reuse_decode, prelude_reuse_encode
+}
+
+import @vibe/compiler/normalize/desugar {
+  prelude_statement_keys
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/parser {
+  stmt_located_offsets
+}
+
+fn parsed(_ src: String) -> Array[Stmt] with Exception {
+  let (toks, starts, _) = lex_with_offsets(src)
+  parse_program_located(tokens = toks, starts = starts, source = src)
+}
+
+let base_src = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n"
+
+let moved_src = "// a comment that moves every offset below\n\nfn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n"
+
+/// `stmt`'s function without its declared result: a rewrite that keeps the
+/// statement's own offsets.
+fn unannotated(_ stmt: Stmt) -> Stmt {
+  match stmt {
+    SLet(e, r, name, ty, EFn(tps, tbs, params, _, eff, body)) => SLet(e, r, name, ty, EFn(tps, tbs, params, None, eff, body)),
+    other => other
+  }
+}
+
+/// `stmt` bound under `name`: an appended copy.
+fn renamed(stmt: Stmt, name: String) -> Stmt {
+  match stmt {
+    SLet(e, r, _, ty, expr) => SLet(e, r, name, ty, expr),
+    other => other
+  }
+}
+
+/// The stand-in passes' output for `stmts`.
+fn passes(_ stmts: Array[Stmt]) -> Array[Stmt] {
+  [
+    Array::get(stmts, at = 0),
+    unannotated(Array::get(stmts, at = 1)),
+    renamed(stmt = Array::get(stmts, at = 0), name = "f_copy")
+  ]
+}
+
+fn no_ints() -> Array[Int] {
+  []
+}
+
+fn no_keys() -> Array[String] {
+  []
+}
+
+fn lowest(_ stmt: Stmt) -> Int {
+  let mut low = -1
+  for off in stmt_located_offsets(stmt) {
+    if off >= 0 && (low < 0 || off < low) {
+      low = off
+    }
+  }
+  low
+}
+
+test "a record replays onto the same statements at other positions" {
+  let base = parsed(base_src)
+  let record = match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = passes(base)) {
+    Some(r) => r,
+    None => {
+      assert(false)
+      return ()
+    }
+  }
+  let (_, _, _, kinds, refs, _) = prelude_reuse_record_parts(record)
+  inspect(kinds, content = "[0, 1, 2]")
+  inspect(refs, content = "[0, 1, 0]")
+  let moved = parsed(moved_src)
+  // The comment moved both statements.
+  assert(lowest(Array::get(moved, at = 0)) > lowest(Array::get(base, at = 0)))
+  match prelude_reuse_replay(record = record, inputs = moved, keys = prelude_statement_keys(stmts = moved, row_offsets = no_ints(), row_keys = no_keys())) {
+    Some(outs) => {
+      // Exactly what the passes give for the moved program.
+      assert(outs == passes(moved))
+    },
+    None => assert(false)
+  }
+}
+
+test "an edited statement or a changed header does not replay" {
+  let base = parsed(base_src)
+  let record = match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = passes(base)) {
+    Some(r) => r,
+    None => {
+      assert(false)
+      return ()
+    }
+  }
+  let edited = parsed("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(3)\n}\n")
+  inspect(prelude_reuse_replay(record = record, inputs = edited, keys = prelude_statement_keys(stmts = edited, row_offsets = no_ints(), row_keys = no_keys())) is None, content = "true")
+  // A row the passes read for a statement is part of its key.
+  let anchor = lowest(Array::get(base, at = 1))
+  inspect(prelude_reuse_replay(record = record, inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = [
+    anchor
+  ], row_keys = ["Int"])) is None, content = "true")
+  let fewer = [Array::get(base, at = 0)]
+  inspect(prelude_reuse_replay(record = record, inputs = fewer, keys = prelude_statement_keys(stmts = fewer, row_offsets = no_ints(), row_keys = no_keys())) is None, content = "true")
+}
+
+test "a rewrite that brings in another statement's offsets is not recorded" {
+  let base = parsed(base_src)
+  // `g` rewritten to `f`'s body: its offsets are not `g`'s own, so moving it
+  // with `g` would be wrong once the two statements move apart.
+  let borrowed = match (Array::get(base, at = 0), Array::get(base, at = 1)) {
+    (SLet(_, _, _, _, f_expr), SLet(e, r, name, ty, _)) => SLet(e, r, name, ty, f_expr),
+    (_, other) => other
+  }
+  let outs = [Array::get(base, at = 0), borrowed]
+  inspect(prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = outs) is None, content = "true")
+}
+
+test "a record survives being stored" {
+  let base = parsed(base_src)
+  let record = match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = passes(base)) {
+    Some(r) => r,
+    None => {
+      assert(false)
+      return ()
+    }
+  }
+  let bytes = prelude_reuse_encode(record)
+  match prelude_reuse_decode(bytes) {
+    Some(back) => {
+      let moved = parsed(moved_src)
+      match prelude_reuse_replay(record = back, inputs = moved, keys = prelude_statement_keys(stmts = moved, row_offsets = no_ints(), row_keys = no_keys())) {
+        Some(outs) => assert(outs == passes(moved)),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+  // A truncated slot is no record.
+  let short = Bytes::new()
+  let mut i = 0
+  while i + 1 < Bytes::length(bytes) {
+    Bytes::push(short, value = Bytes::get(bytes, at = i))
+    i = i + 1
+  }
+  inspect(prelude_reuse_decode(short) is None, content = "true")
+}
+
+test "a statement's digest tells apart integers that agree modulo a hash prime" {
+  // 3147483647 - 1000000000 is 2147483647, the first hash's prime. Both are
+  // ten digits, so nothing else in the statement moves either.
+  let a = parsed("fn f() -> Int {\n  1000000000\n}\n")
+  let b = parsed("fn f() -> Int {\n  3147483647\n}\n")
+  let ka = Array::get(prelude_statement_keys(stmts = a, row_offsets = no_ints(), row_keys = no_keys()), at = 0)
+  let kb = Array::get(prelude_statement_keys(stmts = b, row_offsets = no_ints(), row_keys = no_keys()), at = 0)
+  inspect(prelude_reuse_key_digest(ka) == prelude_reuse_key_digest(kb), content = "false")
+  // A negative value is told apart from its magnitude.
+  let c = parsed("fn f() -> Int {\n  0 - 5\n}\n")
+  let d = parsed("fn f() -> Int {\n  0 - 6\n}\n")
+  inspect(prelude_reuse_key_digest(Array::get(prelude_statement_keys(stmts = c, row_offsets = no_ints(), row_keys = no_keys()), at = 0)) == prelude_reuse_key_digest(Array::get(prelude_statement_keys(stmts = d, row_offsets = no_ints(), row_keys = no_keys()), at = 0)), content = "false")
+}
+
