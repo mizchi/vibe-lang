@@ -1,0 +1,116 @@
+// #4037: the dot calls `obj.method(args)` whose receiver was still an
+// unsolved type variable when the call was checked -- an unannotated lambda
+// parameter, typically, which meets its type only when the enclosing call
+// unifies the lambda with its parameter
+// (`Array::fold(xs, init = 0, f = (acc, c) -> acc + c.size())`). Such a call
+// names no `T::method` yet, so nothing could compare its arguments with a
+// signature. Each one is recorded here and judged again by
+// `resolve_deferred_checks` (checker_deferred_method_call.vibe) once
+// the receiver has resolved. This file holds only the table, so the files
+// that reset or checkpoint per-run state can reach it without reaching the
+// checker.
+
+import @vibe/compiler/core {
+  Expr, Subst, Type, fresh_var, subst_apply
+}
+
+/// One pending dot call. `recv` is the receiver's variable; `callee` is the
+/// written `obj.method` and `obj` its receiver; `method_off` is the method
+/// name's offset and `call_off` the call's; `cell` is the call's placement
+/// cell, published only once the call is judged; `args` and `arg_tys` are the
+/// written arguments and the types they checked at, in written order; and
+/// `result` is the variable the call was typed with.
+export struct DeferredMethodCall {
+  recv: Int;
+  callee: Expr;
+  obj: Expr;
+  method: String;
+  method_off: Int;
+  call_off: Int;
+  cell: Array[Int];
+  args: Array[Expr];
+  arg_tys: Array[Type];
+  result: Int
+}
+
+/// An expression waits for its pending inputs before choosing a type and
+/// recording any lowering information.
+export struct DeferredExprCheck {
+  operands: Array[Int];
+  result: Int;
+  subject: String;
+  off: Int;
+  check: (Subst, Array[String]) -> (Type, Subst)
+}
+
+/// Calls and expressions using their results share evaluation order.
+export enum DeferredCheck {
+  DeferredMethod(DeferredMethodCall)
+  DeferredExpr(DeferredExprCheck)
+}
+
+/// The pending rows, in recording order. Reset per run, since variable ids
+/// restart.
+let deferred_checks: Array[DeferredCheck] = []
+
+/// Record `row` for a later judgement.
+export fn defer_method_call(_ row: DeferredMethodCall) -> Unit {
+  Array::push(deferred_checks, value = DeferredMethod(row))
+}
+
+/// Record the expression after the checks for its inputs.
+export fn defer_expr_check(operands: Array[Int], subject: String, off: Int, c: Int, check: (Subst, Array[String]) -> (Type, Subst)) -> (Type, Int) {
+  let (result, next) = fresh_var(c)
+  let row = DeferredExprCheck::{
+    operands: operands,
+    result: next - 1,
+    subject: subject,
+    off: off,
+    check: check
+  }
+  Array::push(deferred_checks, value = DeferredExpr(row))
+  (result, next)
+}
+
+/// Whether the current checker run has any pending checks.
+export fn has_deferred_checks() -> Bool {
+  Array::length(deferred_checks) > 0
+}
+
+/// Whether this variable still depends on a pending check.
+export fn deferred_result_pending(id: Int, s: Subst) -> Bool {
+  let mut i = Array::length(deferred_checks) - 1
+  while i >= 0 {
+    let result = match Array::get(deferred_checks, at = i) {
+      DeferredMethod(row) => row.result,
+      DeferredExpr(row) => row.result
+    }
+    match subst_apply(s = s, ty = CtVar(result)) {
+      CtVar(resolved_id) => if resolved_id == id {
+        return true
+      },
+      _ => ()
+    }
+    i = i - 1
+  }
+  false
+}
+
+/// A copy of the pending rows, for a check whose effects are rolled back.
+export fn deferred_checks_snapshot() -> Array[DeferredCheck] {
+  Array::slice(deferred_checks, start = 0, end = Array::length(deferred_checks))
+}
+
+/// Put back the rows `deferred_checks_snapshot` copied.
+export fn deferred_checks_restore(_ rows: Array[DeferredCheck]) -> Unit {
+  Array::truncate(deferred_checks, length = 0)
+  for row in rows {
+    Array::push(deferred_checks, value = row)
+  }
+  ()
+}
+
+/// Drop every pending row: a new run numbers its variables from zero.
+export fn reset_deferred_checks() -> Unit {
+  Array::truncate(deferred_checks, length = 0)
+}
