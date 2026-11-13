@@ -59,6 +59,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_load,
   emit_i64_store,
   emit_rc_dup_guarded,
+  emit_rc_path_mark,
   emit_shift_count_clamp,
   emit_str_ref_slot,
   expr_tag,
@@ -99,6 +100,7 @@ import @vibe/compiler/codegen/common_base {
 
 import @vibe/compiler/codegen/common_extractors {
   array_contains_str,
+  array_count_str,
   emit_assignop_op,
   emit_memory_copy,
   find_catchall_idx,
@@ -1005,8 +1007,10 @@ fn compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], nex
 /// #2389 per-path release: this occurrence of `name` is one the Perceus plan
 /// recorded as spending the binding's initial reference (PaConsumeMark, keyed
 /// by the occurrence's source offset), so the path that runs it has moved the
-/// value out -- set the binding's flag local, and the guarded scope-end drop
-/// in the `let` lowering stands down. A mark whose binding has no live flag
+/// value out -- count one in the binding's flag local, and the guarded
+/// scope-end drop in the `let` lowering releases one reference fewer
+/// (`emit_rc_path_drop`; a #1980 merged binding marks every occurrence a dup
+/// was planned for, so the count is what the path consumed). A mark whose binding has no live flag
 /// local here (a lambda body compiled in its own CompileCtx) emits nothing:
 /// the drop then fires on a path that also consumed, which is the shape the
 /// planner declines by refusing any binding with an unmarkable occurrence.
@@ -1036,8 +1040,7 @@ fn ce_mark_path_consume(buf: Bytes, expr: Expr, name: String, ctx: CompileCtx) -
           }
         }
         if slot >= 0 {
-          emit_i64_const(buf = buf, value = 1)
-          emit_local_set(buf = buf, idx = slot)
+          emit_rc_path_mark(buf = buf, flag = slot, counted = array_count_str(arr = ctx.rc_path_drop_names, s = name) > 1)
         } else {
           ()
         }
