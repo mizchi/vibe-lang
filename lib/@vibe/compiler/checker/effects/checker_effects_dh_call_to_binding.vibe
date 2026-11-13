@@ -75,6 +75,7 @@ import ./checker_effects_mutability_expr_into.vibe {
 import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects,
   effect_name_of_op,
+  entry_host_provided_effects,
   erased_arg_kept_marker,
   erased_iife_marker,
   erased_reads_binder,
@@ -925,7 +926,20 @@ export fn optional_grade_errors(fn_name: String, labels: Array[String]) -> Array
   while i < Array::length(labels) {
     let label = Array::get(labels, at = i)
     if authority_is_optional(label) && !is_instantiate_authority(label) {
-      Array::push(errors, value = EEOptionalGradeNotCapability(fn_name, label))
+      // An `extern effect` IS host-provided; what is missing is the optional
+      // grade for one (#4082), and the refusal says so.
+      let base = row_label_base(effect_name_of_op(strip_authority_grade(label)))
+      let mut extern_effect = false
+      for host in entry_host_provided_effects {
+        if host == base {
+          extern_effect = true
+        }
+      }
+      if extern_effect {
+        Array::push(errors, value = EEOptionalGradeExternEffect(fn_name, label))
+      } else {
+        Array::push(errors, value = EEOptionalGradeNotCapability(fn_name, label))
+      }
     } else {
       ()
     }

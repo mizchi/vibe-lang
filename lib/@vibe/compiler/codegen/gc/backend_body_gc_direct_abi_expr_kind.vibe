@@ -778,6 +778,60 @@ export fn emit_gc_direct_func_type(buf: Bytes, param_refs: Array[Bool], return_r
   }
 }
 
+/// #4082: the `extern effect` and operation an ADR-0124 helper name encodes,
+/// or `("", "")` for any other name. The helper prefix is
+/// `__xe<length><effect>_`, the effect spelled with an uppercase letter as `_`
+/// plus its lowercase and `_` doubled; the raw stub of operation `op` is
+/// `<prefix>raw_<prefix>op_<op>`.
+fn gc_extern_effect_of_helper(_ name: String) -> (String, String) {
+  let n = String::length(name)
+  if !String::starts_with(name, prefix = "__xe") {
+    ("", "")
+  } else {
+    let mut i = 4
+    let mut len = 0
+    let mut digits = 0
+    while i < n && String::byte_at(name, at = i) >= '0' && String::byte_at(name, at = i) <= '9' {
+      len = len * 10 + (String::byte_at(name, at = i) - '0')
+      i = i + 1
+      digits = digits + 1
+    }
+    let mut effect = ""
+    let mut produced = 0
+    let mut ok = digits > 0
+    while ok && produced < len {
+      if i + 1 < n && String::byte_at(name, at = i) == '_' {
+        let c = String::byte_at(name, at = i + 1)
+        if c == '_' {
+          effect = String::concat(effect, "_")
+        } else if c >= 'a' && c <= 'z' {
+          effect = String::concat(effect, String::from_byte(c - 32))
+        } else {
+          ok = false
+        }
+        i = i + 2
+      } else if i < n {
+        effect = String::concat(effect, String::from_byte(String::byte_at(name, at = i)))
+        i = i + 1
+      } else {
+        ok = false
+      }
+      produced = produced + 1
+    }
+    if !ok || i >= n || String::byte_at(name, at = i) != '_' {
+      ("", "")
+    } else {
+      let prefix = String::substring(name, start = 0, end = i + 1)
+      let marker = String::concat("raw_", String::concat(prefix, "op_"))
+      if String::starts_with(String::substring(name, start = i + 1, end = n), prefix = marker) {
+        (effect, String::substring(name, start = i + 1 + String::length(marker), end = n))
+      } else {
+        (effect, "")
+      }
+    }
+  }
+}
+
 /// #805 (ADR-0072): inline wasm (`fn f(..) -> Int = wasm "..."`, carried as
 /// the parser-internal `%wasm("<WAT>")` marker body) is LINEAR-BACKEND ONLY —
 /// the WAT text is written against the linear backend's raw 62-bit tagged i64
@@ -791,7 +845,19 @@ export fn gc_reject_inline_wasm(_ stmts: Array[Stmt]) -> Unit with Exception {
         EFn(_, _, _, _, _, iw_body) => match iw_body {
           ECall(iw_cal, iw_args, _, _) => match iw_cal {
             EIdent(iw_cn, _) => if iw_cn == "%wasm" && Array::length(iw_args) == 1 {
-              throw("inline wasm fn '\{iw_name}' (= wasm \"...\") is linear-backend only; the wasm-gc backend does not support it (#805)")
+              let (xe_effect, xe_op) = gc_extern_effect_of_helper(iw_name)
+              if xe_effect != "" {
+                // #4082: the stub ADR-0124 binds an `extern effect` operation
+                // to is inline wasm too; name the operation, not the stub.
+                let op = if xe_op != "" {
+                  "`\{xe_effect}::\{xe_op}`, an operation of "
+                } else {
+                  "an operation of "
+                }
+                throw("build this program on the default linear backend: it calls \{op}`extern effect \{xe_effect}`, which the wasm-gc backend does not compile yet (#4082)")
+              } else {
+                throw("inline wasm fn '\{iw_name}' (= wasm \"...\") is linear-backend only; the wasm-gc backend does not support it (#805)")
+              }
             } else {
               ()
             },
