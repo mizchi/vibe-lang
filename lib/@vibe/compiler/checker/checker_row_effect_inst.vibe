@@ -29,6 +29,7 @@ import @vibe/compiler/core {
   is_alias_constructor,
   is_effect_inst_label,
   resolve_type_constructor_args,
+  row_items,
   row_may_have_effect_inst,
   strip_published_formal_suffixes,
   strip_published_row_marks,
@@ -103,10 +104,6 @@ import ./checker_builtin_arg_head_rest.vibe {
   inst_struct_field_ty
 }
 
-import @vibe/compiler/checker/effects {
-  row_items_top_level
-}
-
 import ./checker_throw_kind_of_type.vibe {
   railway_expr_off
 }
@@ -137,7 +134,7 @@ fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array
       let seen_bases = array_empty()
       let seen_labels = array_empty()
       let mut out = env
-      for raw in row_items_top_level(text) {
+      for raw in row_items(text) {
         let label = String::trim(raw)
         let bi = String::index_of(label, needle = "[")
         let base = if bi > 0 {
@@ -693,7 +690,7 @@ fn row_only_items_into(t: Type, formals: Array[(String, Int)], defs: Array[TypeD
       }
       row_only_items_into(t = ret, formals = formals, defs = defs, out = out)
       match row {
-        Some(text) => for raw in row_items_top_level(text) {
+        Some(text) => for raw in row_items(text) {
           let item = String::trim(raw)
           let bi = String::index_of(item, needle = "[")
           if bi > 0 && String::ends_with(item, suffix = "]") {
@@ -782,7 +779,7 @@ fn label_row_only_row(row: Option[String], items: Array[(String, Int)]) -> Optio
   match row {
     Some(text) => {
       let mut out = row
-      for raw in row_items_top_level(text) {
+      for raw in row_items(text) {
         let item = String::trim(raw)
         let bi = String::index_of(item, needle = "[")
         for labelled in items {
@@ -1064,7 +1061,7 @@ fn type_has_instantiated_callback_row(_ t: Type) -> Bool {
 /// checker's own provenance labels (`#param[0]`) do not count.
 fn row_names_instantiation(_ row: String) -> Bool {
   let mut found = false
-  for raw in row_items_top_level(row) {
+  for raw in row_items(row) {
     let label = String::trim(raw)
     if !String::starts_with(label, prefix = "#") && String::contains(label, needle = "[") {
       found = true
@@ -1452,7 +1449,7 @@ fn bind_field_effect_row(row: Option[String], read: (String) -> Array[Type], def
       let out: Array[String] = []
       let mut ns = s
       let mut nc = c
-      for raw in row_items_top_level(text) {
+      for raw in row_items(text) {
         let label = String::trim(raw)
         let items = read(label)
         let vouched = published_nominal_names(published_nominal_words(label))
@@ -1796,7 +1793,7 @@ fn fresh_unbound_var(s: Subst, c: Int) -> (Int, Int) {
 /// Does the row text write `name` with a type argument (`Box[Int]`)?
 fn row_writes_effect_instantiation(row: String, name: String) -> Bool {
   let mut found = false
-  for raw in row_items_top_level(row) {
+  for raw in row_items(row) {
     let label = String::trim(raw)
     let bi = String::index_of(label, needle = "[")
     if bi > 0 && label[0: bi] == name {
@@ -1839,7 +1836,7 @@ export fn effect_inst_labels(_ row: Option[String]) -> Array[EffectInst] {
   let out: Array[EffectInst] = []
   match row {
     Some(text) => if row_may_have_effect_inst(text) {
-      for raw in row_items_top_level(text) {
+      for raw in row_items(text) {
         match effect_inst_of_label(String::trim(raw)) {
           Some(inst) => Array::push(out, value = inst),
           None => ()
@@ -1896,7 +1893,7 @@ export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty:
       Some(text) => callback_row_instantiations(row = text, callee = callee, defs = defs),
       None => []
     }
-    for raw in row_items_top_level(row) {
+    for raw in row_items(row) {
       let name = String::trim(raw)
       let mut concrete = false
       for item in explicit {
@@ -2154,7 +2151,7 @@ fn effect_inst_function_row(_ binding: Option[Type]) -> Option[String] {
 fn effect_inst_row_has_bare(row: Option[String], name: String) -> Bool {
   let mut found = false
   match row {
-    Some(text) => for raw in row_items_top_level(text) {
+    Some(text) => for raw in row_items(text) {
       if String::trim(raw) == name {
         found = true
       }
@@ -2373,7 +2370,7 @@ fn row_names_effect(row: Option[String], eff: String) -> Bool {
   let mut found = false
   match row {
     Some(text) => {
-      for raw in row_items_top_level(text) {
+      for raw in row_items(text) {
         let label = String::trim(raw)
         let bi = String::index_of(label, needle = "[")
         if label == eff || (bi > 0 && label[0: bi] == eff) {
@@ -2464,7 +2461,7 @@ fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: Stri
     let lexical_row = !String::contains(arow, needle = "$") && match arg {
       EFn(tparams, _, _, _, Some(written), _) => Array::length(tparams) == 0 && row_names_instantiation(written),
       EIdent(name, _) => match env_lookup(env = env, name = String::concat("__param_marker__", name)) {
-        Some(CtNamed(marker, _)) => checker_string_array_has(items = row_items_top_level(arow), wanted = marker),
+        Some(CtNamed(marker, _)) => checker_string_array_has(items = row_items(arow), wanted = marker),
         _ => false
       },
       _ => false
@@ -2482,7 +2479,7 @@ fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: Stri
       let (eff, _) = resolved
       Array::push(label_effects, value = eff)
     }
-    for raw in row_items_top_level(arow) {
+    for raw in row_items(arow) {
       let item_text = String::trim(raw)
       let bracket = String::index_of(item_text, needle = "[")
       let covered = bracket > 0 && String::contains(item_text, needle = "$") && checker_string_array_has(items = label_effects, wanted = item_text[0: bracket])
@@ -2784,7 +2781,7 @@ fn strip_effect_inst_row(eff: Option[String], s: Subst, defs: Array[TypeDef]) ->
           Array::push(inferred, value = (name, ty))
         }
       }
-      for raw in row_items_top_level(row) {
+      for raw in row_items(row) {
         let label = String::trim(raw)
         if !is_effect_inst_label(label) && String::length(label) > 0 {
           let mut published = label

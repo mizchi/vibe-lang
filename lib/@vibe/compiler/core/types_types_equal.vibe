@@ -1984,6 +1984,53 @@ fn option_string_equal(left: Option[String], right: Option[String]) -> Bool {
   }
 }
 
+/// #3417: `text` split at the commas outside brackets and parentheses, each
+/// item trimmed. An empty item is kept, so the argument text of `Id[]` is one
+/// empty argument; `row_items` is the same split with empty items dropped.
+export fn split_top_level_commas(_ text: String) -> Array[String] {
+  top_level_comma_items(text = text, keep_empty = true)
+}
+
+/// #3417: a stored effect row's items, split at the commas that separate
+/// items, trimmed, with empty items dropped. A kind such as
+/// `Exception[(Int, Int) -> Int]` holds commas of its own, inside brackets,
+/// and stays one item.
+export fn row_items(_ row: String) -> Array[String] {
+  top_level_comma_items(text = row, keep_empty = false)
+}
+
+fn top_level_comma_items(text: String, keep_empty: Bool) -> Array[String] {
+  let out = array_empty()
+  let n = String::length(text)
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(text, at = i)
+    if c == 40 || c == 91 {
+      depth = depth + 1
+    } else if c == 41 || c == 93 {
+      depth = depth - 1
+    } else if c == 44 && depth == 0 {
+      push_comma_item(out = out, item = String::trim(String::substring(text, start = start, end = i)), keep_empty = keep_empty)
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  push_comma_item(out = out, item = String::trim(String::substring(text, start = start, end = n)), keep_empty = keep_empty)
+  out
+}
+
+fn push_comma_item(out: Array[String], item: String, keep_empty: Bool) -> Unit {
+  if keep_empty || String::length(item) > 0 {
+    Array::push(out, value = item)
+  } else {
+    ()
+  }
+}
+
 /// #626 criterion 3: an effect annotation `with A + B` is an unordered SET,
 /// but `collect_effect_names` joins it source-order into one string ("A, B"),
 /// so `{ A, B }` and `{ B, A }` serialize to different strings. Split the
