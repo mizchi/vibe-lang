@@ -1,0 +1,70 @@
+// #3417: the checker reads stored rows with core's bracket-aware `row_items`,
+// so an exception kind the checker spells from a function type,
+// `Exception[(Int, Int) -> Int]`, is one label. Each row below used to be cut
+// at every comma. That broke the kind into `Exception[(Int` and
+// `Int) -> Int]`. Deduplicating those fragments dropped part of a second kind
+// (the first two tests), and the readers listed the fragments as labels (the
+// rest).
+
+import @vibe/compiler/core {
+  Subst, Type, resolve_effect_opt_preserving_open
+}
+
+import @vibe/compiler/checker {
+  merge_value_effect_provenance
+}
+
+import @vibe/compiler/checker/effects {
+  effect_row_parse
+}
+
+import @vibe/compiler/checker/type_relations {
+  plain_row_labels, row_labels
+}
+
+/// A function `() -> Int` performing `row`.
+fn thunk(_ row: String) -> Type {
+  CtFn([], CtInt, Some(row))
+}
+
+/// The row a function type performs, or `-`.
+fn row_of(_ ty: Type) -> String {
+  match ty {
+    CtFn(_, _, Some(row)) => row,
+    _ => "-"
+  }
+}
+
+/// Each label wrapped in `<>`.
+fn shown(_ labels: Array[String]) -> String {
+  let parts: Array[String] = []
+  for label in labels {
+    Array::push(parts, value = "<" + label + ">")
+  }
+  String::join(parts, sep = "")
+}
+
+test "publishing a scheme keeps two function kinds whole" {
+  let two = "Exception[(Int, Int) -> Int], Exception[(String, Int) -> Int]"
+  // Was `Exception[(Int, Int) -> Int], Exception[(String`.
+  match resolve_effect_opt_preserving_open(s = SubstEmpty, eff = Some(two)) {
+    Some(row) => inspect(row, content = "Exception[(Int, Int) -> Int], Exception[(String, Int) -> Int]"),
+    None => assert(false)
+  }
+}
+
+test "joining value rows keeps the actual function kind whole" {
+  let merged = merge_value_effect_provenance(expected = thunk("Exception[(Int, Int) -> Int]"), actual = thunk("Exception[(String, Int) -> Int]"), s = SubstEmpty)
+  // Was `Exception[(Int, Int) -> Int], Exception[(String`.
+  inspect(row_of(merged), content = "Exception[(Int, Int) -> Int], Exception[(String, Int) -> Int]")
+}
+
+test "row readers list a function kind as one label" {
+  let row = "IO, Exception[(Int, Int) -> Int]"
+  match effect_row_parse(Some(row)) {
+    Some(labels) => inspect(shown(labels), content = "<IO><Exception[(Int, Int) -> Int]>"),
+    None => assert(false)
+  }
+  inspect(shown(row_labels(Some(row))), content = "<IO><Exception[(Int, Int) -> Int]>")
+  inspect(shown(plain_row_labels("IO, #region_3, Exception[(Int, Int) -> Int]")), content = "<IO><Exception[(Int, Int) -> Int]>")
+}
