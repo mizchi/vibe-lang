@@ -62,7 +62,12 @@ import @vibe/compiler/checker/patterns {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_arms_bind, retention_assigned_values_into, retention_decl_value, retention_pat_names_into, retention_result_items
+  retention_arms_bind,
+  retention_assigned_values_into,
+  retention_decl_value,
+  retention_module_env_cell,
+  retention_pat_names_into,
+  retention_result_items
 }
 
 import ./checker_region_call_result.vibe {
@@ -1158,6 +1163,73 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
 /// asks for that: every lambda's provenance row reading it too cost ~27 MB
 /// of the self-compile, over the heap gate.
 fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
+  // #4091: a value whose type is a scalar is copied, whatever it is read
+  // from (`state.tag`, `count(outer)`, `outer_int`), so it holds nothing.
+  if deep && held_value_is_scalar(value = body, params = params) {
+    ()
+  } else {
+    collect_result_params_at(body = body, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
+  }
+}
+
+/// #4091: whether a value a function's result reads is a scalar by its
+/// static type: a parameter annotated with a scalar type, or a value every
+/// name of which the module's scope binds (no parameter or binder of the
+/// body spells it), typed there as `literal_item_is_scalar` types a literal's
+/// field -- a projection by the struct's declaration, a call by its declared
+/// result. A value whose type is not established that way is not a scalar.
+fn held_value_is_scalar(value: Expr, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  match value {
+    EIdent(name, _) => match held_param_annotation(name = name, params = params) {
+      Some(Some(TyName(tname))) => tname == "Int" || tname == "Int32" || tname == "UInt32" || tname == "Double" || tname == "Float" || tname == "Bool" || tname == "Char" || tname == "String" || tname == "Bytes" || tname == "Unit",
+      Some(_) => false,
+      None => held_module_value_is_scalar(value)
+    },
+    EDot(_, _, _, _) => held_module_value_is_scalar(value),
+    ECall(_, _, _, _) => held_module_value_is_scalar(value),
+    _ => false
+  }
+}
+
+/// The annotation of the parameter spelled `name`: `Some(None)` for one with
+/// none, `None` when no parameter is spelled so.
+fn held_param_annotation(name: String, params: Array[(String, Option[TypeExpr])]) -> Option[Option[TypeExpr]] {
+  let mut out: Option[Option[TypeExpr]] = None
+  for p in params {
+    if p.0 == name || p.0 == String::concat(name, "?") {
+      out = Some(p.1)
+    }
+  }
+  out
+}
+
+fn held_module_value_is_scalar(_ value: Expr) -> Bool {
+  if Array::length(retention_module_env_cell) == 0 {
+    false
+  } else {
+    let names: Array[String] = []
+    held_value_names_into(e = value, out = names)
+    let mut module_only = true
+    for n in names {
+      module_only = module_only && !checker_string_array_has(items = held_result_binders, wanted = n)
+    }
+    module_only && literal_item_is_scalar(item = value, env = Array::get(retention_module_env_cell, at = 0))
+  }
+}
+
+fn held_value_names_into(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EIdent(n, _) => Array::push(out, value = n),
+    _ => {
+      for child in expr_children(e) {
+        held_value_names_into(e = child, out = out)
+      }
+      ()
+    }
+  }
+}
+
+fn collect_result_params_at(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
   match body {
     EIdent(name, _) => {
       let mut known = false

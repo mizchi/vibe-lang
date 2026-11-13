@@ -61,6 +61,7 @@ import ./checker_merge_capture_provenance.vibe {
   expression_aliases_outer_binding,
   held_result_param_indices,
   literal_item_is_inert,
+  literal_item_is_scalar,
   type_can_carry_region
 }
 
@@ -737,6 +738,50 @@ fn content_alias_names(value: Expr, env: TypeEnv, facts: ContentFacts) -> Array[
 }
 
 fn content_alias_names_into(value: Expr, env: TypeEnv, facts: ContentFacts, out: Array[String]) -> Unit {
+  if content_value_is_scalar(value = value, env = env, facts = facts) {
+    ()
+  } else {
+    content_alias_names_at(value = value, env = env, facts = facts, out = out)
+  }
+}
+
+/// #4091: whether `value` is a scalar by its static type -- a name, a field
+/// of one, a call, typed in the environment as `literal_item_is_scalar`
+/// types a literal's field -- when no binder of the scope spells a name it
+/// reads, so the environment's type is its. A scalar is copied and holds no
+/// storage. A value typed no other way is not a scalar.
+fn content_value_is_scalar(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
+  match value {
+    EIdent(_, _) => content_env_scalar(value = value, env = env, facts = facts),
+    EDot(_, _, _, _) => content_env_scalar(value = value, env = env, facts = facts),
+    ECall(_, _, _, _) => content_env_scalar(value = value, env = env, facts = facts),
+    _ => false
+  }
+}
+
+fn content_env_scalar(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
+  let names: Array[String] = []
+  content_value_names_into(e = value, out = names)
+  let mut unshadowed = true
+  for n in names {
+    unshadowed = unshadowed && content_resolve(name = n, facts = facts) == n
+  }
+  unshadowed && literal_item_is_scalar(item = value, env = env)
+}
+
+fn content_value_names_into(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EIdent(n, _) => Array::push(out, value = n),
+    _ => {
+      for child in expr_children(e) {
+        content_value_names_into(e = child, out = out)
+      }
+      ()
+    }
+  }
+}
+
+fn content_alias_names_at(value: Expr, env: TypeEnv, facts: ContentFacts, out: Array[String]) -> Unit {
   match value {
     EIdent(n, _) => if n != "_" {
       let id = content_resolve(name = n, facts = facts)
