@@ -24,6 +24,7 @@ import @vibe/compiler/core {
   is_exception_label,
   pattern_ctor_base_name,
   resolve_type_alias_params,
+  row_items,
   strip_published_row_marks
 }
 
@@ -75,11 +76,11 @@ import ./checker_effects_throw_payload_kind.vibe {
 /// #2964: every missing label is the ERASED exception (`Exception` /
 /// `Exception::Throw`).
 fn missing_is_erased_exception_only(_ missing: String) -> Bool {
-  let parts = String::split(missing, sep = ",")
+  let parts = row_items(missing)
   let mut ok = Array::length(parts) > 0
   let mut i = 0
   while i < Array::length(parts) {
-    let p = String::trim(Array::get(parts, at = i))
+    let p = Array::get(parts, at = i)
     // #1963: the exception policy's predicates, not the spelling -- the
     // legacy `Error` alias is the same erased exception.
     if !is_exception_label(p) || String::length(exception_label_kind(p)) > 0 {
@@ -94,12 +95,12 @@ fn missing_is_erased_exception_only(_ missing: String) -> Bool {
 
 /// #2964: the declared row names a kinded exception and no erased one.
 fn declared_is_kinded_exception(_ declared: String) -> Bool {
-  let parts = String::split(declared, sep = ",")
+  let parts = row_items(declared)
   let mut kinded = false
   let mut erased = false
   let mut i = 0
   while i < Array::length(parts) {
-    let p = String::trim(Array::get(parts, at = i))
+    let p = Array::get(parts, at = i)
     if !is_exception_label(p) {
       ()
     } else if String::length(exception_label_kind(p)) > 0 {
@@ -110,6 +111,20 @@ fn declared_is_kinded_exception(_ declared: String) -> Bool {
     i = i + 1
   }
   kinded && !erased
+}
+
+/// #3417: the first kind in `offending`, spelled the way a reader writes it
+/// (`row_as_source`), and the alias declarations that spelling needs ("" when
+/// none). `offending` is a stored row, so a kind such as
+/// `Exception[(Int, Int) -> Int]` is one item, not two.
+fn first_offending_kind(_ offending: String) -> (String, String) {
+  let items = row_items(offending)
+  let first = if Array::length(items) > 0 {
+    Array::get(items, at = 0)
+  } else {
+    ""
+  }
+  (row_as_source(first), row_unspellable_kind_decls(first))
 }
 
 export fn effect_error_to_string(_ err: EffectError) -> String {
@@ -186,8 +201,8 @@ export fn effect_error_to_string(_ err: EffectError) -> String {
       } else {
         binder
       }
-      let first = Array::get(String::split(offending, sep = ","), at = 0)
-      let edit = String::concat("write `", String::concat(String::trim(first), String::concat("::Throw(", String::concat(name, ")` to catch it"))))
+      let (first, decls) = first_offending_kind(offending)
+      let edit = String::concat(decls, String::concat("write `", String::concat(first, String::concat("::Throw(", String::concat(name, ")` to catch it")))))
       let why = String::concat(": the erased arm `Exception::Throw(", String::concat(name, String::concat(")` reads `", String::concat(name, String::concat("` as the thrown message, a `String`, and the kind is not carried at run time, but in ", String::concat(where_, String::concat(" the handled body raises { ", String::concat(offending, " }"))))))))
       let more = "\nhint: a kinded arm binds the payload at its own type; for several kinds, nest one handle per kind, or leave the payload unread (`Exception::Throw(_)`), which catches every kind. A callee declared with the erased `with Exception` raises the kinds its body throws"
       let body = String::concat(edit, String::concat(why, more))
@@ -198,17 +213,17 @@ export fn effect_error_to_string(_ err: EffectError) -> String {
       }
     },
     EEErasedValueOtherKind(fname, value, offending, off) => {
-      let first = String::trim(Array::get(String::split(offending, sep = ","), at = 0))
+      let (first, decls) = first_offending_kind(offending)
       let where_ = erased_error_place(fname)
-      let edit = String::concat("declare `", String::concat(value, String::concat("` `with ", String::concat(first, "` instead of the erased `with Exception`, and the parameter, annotation or field it is passed to with that kind (or a row variable alone, `with e`, with no erased `Exception` beside it)"))))
+      let edit = String::concat(decls, String::concat("declare `", String::concat(value, String::concat("` `with ", String::concat(first, "` instead of the erased `with Exception`, and the parameter, annotation or field it is passed to with that kind (or a row variable alone, `with e`, with no erased `Exception` beside it)")))))
       let why = String::concat(": the row of `", String::concat(value, String::concat("` is the erased `with Exception`, but it raises { ", String::concat(offending, String::concat(" }, and in ", String::concat(where_, " it is used as a value whose row does not name that kind; a function value typed with the erased row raises only messages (`String`) to the code that calls it, so an erased arm `Exception::Throw(m)` would read the payload as a `String`"))))))
       let more = String::concat("\nhint: a call `", String::concat(value, String::concat("(..)` and an unannotated alias `let f = ", String::concat(value, String::concat("` keep the kinds, and a receiver declared `with Exception + ", String::concat(first, String::concat("` takes `", String::concat(value, "` as it is"))))))))
       erased_error_at(body = String::concat(edit, String::concat(why, more)), off = off)
     },
     EEErasedClosureOtherKind(fname, offending, off) => {
-      let first = String::trim(Array::get(String::split(offending, sep = ","), at = 0))
+      let (first, decls) = first_offending_kind(offending)
       let where_ = erased_error_place(fname)
-      let edit = String::concat("write `with ", String::concat(first, "` in this closure's function type (or throw a `String`)"))
+      let edit = String::concat(decls, String::concat("write `with ", String::concat(first, "` in this closure's function type (or throw a `String`)")))
       let why = String::concat(": its row is the erased `with Exception`, which raises only messages (`String`) to the code that calls the closure, but in ", String::concat(where_, String::concat(" its body raises { ", String::concat(offending, " }"))))
       let more = "\nhint: the kind is not carried at run time, so an erased arm `Exception::Throw(m)` around a call of the closure would read the payload as a `String`; the row is the parameter's, the annotation's or the field's the closure is written for, or its own"
       erased_error_at(body = String::concat(edit, String::concat(why, more)), off = off)
