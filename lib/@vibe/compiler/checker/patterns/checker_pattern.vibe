@@ -9,6 +9,8 @@ import @vibe/compiler/core {
   env_lookup,
   find_enum_typedef,
   find_typedef,
+  opaque_type_name_of,
+  opaque_type_refusal,
   pattern_ctor_base_name,
   pattern_ctor_owner,
   type_to_string
@@ -541,6 +543,25 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           bind_subs(0, env)
         },
         None => {
+          // #4115: a constructor of an opaque enum is not visible outside its
+          // package, so the pattern names nothing -- refused rather than left
+          // to match nothing.
+          let qualifier = pattern_ctor_owner(raw_name)
+          let opaque = match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
+            Some(n) => Some(n),
+            None => if qualifier == "" {
+              None
+            } else {
+              match find_typedef(defs = defs, name = qualifier) {
+                Some(TDOpaque(n, _, _)) => Some(n),
+                _ => None
+              }
+            }
+          }
+          match opaque {
+            Some(n) => Array::push(errors, value = opaque_type_refusal(name = n, what = "its constructor `" + name + "` is not visible here")),
+            None => ()
+          }
           let splen = Array::length(sub_pats)
           let rec bind_unknown: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
             if i >= splen {
@@ -626,7 +647,12 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
       }
     },
     POr(left, _right) => check_pattern(pat = left, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors),
-    PStruct(_, fields) => {
+    PStruct(sname, fields) => {
+      // #4115: a struct pattern reads the fields of what it destructures.
+      match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
+        Some(n) => Array::push(errors, value = opaque_type_refusal(name = n, what = "it cannot be destructured here (`" + sname + "::{ .. }`)")),
+        None => ()
+      }
       let flen = Array::length(fields)
       let rec bind_fields: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
         if i >= flen {

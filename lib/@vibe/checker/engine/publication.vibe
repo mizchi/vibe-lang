@@ -37,7 +37,7 @@ import ./type_members.vibe {
   engine_typedef_projection_name
 }
 import @vibe/ast {
-  TypeExpr, TypeExpr::is_array_of_int, trait_ref_name, type_param_arity, type_param_name
+  ImportKind, TypeExpr, TypeExpr::is_array_of_int, trait_ref_name, type_param_arity, type_param_name
 }
 import @vibe/checker/transport/env {
   encode_checked_environment
@@ -747,7 +747,7 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
   let value_surface = engine_interface_public_value_names(stmts)
   let trait_surface = engine_interface_public_trait_names(stmts = stmts, checked_env = publication_env)
   let type_surface = engine_interface_public_type_names(stmts = stmts, checked_env = publication_env)
-  let published = engine_bind_type_reference_definitions(value_surface = value_surface, publication_env = publication_env, published = env_preserve_type_definition_origins(env = engine_restrict_env_to_export_surface(value_surface = value_surface, trait_surface = trait_surface, type_surface = type_surface, env = publication_env, strict = strict), source = publication_env))
+  let published = engine_seal_opaque_reexports(env = engine_bind_type_reference_definitions(value_surface = value_surface, publication_env = publication_env, published = env_preserve_type_definition_origins(env = engine_restrict_env_to_export_surface(value_surface = value_surface, trait_surface = trait_surface, type_surface = type_surface, env = publication_env, strict = strict), source = publication_env)), opaque = engine_opaque_reexport_names(stmts))
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
@@ -785,6 +785,122 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
   }
   env_with_show_wrapper_facts(env = engine_bind_erased_kinds_markers(publication_env = publication_env, published = engine_bind_retention_summary_markers(publication_env = publication_env, published = engine_bind_param_name_markers(stmts = stmts, publication_env = publication_env, published = published_env))), wrappers = exported_wrappers, unknown = exported_unknown)
 }
+/// #4115: the public spellings this module re-exports as `opaque T`.
+fn engine_opaque_reexport_names(_ stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SReExport(_, items) => for item in items {
+        match item.kind {
+          Some(ImportOpaque) => Array::push(out, value = match item.alias {
+            Some(local) => local,
+            None => item.name
+          }),
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// #4115: a sealed declaration's identity -- the type a value of it has, so
+/// an importer's annotation unifies with what the package's functions
+/// return. `None` for an alias: its values already have the target type, so
+/// withholding the definition would hide nothing.
+fn engine_opaque_identity(_ def: TypeDef) -> Option[(String, Array[String], Type)] {
+  match def {
+    TDStruct(name, _, _, params) => Some((name, params, if Array::length(params) == 0 {
+      CtStruct(name)
+    } else {
+      CtNamed(name, for param in params {
+        CtNamed(param, [])
+      })
+    })),
+    TDEnum(name, params, _) => Some((name, params, if Array::length(params) == 0 {
+      CtEnum(name)
+    } else {
+      CtNamed(name, for param in params {
+        CtNamed(param, [])
+      })
+    })),
+    _ => None
+  }
+}
+
+/// #4115: publish every `opaque T` re-export as a withheld definition. The
+/// struct's fields or the enum's variants leave the published environment,
+/// wherever they appear (a transparent type's closure carries them too), and
+/// so do the enum's constructor bindings. An importer keeps the name and the
+/// identity; constructing, reading or destructuring it is refused because
+/// nothing it could use is published.
+fn engine_seal_opaque_reexports(env: TypeEnv, opaque: Array[String]) -> TypeEnv {
+  if Array::length(opaque) == 0 {
+    env
+  } else {
+    let constructors: Array[String] = []
+    for def in env_type_defs(env) {
+      match def {
+        TDEnum(name, _, variants) => if contains_str(arr = opaque, target = name) {
+          for variant in variants {
+            Array::push(constructors, value = String::concat(name, String::concat("::", variant.0)))
+          }
+        } else (),
+        _ => ()
+      }
+    }
+    engine_seal_env(env = env, opaque = opaque, constructors = constructors)
+  }
+}
+
+fn engine_seal_defs(defs: Array[TypeDef], opaque: Array[String]) -> Array[TypeDef] {
+  for def in defs {
+    match engine_opaque_identity(def) {
+      Some((name, params, identity)) => if contains_str(arr = opaque, target = name) {
+        TDOpaque(name, params, identity)
+      } else {
+        def
+      },
+      None => def
+    }
+  }
+}
+
+fn engine_seal_env(env: TypeEnv, opaque: Array[String], constructors: Array[String]) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => {
+      let sealed = engine_seal_env(env = rest, opaque = opaque, constructors = constructors)
+      if contains_str(arr = constructors, target = name) {
+        sealed
+      } else {
+        EnvBind(name, binding, sealed)
+      }
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, engine_seal_env(env = rest, opaque = opaque, constructors = constructors), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, engine_seal_env(env = rest, opaque = opaque, constructors = constructors)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, engine_seal_env(env = rest, opaque = opaque, constructors = constructors)),
+    EnvTypeDefs(defs, selectable, rest) => EnvTypeDefs(engine_seal_defs(defs = defs, opaque = opaque), selectable, engine_seal_env(env = rest, opaque = opaque, constructors = constructors)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, engine_seal_env(env = rest, opaque = opaque, constructors = constructors)),
+    EnvFlat(bindings) => {
+      let kept: Array[(String, EnvValueBinding)] = []
+      for row in bindings {
+        if contains_str(arr = constructors, target = row.0) {
+          ()
+        } else {
+          Array::push(kept, value = row)
+        }
+      }
+      EnvFlat(kept)
+    },
+    // The index is acceleration state over `rest`; dropping it keeps the
+    // chain authoritative (see the same arm of the export restriction).
+    EnvCached(_, _, rest) => engine_seal_env(env = rest, opaque = opaque, constructors = constructors),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, engine_seal_env(env = rest, opaque = opaque, constructors = constructors))
+  }
+}
+
 /// #3601: the kinds other than the message each published function's erased
 /// `with Exception` row lets out, for an importer that calls it. A function
 /// of this module carries what its effect check charged; a re-exported one

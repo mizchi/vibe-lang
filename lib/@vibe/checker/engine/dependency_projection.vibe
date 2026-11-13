@@ -256,7 +256,10 @@ fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Ar
             })),
             TDAlias(_, params, target) => TDAlias(local_name, params, target),
             TDEffect(_, ops, params, kinds, owner) => TDEffect(local_name, ops, params, kinds, owner),
-            TDEffectSet(_, members) => TDEffectSet(local_name, members)
+            TDEffectSet(_, members) => TDEffectSet(local_name, members),
+            TDOpaque(_, params, _) => TDAlias(local_name, params, CtNamed(name, for param in params {
+              CtNamed(param, array_empty())
+            }))
           }
           Array::push(selected, value = alias_def)
         } else {
@@ -672,7 +675,9 @@ fn engine_typedef_payload_types(_ def: TypeDef) -> (Array[String], Array[Type]) 
       }
       (params, tys)
     },
-    TDEffectSet(_, _) => (array_empty(), tys)
+    TDEffectSet(_, _) => (array_empty(), tys),
+    // #4115: a withheld definition has no payload to interpret.
+    TDOpaque(_, params, _) => (params, tys)
   }
 }
 /// #3026, the declaration half: importing a TYPE brings its declaration and,
@@ -1162,7 +1167,8 @@ fn engine_typedef_identity(_ def: TypeDef) -> Type {
     // declaration, as the interface fingerprint already treats them.
     TDEffectSet(name, members) => CtNamed(String::concat("#typeid.effectset.", name), for m in engine_interface_sorted_unique(members) {
       CtNamed(m, array_empty())
-    })
+    }),
+    TDOpaque(name, params, _) => CtNamed(String::concat("#typeid.opaque.", name), engine_identity_formals(params))
   }
 }
 /// The bare names `ty` may refer to a declaration by: every nominal head, and
@@ -1245,7 +1251,8 @@ fn engine_typedef_reference_names(_ def: TypeDef) -> Array[String] {
         }
         mi = mi + 1
       }
-    }
+    },
+    TDOpaque(_, _, _) => ()
   }
   out
 }

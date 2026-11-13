@@ -80,6 +80,7 @@ import @vibe/compiler/contract {
   extract_require_pins,
   parse_contract_program,
   parse_contract_program_spans,
+  parse_contract_program_spans_opaque_at,
   vpkg_contract_effects_prefix,
   vpkg_contract_effects_sibling_slot,
   vpkg_shared_import_marker,
@@ -2213,6 +2214,10 @@ struct ContractPlan {
   original: String;
   decls: Array[(String, String)];
   opaque_names: Array[(String, Array[String])];
+  /// #4115: the names among `opaque_names` written `opaque type`, which the
+  /// facade seals. A bodyless `type T` only forward-declares a type whose
+  /// definition (constructors included) stays public.
+  sealed_names: Array[String];
   extra: Array[Stmt];
   stmt_at: Array[Int];
   src_starts: Array[Int];
@@ -2256,7 +2261,19 @@ fn contract_plan(path: String, source: String) -> ContractPlan with Env + Except
   // `lex_with_offsets`, because the declaration positions below need byte
   // offsets and `stmt_at` records token indices.
   let (src_tokens, src_starts, _src_ends) = lex_with_offsets(source)
-  let (decls_raw, opaque_names, extra, stmt_at, _decl_at) = parse_contract_program_spans(src_tokens)
+  let (decls_raw, opaque_names, extra, stmt_at, _decl_at, opaque_at) = parse_contract_program_spans_opaque_at(src_tokens)
+  let sealed_names: Array[String] = []
+  let mut oi = 0
+  while oi < Array::length(opaque_names) && oi < Array::length(opaque_at) {
+    let written_opaque = match Array::get(src_tokens, at = Array::get(opaque_at, at = oi)) {
+      TIdent(head) => head == "opaque",
+      _ => false
+    }
+    if written_opaque {
+      Array::push(sealed_names, value = Array::get(opaque_names, at = oi).0)
+    } else ()
+    oi = oi + 1
+  }
   // `source` here has already had its leading directive region blanked by
   // extract_require_pins (see ingest_source_text_fs), so the directive must
   // be read back from the ORIGINAL on-disk text via `path`.
@@ -2335,6 +2352,7 @@ fn contract_plan(path: String, source: String) -> ContractPlan with Env + Except
     original: original,
     decls: decls,
     opaque_names: opaque_names,
+    sealed_names: sealed_names,
     extra: extra,
     stmt_at: stmt_at,
     src_starts: src_starts,
@@ -2455,7 +2473,7 @@ fn contract_build(path: String, source: String, plan: ContractPlan) -> ContractD
   } else {
     relative_spelling_from_dir(dir = dir_of_path(path), canonical = facade_types_path)
   }
-  let facade = contract_facade_source(decls = decls, opaque_names = opaque_names, type_defs = type_defs, impl_units = impl_units, types_path = facade_types_rel)
+  let facade = contract_facade_source(decls = decls, opaque_names = opaque_names, sealed_names = plan.sealed_names, type_defs = type_defs, impl_units = impl_units, types_path = facade_types_rel)
   let facade_final = if pkg_version == "" {
     facade
   } else {

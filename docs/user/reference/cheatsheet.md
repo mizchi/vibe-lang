@@ -4442,6 +4442,33 @@ subdirectory source は direct root からの relative import/export で到達�
 できる。owner を持つ package の内部 source は同一 owner またはその
 `index.vpkg` facade 経由でのみ参照できる。
 
+### `opaque type` in a contract (#4115)
+
+A contract may publish a type's name without its definition:
+
+```vpkg
+opaque type Handle
+fn handle_new(_ n: Int) -> Handle
+fn handle_get(_ h: Handle) -> Int
+```
+
+The implementation file declares `Handle` as an ordinary `struct` or `enum`.
+Inside the package nothing changes. Outside it, `Handle` is a name only:
+
+- **Allowed:** an importer can annotate with it, pass it, and call the package's functions.
+- **Refused, each naming the edit:** `Handle::{ .. }`, a field read `h.n`, an
+  enum constructor `Shade::Dark`, and a pattern that destructures it.
+
+The facade the loader generates re-exports such a type as `opaque Handle`, and
+`export ./impl.vibe { opaque T }` does the same in a hand-written re-export
+list.
+
+An `opaque type` implemented by a `type` alias stays transparent: its values
+already have the target type, so there is nothing to withhold. An opaque type
+is imported by its bare name (`import ./pkg { Handle }`) or with the kind its
+implementation declares (`struct Handle`); either way the import brings the
+sealed declaration.
+
 ### `index.vpkg` ヘッダー (#1128)
 
 契約本体 (bodyless `fn`/`type`) の前に置く、`name`/`version`/`description`/

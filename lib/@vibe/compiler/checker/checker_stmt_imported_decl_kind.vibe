@@ -939,7 +939,8 @@ export fn typedef_index_of_from(defs: Array[TypeDef], name: String, from: Int) -
       TDStruct(n, _, _, _) => n == name,
       TDAlias(n, _, _) => n == name,
       TDEffect(n, _, _, _, _) => n == name,
-      TDEffectSet(n, _) => n == name
+      TDEffectSet(n, _) => n == name,
+      TDOpaque(n, _, _) => n == name
     }
     if matched {
       found = i
@@ -1253,6 +1254,11 @@ fn imported_decl_kind(item: ImportItem, expected: ImportKind, initial_env: TypeE
         } else {
           None
         },
+        TDOpaque(name, _, _) => if name == item.name {
+          Some("opaque type")
+        } else {
+          None
+        },
         TDEffectSet(name, _) => if name == item.name {
           Some("effect set")
         } else {
@@ -1312,16 +1318,28 @@ fn import_kind_label(_ kind: ImportKind) -> String {
     ImportStruct => "struct",
     ImportEnum => "enum",
     ImportEffect => "effect",
-    ImportTrait => "trait"
+    ImportTrait => "trait",
+    ImportOpaque => "opaque type"
   }
 }
 
 fn import_kind_matches(expected: ImportKind, actual: String) -> Bool {
-  actual == import_kind_label(expected)
+  match expected {
+    // #4115: `opaque T` names any type declaration; what it withholds is the
+    // definition, not the kind.
+    ImportOpaque => actual == "struct" || actual == "enum" || actual == "type alias" || actual == "opaque type",
+    // An opaque type is still a type: `struct T` / `enum T` / `type T` name
+    // it (the kind spelling written before #4115 sealed it). What the import
+    // brings is the sealed declaration either way.
+    ImportStruct => actual == "struct" || actual == "opaque type",
+    ImportEnum => actual == "enum" || actual == "opaque type",
+    ImportType => actual == "type alias" || actual == "opaque type",
+    _ => actual == import_kind_label(expected)
+  }
 }
 
 fn import_kind_article(_ label: String) -> String {
-  if label == "enum" || label == "effect" || label == "effect set" {
+  if label == "enum" || label == "effect" || label == "effect set" || label == "opaque type" {
     "an"
   } else {
     "a"
@@ -1569,7 +1587,8 @@ export fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs
       TDStruct(n, _, _, _) => n,
       TDAlias(n, _, _) => n,
       TDEffect(n, _, _, _, _) => n,
-      TDEffectSet(n, _) => n
+      TDEffectSet(n, _) => n,
+      TDOpaque(n, _, _) => n
     }
     // First declaration wins, matching find_typedef and the import cache's
     // first-match rule. A projected interface never contains effects here.
@@ -1616,7 +1635,11 @@ export fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs
           Array::push(defs, value = TDEffect(effect_name, ops, params, kinds, owner))
           Array::push(type_def_binders, value = array_empty())
         },
-        TDEffectSet(_, _) => ()
+        TDEffectSet(_, _) => (),
+        TDOpaque(opaque_name, params, identity) => {
+          Array::push(defs, value = TDOpaque(opaque_name, params, identity))
+          Array::push(type_def_binders, value = array_empty())
+        }
       }
     }
     i = i + 1

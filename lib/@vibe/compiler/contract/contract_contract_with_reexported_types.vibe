@@ -760,7 +760,8 @@ export fn contract_imported_type_names(_ extra: Array[Stmt]) -> Array[(String, I
               ImportStruct => true,
               ImportEnum => true,
               ImportEffect => true,
-              ImportTrait => false
+              ImportTrait => false,
+              ImportOpaque => true
             },
             None => ctm_name_is_type_head(local)
           }
@@ -1222,7 +1223,7 @@ export fn contract_directory_shared_import_prefix_text(_ stmts: Array[Stmt]) -> 
 /// source, so everything downstream of the loader (type db, merge plan,
 /// codegen) needs no .vibei awareness — it rides the #716 re-export
 /// machinery unchanged.
-export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
+export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], sealed_names: Array[String], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
   let lines = array_empty()
   // #1840: when the loader materialized a types module, the facade
   // RE-EXPORTS the type family from it instead of defining it verbatim —
@@ -1326,19 +1327,31 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
         ()
       } else {
         let mut here = array_contains_string(xs = unit_reexported, target = oname)
+        // #4115: whether this unit DECLARES the type (a struct, enum, alias or
+        // suberror), rather than passing on a name it re-exports, which may
+        // be a trait or come from another package. Only a name the contract
+        // wrote `opaque type` is sealed; a bodyless `type T` stays public.
+        let mut declared_here = false
         let mut uti = 0
         while uti < Array::length(unit_types) {
           let (tname, _, _) = Array::get(unit_types, at = uti)
           if tname == oname {
             here = true
+            declared_here = true
           } else ()
           uti = uti + 1
         }
         if here {
-          // Generated facade carrier: this does not assert that the opaque
-          // implementation is a type alias (it may be a struct or enum).
-          // Keep the import item bare so Phase 1 records kind=None.
-          Array::push(names, value = oname)
+          // #4115: a type this unit declares is re-exported as `opaque T`, so
+          // the facade publishes its name and identity without the
+          // definition, and an importer cannot construct, read or
+          // destructure it. A name the unit only re-exports keeps the bare
+          // item: its declaration is sealed (or not) where it is declared.
+          Array::push(names, value = if declared_here && array_contains_string(xs = sealed_names, target = oname) {
+            String::concat("opaque ", oname)
+          } else {
+            oname
+          })
           Array::push(allocated, value = okey)
         } else ()
       }
