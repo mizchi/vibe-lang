@@ -11,18 +11,28 @@ import @vibe/compiler/core {
   call_placement_mode,
   call_placement_payload_valid,
   env_value_binding,
+  expr_any_node,
   fresh_var,
-  refine_trait_bounds_from_receiver
+  refine_trait_bounds_from_receiver,
+  subst_apply
 }
 import ./checker_int32.vibe {
   int32_literal_adapt
 }
 
+import ./checker_expr_capture_helpers.vibe {
+  struct_literal_typedef
+}
+
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture
 }
-import ./checker_lambda_expr.vibe {
-  seed_lambda_arg_from_call
+import ./checker_lambda_seed.vibe {
+  seed_lambda_arg_from_call, seed_lambda_fn, seed_lambda_params, take_lambda_param_seeds, take_lambda_return_seed
+}
+
+import @vibe/compiler/checker/type_relations {
+  int32_kind_name
 }
 import ./checker_row_effect_inst.vibe {
   callback_arg_env, callback_prefix_subst, effect_inst_arg_check
@@ -36,6 +46,77 @@ export fn checker_call_argument_value(_ arg: Expr) -> Expr {
   match arg {
     ELabeledArg(_, _, value) => value,
     _ => arg
+  }
+}
+
+/// Whether `arg` is a lambda literal that writes no result type and has a
+/// `return` in its body. Nothing checks such a `return` (`__return__` is
+/// `CtUnknown`) unless a result seed is handed to the lambda, so a parameter
+/// seed alone can type the lambda by its tail while a `return` hands back
+/// another type. A `return` inside a nested lambda counts too: that only
+/// leaves more lambdas unseeded, which is how they were checked before #4053.
+fn lambda_has_unchecked_return(_ arg: Expr) -> Bool {
+  match checker_call_argument_value(arg) {
+    EFn(_, _, _, None, _, body) => expr_any_node(expr = body, pred = (e) -> e is EReturn(_)),
+    _ => false
+  }
+}
+
+/// Drop any seed recorded for a lambda that is not going to receive one.
+fn clear_lambda_seeds() -> Unit {
+  let _ = take_lambda_param_seeds()
+  let _ = take_lambda_return_seed()
+}
+
+/// #4053: an element callback's lambda literal (`Array::map(xs, f = (k) ->
+/// ..)`) starts with its one parameter at the receiver's element type, so an
+/// `Array[Int32]` gives `k + 1` the `Int32` the call will ask of it.
+///
+/// A lambda with an unchecked `return` (`lambda_has_unchecked_return`) is not
+/// seeded: `Array::map(xs, f = (s) -> { if s == "" { return 123 }; s + s })`
+/// over an `Array[String]` would type as `(String) -> String` while
+/// `return 123` puts an `Int` into the result. Unseeded, `s + s` settles on
+/// `Int` and the call is refused, as it was before this seed existed.
+export fn seed_array_callback_elem(arg: Expr, recv_ty: Type, s: Subst) -> Unit {
+  if lambda_has_unchecked_return(arg) {
+    clear_lambda_seeds()
+  } else {
+    match subst_apply(s = s, ty = recv_ty) {
+      CtArray(elem) => {
+        let expected: Array[Type] = [elem]
+        seed_lambda_params(arg = checker_call_argument_value(arg), expected = expected, s = s)
+      },
+      _ => ()
+    }
+  }
+}
+
+/// #4053: a lambda literal given for a named struct's function-typed field
+/// (`H::{ f: (k) -> k + 1 }`) starts with its parameters, and an `Int32` /
+/// `UInt32` result, at the field's declared types, as an argument does at its
+/// parameter's (`seed_lambda_fn`).
+export fn seed_struct_field_lambda(defs: Array[TypeDef], struct_name: String, field: String, value: Expr, s: Subst) -> Unit {
+  if struct_name != "" && (value is EFn(_, _, _, _, _, _)) {
+    match struct_literal_typedef(defs = defs, name = struct_name) {
+      Some(TDStruct(_, dfields, _, _)) => for df in dfields {
+        let (dn, dty) = df
+        if dn == field {
+          // An unchecked `return` is left unseeded, as for an element
+          // callback, unless the field's result is an `Int32` / `UInt32`:
+          // that result seed checks every `return` (`seed_lambda_fn`).
+          let ret_seeded = match subst_apply(s = s, ty = dty) {
+            CtFn(_, ret, _) => int32_kind_name(subst_apply(s = s, ty = ret)) != "",
+            _ => false
+          }
+          if lambda_has_unchecked_return(value) && !ret_seeded {
+            clear_lambda_seeds()
+          } else {
+            seed_lambda_fn(arg = value, want = dty, s = s)
+          }
+        }
+      },
+      _ => ()
+    }
   }
 }
 

@@ -16,7 +16,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/compiler/codegen/wasi {
-  PreludeReuseRecord, prelude_reuse_arm, prelude_reuse_record_new, prelude_reuse_record_parts, prelude_reuse_take
+  PreludeReuseRecord, prelude_reuse_arm, prelude_reuse_outcome, prelude_reuse_record_new, prelude_reuse_record_parts, prelude_reuse_take
 }
 
 import @vibe/compiler/core {
@@ -47,7 +47,8 @@ export fn prelude_reuse_mode() -> String with Env + Exception {
 /// `compile`, armed with this entry's stored record when the mode is on, and
 /// storing the record it made.
 export fn prelude_reuse_around(entry_path: String, entry_name: String, checked_error_row: Bool, compile: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
-  if prelude_reuse_mode() != "on" {
+  let mode = prelude_reuse_mode()
+  if mode == "off" {
     compile()
   } else {
     let slot = compact_string_fingerprint(entry_path)
@@ -61,12 +62,42 @@ export fn prelude_reuse_around(entry_path: String, entry_name: String, checked_e
       Some(made) => store_persistent_artifact(kind = "prelude-reuse", entry_name = entry_name, fingerprint = slot, bytes = prelude_reuse_encode(made), checked_error_row = checked_error_row),
       None => ()
     }
+    // `VIBE_PRELUDE_REUSE_TRACE=<file>`: append whether the build replayed,
+    // and why not, one line per compile.
+    let trace = Env::get("VIBE_PRELUDE_REUSE_TRACE")
+    if trace != "" {
+      let before = if Fs::exists(trace) {
+        Fs::read_file(trace)
+      } else {
+        ""
+      }
+      Fs::write_file(trace, contents = before + "prelude-reuse: " + prelude_reuse_outcome() + "\n")
+    } else ()
     out
   }
 }
 
 fn prelude_reuse_magic() -> String {
-  "vibe-prelude-reuse-v2"
+  "vibe-prelude-reuse-v3"
+}
+
+fn prelude_reuse_write_strings(buf: Bytes, items: Array[String]) -> Unit {
+  ast_binary_write_varint(buf = buf, v = Array::length(items))
+  for item in items {
+    ast_binary_write_string(buf = buf, s = item)
+  }
+  ()
+}
+
+fn prelude_reuse_read_strings(_ r: AstBinaryReader) -> Array[String] with Exception {
+  let n = ast_binary_read_varint_checked(r)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, value = ast_binary_read_string_checked(r))
+    i = i + 1
+  }
+  out
 }
 
 fn prelude_reuse_write_stmts(buf: Bytes, items: Array[Stmt]) -> Unit {
@@ -87,15 +118,24 @@ fn prelude_reuse_write_ints(buf: Bytes, items: Array[Int]) -> Unit {
 
 /// A record as bytes.
 export fn prelude_reuse_encode(_ record: PreludeReuseRecord) -> Bytes {
-  let (header, keys, plain, kinds, refs, outs) = prelude_reuse_record_parts(record)
+  let (header, keys, plain, names, sigs, quiet, avoid, kinds, refs, outs) = prelude_reuse_record_parts(record)
   let buf = Bytes::new()
   ast_binary_write_string(buf = buf, s = prelude_reuse_magic())
   ast_binary_write_string(buf = buf, s = header)
-  ast_binary_write_varint(buf = buf, v = Array::length(keys))
-  for key in keys {
-    ast_binary_write_string(buf = buf, s = key)
-  }
+  prelude_reuse_write_strings(buf = buf, items = keys)
   prelude_reuse_write_stmts(buf = buf, items = plain)
+  prelude_reuse_write_strings(buf = buf, items = names)
+  prelude_reuse_write_strings(buf = buf, items = sigs)
+  let bits: Array[Int] = []
+  for b in quiet {
+    Array::push(bits, value = if b {
+      1
+    } else {
+      0
+    })
+  }
+  prelude_reuse_write_ints(buf = buf, items = bits)
+  prelude_reuse_write_strings(buf = buf, items = avoid)
   prelude_reuse_write_ints(buf = buf, items = kinds)
   prelude_reuse_write_ints(buf = buf, items = refs)
   prelude_reuse_write_stmts(buf = buf, items = outs)
@@ -133,19 +173,20 @@ export fn prelude_reuse_decode(_ bytes: Bytes) -> Option[PreludeReuseRecord] {
       None
     } else {
       let header = ast_binary_read_string_checked(r)
-      let n = ast_binary_read_varint_checked(r)
-      let keys: Array[String] = []
-      let mut i = 0
-      while i < n {
-        Array::push(keys, value = ast_binary_read_string_checked(r))
-        i = i + 1
-      }
+      let keys = prelude_reuse_read_strings(r)
       let plain = prelude_reuse_read_stmts(r)
+      let names = prelude_reuse_read_strings(r)
+      let sigs = prelude_reuse_read_strings(r)
+      let quiet: Array[Bool] = []
+      for b in prelude_reuse_read_ints(r) {
+        Array::push(quiet, value = b == 1)
+      }
+      let avoid = prelude_reuse_read_strings(r)
       let kinds = prelude_reuse_read_ints(r)
       let refs = prelude_reuse_read_ints(r)
       let outs = prelude_reuse_read_stmts(r)
       if ast_binary_reader_remaining(r) == 0 && Array::length(kinds) == Array::length(refs) && Array::length(kinds) == Array::length(outs) {
-        Some(prelude_reuse_record_new(header = header, keys = keys, plain = plain, kinds = kinds, refs = refs, outs = outs))
+        Some(prelude_reuse_record_new(header = header, keys = keys, plain = plain, names = names, sigs = sigs, quiet = quiet, avoid = avoid, kinds = kinds, refs = refs, outs = outs))
       } else {
         None
       }

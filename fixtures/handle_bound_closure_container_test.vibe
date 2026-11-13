@@ -1,0 +1,156 @@
+// #4064: a value stored into a container the handled body declares
+// (`Array::push`, `Array::set`, `xs[i] = ..`, a getter's element, a field,
+// a closure or helper that pushes) is held by that container and by every
+// binding of the body it was taken from, so a handle-bound closure stored
+// there and kept through it is refused
+// (fixtures/typecheck/handle_bound_closure_container_*_reject.vibe). These
+// are the container shapes that stay accepted: a container of closures that
+// perform nothing the handle answers, kept and called after the handle; a
+// container of what a handle-bound closure computes; a container holding
+// one that is only read inside the handle; and a container beside it that
+// only ever holds plain closures.
+effect Ask {
+  Get() -> Int
+}
+
+let saved: Array[() -> Int] = []
+
+let ints: Array[Int] = []
+
+fn keep_arr(xs: Array[() -> Int]) -> Int {
+  Array::push(saved, value = Array::get(xs, at = 0))
+  0
+}
+
+fn keep_ints(ns: Array[Int]) -> Int {
+  Array::push(ints, value = Array::get(ns, at = 0))
+  0
+}
+
+fn last_kept() -> Int {
+  let k = Array::get(saved, at = Array::length(saved) - 1)
+  k()
+}
+
+fn plain_pushed_kept() -> Int {
+  let plain = () -> 31
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let _ = g()
+    let arr: Array[() -> Int] = []
+    Array::push(arr, value = plain)
+    let _ = keep_arr(xs = arr)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+fn results_pushed_kept() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 27
+    let ns: Array[Int] = []
+    Array::push(ns, value = g())
+    let _ = keep_ints(ns = ns)
+    ()
+  } with { Ask::Get() => resume(5) }
+  Array::get(ints, at = Array::length(ints) - 1)
+}
+
+fn pushed_read_inside() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 28
+    let arr: Array[() -> Int] = []
+    Array::push(arr, value = g)
+    Array::length(arr) + g()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn beside_plain_container_kept() -> Int {
+  let plain = () -> 34
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let arr: Array[() -> Int] = []
+    let other: Array[() -> Int] = []
+    Array::push(arr, value = g)
+    Array::push(other, value = plain)
+    let _ = keep_arr(xs = other)
+    ()
+  } with { Ask::Get() => resume(5) }
+  last_kept()
+}
+
+test "a container of closures that perform nothing the handle answers may be kept" {
+  inspect(plain_pushed_kept(), content = "31")
+}
+
+test "a container of what a handle-bound closure computes may be kept" {
+  inspect(results_pushed_kept(), content = "32")
+}
+
+test "a container holding a handle-bound closure may be read inside the handle" {
+  inspect(pushed_read_inside(), content = "34")
+}
+
+test "a container beside one holding a handle-bound closure keeps its own fact" {
+  inspect(beside_plain_container_kept(), content = "34")
+}
+
+fn keep(f: () -> Int) -> Int {
+  Array::push(saved, value = f)
+  0
+}
+
+test "push does not store the receiver's closures into the value argument" {
+  handle {
+    let arr: Array[() -> Int] = []
+    let g = () -> perform Ask::Get() + 1
+    let plain = () -> 41
+    Array::push(arr, value = g)
+    Array::push(arr, value = plain)
+    let _ = keep(f = plain)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "41")
+}
+
+test "push into an array slice leaves the source array unchanged" {
+  handle {
+    let plain = () -> 42
+    let arr = [plain]
+    let copy = Array::slice(arr, start = 0, end = 1)
+    let g = () -> perform Ask::Get() + 1
+    Array::push(copy, value = g)
+    let _ = keep_arr(xs = arr)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "42")
+}
+
+fn use_row_callback(xs: Array[() -> Int], f: () -> Int with Ask) -> Int with Ask {
+  Array::length(xs) + f()
+}
+
+test "an explicit callback row does not taint a sibling container" {
+  handle {
+    let arr = [() -> 43]
+    let private: Array[() -> Int] = []
+    let g = () -> perform Ask::Get() + 1
+    Array::push(private, value = g)
+    let _ = use_row_callback(xs = arr, f = () -> perform Ask::Get())
+    let _ = keep_arr(xs = arr)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "43")
+}
+
+test "push into a fresh array does not change its original elements" {
+  handle {
+    let plain = () -> 44
+    let arr = [plain]
+    let g = () -> perform Ask::Get() + 1
+    Array::push(arr, value = g)
+    let _ = keep(f = plain)
+    ()
+  } with { Ask::Get() => resume(5) }
+  inspect(last_kept(), content = "44")
+}

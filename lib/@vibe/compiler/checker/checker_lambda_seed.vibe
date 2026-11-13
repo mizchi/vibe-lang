@@ -1,0 +1,170 @@
+// Expected types for a lambda literal's unannotated parameters and result
+// (#3547, #4053), handed from the call or field that is about to check it.
+
+import @vibe/compiler/core {
+  Expr, Subst, Type, call_arg_value, expr_any_node, subst_apply, unify
+}
+
+import @vibe/compiler/checker/type_relations {
+  int32_kind_name
+}
+
+//# Functions
+
+/// #3547: the parameter types a call expects of the lambda literal it is
+/// about to check, one slot per parameter (`None` = no expectation), set
+/// immediately before that one argument is checked and taken by
+/// `check_lambda_expr` before anything else, so no nested lambda can see it.
+/// Without it an unannotated parameter is a fresh variable while the body is
+/// checked, and `+` on two such variables settles on `Int` before the call
+/// unifies the lambda with its parameter: `Array::fold(["a"], "", (acc, s) ->
+/// acc + s)` was refused as `(Int, Int) -> Int`.
+let lambda_param_seed_cell: Array[Array[Option[Type]]] = []
+
+export fn take_lambda_param_seeds() -> Array[Option[Type]] {
+  if Array::length(lambda_param_seed_cell) == 0 {
+    []
+  } else {
+    let seeds = Array::get(lambda_param_seed_cell, at = 0)
+    Array::truncate(lambda_param_seed_cell, length = 0)
+    seeds
+  }
+}
+
+/// The expectations that are seeded: the scalars whose operators lower
+/// correctly when only the CHECKER knows the operand's type. `+` / `<` on a
+/// `String` ride the typed String-lowering channel (#2391), and `Int` /
+/// `Bool` / `Char` need no classification. `Double` is deliberately absent:
+/// its arithmetic is chosen by the lowering from the operand's SYNTAX (an
+/// annotation, a float literal), so an unannotated `(acc, s) -> acc + s`
+/// typed `Double` here compiled to an integer add over two boxed values and
+/// printed `0` for `1.5 + 2.0` (measured). Left unseeded, it stays refused,
+/// with the edit (`Array::fold`'s accumulator check) -- never silently wrong.
+/// `Int32` / `UInt32` (#4053) are wrapped from rows the checker files at the
+/// operator (`record_int32_binop`), so `(k) -> k + 1` wraps as `(k: Int32)` does.
+fn lambda_seed_type_lowers(_ t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtString => true,
+    CtBool => true,
+    CtChar => true,
+    _ => int32_kind_name(t) != ""
+  }
+}
+
+/// Record the expected types of the unannotated parameters of `arg`, when it
+/// is a non-generic lambda literal with exactly `expected.length` parameters.
+/// Only the expectations `lambda_seed_type_lowers` admits are kept.
+export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit {
+  seed_lambda_params_with(arg = arg, expected = expected, s = s, returns_checked = false)
+}
+
+/// `seed_lambda_params`, told whether the lambda's `return`s will be checked
+/// against an expected result (`seed_lambda_fn`'s result seed).
+///
+/// #4053: a `return` in a lambda that writes no result type, and is handed no
+/// result seed, is checked against nothing (`__return__` is `CtUnknown`). An
+/// `Int32` / `UInt32` parameter seed would then let `return 2147483648` leave a
+/// lambda whose tail is `Int32` and so is typed as returning one
+/// (`Array::map(xs32, f = (k) -> { if k == 0 { return 2147483648 }; k })`).
+/// Such a parameter is left open, and the lambda is refused as it was.
+fn seed_lambda_params_with(arg: Expr, expected: Array[Type], s: Subst, returns_checked: Bool) -> Unit {
+  let arg = call_arg_value(arg)
+  Array::truncate(lambda_param_seed_cell, length = 0)
+  Array::truncate(lambda_return_seed_cell, length = 0)
+  match arg {
+    EFn(tparams, _, params, ret_ty, _, body) => if Array::length(tparams) == 0 && Array::length(params) == Array::length(expected) {
+      let sized_ok = returns_checked || (ret_ty is Some(_)) || !expr_any_node(expr = body, pred = (e) -> e is EReturn(_))
+      let seeds: Array[Option[Type]] = []
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, ann) = Array::get(params, at = i)
+        let want = subst_apply(s = s, ty = Array::get(expected, at = i))
+        if (ann is None) && lambda_seed_type_lowers(want) && (sized_ok || int32_kind_name(want) == "") {
+          Array::push(seeds, value = Some(want))
+          any = true
+        } else {
+          Array::push(seeds, value = None)
+        }
+        i = i + 1
+      }
+      if any {
+        Array::push(lambda_param_seed_cell, value = seeds)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// `seed_lambda_params` for an argument of a call whose parameter `ai` has a
+/// function type: the expectation is read after unifying the arguments to its
+/// left with their parameters in a scratch substitution (the call's own
+/// unification does the same, later).
+export fn seed_lambda_arg_from_call(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Unit {
+  let arg = call_arg_value(arg)
+  Array::truncate(lambda_param_seed_cell, length = 0)
+  Array::truncate(lambda_return_seed_cell, length = 0)
+  let ai = Array::length(arg_tys)
+  if ai < Array::length(param_tys) && (arg is EFn(_, _, _, _, _, _)) {
+    let mut scratch = s
+    let mut j = 0
+    while j < ai {
+      match unify(a = Array::get(param_tys, at = j), b = Array::get(arg_tys, at = j), s = scratch) {
+        Some(su) => {
+          scratch = su
+        },
+        None => ()
+      }
+      j = j + 1
+    }
+    seed_lambda_fn(arg = arg, want = Array::get(param_tys, at = ai), s = scratch)
+  } else {
+    ()
+  }
+}
+
+/// #4053: the result type a call expects of the lambda literal it is about to
+/// check, when that is an `Int32` / `UInt32` and the lambda writes none. Set
+/// and taken like `lambda_param_seed_cell`. `check_lambda_expr` binds it as
+/// the lambda's `__return__`, so an explicit `return` is checked against it as
+/// under an annotation, and checks the tail the same way: the tail alone
+/// cannot vouch for the result while a `return 2147483648` is unchecked.
+let lambda_return_seed_cell: Array[Type] = []
+
+/// Take the result seed `seed_lambda_fn` recorded, if any.
+export fn take_lambda_return_seed() -> Option[Type] {
+  if Array::length(lambda_return_seed_cell) == 0 {
+    None
+  } else {
+    let want = Array::get(lambda_return_seed_cell, at = 0)
+    Array::truncate(lambda_return_seed_cell, length = 0)
+    Some(want)
+  }
+}
+
+/// `seed_lambda_params` for a lambda literal wanted as the function type
+/// `want`: its parameters, and an `Int32` / `UInt32` result it does not write.
+export fn seed_lambda_fn(arg: Expr, want: Type, s: Subst) -> Unit {
+  match subst_apply(s = s, ty = want) {
+    CtFn(eps, ret, _) => {
+      let want_ret = subst_apply(s = s, ty = ret)
+      let seeds_ret = match call_arg_value(arg) {
+        EFn(tparams, _, params, None, _, _) => Array::length(tparams) == 0 && Array::length(params) == Array::length(eps) && int32_kind_name(want_ret) != "",
+        _ => false
+      }
+      seed_lambda_params_with(arg = arg, expected = eps, s = s, returns_checked = seeds_ret)
+      if seeds_ret {
+        Array::push(lambda_return_seed_cell, value = want_ret)
+      }
+    },
+    _ => {
+      Array::truncate(lambda_param_seed_cell, length = 0)
+      Array::truncate(lambda_return_seed_cell, length = 0)
+    }
+  }
+}

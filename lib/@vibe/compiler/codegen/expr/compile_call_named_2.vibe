@@ -137,6 +137,203 @@ fn cc_map_get_miss_parts(_ ctx: CompileCtx) -> (Int, Int) with Exception {
 }
 
 // Ordered named-call dispatch group.
+/// The copy path of `Map::set` on a shared or bump-lane map: a fresh block
+/// of count + 1 entries, the source's entries copied (and, on the RC lane,
+/// retained), the new entry replacing or appended. A function and not a
+/// closure (#2827): a closure would capture `ctx`, and borrow inference counts
+/// a capture as a consume, which made `ctx` owned in `cc_compile_named_2` and
+/// up its callers to `compile_expr`.
+fn cc_map_set_copy_path(buf: Bytes, ctx: CompileCtx, map_l: Int, key_l: Int, val_l: Int, cnt_l: Int, new_l: Int, idx_l: Int, found_l: Int, tmp_l: Int, eq_fi_ms: Int, scalar_key: Bool) -> Unit {
+  if ctx.enable_rc {
+    // #2683: an RC map block (class 6) sized for count + 1 entries.
+    cc_map_alloc_rc(buf = buf, ptr_l = new_l, class = 6, push_payload = () -> {
+      emit_local_get(buf = buf, idx = cnt_l)
+      emit_i64_const(buf = buf, value = 1)
+      emit_i64_add(buf)
+      emit_i64_const(buf = buf, value = 16)
+      emit_i64_mul(buf)
+      emit_i64_const(buf = buf, value = 8)
+      emit_i64_add(buf)
+    }, ctx = ctx)
+  } else {
+    emit_global_get(buf = buf, idx = 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf = buf, idx = new_l)
+    emit_global_get(buf = buf, idx = 0)
+    emit_local_get(buf = buf, idx = cnt_l)
+    emit_i64_const(buf = buf, value = 1)
+    emit_i64_add(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf = buf, value = 16)
+    emit_i32_mul(buf)
+    emit_i32_const(buf = buf, value = 8)
+    emit_i32_add(buf)
+    emit_i32_add(buf)
+    emit_global_set(buf = buf, idx = 0)
+    emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
+  }
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = idx_l)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = found_l)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_local_get(buf = buf, idx = cnt_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf = buf, label = 1)
+  emit_local_get(buf = buf, idx = new_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 8)
+  // #2683: the copied key is owned by both maps (see the value below).
+  if ctx.enable_rc {
+    emit_local_tee(buf = buf, idx = tmp_l)
+    emit_rc_dup_guarded(buf = buf, local_idx = tmp_l, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+  } else {
+    ()
+  }
+  emit_i64_store(buf = buf, align = 3, offset = 8)
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 8)
+  emit_local_get(buf = buf, idx = key_l)
+  cc_map_emit_key_eq(buf = buf, eq_fi = eq_fi_ms)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf = buf, idx = new_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf = buf, idx = val_l)
+  emit_i64_store(buf = buf, align = 3, offset = 16)
+  emit_i64_const(buf = buf, value = 1)
+  emit_local_set(buf = buf, idx = found_l)
+  // #2683: the key already present is kept; the caller's key was
+  // retained for storage and is not stored -- release it.
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf = buf, idx = key_l)
+    emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+  emit_else(buf)
+  emit_local_get(buf = buf, idx = new_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 16)
+  // #2683: the copied value is now owned by BOTH maps; the source map
+  // is borrowed here and keeps its reference.
+  if ctx.enable_rc {
+    emit_local_tee(buf = buf, idx = tmp_l)
+    emit_rc_dup_guarded(buf = buf, local_idx = tmp_l, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+  } else {
+    ()
+  }
+  emit_i64_store(buf = buf, align = 3, offset = 16)
+  emit_end(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i64_const(buf = buf, value = 1)
+  emit_i64_add(buf)
+  emit_local_set(buf = buf, idx = idx_l)
+  emit_br(buf = buf, label = 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_local_get(buf = buf, idx = found_l)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf = buf, idx = new_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = cnt_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf = buf, idx = key_l)
+  emit_i64_store(buf = buf, align = 3, offset = 8)
+  emit_local_get(buf = buf, idx = new_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = cnt_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf = buf, idx = val_l)
+  emit_i64_store(buf = buf, align = 3, offset = 16)
+  emit_local_get(buf = buf, idx = new_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = cnt_l)
+  emit_i64_const(buf = buf, value = 1)
+  emit_i64_add(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf = buf, align = 2, offset = 0)
+  emit_else(buf)
+  emit_local_get(buf = buf, idx = new_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = cnt_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf = buf, align = 2, offset = 0)
+  emit_end(buf)
+  // #Map-hash-index: (re-loading the just-written final count from new_l
+  // rather than re-deriving it from found_l/cnt_l) build + attach the
+  // O(1)-average side index when it's worth it (count>=8). idx_l/found_l
+  // are dead after the copy loop above -- reused here as scratch (final
+  // count, then the built index pointer) so this needs no new locals.
+  if !scalar_key && ctx.map_build_index_func_idx >= 0 {
+    emit_local_get(buf = buf, idx = new_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf = buf, align = 2, offset = 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf = buf, idx = idx_l)
+    emit_local_get(buf = buf, idx = idx_l)
+    emit_i64_const(buf = buf, value = 8)
+    emit_i64_ge_s(buf)
+    emit_if_void(buf)
+    emit_local_get(buf = buf, idx = new_l)
+    emit_local_get(buf = buf, idx = idx_l)
+    emit_call(buf = buf, func_idx = ctx.map_build_index_func_idx)
+    emit_local_set(buf = buf, idx = found_l)
+    emit_local_get(buf = buf, idx = new_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf = buf, idx = found_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_store(buf = buf, align = 2, offset = 4)
+    emit_end(buf)
+  } else {
+    ()
+  }
+}
+
 export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
   if fname == "__let_refuted" {
     // #3626: a refutable `let` whose pattern did not match. Print the line
@@ -1460,196 +1657,6 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // The copy path: a fresh block of count + 1 entries, the source's
     // entries copied (and, on the RC lane, retained), the new entry
     // replacing or appended.
-    let copy_path = () -> {
-      if ctx.enable_rc {
-        // #2683: an RC map block (class 6) sized for count + 1 entries.
-        cc_map_alloc_rc(buf = buf, ptr_l = new_l, class = 6, push_payload = () -> {
-          emit_local_get(buf = buf, idx = cnt_l)
-          emit_i64_const(buf = buf, value = 1)
-          emit_i64_add(buf)
-          emit_i64_const(buf = buf, value = 16)
-          emit_i64_mul(buf)
-          emit_i64_const(buf = buf, value = 8)
-          emit_i64_add(buf)
-        }, ctx = ctx)
-      } else {
-        emit_global_get(buf = buf, idx = 0)
-        emit_i64_extend_i32_u(buf)
-        emit_local_set(buf = buf, idx = new_l)
-        emit_global_get(buf = buf, idx = 0)
-        emit_local_get(buf = buf, idx = cnt_l)
-        emit_i64_const(buf = buf, value = 1)
-        emit_i64_add(buf)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf = buf, value = 16)
-        emit_i32_mul(buf)
-        emit_i32_const(buf = buf, value = 8)
-        emit_i32_add(buf)
-        emit_i32_add(buf)
-        emit_global_set(buf = buf, idx = 0)
-        emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
-      }
-      emit_i64_const(buf = buf, value = 0)
-      emit_local_set(buf = buf, idx = idx_l)
-      emit_i64_const(buf = buf, value = 0)
-      emit_local_set(buf = buf, idx = found_l)
-      emit_block_void(buf)
-      emit_loop_void(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_local_get(buf = buf, idx = cnt_l)
-      emit_i64_ge_s(buf)
-      emit_br_if(buf = buf, label = 1)
-      emit_local_get(buf = buf, idx = new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf = buf, idx = map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf = buf, align = 3, offset = 8)
-      // #2683: the copied key is owned by both maps (see the value below).
-      if ctx.enable_rc {
-        emit_local_tee(buf = buf, idx = tmp_l)
-        emit_rc_dup_guarded(buf = buf, local_idx = tmp_l, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
-      } else {
-        ()
-      }
-      emit_i64_store(buf = buf, align = 3, offset = 8)
-      emit_local_get(buf = buf, idx = map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf = buf, align = 3, offset = 8)
-      emit_local_get(buf = buf, idx = key_l)
-      cc_map_emit_key_eq(buf = buf, eq_fi = eq_fi_ms)
-      emit_i32_wrap_i64(buf)
-      emit_if_void(buf)
-      emit_local_get(buf = buf, idx = new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf = buf, idx = val_l)
-      emit_i64_store(buf = buf, align = 3, offset = 16)
-      emit_i64_const(buf = buf, value = 1)
-      emit_local_set(buf = buf, idx = found_l)
-      // #2683: the key already present is kept; the caller's key was
-      // retained for storage and is not stored -- release it.
-      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
-        emit_local_get(buf = buf, idx = key_l)
-        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
-      } else {
-        ()
-      }
-      emit_else(buf)
-      emit_local_get(buf = buf, idx = new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf = buf, idx = map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf = buf, align = 3, offset = 16)
-      // #2683: the copied value is now owned by BOTH maps; the source map
-      // is borrowed here and keeps its reference.
-      if ctx.enable_rc {
-        emit_local_tee(buf = buf, idx = tmp_l)
-        emit_rc_dup_guarded(buf = buf, local_idx = tmp_l, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
-      } else {
-        ()
-      }
-      emit_i64_store(buf = buf, align = 3, offset = 16)
-      emit_end(buf)
-      emit_local_get(buf = buf, idx = idx_l)
-      emit_i64_const(buf = buf, value = 1)
-      emit_i64_add(buf)
-      emit_local_set(buf = buf, idx = idx_l)
-      emit_br(buf = buf, label = 0)
-      emit_end(buf)
-      emit_end(buf)
-      emit_local_get(buf = buf, idx = found_l)
-      emit_i64_eqz(buf)
-      emit_if_void(buf)
-      emit_local_get(buf = buf, idx = new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = cnt_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf = buf, idx = key_l)
-      emit_i64_store(buf = buf, align = 3, offset = 8)
-      emit_local_get(buf = buf, idx = new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = cnt_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf = buf, idx = val_l)
-      emit_i64_store(buf = buf, align = 3, offset = 16)
-      emit_local_get(buf = buf, idx = new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = cnt_l)
-      emit_i64_const(buf = buf, value = 1)
-      emit_i64_add(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i32_store(buf = buf, align = 2, offset = 0)
-      emit_else(buf)
-      emit_local_get(buf = buf, idx = new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = cnt_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_store(buf = buf, align = 2, offset = 0)
-      emit_end(buf)
-      // #Map-hash-index: (re-loading the just-written final count from new_l
-      // rather than re-deriving it from found_l/cnt_l) build + attach the
-      // O(1)-average side index when it's worth it (count>=8). idx_l/found_l
-      // are dead after the copy loop above -- reused here as scratch (final
-      // count, then the built index pointer) so this needs no new locals.
-      if !scalar_key && ctx.map_build_index_func_idx >= 0 {
-        emit_local_get(buf = buf, idx = new_l)
-        emit_i32_wrap_i64(buf)
-        emit_i32_load(buf = buf, align = 2, offset = 0)
-        emit_i64_extend_i32_u(buf)
-        emit_local_set(buf = buf, idx = idx_l)
-        emit_local_get(buf = buf, idx = idx_l)
-        emit_i64_const(buf = buf, value = 8)
-        emit_i64_ge_s(buf)
-        emit_if_void(buf)
-        emit_local_get(buf = buf, idx = new_l)
-        emit_local_get(buf = buf, idx = idx_l)
-        emit_call(buf = buf, func_idx = ctx.map_build_index_func_idx)
-        emit_local_set(buf = buf, idx = found_l)
-        emit_local_get(buf = buf, idx = new_l)
-        emit_i32_wrap_i64(buf)
-        emit_local_get(buf = buf, idx = found_l)
-        emit_i32_wrap_i64(buf)
-        emit_i32_store(buf = buf, align = 2, offset = 4)
-        emit_end(buf)
-      } else {
-        ()
-      }
-    }
     if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
       // ADR-0092 for maps: a uniquely referenced source is updated in
       // place and is the result; a shared one is copied, then the
@@ -1658,11 +1665,11 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_if_void(buf)
       cc_map_set_in_place(buf = buf, map_l = map_l, key_l = key_l, val_l = val_l, cnt_l = cnt_l, new_l = new_l, idx_l = idx_l, pos_l = found_l, tmp_l = tmp_l, ip_l = ip_l, cap_l = cap_l, eq_fi = eq_fi_ms, ctx = ctx)
       emit_else(buf)
-      copy_path()
+      cc_map_set_copy_path(buf = buf, ctx = ctx, map_l = map_l, key_l = key_l, val_l = val_l, cnt_l = cnt_l, new_l = new_l, idx_l = idx_l, found_l = found_l, tmp_l = tmp_l, eq_fi_ms = eq_fi_ms, scalar_key = scalar_key)
       cc_map_release_ptr(buf = buf, ptr_l = map_l, ctx = ctx)
       emit_end(buf)
     } else {
-      copy_path()
+      cc_map_set_copy_path(buf = buf, ctx = ctx, map_l = map_l, key_l = key_l, val_l = val_l, cnt_l = cnt_l, new_l = new_l, idx_l = idx_l, found_l = found_l, tmp_l = tmp_l, eq_fi_ms = eq_fi_ms, scalar_key = scalar_key)
     }
     if scalar_key {
       cc_map_mark_scalar(buf = buf, map_l = new_l)
