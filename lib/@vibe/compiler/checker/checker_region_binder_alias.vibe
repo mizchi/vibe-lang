@@ -15,7 +15,7 @@
 //# so it may hold an `r1` value but not an `r2` one.
 
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef
+  Expr, Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, type_name_has_iterator_impl
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -146,14 +146,14 @@ fn binder_alias_bind_pairs(env: TypeEnv, ps: Array[Pat], es: Array[Expr], scope:
 /// #4050 (Codex on #4061): `for name in iterable` -- the loop's element is
 /// what the iteration hands out, not `iterable` itself. An `Array` hands out
 /// its stored elements, so the binder reads `iterable`. A declared type
-/// iterated through its own protocol hands out what `C::next(iterable)`,
-/// `C::iter(iterable)` or `C::iter_get(iterable, i)` returns (the calls
-/// `for` lowers to), so the binder is judged as each of those calls the
-/// type binds would be, and is marked with the regions any of them
+/// iterated through its own protocol hands out what the protocol call the
+/// `for` desugar selects returns -- `C::next(iterable)`, `C::iter(iterable)`
+/// or `C::iter_get(iterable, i)` (`for_binder_protocols`) -- so the binder is
+/// judged as that call would be, and is marked with the regions it
 /// predates. A method whose body returns a fresh value marks nothing: an
-/// indexed iterator built before the region may hand out a new array to
-/// write into. A method returning a stored part of `iterable`, or one whose
-/// body is not readable here, answers what `iterable` does.
+/// iterator built before the region may hand out a new array to write into.
+/// A method returning a stored part of `iterable`, or one whose body is not
+/// readable here, answers what `iterable` does.
 export fn region_for_binder_bind(env: TypeEnv, name: String, iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
   let active = match env_lookup(env = scope, name = "#active_region") {
     Some(CtNamed(_, _)) => true,
@@ -186,33 +186,93 @@ fn for_binder_sources(iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array
     CtNamed(nm, _) => nm,
     _ => ""
   }
-  let declared = head != "" && match find_typedef(defs = defs, name = head) {
+  let declared = head != "" && head != "Array" && head != "String" && head != "Map" && head != "HostStream" && match find_typedef(defs = defs, name = head) {
     Some(_) => true,
     None => false
   }
-  if declared {
-    let calls: Array[Expr] = []
-    for method in ["next", "iter", "iter_get"] {
+  let methods = if declared {
+    for_binder_protocols(head = head, scope = scope)
+  } else {
+    []
+  }
+  if Array::length(methods) > 0 {
+    for method in methods {
       let callee = String::concat(head, String::concat("::", method))
-      match env_lookup(env = scope, name = callee) {
-        Some(_) => {
-          let args = if method == "iter_get" {
-            [iterable, EInt(0)]
-          } else {
-            [iterable]
-          }
-          Array::push(calls, value = ECall(EIdent(callee, -1), args, -1, []))
-        },
-        None => ()
+      let args = if method == "iter_get" {
+        [iterable, EInt(0)]
+      } else {
+        [iterable]
       }
-    }
-    if Array::length(calls) > 0 {
-      calls
-    } else {
-      [iterable]
+      ECall(EIdent(callee, -1), args, -1, [])
     }
   } else {
     [iterable]
+  }
+}
+
+/// The protocol method(s) the `for` desugar may draw `head`'s elements
+/// from, mirroring `normalize/desugar/iteration.vibe` (Codex on #4061). With
+/// a method-bearing trait in the program, `classify_sync_for_loop` takes
+/// `C::next`, else `C::iter`, else the indexed `C::iter_length` +
+/// `C::iter_get`. Without one, `classify_trait_free_for_loop` takes `C::next`
+/// only when it returns a `Future`, else the indexed protocol. An `impl` of an
+/// iterator trait for `head` puts such a trait in the program, so only the
+/// first lane can run; otherwise the lane is not known here, and both lanes'
+/// choices are returned, so the binder is marked with what either predates.
+/// Empty when neither lane finds a protocol (the loop does not iterate a
+/// protocol, and the binder reads the iterand).
+fn for_binder_protocols(head: String, scope: TypeEnv) -> Array[String] {
+  let has_next = for_binder_has(head = head, method = "next", scope = scope)
+  let has_indexed = for_binder_has(head = head, method = "iter_length", scope = scope) && for_binder_has(head = head, method = "iter_get", scope = scope)
+  let sync_choice = if has_next {
+    "next"
+  } else if for_binder_has(head = head, method = "iter", scope = scope) {
+    "iter"
+  } else if has_indexed {
+    "iter_get"
+  } else {
+    ""
+  }
+  let next_is_future = has_next && match env_lookup(env = scope, name = String::concat(head, "::next")) {
+    Some(t) => for_binder_returns_future(t),
+    None => false
+  }
+  let free_choice = if next_is_future {
+    "next"
+  } else if has_indexed {
+    "iter_get"
+  } else {
+    ""
+  }
+  let out: Array[String] = []
+  if sync_choice != "" {
+    Array::push(out, value = sync_choice)
+  } else {
+    ()
+  }
+  if !type_name_has_iterator_impl(env = scope, type_name = head) && free_choice != "" && free_choice != sync_choice {
+    Array::push(out, value = free_choice)
+  } else {
+    ()
+  }
+  out
+}
+
+fn for_binder_has(head: String, method: String, scope: TypeEnv) -> Bool {
+  match env_lookup(env = scope, name = String::concat(head, String::concat("::", method))) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn for_binder_returns_future(_ t: Type) -> Bool {
+  match t {
+    CtFn(_, ret, _) => match ret {
+      CtNamed(n, _) => n == "Future",
+      _ => false
+    },
+    CtForAll(_, _, body) => for_binder_returns_future(body),
+    _ => false
   }
 }
 
