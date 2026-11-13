@@ -127,7 +127,8 @@ test "a dup planned on one branch gets a mark and a path drop" {
 }
 
 // The path that skips a branch of two consumes holds both dups, so its drop
-// is two rows; against an arm of one, a `0` arm still gets one.
+// is two rows; the flag counts the marks a path ran, and each row past that
+// count releases one.
 test "a branch two consumes short gets a path drop of two" {
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    Pair(own(t), own(t))\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
   let plan = plan_of(src)
@@ -135,12 +136,41 @@ test "a branch two consumes short gets a path drop of two" {
   assert(String::contains(plan, needle = "run t path_drop 2"))
 }
 
-test "arms of two, one and none get a path drop of one" {
+/// How many `consume_mark` rows of `run`'s `t` the rendered plan holds.
+fn run_t_marks(_ plan: String) -> Int {
+  let mut n = 0
+  let mut rest = plan
+  let mut at = String::index_of(rest, needle = "run t consume_mark:")
+  while at >= 0 {
+    n = n + 1
+    rest = String::substring(rest, start = at + 1, end = String::length(rest))
+    at = String::index_of(rest, needle = "run t consume_mark:")
+  }
+  n
+}
+
+// Arms of 2, 1 and 0: the budget is the larger arm's two, and every
+// occurrence is a mark -- the `1` arm's as well -- so the `0` path releases
+// both rows and the `1` path one. A drop counted per merge released one on
+// the `0` path, which held two (#1980).
+test "arms of two, one and none mark every occurrence against a path drop of two" {
   let src = String::concat(prelude, String::concat("let run: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = match k {\n    0 => Pair(own(t), own(t)),\n    1 => own(t),\n    _ => Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(1) {\n    _ => 0\n  }\n}"))
   let plan = plan_of(src)
   assert(String::contains(plan, needle = "run t dup 2"))
-  assert(String::contains(plan, needle = "run t path_drop 1"))
-  assert(!String::contains(plan, needle = "run t path_drop 2"))
+  assert(String::contains(plan, needle = "run t path_drop 2"))
+  assert(run_t_marks(plan) == 3)
+}
+
+// Two merges in sequence, each consuming on one arm: the budget is one per
+// merge, and a path through either consume alone still holds the other's.
+// A boolean flag released nothing on such a path and one reference on the
+// path through neither.
+test "two merges in sequence get a path drop of two" {
+  let src = String::concat(prelude, String::concat("let run: (Bool, Bool) -> Node = (c, d) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  let w = if d {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => Pair(u, w)\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true, false) {\n    _ => 0\n  }\n}"))
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "run t dup 2"))
+  assert(String::contains(plan, needle = "run t path_drop 2"))
+  assert(run_t_marks(plan) == 2)
 }
 
 test "dups planned on both branches are budgeted once" {
@@ -151,10 +181,10 @@ test "dups planned on both branches are budgeted once" {
   assert(!String::contains(plan, needle = "run t path_drop"))
 }
 
-test "an inner merge's mark makes the outer maximal arm mark too" {
+test "a merge's binding marks the occurrence an enclosing merge counted out" {
   // Symmetric at the outer merge, which drops the inner arm's row: the outer
-  // `then` path spends its whole budget, so it must stand the path drop down
-  // with a mark of its own (two marks), or the drop releases what `own` kept.
+  // `then` path spends its whole budget, so it must count a mark of its own
+  // (two marks), or the drop releases what `own` kept.
   let src = String::concat(prelude, String::concat("let run: (Bool, Bool) -> Node = (c, d) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else if d {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true, false) {\n    _ => 0\n  }\n}"))
   let plan = plan_of(src)
   assert(String::contains(plan, needle = "run t dup 1"))

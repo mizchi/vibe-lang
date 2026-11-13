@@ -1121,29 +1121,41 @@ fn pe_emit_path_release(_ ctx: PCtx) -> Unit {
     }
     mi = mi + 1
   }
-  // `pe_dup_merge`'s marks: the occurrences a dup was planned for on the
-  // larger arm of a merge. Never a #2389 split binding as well, nor a name
-  // two bindings share, nor a binding whose body may hand back a view into
-  // it (`pe_dsplit_marks_ok`). Asked once per binding, not once per mark.
+  // `pe_dup_merge`'s marks: EVERY occurrence a dup was planned for, of a
+  // binding some merge left holding a reference on one path and not another
+  // (`pf_dsplit`). Never a #2389 split binding as well, nor a name two
+  // bindings share, nor a binding whose body may hand back a view into it
+  // (`pe_dsplit_marks_ok`). Asked once per binding, not once per mark.
   let ok_ids: Array[Int] = []
   let bad_ids: Array[Int] = []
+  let dsplit_rows: Array[Int] = []
   let mut si = 0
-  while si < Array::length(ctx.dsplit_ids) {
-    let id = Array::get(ctx.dsplit_ids, at = si)
+  while si < Array::length(ctx.dmark_ids) {
+    let id = Array::get(ctx.dmark_ids, at = si)
     let ok = if pe_int_array_has(xs = ok_ids, v = id) {
       true
     } else if pe_int_array_has(xs = bad_ids, v = id) {
       false
     } else if pe_dsplit_marks_ok(ctx = ctx, id = id) {
       Array::push(ok_ids, value = id)
+      Array::push(dsplit_rows, value = 0)
       true
     } else {
       Array::push(bad_ids, value = id)
       false
     }
     if ok {
-      let nm = Array::get(ctx.dsplit_names, at = si)
-      let _ = pe_push_for(ctx = ctx, kind = PaConsumeMark, name = nm, binding_id = id, use_offset = Array::get(ctx.dsplit_offs, at = si))
+      let nm = Array::get(ctx.dmark_names, at = si)
+      let _ = pe_push_for(ctx = ctx, kind = PaConsumeMark, name = nm, binding_id = id, use_offset = Array::get(ctx.dmark_offs, at = si))
+      // The occurrence's dup row is still in the plan unless a merge counted
+      // it out (`pe_apply_dup_splits` drops every such row of a binding that
+      // gets here).
+      if !Array::get(ctx.dmark_dead, at = si) {
+        let ri = pe_int_array_index(xs = ok_ids, v = id)
+        Array::set(dsplit_rows, at = ri, value = Array::get(dsplit_rows, at = ri) + 1)
+      } else {
+        ()
+      }
       if pe_int_array_has(xs = done, v = id) {
         ()
       } else {
@@ -1156,15 +1168,15 @@ fn pe_emit_path_release(_ ctx: PCtx) -> Unit {
     si = si + 1
   }
   // One row per reference released. A #2389 split binding's drop releases
-  // its initial reference; a merged one's releases what every path that ran
-  // none of its marks still holds (`pe_dspare`).
+  // its initial reference; a merged one's, one per dup row its marks track,
+  // less the marks the path ran (codegen counts them in the flag).
   let mut di = 0
   while di < Array::length(done) {
     let id = Array::get(done, at = di)
     let n = if pe_int_array_has(xs = split_ok, v = id) {
       1
     } else {
-      pe_dspare(ctx = ctx, id = id)
+      Array::get(dsplit_rows, at = pe_int_array_index(xs = ok_ids, v = id))
     }
     let mut r = 0
     while r < n {
@@ -1175,29 +1187,19 @@ fn pe_emit_path_release(_ ctx: PCtx) -> Unit {
   }
 }
 
-/// How many references binding `id`'s merged path drop releases: the least
-/// any of its marking merges recorded (`pe_dup_merge`), and at least one.
-fn pe_dspare(ctx: PCtx, id: Int) -> Int {
-  let mut n = 0
+/// The position of `v` in `xs`, or -1.
+fn pe_int_array_index(xs: Array[Int], v: Int) -> Int {
+  let mut at = 0 - 1
   let mut i = 0
-  while i < Array::length(ctx.dspare_ids) {
-    if Array::get(ctx.dspare_ids, at = i) == id {
-      let c = Array::get(ctx.dspare_counts, at = i)
-      if n == 0 || c < n {
-        n = c
-      } else {
-        ()
-      }
+  while at < 0 && i < Array::length(xs) {
+    if Array::get(xs, at = i) == v {
+      at = i
     } else {
       ()
     }
     i = i + 1
   }
-  if n < 1 {
-    1
-  } else {
-    n
-  }
+  at
 }
 
 fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int], result_immediate: Bool) -> Array[PerceusAction] {
