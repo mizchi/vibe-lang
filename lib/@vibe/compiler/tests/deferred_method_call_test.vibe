@@ -1,0 +1,324 @@
+//# Imports
+
+// #4037: a dot call `c.m(..)` whose receiver is an unannotated lambda
+// parameter is checked before the enclosing call unifies that parameter with
+// its type (`Array::fold(xs, init = 0, f = (acc, c) -> acc + c.size())`). The
+// call is recorded and judged once the receiver resolves. These rows pin
+// that the correct spellings stay clean -- through fold, map, a generic
+// callback, a chain, and a receiver that stands for a bounded type parameter
+// -- and that the wrong ones are refused with the message an annotated
+// receiver gets.
+
+import @vibe/compiler/checker {
+  check_program,
+  check_program_with_env_direct_expression_return_observation,
+  check_program_with_env_typed_occurrence_expression_path_observation
+}
+
+import @vibe/compiler/checker/artifacts {
+  checked_direct_expression_return_observation_expression_path_at,
+  checked_direct_expression_return_observation_row_count,
+  checked_typed_occurrence_expression_path_observation_expression_path_at,
+  checked_typed_occurrence_expression_path_observation_row_count
+}
+
+import @vibe/compiler/core {
+  BindingOrigin, Expr, Stmt, Type, TypeEnv, TypeExpr, env_bind, env_bind_with_origin
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The first line of the checker's report for `source`, or "" when it
+/// type-checks.
+fn first_check_error(_ source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)), checked_error_row = false)
+    ""
+  } with { Exception::Throw(msg) => Array::get(String::split(msg, sep = "\n"), at = 0) }
+}
+
+/// The program prelude every row shares.
+fn counter_source(_ body: String) -> String {
+  "struct Counter {\n  n: Int\n}\nfn Counter::size(c: Counter) -> Int {\n  c.n\n}\nfn Counter::add(c: Counter, k: Int) -> Int {\n  c.n + k\n}\nfn Counter::twin(c: Counter) -> Counter {\n  c\n}\n" + body
+}
+
+//# Accepted
+
+test "#4037: correct calls on a late receiver stay clean" {
+  let fold = counter_source("fn main() -> Int {\n  let xs = [Counter::{ n: 1 }]\n  Array::fold(xs, init = 0, f = (acc, c) -> acc + c.size() + c.add(k = 10))\n}\n")
+  let map = counter_source("fn main() -> Array[Int] {\n  Array::map([Counter::{ n: 1 }], f = (c) -> c.add(k = 1))\n}\n")
+  let chain = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.twin().size())\n}\n")
+  let generic = counter_source("fn via[T](x: T, f: (T) -> Int) -> Int {\n  f(x)\n}\nfn main() -> Int {\n  via(x = Counter::{ n: 2 }, f = (c) -> c.size())\n}\n")
+  let bounded = "trait Sized {\n  size(Self) -> Int\n}\nfn total[T: Sized](xs: Array[T]) -> Int {\n  Array::fold(xs, init = 0, f = (acc, x) -> acc + x.size())\n}\nfn main() -> Int {\n  0\n}\n"
+  let field = "struct Holder {\n  f: (Int) -> Int\n}\nfn apply(h: Holder, g: (Holder) -> Int) -> Int {\n  g(h)\n}\nfn main() -> Int {\n  apply(h = Holder::{ f: (x) -> x + 1 }, g = (v) -> v.f(41))\n}\n"
+  inspect([
+    first_check_error(fold),
+    first_check_error(map),
+    first_check_error(chain),
+    first_check_error(generic),
+    first_check_error(bounded),
+    first_check_error(field)
+  ], content = "[, , , , , ]")
+}
+
+//# Rejected
+
+test "#4037: extra arguments, as for an annotated receiver" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.size(99, \"x\"))\n}\n")
+  inspect(first_check_error(src), content = "function arity mismatch for Counter::size: expected 1 args, got 3")
+}
+
+test "#4037: an argument of the wrong type" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.add(k = \"x\"))\n}\n")
+  inspect(first_check_error(src), content = "argument type mismatch for Counter::add: expected Int, got String")
+}
+
+test "#4037: a method the receiver does not have" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.nope())\n}\n")
+  inspect(first_check_error(src), content = "no method `nope` on `Counter`: declare a top-level `fn Counter::nope(...)`")
+}
+
+test "#4037: a result used at another type" {
+  let src = counter_source("fn main() -> String {\n  Array::fold([Counter::{ n: 1 }], init = \"\", f = (acc, c) -> acc + c.size())\n}\n")
+  inspect(first_check_error(src), content = "the call `.size(..)` returns Int once its receiver is known, but its value was already used as String")
+}
+
+test "#4037: a chained call on the resolved result" {
+  let src = counter_source("fn main() -> Int {\n  Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.twin().size(1))\n}\n")
+  inspect(first_check_error(src), content = "function arity mismatch for Counter::size: expected 1 args, got 2")
+}
+
+test "#4037: a function stored in a field, called with the wrong type" {
+  let src = "struct Holder {\n  f: (Int) -> Int\n}\nfn apply(h: Holder, g: (Holder) -> Int) -> Int {\n  g(h)\n}\nfn main() -> Int {\n  apply(h = Holder::{ f: (x) -> x + 1 }, g = (v) -> v.f(\"abc\"))\n}\n"
+  inspect(first_check_error(src), content = "argument type mismatch for Holder::f: expected Int, got String")
+}
+
+/// A late call through a function-valued field returns a function into a
+/// slot with its own effect row.
+fn function_result_source(return_ty: String, slot_ty: String) -> String {
+  "effect Logger { Log(String) -> Unit }\nstruct Holder { make: () -> (" + return_ty + ") }\nfn apply(h: Holder, g: (Holder) -> Int) -> Int { g(h) }\nfn use(h: Holder) -> Int {\n  apply(h = h, g = (v) -> {\n    let f: " + slot_ty + " = v.make()\n    0\n  })\n}\n"
+}
+
+test "#4037: a deferred pure function result can widen to an effectful slot" {
+  assert_eq(first_check_error(function_result_source(return_ty = "(Int) -> Int", slot_ty = "(Int) -> Int with Logger")), "")
+}
+
+test "#4037: a deferred function result cannot lose its concrete effect" {
+  let msg = first_check_error(function_result_source(return_ty = "(Int) -> Int with Logger", slot_ty = "(Int) -> Int"))
+  assert_true(String::contains(msg, needle = "the { Logger } effect would be dropped"))
+}
+
+test "#4037: a deferred result checks effect rows inside containers" {
+  let pure = "(Array[(Int) -> Int], Option[(Int) -> Int])"
+  let effectful = "(Array[(Int) -> Int with Logger], Option[(Int) -> Int with Logger])"
+  assert_eq(first_check_error(function_result_source(return_ty = pure, slot_ty = effectful)), "")
+  let msg = first_check_error(function_result_source(return_ty = effectful, slot_ty = pure))
+  assert_true(String::contains(msg, needle = "the { Logger } effect would be dropped"))
+}
+
+//# Int32 / UInt32 literals
+
+/// The prelude of the #3730 rows: methods taking 32-bit integers.
+fn int32_source(_ call: String) -> String {
+  "struct Counter {\n  n: Int\n}\nfn Counter::add(c: Counter, k: Int32) -> Int {\n  c.n\n}\nfn Counter::addu(c: Counter, k: UInt32) -> Int {\n  c.n\n}\nfn Counter::opt(c: Counter, k: Int, m?: Int32) -> Int {\n  c.n + k\n}\nfn Counter::pos(c: Counter, _ k: Int32) -> Int {\n  c.n\n}\nfn main() -> Array[Int] {\n  Array::map([Counter::{ n: 1 }], f = (c) -> " + call + ")\n}\n"
+}
+
+test "#4037: an integer literal takes a late method's Int32 / UInt32 parameter" {
+  // #3730: the same adaptation `check_written_call_arguments` applies, in the
+  // labeled, positional and optional placements.
+  inspect([
+    first_check_error(int32_source("c.add(k = 1)")),
+    first_check_error(int32_source("c.addu(k = 7)")),
+    first_check_error(int32_source("c.pos(3)")),
+    first_check_error(int32_source("c.opt(k = 1, m = 2)")),
+    first_check_error(int32_source("c.opt(k = 1)"))
+  ], content = "[, , , , ]")
+}
+
+test "#4037: a string is still refused where a late method wants Int32" {
+  inspect(first_check_error(int32_source("c.add(k = \"x\")")), content = "argument type mismatch for Counter::add: expected Int32, got String")
+}
+
+test "#4037: a literal outside UInt32's range is refused" {
+  inspect(first_check_error(int32_source("c.addu(k = -1)")), content = "integer literal -1 does not fit `UInt32` (0 .. 4294967295): use an `Int`, or write a value in range")
+}
+
+/// The callback can call a function-valued field or a declared method that
+/// returns the same sized integer as the field takes.
+fn sized_receiver_source(width: String, body: String, result: String) -> String {
+  "struct Holder { f: (" + width + ") -> Int; n: " + width + " }\nfn Holder::value(h: Holder) -> " + width + " { h.n }\nfn probe(hs: Array[Holder]) -> Array[" + result + "] {\n  Array::map(hs, f = (h) -> " + body + ")\n}\n"
+}
+
+test "#4037: a late function-valued field adapts literal arguments" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.f(1)", result = "Int")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "h.f(4294967295)", result = "Int")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.f(-1)", result = "Int")), needle = "does not fit `UInt32`"))
+}
+
+test "#4037: a literal operator waits for the late method's result width" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.value() == 0", result = "Bool")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "4294967295 >= h.value()", result = "Bool")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.value() + 1", result = "Int32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "(h.value() + 1) == 0", result = "Bool")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.value() == -1", result = "Bool")), needle = "does not fit `UInt32`"))
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "Int32", body = "{ let n: Int = 0; h.value() == n }", result = "Bool")), needle = "already used as Int"))
+}
+
+test "#4037: a conditional literal takes the late operand's integer width" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.value() == (if true { 0 } else { 1 })", result = "Bool")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "(if true { 0 } else { 1 }) <= h.value()", result = "Bool")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "h.value() == (if true { 0 } else { -1 })", result = "Bool")), needle = "does not fit `UInt32`"))
+}
+
+/// A comparison against a compound literal uses the return shape of the
+/// function-valued field, including any sized integer inside it.
+fn compound_operand_source(return_ty: String, expr: String) -> String {
+  "struct Holder { get: () -> " + return_ty + " }\nfn probe(hs: Array[Holder]) -> Array[Bool] {\n  Array::map(hs, f = (h) -> " + expr + ")\n}\n"
+}
+
+test "#4037: container literals adapt to late operands" {
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Array[Int32]", expr = "h.get() == [0]")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "(Int32, Bool)", expr = "(0, false) == h.get()")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Option[UInt32]", expr = "h.get() == Some(4294967295)")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Option[(Array[Int32], Bool)]", expr = "Some(([0], true)) == h.get()")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Array[Int32]", expr = "h.get() == (if true { [0] } else { [1] })")), "")
+  assert_true(String::contains(first_check_error(compound_operand_source(return_ty = "Option[UInt32]", expr = "h.get() == Some(-1)")), needle = "does not fit `UInt32`"))
+}
+
+test "#4037: an operator waits for late results inside its operands" {
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Int32", expr = "(h.get(), 0) == (0, 0)")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "UInt32", expr = "Some(0) == Some(h.get())")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "UInt32", expr = "[h.get(), h.get()] == [0, 0]")), "")
+  assert_eq(first_check_error(compound_operand_source(return_ty = "Int32", expr = "(h.get(), 0) == (h.get(), 0)")), "")
+  assert_true(String::contains(first_check_error(compound_operand_source(return_ty = "UInt32", expr = "Some(h.get()) == Some(-1)")), needle = "does not fit `UInt32`"))
+}
+
+test "#4037: an operator waits for a projection of a late result" {
+  let prelude = "struct Counter { n: Int32 }\nstruct Box { counter: Counter }\nstruct Holder { get: () -> Box }\n"
+  let valid = prelude + "fn probe(hs: Array[Holder]) -> Array[Bool] { Array::map(hs, f = (h) -> h.get().counter.n == 0) }"
+  assert_eq(first_check_error(valid), "")
+  let range = prelude + "fn probe(hs: Array[Holder]) -> Array[Bool] { Array::map(hs, f = (h) -> 2147483648 == h.get().counter.n) }"
+  assert_true(String::contains(first_check_error(range), needle = "does not fit `Int32`"))
+}
+
+test "#4037: unary numeric operators wait for the late method's result type" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "-h.value()", result = "Int32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "~h.value()", result = "UInt32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Float64", body = "-h.value()", result = "Float64")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Float32", body = "-h.value()", result = "Float32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "-h.value() == 0", result = "Bool")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "-h.value()", result = "UInt32")), needle = "is not defined on `UInt32`"))
+}
+
+test "#4037: an operator waits for both late operands" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "h.value() < h.value()", result = "Bool")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "h.value() + h.value()", result = "UInt32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Float64", body = "h.value() * h.value()", result = "Float64")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Float32", body = "h.value() >= h.value()", result = "Bool")), "")
+}
+
+test "#4037: if branches wait for the late result that sizes a literal" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "if true { h.value() } else { 0 }", result = "Int32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "if true { 0 } else { h.value() }", result = "UInt32")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "if true { h.value() } else { -1 }", result = "UInt32")), needle = "does not fit `UInt32`"))
+}
+
+test "#4037: a literal match arm or array element waits for the late result" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "match true { true => h.value(), false => 0 }", result = "Int32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "match true { true => 0, false => h.value() }", result = "UInt32")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "[h.value(), 0, 1]", result = "Array[Int32]")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "[0, 1, h.value(), 2]", result = "Array[UInt32]")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "[0, h.value(), -1]", result = "Array[UInt32]")), needle = "does not fit `UInt32`"))
+}
+
+test "#4037: joins wait for late results nested inside values" {
+  assert_eq(first_check_error(sized_receiver_source(width = "Int32", body = "[(h.value(), 0), (0, 0)]", result = "Array[(Int32, Int)]")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "match true { true => Some(h.value()), false => Some(0) }", result = "Option[UInt32]")), "")
+  assert_eq(first_check_error(sized_receiver_source(width = "UInt32", body = "if true { Some((h.value(), true)) } else { Some((0, false)) }", result = "Option[(UInt32, Bool)]")), "")
+  assert_true(String::contains(first_check_error(sized_receiver_source(width = "UInt32", body = "[(h.value(), false), (-1, true)]", result = "Array[(UInt32, Bool)]")), needle = "does not fit `UInt32`"))
+}
+
+//# Typed-occurrence capture
+
+/// `apply(c = d, f = (c) -> c.add(k = n))`, built by hand so the capture
+/// lanes see exactly this tree; `ann` annotates the lambda's parameter.
+fn capture_stmts(_ ann: Option[TypeExpr]) -> Array[Stmt] {
+  [
+    SStruct(false, "Counter", [("n", TyName("Int"))], array_empty(), array_empty(), array_empty()),
+    SLet(false, false, "result", None, ECall(EIdent("apply", 10), [
+      ELabeledArg("c", "", EIdent("d", 15)),
+      ELabeledArg("f", "", EFn([], [], [("c", ann)], None, None, ECall(EDot(EIdent("c", 20), "add", 21, 22), [
+        ELabeledArg("k", "", EIdent("n", 30))
+      ], 25, [])))
+    ], 11, []))
+  ]
+}
+
+fn capture_env() -> TypeEnv {
+  let counter = CtNamed("Counter", [])
+  let with_values = env_bind(env = env_bind(env = EnvEmpty, name = "d", ty = counter), name = "n", ty = CtInt)
+  let with_method = env_bind_with_origin(env = with_values, name = "Counter::add", ty = CtFn([
+    counter,
+    CtInt
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["c", "k"]))
+  env_bind_with_origin(env = with_method, name = "apply", ty = CtFn([
+    counter,
+    CtFn([counter], CtInt, None)
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["c", "f"]))
+}
+
+fn render_path(_ path: Option[Array[Int]]) -> String {
+  match path {
+    Some(steps) => String::join(for step in steps {
+      __to_string(step)
+    }, sep = "."),
+    None => "none"
+  }
+}
+
+/// Every typed-occurrence row's expression path, then whether the direct
+/// expression-return observation could be built and its row paths.
+fn capture_paths(_ ann: Option[TypeExpr]) -> String with Exception {
+  let occurrence = match check_program_with_env_typed_occurrence_expression_path_observation(stmts = capture_stmts(ann), initial_env = capture_env(), checked_error_row = false) {
+    Some(o) => {
+      let rows: Array[String] = []
+      let mut i = 0
+      while i < checked_typed_occurrence_expression_path_observation_row_count(o) {
+        Array::push(rows, value = render_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation = o, row_index = i)))
+        i = i + 1
+      }
+      String::join(rows, sep = " ")
+    },
+    None => "no occurrence observation"
+  }
+  let direct = match check_program_with_env_direct_expression_return_observation(stmts = capture_stmts(ann), initial_env = capture_env(), checked_error_row = false) {
+    Some(o) => {
+      let rows: Array[String] = []
+      let mut i = 0
+      while i < checked_direct_expression_return_observation_row_count(o) {
+        Array::push(rows, value = render_path(checked_direct_expression_return_observation_expression_path_at(observation = o, row_index = i)))
+        i = i + 1
+      }
+      String::join(rows, sep = " ")
+    },
+    None => "no direct observation"
+  }
+  occurrence + " | " + direct
+}
+
+test "#4037: a late receiver's labeled argument keeps its capture paths" {
+  // Codex on #4046: the labeled wrapper stays in the checked tree, so `n` is
+  // at its child path (`..1.0`) and the direct-return frames line up, exactly
+  // as for the annotated receiver.
+  let annotated = capture_paths(Some(TyName("Counter")))
+  inspect(capture_paths(None) == annotated, content = "true")
+  inspect(annotated, content = "1.0 2.0.0.0.0 2.0.0.1.0 2.0.0  | no direct observation")
+}

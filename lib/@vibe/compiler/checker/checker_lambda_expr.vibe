@@ -8,6 +8,10 @@ import ./checker_int32.vibe {
   int32_literal_adapt
 }
 
+import ./checker_deferred_method_call.vibe {
+  resolve_deferred_checks
+}
+
 import ./checker_retaining_write.vibe {
   retaining_write_argument_mask, retaining_write_call_mask
 }
@@ -275,8 +279,6 @@ export fn tab_identifier_ty(tytab: Array[(Int, Type)], ident_off: Int, ty: Type,
 export fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Type {
   if call_off >= 0 {
     append_legacy_typed_occurrence(tytab = tytab, offset = call_off, ty = ty, capture = capture, role = "CallResult", lane = lane)
-  } else {
-    ()
   }
   ty
 }
@@ -2092,8 +2094,9 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // formals are still open, so a parameter that became `T` is refused as
       // `T` and one that became a concrete type gets the concrete verdict.
       // The substitution comes back extended by the resolved reads' result
-      // variables, so the body type below already carries the field types.
-      let s2 = resolve_deferred_field_reads(s = s2_body, defs = defs, errors = errors, open_only = true)
+      // variables, so the body type below already carries the field types. A
+      // dot CALL on such a receiver (#4037) is judged the same way, after.
+      let (s2, c2) = resolve_deferred_checks(s = resolve_deferred_field_reads(s = s2_body, defs = defs, errors = errors, open_only = true), c = c2, env = env, defs = defs, errors = errors, last = false)
       if eq_gid >= 0 {
         eq_group_end()
       } else {

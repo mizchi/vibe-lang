@@ -7,6 +7,7 @@ import ./checker_call_arguments.vibe {
   checker_call_argument_env,
   checker_call_argument_positions,
   checker_call_argument_value,
+  checker_known_labeled_argument_env,
   seed_array_callback_elem
 }
 
@@ -22,6 +23,18 @@ import ./checker_call_placement.vibe {
 
 import ./checker_label_sites.vibe {
   checker_check_required_labels, checker_note_label_site
+}
+
+import ./checker_call_header_flow.vibe {
+  checker_call_header_is_probe
+}
+
+import ./checker_deferred_method_rows.vibe {
+  defer_method_call, struct DeferredMethodCall
+}
+
+import ./checker_deferred_method_call.vibe {
+  dot_call_builtin_receiver_message, dot_call_no_method_message
 }
 
 // lib/@vibe/compiler/checker/checker.vibe — call expr.
@@ -215,6 +228,7 @@ import ./checker_lambda_expr.vibe {
   array_reader_second_key,
   bind_array_arg,
   field_write_mut_check,
+  open_formal_name_for_var,
   record_array_receiver,
   retaining_write_region_check,
   run_body_param_cell,
@@ -2251,6 +2265,18 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             let (obj_ty, s1, c1) = check_child(obj, env, defs, s, c, errors, tytab, capture, lane)
             typed_occurrence_capture_restore_frame_depth(capture = capture, expected_depth = virtual_parent_depth)
             let resolved = subst_apply(s = s1, ty = obj_ty)
+            // #4037: a receiver that is still an unsolved variable (an
+            // unannotated lambda parameter) names no method yet. The call is
+            // recorded below and judged once the variable resolves
+            // (`resolve_deferred_checks`); its placement waits for it.
+            let late_receiver = match resolved {
+              CtVar(id) => if checker_call_header_is_probe() || open_formal_name_for_var(id = id, s = s1) != "" {
+                0 - 1
+              } else {
+                id
+              },
+              _ => 0 - 1
+            }
             let type_prefix = type_name_prefix(resolved)
             let qualified = dot_call_qualified_name(env = env, defs = defs, type_prefix = type_prefix, method = method)
             match dot_call_field_companion_refusal(env = env, defs = defs, type_prefix = type_prefix, method = method) {
@@ -2273,7 +2299,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // is not a call through a field value, so its labels are not
               // the problem.
               ()
-            } else {
+            } else if late_receiver < 0 {
               checker_record_opaque_call_placement(cell = callee_resolution, errors = errors)
             }
             // #994: `desugar_trait_dict.vibe`'s dot-call lowering (the
@@ -2299,36 +2325,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               None => false
             }
             if !has_real_fn_binding && !prefix_is_declared && is_known_builtin_receiver_prefix(type_prefix) {
-              match lookup_builtin_in_env(env = env, name = qualified) {
-                Some(_) => {
-                  Array::push(errors, value = String::concat("dot-call syntax is not supported for the builtin method `", String::concat(qualified, String::concat("` -- call it as `", String::concat(qualified, String::concat("(...)`", off_marker_len(off = qcall_field_off, len = String::length(method))))))))
-                  (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtUnknown, capture = capture, lane = lane), s1, c1)
-                },
-                None => {
-                  let bare_hint = match env_lookup(env = env, name = method) {
-                    Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
-                    None => "(...)`"
-                  }
-                  // #3163: `f.await()` on a `Future` named no method and
-                  // checked clean with an unknown result, then failed in
-                  // codegen ("unknown struct field: await"). A builtin
-                  // FUNCTION of that name is the edit the reader wants, so
-                  // lead with it rather than with declaring a method.
-                  let builtin_fn = match env_lookup(env = env, name = method) {
-                    Some(_) => false,
-                    None => match lookup_builtin_in_env(env = env, name = method) {
-                      Some(_) => true,
-                      None => false
-                    }
-                  }
-                  if builtin_fn {
-                    Array::push(errors, value = String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: `")))), String::concat(method, String::concat("` is a function, not a method -- call it as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, String::concat("`", off_marker_len(off = qcall_field_off, len = String::length(method))))))))))
-                  } else {
-                    Array::push(errors, value = String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(off = qcall_field_off, len = String::length(method))))))
-                  }
-                  (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtUnknown, capture = capture, lane = lane), s1, c1)
-                }
-              }
+              Array::push(errors, value = dot_call_builtin_receiver_message(env = env, type_prefix = type_prefix, method = method, qualified = qualified) + off_marker_len(off = qcall_field_off, len = String::length(method)))
+              (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtUnknown, capture = capture, lane = lane), s1, c1)
             } else {
               let direct_ret = direct_call_return(env = env, name = qualified, callee_off = 0 - 1)
               let method_binding = env_lookup(env = env, name = qualified)
@@ -2449,7 +2447,16 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   } else {
                     env
                   }
-                  let (at, ns, nc) = check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
+                  // #4037: a labeled argument types as `CtUnknown` until a
+                  // placement is published, and a late receiver's waits for
+                  // the receiver. Its value's type is what the judgement
+                  // compares, so the wrapper is checked in a known-value
+                  // context; it stays in the tree, keeping capture paths.
+                  let (at, ns, nc) = if late_receiver >= 0 {
+                    check_child_original(marg, checker_known_labeled_argument_env(arg = marg, env = marg_env), defs, marg_s, c3, errors, tytab, capture, lane)
+                  } else {
+                    check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
+                  }
                   Array::push(arg_tys, value = at)
                   // #3341: see the named-call path.
                   s3 = if ai < Array::length(method_param_tys) {
@@ -2520,6 +2527,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   })
                   match field_fn {
                     Some(CtFn(fpts, fret, frow)) => {
+                      if late_receiver >= 0 {
+                        checker_record_opaque_call_placement(cell = callee_resolution, errors = errors)
+                      }
                       // #3539: and its row is the field type's.
                       record_call_callee_type(call_off = call_off, callee = callee, ty = CtFn(fpts, fret, frow))
                       // #3343: a function stored in a field has no body the
@@ -2585,19 +2595,29 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                         // `CtUnknown` builtin signature. This diagnostic now only
                         // covers genuinely LOCAL user types.
                         if no_field && local_user_ty && !has_method_binding {
-                          let bare_hint = match env_lookup(env = env, name = method) {
-                            Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
-                            // Codex P2 on #961: with no bare binding of this name,
-                            // suggesting `x |> method` re-enters the same fallback
-                            // and reproduces this diagnostic — only suggest the
-                            // Type::method declaration.
-                            None => "(...)`"
-                          }
-                          Array::push(errors, value = String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(off = qcall_field_off, len = String::length(method))))))
-                        } else {
-                          ()
+                          Array::push(errors, value = dot_call_no_method_message(env = env, type_prefix = type_prefix, method = method, qualified = qualified) + off_marker_len(off = qcall_field_off, len = String::length(method)))
                         }
-                        (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtUnknown, capture = capture, lane = lane), s3, c3)
+                        if late_receiver >= 0 {
+                          // #4037: typed by a fresh variable, so what the
+                          // value flows into is checked against the method's
+                          // result once the receiver resolves.
+                          let (result_tv, nc) = fresh_var(c3)
+                          defer_method_call(DeferredMethodCall::{
+                            recv: late_receiver,
+                            callee: callee,
+                            obj: obj,
+                            method: method,
+                            method_off: qcall_field_off,
+                            call_off: call_off,
+                            cell: callee_resolution,
+                            args: args,
+                            arg_tys: Array::slice(arg_tys, start = 1, end = Array::length(arg_tys)),
+                            result: nc - 1
+                          })
+                          (tab_call_ty(tytab = tytab, call_off = call_off, ty = result_tv, capture = capture, lane = lane), s3, nc)
+                        } else {
+                          (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtUnknown, capture = capture, lane = lane), s3, c3)
+                        }
                       }
                     }
                   }
