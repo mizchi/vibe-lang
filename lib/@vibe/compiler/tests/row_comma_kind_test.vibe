@@ -1,0 +1,59 @@
+// #3417: an exception kind the checker spells from a function type,
+// `Exception[(Int, Int) -> Int]`, holds a comma inside its brackets. Row
+// set-equality (`types_equal` / `unify_effects`) and the published interface
+// fingerprint read such a row as ONE label, the way `row_items` splits it.
+// Splitting on every comma read it as two fragments, `Exception[(Int` and
+// `Int) -> Int]`: the first is not an exception label, so it compared as the
+// erased `Exception`, and two different kinds that agree after their first
+// comma compared equal.
+
+import @vibe/compiler/core {
+  Subst, Type, types_equal, unify_effects
+}
+
+import @vibe/checker/engine {
+  engine_interface_effect_set_with_vars
+}
+
+/// A function `() -> Int` performing `row`.
+fn thunk(_ row: String) -> Type {
+  CtFn([], CtInt, Some(row))
+}
+
+/// Does `unify_effects` accept `a` against `b`?
+fn rows_unify(a: String, b: String) -> Bool {
+  match unify_effects(ea = Some(a), eb = Some(b), s = SubstEmpty) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// The interface fingerprint of `row`, with no captures to name.
+fn fingerprint(_ row: String) -> String {
+  let ids: Array[Int] = []
+  let names: Array[String] = []
+  engine_interface_effect_set_with_vars(effect_name = Some(row), ids = ids, names = names)
+}
+
+test "named kinds stay distinct (control)" {
+  assert(!types_equal(a = thunk("Exception[IoErr]"), b = thunk("Exception[ParseErr]")))
+  assert(!rows_unify(a = "Exception[IoErr]", b = "Exception[ParseErr]"))
+  assert(types_equal(a = thunk("Exception[IoErr]"), b = thunk("Exception[IoErr]")))
+}
+
+test "function kinds that differ before their first comma stay distinct" {
+  assert(!types_equal(a = thunk("Exception[(Int, Int) -> Int]"), b = thunk("Exception[(String, Int) -> Int]")))
+  assert(!rows_unify(a = "Exception[(Int, Int) -> Int]", b = "Exception[(String, Int) -> Int]"))
+  assert(types_equal(a = thunk("Exception[(Int, Int) -> Int]"), b = thunk("Exception[(Int, Int) -> Int]")))
+  assert(types_equal(a = thunk("Exception[(Int, Int) -> Int], IO"), b = thunk("IO, Exception[(Int, Int) -> Int]")))
+}
+
+test "a function kind is one label in the interface fingerprint" {
+  inspect(fingerprint("IO, Exception[(Int, Int) -> Int]"), content = "[Exception[(Int, Int) -> Int],IO]")
+}
+
+test "rows that swap kinds' second parameters have different fingerprints" {
+  let a = fingerprint("Exception[(Int, String) -> Int], Exception[(Bool, Int) -> Int]")
+  let b = fingerprint("Exception[(Int, Int) -> Int], Exception[(Bool, String) -> Int]")
+  assert(a != b)
+}

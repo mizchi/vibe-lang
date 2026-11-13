@@ -301,19 +301,59 @@ fn dep_order_seed() -> Int {
 /// Accumulated in memory and written once, not appended per module: the row
 /// order IS the execution order, so a partial file from an aborted run would
 /// read as a legitimate shorter schedule rather than as a truncated one.
+///
+/// #2498: the trace exists only in a compiler built with `VIBE_CFG=telemetry`
+/// (the generation's stage2; scripts/generate_bundle.sh flattens it with
+/// `VIBE_COMPILER_CFG=telemetry`). Each declaration here and the row writers
+/// in typecheck_fs_ensure_fingerprint_fs_impl.vibe has a
+/// `#cfg(not(telemetry))` twin of the same signature, so the compile-only
+/// artifact keeps no path cell and no row writer, and refuses the request by
+/// name (`scheduler_trace_refusal`) instead of answering it with no file.
+#cfg(telemetry)
 let scheduler_trace_cell: Array[String] = array_empty()
 
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_SCHEDULER_TRACE`, or `""` when it
+/// can. The CLI asks before any work and throws a non-empty answer.
+export fn scheduler_trace_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_SCHEDULER_TRACE`, or `""` when it
+/// can. This build has no trace writer, so it always refuses.
+export fn scheduler_trace_refusal() -> String {
+  "VIBE_SCHEDULER_TRACE needs a compiler built with VIBE_CFG=telemetry, and this one was built without it: unset the variable, or use the generation's stage2 (scripts/generate_bundle.sh flattens it with VIBE_COMPILER_CFG=telemetry)"
+}
+
+#cfg(telemetry)
+/// Record this invocation's walk to `path` (`""` turns the trace off).
 export fn set_scheduler_trace_path(_ path: String) -> Unit {
   Array::truncate(scheduler_trace_cell, length = 0)
   Array::push(scheduler_trace_cell, value = path)
 }
 
+#cfg(not(telemetry))
+/// No trace writer in this build. A request is refused before the walk by
+/// `scheduler_trace_refusal`, so nothing is recorded.
+export fn set_scheduler_trace_path(_ path: String) -> Unit {
+  ()
+}
+
+#cfg(telemetry)
+/// The file this invocation's walk is traced to, or `""` when it is not.
 export fn scheduler_trace_path() -> String {
   if Array::length(scheduler_trace_cell) > 0 {
     Array::get(scheduler_trace_cell, at = 0)
   } else {
     ""
   }
+}
+
+#cfg(not(telemetry))
+/// No trace writer in this build: the walk is never traced.
+export fn scheduler_trace_path() -> String {
+  ""
 }
 
 /// --- #1259: cross-module diagnostic collection ---------------------------

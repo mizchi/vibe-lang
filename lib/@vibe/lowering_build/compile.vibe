@@ -4,6 +4,9 @@ import @vibe/lowering_worker/linear {
 import @vibe/compiler/config {
   configure_compiler_cfg_flags
 }
+import @vibe/cli/support {
+  finalize_thrown_diagnostic, format_check_report
+}
 
 import @vibe/compiler/codegen/executable {
   executable_exports_stripped, strip_executable_wasm_env
@@ -160,7 +163,7 @@ fn single_compile(checked_error_row: Bool) -> Unit with Env + Exception + Fs {
   Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), bytes = strip_executable_wasm_env(wasm = bytes, entry_name = Env::get("VIBE_LOWERING_ENTRY")))
 }
 
-fn main() -> Unit allows Env + Exception + Fs {
+fn run_lowering() -> Unit with Env + Exception + Fs {
   configure_compiler_cfg_flags()
   let checked_error_row = Env::get("VIBE_CHECK_ERROR_ROW") != "0"
   let mode = Env::get("VIBE_LOWERING_MODE")
@@ -172,4 +175,20 @@ fn main() -> Unit allows Env + Exception + Fs {
   else {
     throw("lowering: expected serial or single mode")
   }
+}
+
+/// A compile error is reported the way the serial `vibe build` reports it
+/// (#2826): the thrown diagnostic is located against the recorded merge, or
+/// its unresolved ` [@off=N]` marker is stripped, then framed `error: ` per
+/// diagnostic by the CLI's own helpers, and the image exits 1. It used to
+/// escape as an uncaught error -- `vibe: uncaught error: ... [@off=N]` plus a
+/// runner backtrace -- which the `--jobs` frontend then wrapped again.
+fn main() -> Unit allows Env + Exception + Fs + Stderr + Process::exit {
+  handle {
+    run_lowering()
+  } with { Exception::Throw(e) => {
+    Stderr::write_stream(String::concat(format_check_report(finalize_thrown_diagnostic(msg = e, args = [
+    ])), "\n"))
+    Process::exit(1)
+  } }
 }

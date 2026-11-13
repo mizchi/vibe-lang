@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { buildTaskGroupLowering } from "./taskgroup_lowering_frontend.mjs";
+import { buildTaskGroupLowering, reportFailure } from "./taskgroup_lowering_frontend.mjs";
 
 export async function buildTaskGroupFunctions(options) {
   if (process.env.VIBE_UNSTABLE !== "1") throw new Error("functions require VIBE_UNSTABLE=1");
@@ -16,5 +16,5 @@ export async function buildTaskGroupFunctions(options) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [compiler, input, output, entry, count, root, artifacts, runner] = process.argv.slice(2);
   buildTaskGroupFunctions({ compiler, input, output, entry, jobs: Number(count), root, artifacts, runner })
-    .catch(e => { console.error(`build --jobs functions: ${e.message}`); process.exitCode = 1; });
+    .catch(e => reportFailure("functions", e));
 }

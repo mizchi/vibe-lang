@@ -257,16 +257,9 @@ try {
     print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness, trace aliases, protected output and refusal reports passed")
 
 
-def diagnostic_bodies(text, jobs):
-    """The diagnostic lines of one build's stderr without the CLI's framing.
-
-    The serial build locates each line (`error: leaf.vibe: line 8:5: `); the
-    `--jobs` frontend reports the compile image's uncaught error instead,
-    with the site still a ` [@off=N]` marker and a runner backtrace after it.
-    """
-    if jobs:
-        body = text.split("vibe: uncaught error: ", 1)[1].split("Stack backtrace:", 1)[0].strip()
-        return [re.sub(r" \[@off=\d+\]", "", line) for line in body.splitlines()]
+def diagnostic_bodies(text):
+    """The diagnostic lines of one build's stderr without the CLI's framing
+    (`error: leaf.vibe: line 8:5: `)."""
     return [re.sub(r"^error: (\S+: line \d+:\d+: )?", "", line) for line in text.strip().splitlines()]
 
 
@@ -300,9 +293,13 @@ def refusal_parity(repo, env, runner, root):
         serial, jobs = results["serial"], results["jobs"]
         if tag == "eqeq":
             assert serial.returncode == 1 and jobs.returncode == 1, (serial, jobs)
-            expected = diagnostic_bodies(serial.stderr, jobs=False)
+            expected = diagnostic_bodies(serial.stderr)
             assert len(expected) == 2 and "`Box" in expected[0] and "`Cell`" in expected[1], serial.stderr
-            assert diagnostic_bodies(jobs.stderr, jobs=True) == expected, (expected, jobs.stderr)
+            # #2826: the `--jobs` route reports a compile error exactly as the
+            # serial build does -- located, framed `error: ` per diagnostic --
+            # not as the lowering image's uncaught error with a raw
+            # ` [@off=N]` marker and a runner backtrace.
+            assert jobs.stderr == serial.stderr, (serial.stderr, jobs.stderr)
         else:
             assert serial.returncode == 0 and jobs.returncode == 0, (serial, jobs)
             assert (project / "jobs.wasm").read_bytes() == (project / "serial.wasm").read_bytes(), tag
