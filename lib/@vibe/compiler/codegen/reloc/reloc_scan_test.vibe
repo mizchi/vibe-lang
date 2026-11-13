@@ -10,6 +10,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/reloc {
+  body_relocs_count,
   rebuild_body_relocs,
   rebuild_body_relocs_with_slot_width,
   reloc_kind_blocktype,
@@ -342,6 +343,49 @@ test "#3941: function, tag, global and type indices are padded; a table index is
   let indirect = [0x11, 0x82, 0x80, 0x00, 0x00, 0x0B]
   let want = Array::concat(Array::concat(global_get, call), Array::concat(throw_tag, indirect))
   assert_eq(bytes_to_ints(padded), want)
+}
+
+test "#3941: a type-index blocktype is padded; a value-type blocktype and a heap type are not" {
+  // if (type 13) end ; if (result i64) end ; ref.null 13 ; drop ; end.
+  // Only `emit_if_type_index` pads, so only the first site grows.
+  let codes = [0x04, 0x0D, 0x0B, 0x04, 0x7E, 0x0B, 0xD0, 0x0D, 0x1A, 0x0B]
+  let b = body_of(codes)
+  let r = scan_body_relocs(body = b, start = 0, end_pos = Bytes::length(b))
+  assert_eq(body_relocs_count(r), 2)
+  assert_eq(Array::get(r.kinds, at = 0), reloc_kind_blocktype)
+  assert_eq(Array::get(r.kinds, at = 1), reloc_kind_heaptype)
+  let padded = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = r.values, slot_width = 3)
+  assert_eq(bytes_to_ints(padded), [
+    0x04,
+    0x8D,
+    0x80,
+    0x00,
+    0x0B,
+    0x04,
+    0x7E,
+    0x0B,
+    0xD0,
+    0x0D,
+    0x1A,
+    0x0B
+  ])
+}
+
+test "#3941: a padded blocktype reads back and keeps its sign bit clear at 64" {
+  // `0x04 0x8D 0x80 0x00` is `if (type 13)` at width 3. Moved to 64 it stays
+  // three bytes; minimal sleb would need two (`0xC0 0x00`), because a lone
+  // `0x40` reads as -64, the empty blocktype.
+  let codes = [0x04, 0x8D, 0x80, 0x00, 0x0B, 0x0B]
+  let b = body_of(codes)
+  let r = scan_body_relocs(body = b, start = 0, end_pos = Bytes::length(b))
+  assert_eq(Array::get(r.values, at = 0), 13)
+  assert_eq(Array::get(r.widths, at = 0), 3)
+  let same = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = r.values, slot_width = 3)
+  assert_eq(bytes_to_ints(same), codes)
+  let moved = rebuild_body_relocs_with_slot_width(body = b, start = 0, end_pos = Bytes::length(b), r = r, new_values = [
+    64
+  ], slot_width = 3)
+  assert_eq(bytes_to_ints(moved), [0x04, 0xC0, 0x80, 0x00, 0x0B, 0x0B])
 }
 
 fn refusal(_ codes: Array[Int]) -> String {
