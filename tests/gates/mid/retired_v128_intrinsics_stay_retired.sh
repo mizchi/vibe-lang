@@ -1911,6 +1911,35 @@ done
 rm -rf "$pjdir"
 echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pj_used B at N=20000)"
 
+# 40f0u. #4165: `Array::slice` / `xs[a:b]` borrows its source. The runtime
+#        body copies the range and retains the copied elements but never
+#        releases the source, and the planner counted the source as consumed
+#        by the call, so every slice leaked its source array (88 B per call
+#        for a 3-element literal). Unfixed, the fixture left 704,308 B in use
+#        after 2000 rounds; the bound is 20,000. The shadow lane traps on the
+#        drop of a freed block, which is what releasing a source the caller
+#        still reads after the slice would hit.
+echo "[compiler-gate] 40f0u/40 a slice releases nothing of its source, and the caller does (#4165)"
+gate_workdir ssdir "_build/_gate_rc_slice_source_release"
+for ss_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ss_lane" "fixtures/rc_slice_source_release_bounded_test.vibe" "$ssdir/ss.wasm" main
+  gate_require_artifact "$ssdir/ss.wasm" "rc_slice_source_release_bounded fixture did not compile on the $ss_lane lane (#4165)"
+  gate_run ss_out last "$ssdir/ss.wasm"
+  gate_require_eq "$ss_out" "20000" "rc_slice_source_release_bounded got '$ss_out' on the $ss_lane lane (want 20000). A trap means a slice's source was released while the caller still read it (#4165)."
+  if [ "$ss_lane" = rc ]; then
+    ss_json="$(node scripts/measure_heap.mjs "$ssdir/ss.wasm" main 2>/dev/null)"
+    ss_used="$(printf '%s' "$ss_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ss_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_slice_source_release_bounded heap ($ss_json)" >&2; exit 1
+    fi
+    if [ "$ss_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_slice_source_release_bounded heap_used=$ss_used >= 20000 (#4165 regressed: a slice leaks its source again; unfixed, this fixture measured 704,308 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$ssdir"
+echo "[compiler-gate] slice source release guard ok (20000 on bump/rc/shadow/gc, rc heap_used=$ss_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
