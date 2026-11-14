@@ -1,0 +1,49 @@
+// #4172: a `StringBuilder` is released once it goes out of scope. On the RC
+// lane the builder is an array of the pushed strings, and `build` lowers to
+// `String::join(builder, "")`, which borrows it; the planner counted `build`
+// as consuming the builder, so nothing released the array and every builder
+// leaked 88 B. Measured on a stage2 with main's RC lowering (cb6a620c40), this
+// fixture left 544,000 B of heap in use after 2000 rounds on the RC lane. The
+// strings `build` returns are fat pointers into the bump heap, which the RC
+// lane does not reclaim (ADR-0055), so the gate (tests/gates/mid, 40f0w)
+// bounds the heap at 100,000 B rather than near zero, and checks the answer on
+// the bump, rc, shadow and gc lanes. The shadow lane traps on the drop of a
+// freed block, which is what releasing a builder still pushed to after its
+// first `build` would hit (`twice`).
+//
+// Per round: 0 + 4 + 3 = 7, so 2000 * 7 = 14000.
+
+fn empty() -> Int {
+  let b = StringBuilder::new()
+  String::length(StringBuilder::build(b))
+}
+
+fn literals() -> Int {
+  let b = StringBuilder::new()
+  StringBuilder::push(b, value = "ab")
+  StringBuilder::push(b, value = "cd")
+  String::length(StringBuilder::build(b))
+}
+
+fn twice() -> Int {
+  let b = StringBuilder::new()
+  StringBuilder::push(b, value = "x")
+  let first = StringBuilder::build(b)
+  StringBuilder::push(b, value = "y")
+  let second = StringBuilder::build(b)
+  String::length(first) + String::length(second)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + empty() + literals() + twice()
+    i = i + 1
+  }
+  acc
+}
+
+test "the answer" {
+  inspect(main(), content = "14000")
+}

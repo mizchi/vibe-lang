@@ -1911,6 +1911,35 @@ done
 rm -rf "$pjdir"
 echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pj_used B at N=20000)"
 
+# 40f0w. #4172: a `StringBuilder` is released at its scope's end. On the RC
+#        lane it is an array of the pushed strings, and `build` lowers to a
+#        borrowing `String::join`; the planner counted `build` as consuming
+#        the builder, so every builder leaked its array (88 B). Unfixed, the
+#        fixture left 544,000 B in use after 2000 rounds. The strings `build`
+#        returns are bump fat pointers the RC lane does not reclaim
+#        (ADR-0055), so the bound is 100,000 B, not near zero. The shadow lane
+#        traps on the drop of a freed block, which is what releasing a builder
+#        still pushed to after its first `build` would hit.
+echo "[compiler-gate] 40f0w/40 a StringBuilder is released at its scope's end (#4172)"
+gate_workdir sbdir "_build/_gate_rc_stringbuilder_release"
+for sb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$sb_lane" "fixtures/rc_stringbuilder_release_bounded_test.vibe" "$sbdir/sb.wasm" main
+  gate_require_artifact "$sbdir/sb.wasm" "rc_stringbuilder_release_bounded fixture did not compile on the $sb_lane lane (#4172)"
+  gate_run sb_out last "$sbdir/sb.wasm"
+  gate_require_eq "$sb_out" "14000" "rc_stringbuilder_release_bounded got '$sb_out' on the $sb_lane lane (want 14000). A trap means a builder was released while it was still pushed to (#4172)."
+  if [ "$sb_lane" = rc ]; then
+    sb_used="$(node scripts/measure_heap.mjs "$sbdir/sb.wasm" main 2>/dev/null | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sb_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_stringbuilder_release_bounded heap" >&2; exit 1
+    fi
+    if [ "$sb_used" -ge 100000 ]; then
+      echo "[compiler-gate] FAIL: rc_stringbuilder_release_bounded heap_used=$sb_used >= 100000 (#4172 regressed: a StringBuilder leaks its array again; unfixed, this fixture measured 544,000 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$sbdir"
+echo "[compiler-gate] StringBuilder release guard ok (14000 on bump/rc/shadow/gc, rc heap_used=$sb_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
