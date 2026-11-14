@@ -116,15 +116,18 @@ export fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: T
 
 fn content_initializer_regions_into(init: Expr, env: TypeEnv, out: Array[String]) -> Unit {
   match init {
-    ECall(EIdent(name, off), args, _, _) => match ascription_call_value(callee = EIdent(name, off), args = args) {
+    ECall(callee, args, _, _) => match ascription_call_value(callee = callee, args = args) {
       Some(inner) => content_initializer_regions_into(init = inner, env = env, out = out),
-      None => if retention_name_scope(env = env, name = name) != 1 && content_result_may_hold(name = name, env = env) {
-        match retention_decl_value(name) {
-          Some(EFn(tparams, _, params, _, _, body)) => if content_call_result_has_outer(name = name, tparams = tparams, params = params, body = body, env = env, calls = content_calls_new()) {
-            content_union(out = out, items = retention_active_region_names(env))
-          },
-          _ => ()
-        }
+      None => match callee {
+        EIdent(name, _) => if retention_name_scope(env = env, name = name) != 1 && content_result_may_hold(name = name, env = env) {
+          match retention_decl_value(name) {
+            Some(EFn(tparams, _, params, _, _, body)) => if content_call_result_has_outer(name = name, tparams = tparams, params = params, body = body, env = env, calls = content_calls_new()) {
+              content_union(out = out, items = retention_active_region_names(env))
+            },
+            _ => ()
+          }
+        },
+        _ => ()
       },
     },
     _ => ()
@@ -409,7 +412,17 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
       // A scalar result copies a value out of whatever the call reads.
       let scalar_call = match callee {
         EDot(_, _, _, _) => content_env_scalar(value = value, env = env, facts = facts),
-        EIdent(cname, _) => !callee_is_ctor_name(cname) && content_resolve(name = cname, facts = facts) == cname && !content_result_may_hold(name = cname, env = env),
+        EIdent(cname, _) => {
+          let id = content_resolve(name = cname, facts = facts)
+          if id == cname {
+            !callee_is_ctor_name(cname) && !content_result_may_hold(name = cname, env = env)
+          } else {
+            match MutMap::get(facts.alias_types, k = id) {
+              Some(t) => !content_fn_result_may_hold(t),
+              None => false
+            }
+          }
+        },
         _ => false
       }
       if scalar_call {
@@ -1068,6 +1081,7 @@ fn content_alias_type(value: Expr, env: TypeEnv, facts: ContentFacts) -> Option[
       Some(scope) => literal_item_type(item = value, env = scope),
       None => None
     },
+    EFn(tparams, _, _, Some(ret), _, _) => Some(CtFn([], resolve_type_expr_shadowed(te = ret, defs = env_type_defs(env), shadow = tparams), None)),
     _ => None
   }
 }
