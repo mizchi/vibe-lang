@@ -4,10 +4,6 @@ import @vibe/compiler/checker/annotations {
   collect_formal_kind_uses
 }
 
-import @vibe/compiler/checker/type_relations {
-  type_is_ground
-}
-
 import @vibe/compiler/checker/resume {
   pat_binds_resume as resume_pat_binds_resume, reject_resume_outside_handler as resume_reject_resume_outside_handler
 }
@@ -33,7 +29,6 @@ import @vibe/compiler/core {
   expr_children,
   find_typedef,
   instantiate,
-  is_builtin_type_name,
   is_row_provenance_label,
   let_rec_binding_anchor,
   occurs_in,
@@ -69,7 +64,26 @@ import @vibe/compiler/checker/patterns {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_arms_bind, retention_assigned_values_into, retention_decl_value, retention_pat_names_into, retention_result_items
+  retention_arms_bind,
+  retention_assigned_values_into,
+  retention_decl_value,
+  retention_module_env_cell,
+  retention_pat_names_into,
+  retention_result_items
+}
+
+import ./checker_region_call_result.vibe {
+  held_callee_untraced,
+  held_free_name_kind,
+  held_has_module_storage,
+  held_module_storage_index,
+  held_param_annotation,
+  held_value_names_into,
+  region_callee_returns_own_storage,
+  region_method_call_at,
+  region_method_callee,
+  region_outer_content_marker,
+  region_typed_method_name
 }
 
 import ./checker_erased_throw_carriers.vibe {
@@ -81,7 +95,7 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/checker/traits {
-  check_spawnable_captures
+  check_spawnable_captures, env_marker_before
 }
 
 import @vibe/compiler/checker/effects {
@@ -96,100 +110,8 @@ import ./checker_escape.vibe {
   diag_report_into
 }
 
-/// True when a UNARY operator's operand is concrete enough to reject: the
-/// operand cannot be the primitive the operator needs, whatever else is still
-/// unresolved about it. Shared by `!`, unary `-` and `~` (#2408) -- they take
-/// different primitives, but each has already matched its own accepting arms
-/// (`CtBool` / `CtInt` / `CtDouble` / `CtVar`) before consulting this, so the
-/// question left is the same one for all three.
-///
-/// `type_is_ground` alone is NOT that question, and the gap was silently
-/// wrong: it answers `false` for every `CtNamed` and for a container whose
-/// element is not ground, so `-x` on a `Cell[Int]` or a `Map` compiled clean
-/// and complemented the heap pointer, returning -237 as an ordinary `Int`.
-///
-/// The four rows below are the routes into that `false`, each measured
-/// separately (#2403 found them one at a time for `~`):
-///   * a name that resolves to a DECLARED struct or enum -- not a type formal,
-///     so never a primitive
-///   * a name with no `TypeDef` at all but which IS a builtin head -- `Map`,
-///     `MutMap`, `StringBuilder`, and the width primitive `v128`, which is
-///     not a 63-bit tagged `Int`
-///   * a container / tuple / function value -- the OUTER constructor settles
-///     it; `type_is_ground` asks about the contents, so `Array[T]` slipped
-///   * anything else ground
-///
-/// What must stay permissive: a bare `CtNamed(nm, [])` with no declaration is
-/// a rigid type formal and may yet be the primitive. `Int` / `i32` / `Bool` /
-/// `Double` never arrive here at all -- they resolve to `CtInt` / `CtBool` /
-/// `CtDouble` and are taken by the accepting arms above.
-export fn unary_operand_is_definitely_wrong(t: Type, defs: Array[TypeDef]) -> Bool {
-  match t {
-    CtUnknown => false,
-    CtNamed(nm, _) => match find_typedef(defs = defs, name = nm) {
-      Some(TDStruct(_, _, _, _)) => true,
-      Some(TDEnum(_, _, _)) => true,
-      _ => is_builtin_type_name(nm)
-    },
-    CtArray(_) => true,
-    CtOption(_) => true,
-    CtTuple(_) => true,
-    CtFn(_, _, _) => true,
-    _ => type_is_ground(t)
-  }
-}
-
-/// #1340 (ADR-0071): ground modulo a set of rigid names — a generic effect's
-/// declared op return type is usable as the perform's value type when its
-/// only non-ground parts are the effect's OWN type params (which the caller
-/// substitutes with fresh inference vars before use). Any other CtNamed /
-/// CtVar / CtForAll keeps the conservative fresh-var fallback, exactly like
-/// type_is_ground does for non-generic effects.
-export fn type_is_ground_except(t: Type, allowed: Array[String]) -> Bool {
-  match t {
-    CtNamed(nm, targs) => if Array::length(targs) == 0 {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(allowed) {
-        if Array::get(allowed, at = i) == nm {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    } else {
-      false
-    },
-    CtVar(_) => false,
-    CtForAll(_, _, _) => false,
-    CtTuple(items) => {
-      let mut ok = true
-      let mut i = 0
-      while i < Array::length(items) {
-        if !type_is_ground_except(t = Array::get(items, at = i), allowed = allowed) {
-          ok = false
-        }
-        i = i + 1
-      }
-      ok
-    },
-    CtArray(e) => type_is_ground_except(t = e, allowed = allowed),
-    CtOption(e) => type_is_ground_except(t = e, allowed = allowed),
-    CtFn(ps, r, _) => {
-      let mut ok = type_is_ground_except(t = r, allowed = allowed)
-      let mut i = 0
-      while i < Array::length(ps) {
-        if !type_is_ground_except(t = Array::get(ps, at = i), allowed = allowed) {
-          ok = false
-        }
-        i = i + 1
-      }
-      ok
-    },
-    _ => true
-  }
+export ./checker_type_ground.vibe {
+  type_is_ground_except, unary_operand_is_definitely_wrong
 }
 
 /// #1081 step 3: does a FULLY-ZONKED type contain a `CtNamed` with exactly
@@ -884,7 +806,13 @@ export fn callee_is_ctor_name(_ name: String) -> Bool {
 
 export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
   match expr {
+    // #4091: a name whose part may be outer storage (`region_outer_content_marker`)
+    // is read here as that part: every caller asks about a value read out of
+    // the name, a write into the name itself is judged by its binding.
     EIdent(name, _) => binding_predates_active_region(name = name, env = env) || match env_lookup(env = env, name = String::concat("__region_outer_alias__", name)) {
+      Some(_) => true,
+      None => false
+    } || match env_marker_before(env = env, marker = region_outer_content_marker(name), name = name) {
       Some(_) => true,
       None => false
     },
@@ -910,18 +838,25 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
         if !found {
           match retention_decl_value(callee) {
             Some(EFn(_, _, params, _, _, body)) => {
-              for index in held_result_param_indices(body = body, params = params) {
+              let held = held_result_param_indices(body = body, params = params)
+              // #4091: a result that may hold module storage (`fn get_sink()
+              // { kept }`) outlives every region, whatever its arguments.
+              found = held_has_module_storage(held)
+              for index in held {
                 if !found && index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(expr = Array::get(args, at = index), env = env) {
                   found = true
                 }
               }
               ()
             },
-            // #3498: a callee with no declaration here to read -- an imported
-            // function, a local closure -- may hand back any argument its
-            // result type could hold. Its row carries only the direct
-            // summary (`#aliasparam`), not a value built over a parameter.
+            // #3498: a callee with no declaration here to read -- an
+            // imported function, a local closure -- may hand back any
+            // argument its result type could hold. Its row carries only the
+            // direct summary (`#aliasparam`), not a value built over a
+            // parameter. #4091: it may also hand back storage of its own (an
+            // imported getter's module array, what a closure captured).
             _ => if callee_result_can_carry_region(callee_ty) {
+              found = region_callee_returns_own_storage(callee = callee, env = env)
               for a in args {
                 found = found || (!literal_item_is_inert(item = a, env = env) && !arg_is_region_token(arg = a, env = env) && expression_aliases_outer_binding(expr = a, env = env))
               }
@@ -951,23 +886,23 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
     // An immediately invoked closure is read deep, as a named callee is
     // (Codex on #3492: `((c: Cell) -> Wrap { Wrap::{ cell: c } })(outer)`).
     ECall(EFn(_, _, params, _, _, body), args, _, _) => {
-      let mut found = false
-      for index in held_result_param_indices(body = body, params = params) {
+      let held = held_result_param_indices(body = body, params = params)
+      let mut found = held_has_module_storage(held)
+      for index in held {
         if index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(expr = Array::get(args, at = index), env = env) {
           found = true
         }
       }
       found
     },
-    // Any other callee (`(if flag { wrap1 } else { wrap2 })(outer)`) is not
-    // read: its result aliases what its arguments do (Codex on #3492).
-    ECall(_, args, _, _) => {
-      let mut found = false
-      for a in args {
-        found = found || (!literal_item_is_inert(item = a, env = env) && !arg_is_region_token(arg = a, env = env) && expression_aliases_outer_binding(expr = a, env = env))
-      }
-      found
-    },
+    // #4091: a method call (`h.sink()`) runs the function its receiver's
+    // type names, read as that call; with the receiver's type unknown, every
+    // method of the module of that spelling is read.
+    ECall(EDot(recv, method, _, _), args, call_off, _) => !literal_item_is_scalar(item = expr, env = env) && method_call_aliases_outer(recv = recv, method = method, args = args, call_off = call_off, env = env),
+    // #4091: any other callee (`(if flag { get1 } else { get2 })()`) is not
+    // read, so its result may be storage of its own, as an unread named
+    // callee's is.
+    ECall(_, _, _, _) => true,
     // #3488: a literal built over an outer location reaches it through its
     // field or element (`Wrap::{ cell: c }`, then `w.cell.v = x`).
     ERecord(_, fields, _) => {
@@ -1017,6 +952,36 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
       found
     }
   }
+}
+
+/// #4091: whether a method call's result aliases a binding declared before
+/// an active region, read as a call of the function it runs, the receiver
+/// first: the one the checker resolved for this call
+/// (`region_method_call_at`), else the one the receiver's declared type
+/// names. A call neither resolves -- a receiver whose type is not a name, a
+/// call not checked yet -- may run any function, and its result is taken for
+/// outer storage. So is one that resolves to no binding and no builtin (a
+/// closure field).
+fn method_call_aliases_outer(recv: Expr, method: String, args: Array[Expr], call_off: Int, env: TypeEnv) -> Bool {
+  let all_args = [recv]
+  for a in args {
+    Array::push(all_args, value = a)
+  }
+  let noted = region_method_call_at(call_off)
+  let full = if noted != "" {
+    noted
+  } else {
+    region_method_callee(recv = recv, method = method, env = env)
+  }
+  let known = full != "" && match env_lookup(env = env, name = full) {
+    Some(_) => true,
+    None => match lookup_builtin(full) {
+      Some(_) => true,
+      None => false
+    }
+  }
+  !known || expression_aliases_outer_binding(expr = ECall(EIdent(full, -1), all_args, -1, [
+  ]), env = env)
 }
 
 /// #3488 (Codex on #3492): whether a literal's field or element is a scalar
@@ -1131,7 +1096,7 @@ fn subst_struct_params(t: Type, params: Array[String], args: Array[Type]) -> Typ
   }
 }
 
-fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
+export fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
   match item {
     EIdent(name, _) => env_lookup(env = env, name = name),
     EInt(_) => Some(CtInt),
@@ -1172,9 +1137,17 @@ fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
     },
     // A call to a named function is its declared result (Codex on #3492):
     // `tag: count(outer)` with `fn count(..) -> Int` copies an `Int`.
-    ECall(EIdent(fname, _), _, _, _) => match env_lookup(env = env, name = fname) {
-      Some(CtFn(_, ret, _)) => Some(ret),
-      _ => None
+    ECall(EIdent(fname, _), _, _, _) => literal_call_result(name = fname, env = env),
+    ECall(EDot(recv, method, _, _), _, off, _) => {
+      let resolved = region_method_call_at(off)
+      if resolved != "" {
+        literal_call_result(name = resolved, env = env)
+      } else {
+        match literal_item_type(item = recv, env = env) {
+          Some(t) => literal_call_result(name = region_typed_method_name(ty = t, method = method), env = env),
+          None => None
+        }
+      }
     },
     EDot(obj, field, _, _) => match literal_item_type(item = obj, env = env) {
       Some(CtStruct(sname)) => struct_field_type(env = env, sname = sname, args = [
@@ -1184,6 +1157,21 @@ fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
       Some(CtNamed(sname, args)) => struct_field_type(env = env, sname = sname, args = args, field = field),
       _ => None
     },
+    _ => None
+  }
+}
+
+fn literal_call_result(name: String, env: TypeEnv) -> Option[Type] {
+  match env_lookup(env = env, name = name) {
+    Some(ty) => literal_declared_result(ty),
+    None => None
+  }
+}
+
+fn literal_declared_result(_ ty: Type) -> Option[Type] {
+  match ty {
+    CtForAll(_, _, body) => literal_declared_result(body),
+    CtFn(_, ret, _) => Some(ret),
     _ => None
   }
 }
@@ -1198,6 +1186,57 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
 /// asks for that: every lambda's provenance row reading it too cost ~27 MB
 /// of the self-compile, over the heap gate.
 fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
+  // #4091: a value whose type is a scalar is copied, whatever it is read
+  // from (`state.tag`, `count(outer)`, `outer_int`), so it holds nothing.
+  if deep && held_value_is_scalar(value = body, params = params) {
+    ()
+  } else {
+    collect_result_params_at(body = body, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
+  }
+}
+
+/// #4091: whether a value a function's result reads is a scalar by its
+/// static type: a parameter annotated with a scalar type that no binder of
+/// the body shadows, or a value every
+/// name of which the module's scope binds (no parameter or binder of the
+/// body spells it), typed there as `literal_item_is_scalar` types a literal's
+/// field -- a projection by the struct's declaration, a call by its declared
+/// result. A value whose type is not established that way is not a scalar.
+fn held_value_is_scalar(value: Expr, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  match value {
+    // A binder of the body spelled like the parameter (`let n = xs`, a match
+    // arm's, a lambda's) may be what the name reads, so it is not the
+    // parameter's annotation that types it.
+    EIdent(name, _) => if checker_string_array_has(items = held_result_binders, wanted = name) {
+      false
+    } else {
+      match held_param_annotation(name = name, params = params) {
+        Some(Some(TyName(tname))) => tname == "Int" || tname == "Int32" || tname == "UInt32" || tname == "Double" || tname == "Float" || tname == "Bool" || tname == "Char" || tname == "String" || tname == "Bytes" || tname == "Unit",
+        Some(_) => false,
+        None => held_module_value_is_scalar(value = value, params = params)
+      }
+    },
+    EDot(_, _, _, _) => held_module_value_is_scalar(value = value, params = params),
+    ECall(_, _, _, _) => held_module_value_is_scalar(value = value, params = params),
+    _ => false
+  }
+}
+
+fn held_module_value_is_scalar(value: Expr, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  if Array::length(retention_module_env_cell) == 0 {
+    false
+  } else {
+    let names: Array[String] = []
+    held_value_names_into(e = value, out = names)
+    let mut module_only = true
+    for n in names {
+      module_only = module_only && !checker_string_array_has(items = held_result_binders, wanted = n) && held_param_annotation(name = n, params = params) is None
+    }
+    module_only && literal_item_is_scalar(item = value, env = Array::get(retention_module_env_cell, at = 0))
+  }
+}
+
+fn collect_result_params_at(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
   match body {
     EIdent(name, _) => {
       let mut known = false
@@ -1237,11 +1276,14 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
       // constructor or a declaration of the module is not one, unless a
       // binder of the body shadows it.
       if deep && !known && !callee_is_ctor_name(name) {
-        let declared = match retention_decl_value(name) {
-          Some(_) => !checker_string_array_has(items = held_result_binders, wanted = name),
-          None => false
+        // #4091: a module-level value is storage that outlives every region
+        // (`fn get_sink() { kept }`); a function of the module is not; a
+        // name this reading cannot account for may be either.
+        let kind = held_free_name_kind(name = name, shadowed = checker_string_array_has(items = held_result_binders, wanted = name))
+        if kind != 0 {
+          push_unique_dependency_index(out = found, index = held_module_storage_index())
         }
-        if !declared {
+        if kind == 2 {
           let mut p = 0
           while p < Array::length(params) {
             push_unique_dependency_index(out = found, index = p)
@@ -1367,12 +1409,35 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
       if deep {
         match callee {
           EFn(_, _, lambda_params, _, _, lambda_body) => for index in held_result_param_indices(body = lambda_body, params = lambda_params) {
-            if index >= 0 && index < Array::length(args) {
+            if index == held_module_storage_index() {
+              push_unique_dependency_index(out = found, index = index)
+            } else if index >= 0 && index < Array::length(args) {
               collect_result_params(body = Array::get(args, at = index), params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
             }
           },
-          _ => for arg in args {
-            collect_result_params(body = arg, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
+          // #4091: a method call's receiver is held as an argument is, and
+          // the call returns module storage where a method of the module of
+          // that spelling may (a builtin's holds only its arguments); any
+          // other callee not read here may hand back storage of its own.
+          _ => {
+            match callee {
+              EDot(recv, _, _, _) => {
+                let noted = match body {
+                  ECall(_, _, call_off, _) => region_method_call_at(call_off),
+                  _ => ""
+                }
+                if noted == "" {
+                  push_unique_dependency_index(out = found, index = held_module_storage_index())
+                } else {
+                  collect_held_call_args(callee = noted, args = [recv], params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
+                }
+                collect_result_params(body = recv, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
+              },
+              _ => push_unique_dependency_index(out = found, index = held_module_storage_index())
+            }
+            for arg in args {
+              collect_result_params(body = arg, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
+            }
           }
         }
         ()
@@ -1424,6 +1489,35 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
       collect_return_param_indices(e = rest, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
       Array::truncate(alias_names, length = alias_mark)
       Array::truncate(alias_indices, length = alias_mark)
+    },
+    // #4091 (`deep`): a `for` element holds what its iterable holds, so a
+    // helper returning one is read through the iterable rather than as a
+    // name this reading cannot account for.
+    EForIn(name, index_name, iter, loop_body) => if deep {
+      collect_return_param_indices(e = iter, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
+      let alias_mark = Array::length(alias_names)
+      let held = array_empty()
+      collect_result_params(body = iter, params = params, alias_names = alias_names, alias_indices = alias_indices, found = held, deep = deep)
+      if Array::length(held) == 0 {
+        Array::push(alias_names, value = name)
+        Array::push(alias_indices, value = -1)
+      }
+      for index in held {
+        Array::push(alias_names, value = name)
+        Array::push(alias_indices, value = index)
+      }
+      match index_name {
+        Some(i) => {
+          Array::push(alias_names, value = i)
+          Array::push(alias_indices, value = -1)
+        },
+        None => ()
+      }
+      collect_return_param_indices(e = loop_body, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = deep)
+      Array::truncate(alias_names, length = alias_mark)
+      Array::truncate(alias_indices, length = alias_mark)
+    } else {
+      collect_skeleton_returns(e = e, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found)
     },
     _ => if deep {
       for child in expr_children(e) {
@@ -1515,7 +1609,9 @@ fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(Stri
         let held = held_result_param_indices(body = callee_body, params = callee_params)
         Array::truncate(held_result_stack, length = Array::length(held_result_stack) - 1)
         for index in held {
-          if index >= 0 && index < Array::length(args) {
+          if index == held_module_storage_index() {
+            push_unique_dependency_index(out = found, index = index)
+          } else if index >= 0 && index < Array::length(args) {
             collect_result_params(body = Array::get(args, at = index), params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = true)
           }
         }
@@ -1525,7 +1621,16 @@ fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(Stri
       // not a lambda, a builtin -- hands back what its arguments hold, as the
       // call-site rule reads an unbound callee, unless it returns a scalar
       // (Codex on #3492).
+      // #4091: a callee that is not a builtin -- a closure, a parameter, an
+      // imported getter -- may also hand back storage of its own.
       _ => if !builtin_result_is_scalar(callee) {
+        let mut local = checker_string_array_has(items = held_result_binders, wanted = callee)
+        for p in params {
+          local = local || p.0 == callee || p.0 == String::concat(callee, "?")
+        }
+        if held_callee_untraced(callee = callee, local = local) {
+          push_unique_dependency_index(out = found, index = held_module_storage_index())
+        }
         for arg in args {
           collect_result_params(body = arg, params = params, alias_names = alias_names, alias_indices = alias_indices, found = found, deep = true)
         }

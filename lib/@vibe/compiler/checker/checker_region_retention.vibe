@@ -114,7 +114,13 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  hce_decl_facts, retention_alias_names, retention_arg_values, retention_decls, retention_is_function_type, retention_result_items
+  hce_decl_facts,
+  retention_alias_names,
+  retention_arg_values,
+  retention_decls,
+  retention_is_function_type,
+  retention_module_env_cell,
+  retention_result_items
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -151,6 +157,12 @@ import ./checker_region_retention_summary.vibe {
 export ./checker_region_retention_types.vibe {
   retention_type_hides_region
 }
+export ./checker_region_call_result.vibe {
+  retention_name_scope
+}
+import ./checker_region_call_result.vibe {
+  region_method_calls, retention_arg_content, retention_name_scope
+}
 import ./checker_region_retention_types.vibe {
   retention_type_hides_region
 }
@@ -161,18 +173,14 @@ import ./checker_region_retention_types.vibe {
 /// `(literal, name, bound by let rec)`. A binding's marker holds its index.
 let retention_closures: Array[(Expr, String, Bool)] = []
 
-/// The environment of the top-level statement being checked: the scope a
-/// top-level function's body is re-checked in.
-let retention_module_env_cell: Array[TypeEnv] = []
-
-/// `(parameter type, regions, callee, carried)` for each parameter of the
+/// `(parameter type, regions, callee, carried, contents)` for each parameter of the
 /// lambda a re-check is about to check, taken by `check_lambda_expr` on
 /// entry: the argument's type, the regions its location predates, what a
 /// function argument is (a `p:` index into `retention_arg_lambdas`, `o` for a
 /// function nothing is known about, empty otherwise), and the regions the
 /// argument's value carries where its type does not show them
-/// (`retention_value_regions`).
-let retention_param_override_cell: Array[Array[(Type, Array[String], String, Array[String])]] = [
+/// (`retention_value_regions`), and the regions its contents predate.
+let retention_param_override_cell: Array[Array[(Type, Array[String], String, Array[String], Array[String])]] = [
 ]
 
 /// The lambdas a re-check's function arguments stand for, with the scope each
@@ -241,6 +249,7 @@ export fn retention_begin_module(_ stmts: Array[Stmt]) -> (Array[(String, Expr)]
   Array::truncate(hce_decl_facts, length = 0)
   Array::truncate(retention_closures, length = 0)
   Array::truncate(retention_module_env_cell, length = 0)
+  Array::truncate(region_method_calls, length = 0)
   Array::truncate(retention_arg_lambdas, length = 0)
   Array::truncate(retention_let_rows, length = 0)
   Array::truncate(retention_let_hidden_rows, length = 0)
@@ -265,6 +274,7 @@ export fn retention_end_module(_ saved: (Array[(String, Expr)], Array[(Expr, Str
   for m in module_env {
     Array::push(retention_module_env_cell, value = m)
   }
+  Array::truncate(region_method_calls, length = 0)
   Array::truncate(retention_arg_lambdas, length = 0)
   Array::truncate(retention_let_rows, length = 0)
   Array::truncate(retention_let_hidden_rows, length = 0)
@@ -281,7 +291,7 @@ export fn retention_note_module_env(_ env: TypeEnv) -> Unit {
 /// #3343: the parameter types a re-check hands the lambda it checks, taken
 /// once, on entry, by that lambda alone. Some([]) is a zero-argument re-check;
 /// None means ordinary checking and must not overwrite the result summary.
-export fn take_retention_param_override() -> Option[Array[(Type, Array[String], String, Array[String])]] {
+export fn take_retention_param_override() -> Option[Array[(Type, Array[String], String, Array[String], Array[String])]] {
   let taken = if Array::length(retention_param_override_cell) > 0 {
     Some(Array::get(retention_param_override_cell, at = 0))
   } else {
@@ -718,7 +728,7 @@ fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String
 
 /// An optional (`x?`) parameter keeps its marker on the
 /// name; the body binds the bare name.
-fn retention_param_base(_ raw_name: String) -> String {
+export fn retention_param_base(_ raw_name: String) -> String {
   let len = String::length(raw_name)
   if len > 0 && String::byte_at(raw_name, at = len - 1) == 63 {
     String::substring(raw_name, start = 0, end = len - 1)
@@ -1872,69 +1882,6 @@ export fn retention_bind_let(env: TypeEnv, name: String, val: Expr, ty: Type, is
   }
 }
 
-/// 1 when `name` resolves to a binding made inside a body -- a function
-/// body (`__capture_boundary__`) or a top-level statement's value or test
-/// body (`#interp.top.fn`) lies behind it -- 2 when it resolves at module
-/// level, 0 when the chain has no binding of it.
-export fn retention_name_scope(env: TypeEnv, name: String) -> Int {
-  let mut cur = env
-  let mut found = false
-  let mut scope = 0
-  let mut done = false
-  while !done {
-    match cur {
-      EnvBind(n, _, rest) => {
-        if found && (String::equals(n, "__capture_boundary__") || String::equals(n, "#interp.top.fn")) {
-          scope = 1
-          done = true
-        } else if !found && String::equals(n, name) {
-          found = true
-          scope = 2
-        } else {
-          ()
-        }
-        cur = rest
-      },
-      EnvMutCell(n, _, rest) => {
-        if !found && String::equals(n, name) {
-          found = true
-          scope = 2
-        } else {
-          ()
-        }
-        cur = rest
-      },
-      EnvShowWrappers(_, _, rest) => {
-        cur = rest
-      },
-      EnvTraitDef(_, _, _, _, rest, _, _) => {
-        cur = rest
-      },
-      EnvTraitImpl(_, _, rest) => {
-        cur = rest
-      },
-      EnvTraitImplGen(_, _, _, _, rest) => {
-        cur = rest
-      },
-      EnvTypeDefs(_, _, rest) => {
-        cur = rest
-      },
-      // A name in an accelerator index is a module-level or imported one;
-      // the index is otherwise looked through (see `env_marker_before`).
-      EnvCached(index, _, rest) => if !found && env_name_index_find(index = index, name = name) >= 0 {
-        scope = 2
-        done = true
-      } else {
-        cur = rest
-      },
-      _ => {
-        done = true
-      }
-    }
-  }
-  scope
-}
-
 /// The scope the closure literal recorded as `text` was written in: what lies
 /// under the binding of `bound_name` that its marker sits in front of. An
 /// alias copies the marker, so the closure's own binding is found by the
@@ -2397,15 +2344,29 @@ fn retention_name_predates(env: TypeEnv, name: String) -> Array[String] {
   out
 }
 
-/// The regions the location an argument names was declared before: a name,
-/// a field or element of one, or a call the checker knows returns an outer
-/// binding. A fresh value names no location.
+/// The regions the location an argument names was declared before.
+/// Reading a part also includes the provenance of the container's contents.
 export fn retention_arg_predates(arg: Expr, env: TypeEnv) -> Array[String] {
   match arg {
     EIdent(name, _) => retention_name_predates(env = env, name = name),
-    EDot(obj, _, _, _) => retention_arg_predates(arg = obj, env = env),
+    EDot(obj, _, _, _) => {
+      let out = retention_arg_predates(arg = obj, env = env)
+      for r in retention_arg_content(arg = obj, env = env) {
+        if !retention_string_has(items = out, wanted = r) {
+          Array::push(out, value = r)
+        }
+      }
+      out
+    },
     ECall(EIdent("__index", _), args, _, _) => if Array::length(args) > 0 {
-      retention_arg_predates(arg = Array::get(args, at = 0), env = env)
+      let obj = Array::get(args, at = 0)
+      let out = retention_arg_predates(arg = obj, env = env)
+      for r in retention_arg_content(arg = obj, env = env) {
+        if !retention_string_has(items = out, wanted = r) {
+          Array::push(out, value = r)
+        }
+      }
+      out
     } else {
       array_empty()
     },
@@ -2450,7 +2411,7 @@ struct RetentionCheckpoint {
   efn_formals: Int;
   formal_rows: Int;
   let_rhs: Array[Bool];
-  override_cell: Array[Array[(Type, Array[String], String, Array[String])]]
+  override_cell: Array[Array[(Type, Array[String], String, Array[String], Array[String])]]
 }
 
 fn retention_checkpoint() -> RetentionCheckpoint {
@@ -2555,7 +2516,7 @@ fn retention_region_env(base: TypeEnv, regions: Array[(String, Bool)]) -> TypeEn
 /// callee and the argument shape; a re-check already in progress for the same
 /// key answers nothing new, and a chain of re-checks deeper than any real
 /// program builds is refused rather than cut off silently.
-export fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, found: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String]) {
+export fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String], Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, found: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String]) {
   // A re-check skipped -- already in progress for this key, or a chain
   // deeper than any real program builds -- says nothing about the callee's
   // result, so it answers that the result may carry every region.
@@ -2801,7 +2762,7 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
               let predates = retention_arg_predates(arg = arg, env = env)
               let hidden = Array::get(hidden_by_arg, at = ai)
               let fn_arg = retention_arg_callee(arg = arg, arg_ty = arg_ty, env = env)
-              Array::push(overrides, value = (arg_ty, predates, fn_arg, hidden))
+              Array::push(overrides, value = (arg_ty, predates, fn_arg, hidden, retention_arg_content(arg = arg, env = env)))
               // Codex on #3359: WHICH regions the argument carries, not
               // whether it carries one -- a recursive call that moves an
               // inner group's handle into a parameter the first call gave
@@ -2811,6 +2772,7 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
                 rname
               }
               shape = String::concat(shape, String::concat("|", String::concat(String::join(shown, sep = ","), String::concat("/", String::concat(String::join(predates, sep = ","), String::concat("/", String::concat(String::join(hidden, sep = ","), String::concat("/", retention_callee_identity(fn_arg)))))))))
+              shape = String::concat(shape, String::concat("/content:", String::join(retention_arg_content(arg = arg, env = env), sep = ",")))
               ai = ai + 1
             }
             let (kind, result_regions) = retention_recheck(lit = lit, scope = scope, regions = regions, overrides = overrides, key = shape, defs = defs, s = s_args, c = c_args, found = array_empty(), check_child = check_child)
@@ -2855,6 +2817,7 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
         RetentionSummary(summary) => if Array::length(mentioned) > 0 {
           let carried = array_empty()
           let predates = array_empty()
+          let contents = array_empty()
           let mut ai = 0
           while ai < Array::length(args) {
             let names = array_empty()
@@ -2869,9 +2832,10 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
             }
             Array::push(carried, value = names)
             Array::push(predates, value = retention_arg_predates(arg = Array::get(args, at = ai), env = env))
+            Array::push(contents, value = retention_arg_content(arg = Array::get(args, at = ai), env = env))
             ai = ai + 1
           }
-          let kind = retention_summary_refuses(summary = summary, carried = carried, predates = predates)
+          let kind = retention_summary_refuses(summary = summary, carried = carried, predates = predates, contents = contents)
           if kind > 0 {
             Array::push(errors, value = String::concat(retention_call_message(callee = label, nursery = retention_any_nursery(mentioned), kind = kind), marker))
           } else {
@@ -2946,7 +2910,7 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
             Array::push(all_regions, value = r)
           }
           let (kind, result_regions) = retention_recheck(lit = lit, scope = scope, regions = all_regions, overrides = [
-            (group_ty, array_empty(), "", array_empty())
+            (group_ty, array_empty(), "", array_empty(), array_empty())
           ], key = String::concat("run|", String::concat(retention_callee_identity(key), String::concat("|", String::join(for r in all_regions {
             let (an, _) = r
             an
@@ -2957,7 +2921,7 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
         // published (#3360), whose one argument is the group.
         RetentionSummary(summary) => (retention_summary_refuses(summary = summary, carried = [
           [rname]
-        ], predates = [array_empty()]), retention_summary_result_from(summary = summary, i = 0)),
+        ], predates = [array_empty()], contents = [array_empty()]), retention_summary_result_from(summary = summary, i = 0)),
         RetentionTrusted => (0, false),
         // Codex on #3359: a `let mut` closure, a value no closure literal is
         // bound to, a parameter -- checked where it was written, outside
@@ -2979,14 +2943,14 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
 /// keeps of its arguments (`retention_summaries_bind`), each found by
 /// re-checking the function's literal as a call made in a region would. Only
 /// a module checked for publication is summarized.
-export fn retention_bind_module_summaries(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> TypeEnv {
+export fn retention_bind_module_summaries(outer_params: (Expr) -> Array[Int], result_contents: (Expr) -> Bool, stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> TypeEnv {
   if !retention_summaries_enabled() {
     env
   } else {
     let scope = env_bind(env = env, name = "#interp.top.fn", ty = CtBool)
     let base = c + retention_counter_gap()
     let regions = [(retention_summary_region(), false)]
-    retention_summaries_bind(stmts = stmts, env = env, defs = defs, resolve = (name) -> match retention_top_level_callee(name = name, depth = 0) {
+    retention_summaries_bind(outer_params = outer_params, result_contents = result_contents, stmts = stmts, env = env, defs = defs, resolve = (name) -> match retention_top_level_callee(name = name, depth = 0) {
       RetentionVisible(lit, _, _) => (1, lit),
       RetentionOpaque => (2, EUnit),
       _ => (0, EUnit)

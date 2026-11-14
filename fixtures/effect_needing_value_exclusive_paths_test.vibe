@@ -1,0 +1,204 @@
+// #4065: reads the walk can show are plain closures compile and run.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+// A store in one `match` arm has not run in another, so the other arm's read
+// of the element that is still a plain closure compiles.
+fn other_arm(flag: Int) -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    match flag {
+      0 => {
+        Array::push(xs, value = g)
+        0
+      },
+      _ => apply(f = Array::get(xs, at = 0))
+    }
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+// A binding of a projection (`let inner = pair.1`) is read through the part it
+// was bound to, so `inner.1` is the plain closure beside the handle-bound one.
+fn projected_binding() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let pair = (g, (g, () -> 42))
+    let inner = pair.1
+    apply(f = inner.1)
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+effect Box {
+  Put(f: () -> Int) -> Int
+}
+
+// A handler arm's binder shadows an outer binding of its name: `xs` in the
+// `Box::Put(xs)` arm is the plain payload, not the outer array that holds the
+// handle-bound closure.
+fn handler_binder() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [g]
+    handle {
+      perform Box::Put(f = () -> 42)
+    } with {
+      Box::Put(xs) => resume(apply(f = xs))
+    } + Array::length(xs)
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+// A builtin whose result is a number reads no stored function: `n` is an
+// `Int`, so indexing a plain array with it hands a plain closure.
+fn scalar_result() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [g]
+    let n = Array::length(xs)
+    let plain = [() -> 42, () -> 7]
+    apply(f = Array::get(plain, at = n))
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+// A conditional argument: the branch that pushes into `xs` has not run in the
+// branch that reads `xs`, so both hand a plain closure.
+fn conditional_argument(flag: Bool) -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    apply(f = if flag {
+      Array::push(xs, value = g)
+      () -> 7
+    } else {
+      Array::get(xs, at = 0)
+    })
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+// A call earlier in an argument block runs before a later store in it: the
+// `apply` reads the element that is still a plain closure, and only then is
+// the handle-bound one pushed.
+fn earlier_call_in_argument() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    Array::length({
+      let r = apply(f = Array::get(xs, at = 0))
+      Array::push(xs, value = g)
+      Array::push(xs, value = () -> r)
+      xs
+    })
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+test "a store in one match arm is not seen by another" {
+  inspect(other_arm(flag = 1), content = "142")
+}
+
+test "a binding of a projection reads the part it was bound to" {
+  inspect(projected_binding(), content = "142")
+}
+
+test "a handler arm's binder shadows an outer binding" {
+  inspect(handler_binder(), content = "143")
+}
+
+test "a builtin's scalar result carries no stored function" {
+  inspect(scalar_result(), content = "107")
+}
+
+test "a conditional argument's branches are read apart" {
+  inspect(conditional_argument(flag = false), content = "142")
+}
+
+test "a call before a store in an argument block reads the earlier state" {
+  inspect(earlier_call_in_argument(), content = "3")
+}
+
+test "a store into a shadowing array leaves the outer argument result plain" {
+  let answer = handle {
+    let g = () -> perform Ask::Get() + 1
+    apply(f = {
+      let xs: Array[() -> Int] = [() -> 7]
+      if true {
+        let xs: Array[() -> Int] = []
+        Array::push(xs, value = g)
+      } else {
+        ()
+      }
+      Array::get(xs, at = 0)
+    })
+  } with { Ask::Get() => resume(5) }
+  inspect(answer, content = "107")
+}
+
+fn conditional_binding(flag: Bool) -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    let f = if flag {
+      Array::push(xs, value = g)
+      () -> 7
+    } else {
+      Array::get(xs, at = 0)
+    }
+    apply(f = f)
+  } with { Ask::Get() => resume(5) }
+}
+
+test "a conditional initializer reads either branch before its stores are joined" {
+  inspect(conditional_binding(flag = false), content = "142")
+  inspect(conditional_binding(flag = true), content = "107")
+}
+
+// A `for` index binder shadows an outer binding of its name: `i` is the
+// loop's `Int` index, not the outer array holding the handle-bound closure.
+fn index_binder_shadows() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let i = [g]
+    let mut total = Array::length(i)
+    for i, x in [0] {
+      total = total + x + apply(f = Array::get([() -> 42], at = i))
+    }
+    total
+  } with { Ask::Get() => resume(5) }
+}
+
+test "a for index binder shadows an outer binding" {
+  inspect(index_binder_shadows(), content = "143")
+}
+
+// A `loop` parameter shadows an outer binding of its name: `i` is the loop's
+// `Int`, not the outer array holding the handle-bound closure.
+fn loop_param_shadows() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let i = [g]
+    let picked = loop (i = 0) {
+      break(apply(f = Array::get([() -> 42], at = i)))
+    }
+    picked + Array::length(i)
+  } with { Ask::Get() => resume(5) }
+}
+
+test "a loop parameter shadows an outer binding" {
+  inspect(loop_param_shadows(), content = "143")
+}

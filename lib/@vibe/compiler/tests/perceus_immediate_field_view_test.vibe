@@ -1,0 +1,146 @@
+// #2509 / #2827: a read of a struct field declared `Int`, `Bool` or `Unit` is
+// an immediate, not a view into the object. A lambda (no declared result)
+// that consumes its struct parameter on one path and reads an `Int` field of
+// it on the other used to keep the up-front dup on the read path -- the field
+// read counted as a possible view, so the parameter's guarded path drop was
+// declined and the read path leaked one reference. The plan now takes the
+// guarded drop there. A `String` field stays a possible view, so its shape
+// keeps today's plan.
+import @vibe/compiler/query {
+  rc_plan_source, rc_validate_source, rc_validate_source_edited
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction,
+  build_perceus_plan_pinned_split,
+  build_perceus_plan_with_params_split,
+  pa_is_path_drop,
+  perceus_pin_tables,
+  perceus_set_immediate_fields
+}
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+fn plan_rows(source: String, fname: String) -> String with Exception {
+  let plan = rc_plan_source(source = source, fn_filter = fname, checked_error_row = false)
+  let rows: Array[String] = []
+  for line in String::split(plan, sep = "\n") {
+    if String::starts_with(line, prefix = fname + " ") {
+      Array::push(rows, value = line)
+    }
+  }
+  String::join(rows, sep = " ; ")
+}
+
+let shapes: String = "struct Ctx {\n  n: Int;\n  items: Array[Int]\n}\n\nfn keep(c: Ctx) -> Ctx {\n  c\n}\n\nfn count_of(c: Ctx) -> Int {\n  c.n\n}\n\nlet lam_shape = (ctx: Ctx, o: Option[Int]) -> {\n  match o {\n    Some(_) => count_of(keep(ctx)),\n    None => ctx.n\n  }\n}\n\nstruct Named {\n  name: String;\n  n: Int\n}\n\nfn keep_named(c: Named) -> Named {\n  c\n}\n\nlet named_shape = (c: Named, o: Option[Int]) -> {\n  match o {\n    Some(_) => keep_named(c).name,\n    None => c.name\n  }\n}\n"
+
+test "an Int field read lets a lambda's parameter take its guarded drop" {
+  let rows = plan_rows(source = shapes, fname = "lam_shape")
+  inspect(String::contains(rows, needle = "lam_shape ctx path_drop"), content = "true")
+}
+
+// Codex review on #4170: `vibe rc-validate` plans through the query's pin
+// too, so it checks the plan codegen emits -- the guarded drop -- and that
+// plan balances on both paths.
+let seen_path_drops: Array[Int] = [0]
+
+fn count_path_drops(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
+  for a in plan {
+    if pa_is_path_drop(a) {
+      Array::set(seen_path_drops, at = 0, value = Array::get(seen_path_drops, at = 0) + 1)
+    }
+  }
+  plan
+}
+
+test "rc-validate checks the guarded-drop plan, and it balances" {
+  Array::set(seen_path_drops, at = 0, value = 0)
+  let edited = rc_validate_source_edited(source = shapes, fn_filter = "lam_shape", edit = count_path_drops, checked_error_row = false)
+  inspect(edited, content = "")
+  inspect(Array::get(seen_path_drops, at = 0) > 0, content = "true")
+  inspect(rc_validate_source(source = shapes, fn_filter = "lam_shape", checked_error_row = false), content = "")
+}
+
+test "a String field read keeps the parameter's ordinary drop" {
+  let rows = plan_rows(source = shapes, fname = "named_shape")
+  inspect(String::contains(rows, needle = "path_drop"), content = "false")
+}
+
+struct Ctx {
+  n: Int;
+  items: Array[Int]
+}
+
+fn keep(c: Ctx) -> Ctx {
+  c
+}
+
+fn count_of(c: Ctx) -> Int {
+  c.n + Array::length(c.items)
+}
+
+let lam_shape = (ctx: Ctx, o: Option[Int]) -> {
+  match o {
+    Some(_) => count_of(c = keep(c = ctx)),
+    None => ctx.n
+  }
+}
+
+test "the lambda still answers on both paths" {
+  inspect(lam_shape(ctx = Ctx::{ n: 5, items: [1, 2] }, o = Some(1)), content = "7")
+  inspect(lam_shape(ctx = Ctx::{ n: 5, items: [1, 2] }, o = None), content = "5")
+}
+
+// Codex review on #4170: an unpinned plan right after a pinned one keeps the
+// cached context's pin when the ownership tables are unchanged, so the field
+// table must be keyed on the pin THIS plan's caller supplied. Program A pins
+// and records `Ctx.n` as an `Int`; program B, planned unpinned, has a
+// `Ctx.n` that is a `String` -- a view -- and must keep its ordinary drop.
+fn lambda_parts(_ source: String) -> (Array[(String, Option[TypeExpr])], Expr) with Exception {
+  let mut out: (Array[(String, Option[TypeExpr])], Expr) = ([], EUnit)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  for stmt in parse_program_located(tokens = tokens, starts = starts, source = source) {
+    match stmt {
+      SLet(_, _, _, _, EFn(_, _, params, _, _, body)) => {
+        out = (params, body)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn path_drop_count(_ plan: Array[PerceusAction]) -> Int {
+  let mut n = 0
+  for a in plan {
+    if pa_is_path_drop(a) {
+      n = n + 1
+    }
+  }
+  n
+}
+
+test "an unpinned plan ignores the field table a pinned plan installed" {
+  let (params, body) = lambda_parts("let b_shape = (ctx: Ctx, o: Option[Int]) -> {\n  match o {\n    Some(_) => count_of(keep(ctx)),\n    None => ctx.n\n  }\n}\n")
+  // Pin empty tables and record `Ctx.n` as immediate under that pin.
+  let tok = perceus_pin_tables(borrow_ret_names = [], borrow_param_fns = [], borrow_param_masks = [
+  ], view_ret_fns = [])
+  perceus_set_immediate_fields(token = tok, keys = ["Ctx.n"])
+  // The pinned caller reads the table (the control: it is consulted).
+  let pinned = build_perceus_plan_pinned_split(token = tok, params = params, body = body, borrow_ret_names = [
+  ], borrow_param_fns = [], borrow_param_masks = [], view_ret_fns = [], out_param_drop_start = [
+  ], result_immediate = false)
+  inspect(path_drop_count(pinned), content = "1")
+  // The same unchanged tables, unpinned: the cached context still carries
+  // `tok`, but this caller installed nothing, so the table does not apply.
+  let unpinned = build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = [
+  ], borrow_param_fns = [], borrow_param_masks = [], view_ret_fns = [], out_param_drop_start = [
+  ], result_immediate = false)
+  inspect(path_drop_count(unpinned), content = "0")
+}

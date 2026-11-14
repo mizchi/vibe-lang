@@ -29,7 +29,7 @@ includes(
 );
 includes(
   "lib/@vibe/compiler/core/builtin_registry.vibe",
-  '("Fs::publish_immutable_text", CtFn(reg_p2(a = CtString, b = CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false)',
+  '#|Fs::publish_immutable_text F2;ssb!Fs; TFTFFFF',
 );
 includes(
   "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe",

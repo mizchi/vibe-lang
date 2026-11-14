@@ -5,7 +5,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/core {
-  struct MutSet
+  struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/core {
@@ -16,7 +16,13 @@ import @vibe/compiler/core {
   borrow_ret_builtin_names,
   bsearch_leftmost,
   expr_any_node,
+  expr_child_at,
   expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_ascription_call,
+  is_borrow_ret_builtin,
   is_exception_throw_operation,
   sort_perm_by_names,
   sorted_names_of
@@ -192,6 +198,362 @@ fn strip_wrappers_for_borrow_ret(_ e: Expr) -> Expr {
   }
 }
 
+/// #4153: what a binding of the function holds. `bk_view`: a read into the
+/// expression recorded with it (`let r = Array::get(v, at = 0)` reads into
+/// `v`; a match binder reads into its scrutinee). `bk_owned`: a reference of
+/// its own (a `let` of a fresh value, a binder of a fresh scrutinee).
+/// `bk_unknown`: anything flow-dependent -- a `let mut`, a loop, `for` or
+/// handler binder, or a name bound more than once.
+let bk_view: Int = 0
+
+let bk_owned: Int = 1
+
+let bk_unknown: Int = 2
+
+/// Does pattern `p` bind `name`? (`pat_names`' walk, without collecting.)
+fn bret_pat_binds(p: Pat, name: String) -> Bool {
+  match p {
+    PBind(n) => n == name,
+    PCtor(_, args) => {
+      let mut found = false
+      for a in args {
+        found = found || bret_pat_binds(p = a, name = name)
+      }
+      found
+    },
+    PTuple(pats) => {
+      let mut found = false
+      for a in pats {
+        found = found || bret_pat_binds(p = a, name = name)
+      }
+      found
+    },
+    POr(l, _) => bret_pat_binds(p = l, name = name),
+    PStruct(_, fields) => {
+      let mut found = false
+      for f in fields {
+        found = found || bret_pat_binds(p = f.1, name = name)
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// #4153: every binding of `name` in `e`, counted into `st.count`, the last
+/// one's kind (see `bk_view`) and, for a view, what it reads into. Searched
+/// flat, with no scopes, and only on demand -- this runs inside the
+/// borrow-returning fixpoint over the whole program, so it walks with the
+/// shared child stack rather than allocating a binder table per function. A
+/// closure's binders are skipped: none of them is visible at the enclosing
+/// function's result.
+struct BretBinder {
+  mut count: Int;
+  mut kind: Int;
+  mut view: Expr
+}
+
+fn bret_note(st: BretBinder, kind: Int, view: Expr) -> Unit {
+  st.count = st.count + 1
+  st.kind = kind
+  st.view = view
+}
+
+fn bret_find_binder(e: Expr, name: String, known: MutSet[String], st: BretBinder) -> Unit {
+  match e {
+    EFn(_, _, _, _, _, _) => (),
+    ELet(n, v, b, _) => {
+      if n == name {
+        let value = bret_peel_ascription(v)
+        bret_note(st = st, kind = if bret_is_view_expr(known = known, e = value) {
+          bk_view
+        } else {
+          bk_owned
+        }, view = value)
+      } else {
+        ()
+      }
+      bret_find_binder(e = v, name = name, known = known, st = st)
+      bret_find_binder(e = b, name = name, known = known, st = st)
+    },
+    ELetMut(n, v, b, _) => {
+      if n == name {
+        bret_note(st = st, kind = bk_unknown, view = EUnit)
+      } else {
+        ()
+      }
+      bret_find_binder(e = v, name = name, known = known, st = st)
+      bret_find_binder(e = b, name = name, known = known, st = st)
+    },
+    ELetRec(n, v, b) => {
+      if n == name {
+        bret_note(st = st, kind = bk_unknown, view = EUnit)
+      } else {
+        ()
+      }
+      bret_find_binder(e = v, name = name, known = known, st = st)
+      bret_find_binder(e = b, name = name, known = known, st = st)
+    },
+    EMatch(scrut, arms) => {
+      bret_find_binder(e = scrut, name = name, known = known, st = st)
+      for arm in arms {
+        if bret_pat_binds(p = arm.0, name = name) {
+          bret_note(st = st, kind = if bret_is_view_expr(known = known, e = scrut) {
+            bk_view
+          } else {
+            bk_owned
+          }, view = scrut)
+        } else {
+          ()
+        }
+        bret_find_binder(e = arm.1, name = name, known = known, st = st)
+      }
+    },
+    EHandle(b, arms) => {
+      bret_find_binder(e = b, name = name, known = known, st = st)
+      for arm in arms {
+        if bret_pat_binds(p = arm.0, name = name) {
+          bret_note(st = st, kind = bk_unknown, view = EUnit)
+        } else {
+          ()
+        }
+        bret_find_binder(e = arm.1, name = name, known = known, st = st)
+      }
+    },
+    EForIn(n1, n2, it, b) => {
+      let second = match n2 {
+        Some(n) => n == name,
+        None => false
+      }
+      if n1 == name || second {
+        bret_note(st = st, kind = bk_unknown, view = EUnit)
+      } else {
+        ()
+      }
+      bret_find_binder(e = it, name = name, known = known, st = st)
+      bret_find_binder(e = b, name = name, known = known, st = st)
+    },
+    ELoop(params, b) => {
+      for p in params {
+        if p.0 == name {
+          bret_note(st = st, kind = bk_unknown, view = EUnit)
+        } else {
+          ()
+        }
+        bret_find_binder(e = p.1, name = name, known = known, st = st)
+      }
+      bret_find_binder(e = b, name = name, known = known, st = st)
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut i = mark
+      while i < top {
+        bret_find_binder(e = expr_child_at(i), name = name, known = known, st = st)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+/// `let x: T = e` reaches here as the identity application around `e`.
+fn bret_peel_ascription(_ e: Expr) -> Expr {
+  match e {
+    ECall(callee, args, _, _) => if is_ascription_call(callee = callee, args = args) {
+      bret_peel_ascription(Array::get(args, at = 0))
+    } else {
+      e
+    },
+    _ => e
+  }
+}
+
+/// Does `e` evaluate to a read INTO something rather than a value of its
+/// own: an alias, a field read, or a call to a borrow-returning name?
+fn bret_is_view_expr(known: MutSet[String], e: Expr) -> Bool {
+  match bret_peel_ascription(e) {
+    EIdent(_, _) => true,
+    EDot(_, _, _, _) => true,
+    ECall(EIdent(callee, _), _, _, _) => MutSet::has(known, x = callee),
+    _ => false
+  }
+}
+
+/// The names a view expression reads into: the container of a field read or
+/// of a borrow-returning builtin (its first argument, as
+/// `scope_tail_proj_root` reads it), and every named argument of a
+/// borrow-returning user function, which may hand back a view of any of
+/// them. The two Map iterator accessors are read by the user-function rule:
+/// a program may define either name itself
+/// (`source_owned_shadowable_borrow_mask`), and its body may return a view of
+/// any parameter.
+///
+/// A root that is not a name is recorded as `""`, which resolves as
+/// `bk_unknown`: a container that is a temporary or a literal, and any call
+/// not yet known to borrow. The second matters for the fixpoint: a call to a
+/// function that enters `known` in a later round would then read further, so
+/// treating it as "names nothing" accepted a function that a later round
+/// must decline, and an accepted function is never revisited
+/// (`let w = Array::get(later(v), 0)` was accepted or declined by
+/// declaration order). An unresolved root declines, and the verdict only
+/// grows as `known` does.
+fn bret_view_roots(known: MutSet[String], e: Expr, out: Array[String], container: Bool) -> Unit {
+  match bret_peel_ascription(e) {
+    EIdent(n, _) => Array::push(out, value = n),
+    EDot(obj, _, _, _) => bret_view_roots(known = known, e = obj, out = out, container = true),
+    ELabeledArg(_, _, v) => bret_view_roots(known = known, e = v, out = out, container = container),
+    ECall(EIdent(callee, _), args, _, _) => if MutSet::has(known, x = callee) && Array::length(args) > 0 {
+      if is_borrow_ret_builtin(callee) && callee != "Map::iter_get" && callee != "Map::__iter_get_unchecked" {
+        bret_view_roots(known = known, e = Array::get(args, at = 0), out = out, container = true)
+      } else {
+        for a in args {
+          bret_view_roots(known = known, e = a, out = out, container = false)
+        }
+      }
+    } else {
+      Array::push(out, value = "")
+    },
+    // A branch or a block passed or read as a value ends in one of its
+    // result expressions; each one is a root (`first(if c { v } else { v })`
+    // reads into `v`). The condition, the scrutinee and the earlier
+    // statements are not.
+    EIf(_, t, el) => {
+      bret_view_roots(known = known, e = t, out = out, container = container)
+      bret_view_roots(known = known, e = el, out = out, container = container)
+    },
+    EMatch(_, arms) => for arm in arms {
+      bret_view_roots(known = known, e = arm.1, out = out, container = container)
+    },
+    EHandle(b, arms) => {
+      bret_view_roots(known = known, e = b, out = out, container = container)
+      for arm in arms {
+        bret_view_roots(known = known, e = arm.1, out = out, container = container)
+      }
+    },
+    ESeq(_, b) => bret_view_roots(known = known, e = b, out = out, container = container),
+    ELet(_, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
+    ELetMut(_, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
+    ELetRec(_, _, b) => bret_view_roots(known = known, e = b, out = out, container = container),
+    EAssign(_, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
+    EAssignOp(_, _, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
+    _ => if container {
+      Array::push(out, value = "")
+    } else {
+      ()
+    }
+  }
+}
+
+/// What the binding `name` reads into, followed through the views it was
+/// bound to: `bk_owned` when that reaches a binding of the function's own
+/// that holds a reference, `bk_unknown` when it reaches one whose value is
+/// flow-dependent, and `bk_view` when it reaches only names the function
+/// does not bind (a parameter, a global), which its caller keeps alive.
+///
+/// `memo` holds each name already resolved for this function, so a name is
+/// resolved -- and the body searched for it -- once, however many arguments
+/// reach it: `let x2 = choose(x1, x1, c)` over a chain of such bindings would
+/// otherwise double the work at every level. A name is entered as
+/// `bk_unknown` before its own roots are followed, which also cuts the cycle
+/// a flat, scope-blind search can see.
+fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, memo: MutMap[String, Int]) -> Int {
+  if name == "" {
+    return bk_unknown
+  }
+  match MutMap::get(memo, k = name) {
+    Some(k) => return k,
+    None => ()
+  }
+  MutMap::set(memo, k = name, v = bk_unknown)
+  let st = BretBinder::{ count: 0, kind: bk_view, view: EUnit }
+  bret_find_binder(e = body, name = name, known = known, st = st)
+  let kind = if st.count == 0 {
+    bk_view
+  } else if st.count > 1 {
+    bk_unknown
+  } else if st.kind != bk_view {
+    st.kind
+  } else {
+    let roots: Array[String] = []
+    bret_view_roots(known = known, e = st.view, out = roots, container = false)
+    let mut acc = bk_view
+    for r in roots {
+      if acc != bk_owned {
+        let k = bret_resolve_root(known = known, body = body, name = r, memo = memo)
+        if k == bk_owned || k == bk_unknown {
+          acc = k
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+    acc
+  }
+  MutMap::set(memo, k = name, v = kind)
+  kind
+}
+
+/// #4153: does a result path of `top` read into a binding the function owns?
+/// That binding is released when the function returns, so such a function
+/// cannot hand back a borrowed view: classified borrow-returning, its callers
+/// never release the result while its own scope-end drop frees what a branch
+/// tail returned (`let v = [..]; if c { Array::get(v, at = 0) } else { .. }`
+/// answered with freed memory), and where the tail IS the projection the
+/// `let` retains it first (`scope_tail_proj_root`) and every call leaked
+/// that reference (#1980). Declined here, the function joins
+/// `cl_own_return_stmts`' mixed set, whose owning-return marker retains each
+/// such read, and callers release it. Only a read the marker always retains
+/// -- a field read or a borrow-returning call -- declines the verdict.
+fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> Bool {
+  bret_tail_walk(known = known, body = body, top = top, memo = MutMap::new_string())
+}
+
+fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[String, Int]) -> Bool {
+  match top {
+    ELet(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    ELetMut(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    ELetRec(_, _, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    ESeq(_, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    EAssign(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    EAssignOp(_, _, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    EIf(_, t, el) => bret_tail_walk(known = known, body = body, top = t, memo = memo) || bret_tail_walk(known = known, body = body, top = el, memo = memo),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, at = i)
+        found = bret_tail_walk(known = known, body = body, top = arm_body, memo = memo)
+        i = i + 1
+      }
+      found
+    },
+    // A bare name never declines here. The owning-return marker retains a
+    // name only when codegen knows it as borrowed, so a name handed back
+    // through it is not reliably retained (a match binder of a fresh value,
+    // a parameter the borrow inference left borrowed). A provably owned
+    // spine binding is already declined by `tail_is_borrow_ret_safe`.
+    EIdent(_, _) => false,
+    // A field read or a borrow-returning call declines on an owned or a
+    // flow-dependent root: the marker retains it whatever it reads into.
+    _ => if bret_is_view_expr(known = known, e = top) {
+      let roots: Array[String] = []
+      bret_view_roots(known = known, e = top, out = roots, container = false)
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(roots) {
+        found = bret_resolve_root(known = known, body = body, name = Array::get(roots, at = i), memo = memo) != bk_view
+        i = i + 1
+      }
+      found
+    } else {
+      false
+    }
+  }
+}
+
 /// The two Map iterator accessors have source-ownership guards in both linear
 /// and GC codegen. If source binds either exact name, its body -- not the
 /// compiler intrinsic -- determines whether the result is borrowed.
@@ -239,7 +601,7 @@ fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String
               let sp_vals: Array[Expr] = []
               let sp_excluded: Array[String] = []
               let _ = collect_spine_let_vals(e0 = body, names = sp_names, vals = sp_vals, excluded = sp_excluded)
-              if tail_is_borrow_ret_safe(known = known_set, e0 = top, spine_names = sp_names, spine_vals = sp_vals, spine_excluded = sp_excluded) {
+              if tail_is_borrow_ret_safe(known = known_set, e0 = top, spine_names = sp_names, spine_vals = sp_vals, spine_excluded = sp_excluded) && !bret_tail_reads_owned_local(known = known_set, body = body, top = top) {
                 Array::push(known, value = name)
                 MutSet::add(known_set, x = name)
                 changed = true
@@ -963,7 +1325,7 @@ export fn compute_scalar_returning_names(_ stmts: Array[Stmt]) -> Array[String] 
     match Array::get(stmts, at = i) {
       SLet(_, _, name, ty, value) =>
       match value {
-        EFn(_, _, _, _, _, _) =>
+        EFn(tparams, _, _, declared, _, _) =>
         match fn_sig_return_type(ty) {
           Some(ret) =>
           if !type_expr_is_heap(Some(ret)) {
@@ -971,7 +1333,14 @@ export fn compute_scalar_returning_names(_ stmts: Array[Stmt]) -> Array[String] 
           } else {
             ()
           },
-          None => ()
+          // A named fn can carry its explicit result on the literal alone.
+          None => match declared {
+            Some(TyName(n)) => if (n == "Int" || n == "Bool" || n == "Unit") && Array::length(tparams) == 0 {
+              Array::push(out, value = name)
+            },
+            Some(TyUnit) => Array::push(out, value = name),
+            _ => ()
+          }
         },
         _ => ()
       },

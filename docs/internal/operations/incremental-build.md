@@ -3937,7 +3937,11 @@ The lane exists only in a compiler built with the `telemetry` cfg flag, which
 the generation's stage2 is by default (#2498). A build without it -- the
 compile-only artifact -- clears the requested old sidecar like any other, then
 refuses `VIBE_ARTIFACT_INPUT_TRACE_OUT` by name, after every other observation's
-refusal, and compiles nothing.
+refusal, and compiles nothing. The request's own shape checks come first in
+every build: a trace without `VIBE_ARTIFACT_INPUT_TRACE_NONCE`, or one asked of
+a lane the trace cannot instrument (`VIBE_CHECK_ONLY=1` among them), fails with
+that validation error before any refusal, and the lane error does not name the
+telemetry flag.
 
 Strict schema version 3 records the nonce and scope disclaimer, exact
 `compile_lane`, persistent artifact kind, entry path/name/mode, and the

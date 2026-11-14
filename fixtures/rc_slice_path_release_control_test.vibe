@@ -1,0 +1,71 @@
+// #2827: the control for rc_slice_path_release_bounded_test.vibe. The same
+// program, with every slice consumed on every path, so no path drop is
+// planned and the answer is the same (14000). Gate row 40f0x compares the two
+// heaps: an `Array::slice` call leaves heap of its own in use (88 B per call,
+// measured on main and unrelated to path release), and this file makes that
+// the same on both sides, so the difference is what the path drop releases.
+
+fn keep(_ xs: Array[Int]) -> Array[Int] {
+  xs
+}
+
+fn keep_s(_ s: String) -> String {
+  s
+}
+
+fn mk(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+fn by_call(_ i: Int, _ c: Bool) -> Int {
+  let v = Array::slice(mk(i), start = 0, end = 2)
+  if c {
+    Array::length(keep(v))
+  } else {
+    Array::length(keep(v)) - 1
+  }
+}
+
+fn by_sugar(_ i: Int, _ c: Bool) -> Int {
+  let xs = mk(i)
+  let v = xs[0:2]
+  if c {
+    Array::length(keep(v))
+  } else {
+    Array::length(keep(v)) - 1
+  }
+}
+
+fn on_string(_ i: Int, _ c: Bool) -> Int {
+  let s = "a\{i % 10}b"
+  let t = s[0:2]
+  if c {
+    String::length(keep_s(t))
+  } else {
+    String::length(keep_s(t)) - 1
+  }
+}
+
+fn moved_all(_ i: Int, _ c: Bool) -> Int {
+  let v = Array::slice(mk(i), start = 1, end = 3)
+  if c {
+    Array::length(keep(v))
+  } else {
+    Array::length(keep(v)) + 1
+  }
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    let even = i % 2 == 0
+    acc = acc + by_call(i, even) + by_sugar(i, even) + on_string(i, even) + moved_all(i, even)
+    i = i + 1
+  }
+  acc
+}
+
+test "the answer" {
+  inspect(main(), content = "14000")
+}

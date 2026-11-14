@@ -1,0 +1,32 @@
+// #4065: a match on an ordinary call binds what the call returns, not its
+// arguments. `make` takes the handle-bound closure (its parameter carries the
+// row) and returns a fresh plain closure, so the arm's binder is plain and
+// handing it to a row-free parameter compiles and runs.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn make(f: () -> Int with Ask) -> Option[() -> Int] {
+  let _ = f
+  Some(() -> 42)
+}
+
+fn through_call() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    match make(f = g) {
+      Some(x) => apply(f = x),
+      None => 0
+    }
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+test "a match on an ordinary call binds its result" {
+  inspect(through_call(), content = "142")
+}

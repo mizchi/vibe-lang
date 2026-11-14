@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   TypeExpr,
   bsearch_leftmost,
   expr_child_at,
+  expr_children,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
@@ -242,7 +243,13 @@ export struct PCtx {
   // #1980: per candidate row, whether codegen may release it by the count of
   // consume marks the path ran (`pe_exit`, `pe_emit_exit_rows`).
   mut exit_counted: Array[Bool];
-  mut actions: Array[PerceusAction]
+  mut actions: Array[PerceusAction];
+  // #2509: the current plan's parameters and body, read only by a field read
+  // that would otherwise count as immediate (`pe_field_read_is_immediate`).
+  // Fields, not module-level cells, for the reason the tables above are: a
+  // field assignment releases the previous plan's, an Array::set would not.
+  mut plan_params: Array[(String, Option[TypeExpr])];
+  mut plan_body: Expr
 }
 
 export struct HeapInferCtx {
@@ -671,6 +678,201 @@ export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
   n == 1
 }
 
+/// #2509 / #2827: `Struct.field` for each field the program declares `Int`,
+/// `Bool` or `Unit`, sorted, and the pin token it was installed under
+/// (`perceus_set_immediate_fields`). Read only by a plan built under that same
+/// token, so a table left by an earlier compile never answers for another.
+let pe_imm_field_keys: Array[String] = []
+
+let pe_imm_field_token: Array[Int] = [0]
+
+/// 1 when the current plan may consult the field table at all.
+let pe_plan_fields_on: Array[Int] = [0]
+
+/// Parameters asked about in the current plan, and whether the body rebinds
+/// each (1 never, 2 rebound): the body is walked at most once per name.
+let pe_rebind_names: Array[String] = []
+
+let pe_rebind_state: Array[Int] = []
+
+/// The pin the current plan's caller supplied -- 0 for an unpinned plan,
+/// which installed no table. Not the cached context's pin: an unpinned plan
+/// over unchanged tables keeps that one.
+let pe_plan_pin: Array[Int] = [0]
+
+/// Install the immediate-field table for the plans built under pin `token`.
+/// `keys` are `Struct.field`, sorted.
+export fn perceus_set_immediate_fields(token: Int, keys: Array[String]) -> Unit {
+  Array::truncate(pe_imm_field_keys, length = 0)
+  for k in keys {
+    Array::push(pe_imm_field_keys, value = k)
+  }
+  Array::set(pe_imm_field_token, at = 0, value = token)
+}
+
+/// `Struct.field` for each field of the program's structs declared `Int`,
+/// `Bool` or `Unit` -- unsorted; the caller sorts. A generic field (`T`) or an
+/// alias is not listed: what it holds is not known here.
+export fn perceus_immediate_field_keys(_ stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, name, fields, _, _, _) => for f in fields {
+        let (fname, fty) = f
+        let imm = match fty {
+          TyName(t) => t == "Int" || t == "Bool" || t == "Unit",
+          TyUnit => true,
+          _ => false
+        }
+        if imm {
+          Array::push(out, value = name + "." + fname)
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Record the plan's parameters and body on `ctx`. An unpinned plan, or one
+/// whose pin installed no keys, leaves the field table off and releases the
+/// previous plan's.
+export fn pe_set_param_structs(ctx: PCtx, plan_pin: Int, params: Array[(String, Option[TypeExpr])], body: Expr) -> Unit {
+  Array::set(pe_plan_pin, at = 0, value = plan_pin)
+  let on = plan_pin != 0 && plan_pin == Array::get(pe_imm_field_token, at = 0) && Array::length(pe_imm_field_keys) > 0
+  Array::set(pe_plan_fields_on, at = 0, value = if on {
+    1
+  } else {
+    0
+  })
+  // `plan_body` is held exactly while `plan_params` is non-empty, so the
+  // length test below is enough to know there is something to release.
+  if on && Array::length(params) > 0 {
+    ctx.plan_params = params
+    ctx.plan_body = body
+  } else if Array::length(ctx.plan_params) > 0 {
+    ctx.plan_params = []
+    ctx.plan_body = EUnit
+  }
+  if Array::length(pe_rebind_names) > 0 {
+    Array::truncate(pe_rebind_names, length = 0)
+    Array::truncate(pe_rebind_state, length = 0)
+  }
+  ()
+}
+
+/// Does the current plan's body leave parameter `name` unbound?
+fn pe_param_never_rebound(ctx: PCtx, name: String) -> Bool {
+  let mut state = 0
+  let mut i = 0
+  while i < Array::length(pe_rebind_names) {
+    if Array::get(pe_rebind_names, at = i) == name {
+      state = Array::get(pe_rebind_state, at = i)
+    }
+    i = i + 1
+  }
+  if state == 0 {
+    let rebound = pe_body_binds_name(e = ctx.plan_body, name = name)
+    Array::push(pe_rebind_names, value = name)
+    Array::push(pe_rebind_state, value = if rebound {
+      2
+    } else {
+      1
+    })
+    !rebound
+  } else {
+    state == 1
+  }
+}
+
+/// Does `e` bind `name` anywhere -- a `let`, a pattern, a loop or `for`
+/// binder, a lambda parameter?
+fn pe_body_binds_name(e: Expr, name: String) -> Bool {
+  let direct = match e {
+    ELet(n, _, _, _) => n == name,
+    ELetMut(n, _, _, _) => n == name,
+    ELetRec(n, _, _) => n == name,
+    EForIn(n, index, _, _) => n == name || match index {
+      Some(i) => i == name,
+      None => false
+    },
+    ELoop(pairs, _) => {
+      let mut hit = false
+      for pair in pairs {
+        if pair.0 == name {
+          hit = true
+        }
+      }
+      hit
+    },
+    EFn(_, _, params, _, _, _) => {
+      let mut hit = false
+      for param in params {
+        if param.0 == name {
+          hit = true
+        }
+      }
+      hit
+    },
+    EMatch(_, arms) => pe_arms_bind_name(arms = arms, name = name),
+    EHandle(_, arms) => pe_arms_bind_name(arms = arms, name = name),
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let mut hit = false
+    for child in expr_children(e) {
+      if !hit && pe_body_binds_name(e = child, name = name) {
+        hit = true
+      }
+    }
+    hit
+  }
+}
+
+fn pe_arms_bind_name(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut hit = false
+  for arm in arms {
+    let names: Array[String] = []
+    let _ = pat_names(pat = arm.0, out = names)
+    for n in names {
+      if n == name {
+        hit = true
+      }
+    }
+  }
+  hit
+}
+
+/// Is `obj.field` a read of a field declared `Int`, `Bool` or `Unit`? Only
+/// for a parameter declared with a plain struct name that the body never
+/// rebinds, and only while the table belongs to the pin this plan's caller
+/// supplied (`pe_plan_pin`).
+fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
+  let pin = Array::get(pe_plan_pin, at = 0)
+  if Array::get(pe_plan_fields_on, at = 0) == 0 || pin != Array::get(pe_imm_field_token, at = 0) {
+    false
+  } else {
+    let mut sname = ""
+    for p in ctx.plan_params {
+      if p.0 == obj {
+        sname = match p.1 {
+          Some(TyName(t)) => t,
+          _ => ""
+        }
+      }
+    }
+    if sname == "" {
+      false
+    } else {
+      let key = sname + "." + field
+      let slot = bsearch_leftmost(sorted = pe_imm_field_keys, name = key)
+      slot >= 0 && slot < Array::length(pe_imm_field_keys) && Array::get(pe_imm_field_keys, at = slot) == key && pe_param_never_rebound(ctx = ctx, name = obj)
+    }
+  }
+}
+
 /// May the value a `let` body hands back be a VIEW -- a reference into
 /// something it does not own, the binding itself above all? The guarded path
 /// drop releases the binding after the body, and unlike the ordinary
@@ -685,6 +887,11 @@ export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
 export fn pe_tail_may_view(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
   match e {
     EIdent(x, _) => array_contains_str_pctx(arr = views, s = x),
+    // #2509 / #2827: a read of a field declared `Int`, `Bool` or `Unit` is an
+    // immediate, never a pointer into the object, so it is no view. Known
+    // only for a parameter whose declared type names the struct and whose
+    // name nothing in the body rebinds; anything else may be a view.
+    EDot(EIdent(x, _), field, _, _) => !pe_field_read_is_immediate(ctx = ctx, obj = x, field = field),
     EDot(_, _, _, _) => true,
     // The lambda return normalization's marker hands back its argument.
     ECall(EIdent(f, off), args, _, _) => if f == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {

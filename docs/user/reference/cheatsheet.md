@@ -3806,6 +3806,30 @@ Linear backend only (the binding is inline wasm). Fixtures:
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
 
+### A builtin that only returns a value cannot be a statement (#4146)
+
+A builtin whose only effect is the value it returns -- `String::concat`,
+`String::trim`, `Array::get`, `Array::length`, `Map::get`, the numeric
+conversions -- does nothing when its value is thrown away. `vibe check` refuses
+such a call as a statement of a block, and as the value a statement
+`for` / `while` body or `if` / `match` branch ends in, with the edit:
+
+```vibe skip
+fn main() -> Int {
+  let s = "a"
+  String::concat(s, "b") // refused: bind the result or delete the statement
+  String::length(s)
+}
+```
+
+Bind the result, or write `let _ = String::concat(..)` to discard it on
+purpose. The set is read off the builtin registry: a row flagged pure whose
+type has no effect row and does not return `Unit`. So `Array::set` and
+`Array::push` (which change their receiver) and `sleep` or the stdin reads
+(which act) stay statements. A program's own function of the same spelling is
+a call to that function and is not judged. `Map::set` / `Map::delete` get their
+own message, which names the assignment back (#4142).
+
 ### Calling the value of an `if` or `match` needs parentheses (#3385)
 
 `(` after a bare `if`, `match` or `handle` does not call its value. Put the

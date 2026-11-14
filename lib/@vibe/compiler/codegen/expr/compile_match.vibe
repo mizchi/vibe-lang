@@ -39,7 +39,7 @@ import @vibe/compiler/perceus {
 }
 
 import ./compile_match_path_release.vibe {
-  mpr_compile_arm
+  mpr_catch_consumes, mpr_compile_arm
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -1898,13 +1898,48 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       //
       // The Perceus plan cannot cover this: it has no rows for the enclosing
       // function at all, so no PaDup was ever planned to insert here.
-      if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
-        emit_rc_dup_guarded(buf = buf, local_idx = bind_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+      //
+      // #4161: each consume needs its own reference. When the consume sites
+      // are identifiable, take those references on demand.
+      let __catch_pbm = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
+      let __catch_n = if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
+        md_view_consume_count_pre_store(e = __catch_body, name = bname, bfns = ctx.borrow_param_user, bmasks_zeroed = __catch_pbm, store_names = ctx.rc_store_dup_names, store_offs = ctx.rc_store_dup_offs)
       } else {
-        ()
+        0
       }
       Array::push(local_names, value = bname)
-      ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+      let consumes = mpr_catch_consumes(body = __catch_body, name = bname, count = __catch_n, bmasks = __catch_pbm, local_names = local_names, ctx = ctx)
+      if Array::length(consumes) > 0 {
+        let flags = Array::length(ctx.rc_path_flag_names)
+        let marks = Array::length(ctx.rc_consume_mark_names)
+        Array::push(ctx.rc_path_flag_names, value = bname)
+        // Nonnegative entries count consumes in a wasm flag local. Encode
+        // the binder's slot below -1 for a retain at its marked use.
+        Array::push(ctx.rc_path_flag_locals, value = -2 - bind_local)
+        for off in consumes {
+          Array::push(ctx.rc_consume_mark_names, value = bname)
+          Array::push(ctx.rc_consume_mark_offs, value = off)
+        }
+        let next = ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+        Array::truncate(ctx.rc_path_flag_names, length = flags)
+        Array::truncate(ctx.rc_path_flag_locals, length = flags)
+        Array::truncate(ctx.rc_consume_mark_names, length = marks)
+        Array::truncate(ctx.rc_consume_mark_offs, length = marks)
+        next
+      } else {
+        if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
+          emit_rc_dup_guarded_n(buf = buf, local_idx = bind_local, n = if __catch_n > 1 {
+            __catch_n
+          } else {
+            1
+          }, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+        }
+        if __catch_n > 0 {
+          mpr_compile_arm(buf = buf, pat = __catch_p, body = __catch_body, names_mark = names_len_at_match, local_names = local_names, ctx = ctx, ld = ld_catch, md_bmasks = __catch_pbm, ce = ce)
+        } else {
+          ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+        }
+      }
     } else {
       if is_pctor(__catch_p) {
         // #705 dup note as above; recursive bind_match_pat replaces the

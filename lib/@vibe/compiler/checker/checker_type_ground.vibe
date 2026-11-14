@@ -1,0 +1,108 @@
+// lib/@vibe/compiler/checker -- whether a type is concrete enough to judge:
+// the operand of a unary operator, and an effect operation's declared result
+// with the effect's own type parameters left open. Moved out of
+// checker_merge_capture_provenance.vibe, which re-exports both.
+
+import @vibe/compiler/checker/type_relations {
+  type_is_ground
+}
+
+import @vibe/compiler/core {
+  Type, TypeDef, find_typedef, is_builtin_type_name
+}
+
+/// True when a UNARY operator's operand is concrete enough to reject: the
+/// operand cannot be the primitive the operator needs, whatever else is still
+/// unresolved about it. Shared by `!`, unary `-` and `~` (#2408) -- they take
+/// different primitives, but each has already matched its own accepting arms
+/// (`CtBool` / `CtInt` / `CtDouble` / `CtVar`) before consulting this, so the
+/// question left is the same one for all three.
+///
+/// `type_is_ground` alone is NOT that question, and the gap was silently
+/// wrong: it answers `false` for every `CtNamed` and for a container whose
+/// element is not ground, so `-x` on a `Cell[Int]` or a `Map` compiled clean
+/// and complemented the heap pointer, returning -237 as an ordinary `Int`.
+///
+/// The four rows below are the routes into that `false`, each measured
+/// separately (#2403 found them one at a time for `~`):
+///   * a name that resolves to a DECLARED struct or enum -- not a type formal,
+///     so never a primitive
+///   * a name with no `TypeDef` at all but which IS a builtin head -- `Map`,
+///     `MutMap`, `StringBuilder`, and the width primitive `v128`, which is
+///     not a 63-bit tagged `Int`
+///   * a container / tuple / function value -- the OUTER constructor settles
+///     it; `type_is_ground` asks about the contents, so `Array[T]` slipped
+///   * anything else ground
+///
+/// What must stay permissive: a bare `CtNamed(nm, [])` with no declaration is
+/// a rigid type formal and may yet be the primitive. `Int` / `i32` / `Bool` /
+/// `Double` never arrive here at all -- they resolve to `CtInt` / `CtBool` /
+/// `CtDouble` and are taken by the accepting arms above.
+export fn unary_operand_is_definitely_wrong(t: Type, defs: Array[TypeDef]) -> Bool {
+  match t {
+    CtUnknown => false,
+    CtNamed(nm, _) => match find_typedef(defs = defs, name = nm) {
+      Some(TDStruct(_, _, _, _)) => true,
+      Some(TDEnum(_, _, _)) => true,
+      _ => is_builtin_type_name(nm)
+    },
+    CtArray(_) => true,
+    CtOption(_) => true,
+    CtTuple(_) => true,
+    CtFn(_, _, _) => true,
+    _ => type_is_ground(t)
+  }
+}
+
+/// #1340 (ADR-0071): ground modulo a set of rigid names — a generic effect's
+/// declared op return type is usable as the perform's value type when its
+/// only non-ground parts are the effect's OWN type params (which the caller
+/// substitutes with fresh inference vars before use). Any other CtNamed /
+/// CtVar / CtForAll keeps the conservative fresh-var fallback, exactly like
+/// type_is_ground does for non-generic effects.
+export fn type_is_ground_except(t: Type, allowed: Array[String]) -> Bool {
+  match t {
+    CtNamed(nm, targs) => if Array::length(targs) == 0 {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(allowed) {
+        if Array::get(allowed, at = i) == nm {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    } else {
+      false
+    },
+    CtVar(_) => false,
+    CtForAll(_, _, _) => false,
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_is_ground_except(t = Array::get(items, at = i), allowed = allowed) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_is_ground_except(t = e, allowed = allowed),
+    CtOption(e) => type_is_ground_except(t = e, allowed = allowed),
+    CtFn(ps, r, _) => {
+      let mut ok = type_is_ground_except(t = r, allowed = allowed)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_is_ground_except(t = Array::get(ps, at = i), allowed = allowed) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}

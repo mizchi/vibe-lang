@@ -130,6 +130,10 @@ import ./checker_builtin_arg_head_rest.vibe {
   type_name_prefix
 }
 
+import ./checker_region_content_alias.vibe {
+  region_result_part_reaches_outer
+}
+
 import ./checker_closure_capture_row.vibe {
   captured_escape_tvars,
   closure_capture_row,
@@ -137,7 +141,8 @@ import ./checker_closure_capture_row.vibe {
   env_reachable_tvars,
   esc_ids_intersect,
   region_write_escape_message,
-  tail_expr_off
+  tail_expr_off,
+  type_mentions_active_region
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
@@ -436,6 +441,8 @@ export fn retaining_write_region_check(name: String, operation: Int, args: Array
   // itself does nothing for those either way.
   let retained = retaining_write_call_mask(env = env, name = name, operation = operation)
   if Array::length(args) > 0 && retained != 0 && env_has_active_region(env) {
+    let target = Array::get(args, at = 0)
+    let reaches_outer = region_result_part_reaches_outer(target = target, env = env)
     let mut value_index = 1
     while value_index <= 2 {
       let is_retained = if value_index == 1 {
@@ -448,7 +455,7 @@ export fn retaining_write_region_check(name: String, operation: Int, args: Array
         let throwtab = array_empty()
         let (val_ty, s1, c1) = ce(Array::get(args, at = value_index), env, defs, s, c, throwaway, throwtab)
         let stored_ty = subst_apply(s = s1, ty = val_ty)
-        if container_write_crosses_region(target = Array::get(args, at = 0), ty = stored_ty, env = env) {
+        if container_write_crosses_region(target = target, ty = stored_ty, env = env) || reaches_outer && type_mentions_active_region(ty = stored_ty, env = env) {
           Array::push(errors, value = String::concat(region_write_escape_message(ty = stored_ty, env = env, region_message = "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, at = value_index)))))
         } else if retention_type_hides_region(t = stored_ty, defs = defs) {
           // #3343 (Codex on #3359): a value whose type may hide a region --
@@ -460,7 +467,7 @@ export fn retaining_write_region_check(name: String, operation: Int, args: Array
           let mut refused = false
           for rname in retention_active_region_names(env) {
             let region_ty = CtNamed(rname, [])
-            if !refused && retention_region_listed(names = carried, rname = rname) && container_write_crosses_region(target = Array::get(args, at = 0), ty = region_ty, env = env) {
+            if !refused && retention_region_listed(names = carried, rname = rname) && (reaches_outer || container_write_crosses_region(target = target, ty = region_ty, env = env)) {
               refused = true
               Array::push(errors, value = String::concat(region_write_escape_message(ty = region_ty, env = env, region_message = "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, at = value_index)))))
             } else {
@@ -2013,7 +2020,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         // a function argument is, so a call of the parameter is judged too.
         let has_override = pi < Array::length(retention_override)
         let (pt, ns) = if has_override {
-          let (expected, _, _, _) = Array::get(retention_override, at = pi)
+          let (expected, _, _, _, _) = Array::get(retention_override, at = pi)
           match unify(a = pt, b = expected, s = ns) {
             Some(seeded) => (expected, seeded),
             None => (expected, ns)
@@ -2027,12 +2034,17 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         fn_env = env_bind(env = fn_env, name = String::concat("__param_marker__", name), ty = CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [
         ]))
         if has_override {
-          let (_, predates, callee, carried) = Array::get(retention_override, at = pi)
+          let (_, predates, callee, carried, contents) = Array::get(retention_override, at = pi)
           // What the argument carries where its type does not show it (a
           // struct built from the token), so a write of the parameter is
           // judged by the argument's value rather than by every region the
           // parameter is declared inside.
           fn_env = retention_bind_param_carry(env = fn_env, name = name, regions = carried)
+          if Array::length(contents) > 0 {
+            fn_env = env_bind(env = fn_env, name = String::concat("__region_outer_content__", name), ty = CtTuple(for rname in contents {
+              CtNamed(rname, [])
+            }))
+          }
           if Array::length(predates) > 0 {
             fn_env = env_bind(env = fn_env, name = String::concat("__region_outer_alias__", name), ty = CtTuple(for rname in predates {
               CtNamed(rname, [])

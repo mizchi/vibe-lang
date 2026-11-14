@@ -567,6 +567,29 @@ A joined result, or a handle kept in a local declared inside the body, is not
 an escape. Neither is a nested group storing the outer group's handle in a
 local of the outer body.
 
+A local is "declared inside the body" only when what it holds is (#4091). A
+call's result is fresh only where that is established: a builtin or a
+constructor holds only its arguments; a function of the module is read from
+its declaration, and a result that may be a module-level value -- a getter
+`fn get_sink() -> Array[..] { kept }`, with or without parameters, called
+directly, as a method, or through another function -- is a location declared
+before every region (a module-level scalar it copies is not); a method call
+is read as the function the checker resolved for it, and one it did not
+resolve may run anything; an imported function answers by the summary its
+module publishes (`g>r`), and one whose module published none -- a module
+past the summary budget -- may return its own storage, except from the
+standard library (`@vibe/*`, which publishes none by design); a closure, a
+parameter, or any other callee whose body is not read may return storage of
+its own. And a local is judged by what its
+scope stores in it, in any order: once `Array::set(init, at = 0, value =
+sink)`, `init[0] = sink` or `Array::push(init, value = sink)` puts outer
+storage in `init`, an element of `init` -- `Array::get(init, at = 0)`, a
+binder read out of it, a `for` element, a callback parameter -- is outer
+storage, while a write into `init` itself is still a write into a local. A
+`let mut` assigned outer storage is that storage. Binders are told apart by
+occurrence: an inner `let init = sink` does not make an outer `init` outer
+storage.
+
 The alias walk distinguishes each local binder's scope: an inner `let`,
 `let mut`, recursive binding, match/handler arm, for binding, or closure
 parameter with the same spelling does not become the
