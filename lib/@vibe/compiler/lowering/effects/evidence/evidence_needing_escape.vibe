@@ -645,12 +645,47 @@ fn edp_escape_store_taint(callee_nm: String, args: Array[Expr], needing: Array[S
       }
       let root = edp_data_root_items(items = rest, needing = needing, stmts = stmts, fn_defs = fn_defs)
       if root != "" {
-        let _ = edp_escape_taint(name = recv, root = root, init = None)
+        // The array is shared by every plain alias of it (`let ys = xs`), so
+        // all of them hold what was stored.
+        for name in edp_escape_alias_group(recv) {
+          let _ = edp_escape_taint(name = name, root = root, init = None)
+        }
+        ()
       }
       ()
     },
     _ => ()
   }
+}
+
+/// `name` and every local the walk's bindings connect to it through a plain
+/// alias (`let ys = xs`, either direction, transitively).
+fn edp_escape_alias_group(_ name: String) -> Array[String] {
+  let group = [name]
+  let mut grew = true
+  let mut rounds = 0
+  while grew && rounds < 16 {
+    grew = false
+    rounds = rounds + 1
+    for entry in edp_escape_tainted {
+      let (bound, _, init) = entry
+      match init {
+        Some(EIdent(src, _)) => {
+          let has_bound = edp_str_array_contains(arr = group, v = bound)
+          let has_src = edp_str_array_contains(arr = group, v = src)
+          if has_src && !has_bound {
+            Array::push(group, value = bound)
+            grew = true
+          } else if has_bound && !has_src {
+            Array::push(group, value = src)
+            grew = true
+          }
+        },
+        _ => ()
+      }
+    }
+  }
+  group
 }
 
 /// The last `::` segment of a constructor spelling (`Option::Some` -> `Some`).
