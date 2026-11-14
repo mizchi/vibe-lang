@@ -1,5 +1,5 @@
 import ./evidence_callback_adapters.vibe {
-  edp_callback_offsets_set, edp_expr_has_callback_adapter, edp_parameter_callback_slot, edp_row_free_callback_adapter
+  edp_callback_offsets_set, edp_expr_has_callback_adapter, edp_needs_callback_adapter, edp_parameter_callback_slot
 }
 
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
@@ -36,7 +36,8 @@ import @vibe/compiler/lowering/effects/queries {
   edp_mf_set_stmt,
   edp_pat_binds,
   edp_rq_fold,
-  edp_str_array_contains
+  edp_str_array_contains,
+  row_free_callback_capture_prefix
 }
 
 import ./evidence_fn_statement_index.vibe {
@@ -1988,10 +1989,13 @@ fn edp_adapt_row_free_callback(value: Expr, arity: Int, row: String, scope: Arra
     EIdent(name, _) => edp_local_lit_at(name = name, slot = edp_scope_last_index(scope = scope, name = name)) is Some(EFn(_, _, _, _, Some(_), _)),
     _ => false
   }
-  if already_stamped {
-    None
+  if !already_stamped && edp_needs_callback_adapter(value) {
+    // The compiler-only name tells the eligibility scan that calling the
+    // captured value cannot request the slot's effect.
+    let name = row_free_callback_capture_prefix + edp_snap_fresh_name("callback")
+    Some(ELet(name, value, edp_slot_wrapper(name = name, arity = arity, row = row), -1))
   } else {
-    edp_row_free_callback_adapter(value = value, arity = arity, row = row, fresh_name = () -> edp_snap_fresh_name("callback"))
+    None
   }
 }
 
