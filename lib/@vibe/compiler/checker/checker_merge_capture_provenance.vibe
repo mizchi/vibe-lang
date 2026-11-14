@@ -82,7 +82,8 @@ import ./checker_region_call_result.vibe {
   region_callee_returns_own_storage,
   region_method_call_at,
   region_method_callee,
-  region_outer_content_marker
+  region_outer_content_marker,
+  region_typed_method_name
 }
 
 import ./checker_erased_throw_carriers.vibe {
@@ -897,7 +898,7 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
     // #4091: a method call (`h.sink()`) runs the function its receiver's
     // type names, read as that call; with the receiver's type unknown, every
     // method of the module of that spelling is read.
-    ECall(EDot(recv, method, _, _), args, call_off, _) => method_call_aliases_outer(recv = recv, method = method, args = args, call_off = call_off, env = env),
+    ECall(EDot(recv, method, _, _), args, call_off, _) => !literal_item_is_scalar(item = expr, env = env) && method_call_aliases_outer(recv = recv, method = method, args = args, call_off = call_off, env = env),
     // #4091: any other callee (`(if flag { get1 } else { get2 })()`) is not
     // read, so its result may be storage of its own, as an unread named
     // callee's is.
@@ -1136,9 +1137,17 @@ fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
     },
     // A call to a named function is its declared result (Codex on #3492):
     // `tag: count(outer)` with `fn count(..) -> Int` copies an `Int`.
-    ECall(EIdent(fname, _), _, _, _) => match env_lookup(env = env, name = fname) {
-      Some(CtFn(_, ret, _)) => Some(ret),
-      _ => None
+    ECall(EIdent(fname, _), _, _, _) => literal_call_result(name = fname, env = env),
+    ECall(EDot(recv, method, _, _), _, off, _) => {
+      let resolved = region_method_call_at(off)
+      if resolved != "" {
+        literal_call_result(name = resolved, env = env)
+      } else {
+        match literal_item_type(item = recv, env = env) {
+          Some(t) => literal_call_result(name = region_typed_method_name(ty = t, method = method), env = env),
+          None => None
+        }
+      }
     },
     EDot(obj, field, _, _) => match literal_item_type(item = obj, env = env) {
       Some(CtStruct(sname)) => struct_field_type(env = env, sname = sname, args = [
@@ -1148,6 +1157,13 @@ fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
       Some(CtNamed(sname, args)) => struct_field_type(env = env, sname = sname, args = args, field = field),
       _ => None
     },
+    _ => None
+  }
+}
+
+fn literal_call_result(name: String, env: TypeEnv) -> Option[Type] {
+  match env_lookup(env = env, name = name) {
+    Some(CtFn(_, ret, _)) => Some(ret),
     _ => None
   }
 }

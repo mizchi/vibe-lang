@@ -169,15 +169,25 @@ export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, 
 struct ContentCalls {
   active: Array[String];
   memo: MutMap[String, Array[Int]];
-  recursive: Array[Int]
+  recursive: Array[Int];
+  result_active: Array[String];
+  result_memo: MutMap[String, Bool];
+  result_recursive: Array[Int]
 }
 
 fn content_calls_new() -> ContentCalls {
-  ContentCalls::{ active: [], memo: MutMap::new_string(), recursive: [0] }
+  ContentCalls::{
+    active: [],
+    memo: MutMap::new_string(),
+    recursive: [0],
+    result_active: [],
+    result_memo: MutMap::new_string(),
+    result_recursive: [0]
+  }
 }
 
-fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls) -> ContentFacts {
-  let facts = ContentFacts::{
+fn content_facts_new(names: Array[String], calls: ContentCalls) -> ContentFacts {
+  ContentFacts::{
     bind_names: [],
     bind_own_storage: [],
     bind_alias: [],
@@ -191,6 +201,10 @@ fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: Conte
     next_id: [0],
     calls
   }
+}
+
+fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls) -> ContentFacts {
+  let facts = content_facts_new(names = names, calls = calls)
   content_facts_into(expr = scope, facts = facts, env = env)
   facts
 }
@@ -358,11 +372,13 @@ fn content_fixed_regions(own: Bool, aliases: Array[String], env: TypeEnv, s: Sub
 fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
   match value {
     EIdent(_, _) => false,
+    EMatch(_, _) => content_value_fact(value = value, env = env, facts = facts).0,
     EFn(_, _, _, _, _, _) => false,
     EDot(obj, _, _, _) => !content_env_scalar(value = value, env = env, facts = facts) && content_own_storage(value = obj, env = env, facts = facts),
     ECall(callee, args, _, _) => {
       // A scalar result copies a value out of whatever the call reads.
       let scalar_call = match callee {
+        EDot(_, _, _, _) => content_env_scalar(value = value, env = env, facts = facts),
         EIdent(cname, _) => !callee_is_ctor_name(cname) && content_resolve(name = cname, facts = facts) == cname && !content_result_may_hold(name = cname, env = env),
         _ => false
       }
@@ -376,7 +392,8 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
           true
         } else {
           match retention_decl_value(cname) {
-            Some(EFn(_, _, params, _, _, body)) => held_has_module_storage(held_result_param_indices(body = body, params = params)),
+            Some(EFn(_, _, params, _, _, body)) => held_has_module_storage(held_result_param_indices(body = body, params = params)) ||
+            content_call_result_has_outer(name = cname, params = params, body = body, env = env, calls = facts.calls),
             Some(_) => true,
             None => match lookup_builtin(cname) {
               Some(_) => false,
@@ -660,6 +677,24 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
       return result
     },
     ESeq(_, body) => return content_value_fact(value = body, env = env, facts = facts),
+    EAssign(_, _, body, _) => return content_value_fact(value = body, env = env, facts = facts),
+    EAssignOp(_, _, _, body, _) => return content_value_fact(value = body, env = env, facts = facts),
+    EReturn(result) => return content_value_fact(value = result, env = env, facts = facts),
+    EMatch(scrut, arms) => {
+      let aliases: Array[String] = []
+      let mut own = false
+      for arm in arms {
+        let mark = Array::length(facts.scope_ids)
+        content_pattern_binds(pat = arm.0, value = scrut, facts = facts, env = env)
+        // The stores and the result must share the very same pattern binders.
+        content_facts_into(expr = arm.1, facts = facts, env = env)
+        let result = content_value_fact(value = arm.1, env = env, facts = facts)
+        own = own || result.0
+        content_union(out = aliases, items = result.1)
+        content_pop(mark = mark, facts = facts)
+      }
+      return (own, aliases)
+    },
     _ => ()
   }
   (content_own_storage(value = value, env = env, facts = facts), content_alias_names(value = value, env = env, facts = facts))
@@ -922,7 +957,7 @@ fn content_value_names_into(e: Expr, out: Array[String]) -> Unit {
 
 fn content_alias_names_at(value: Expr, env: TypeEnv, facts: ContentFacts, out: Array[String]) -> Unit {
   match value {
-    ELet(_, _, _, _)|ELetMut(_, _, _, _) => content_union(out = out, items = content_value_fact(value = value, env = env, facts = facts).1),
+    ELet(_, _, _, _)|ELetMut(_, _, _, _)|EMatch(_, _) => content_union(out = out, items = content_value_fact(value = value, env = env, facts = facts).1),
     EIdent(n, _) => if n != "_" {
       let id = content_resolve(name = n, facts = facts)
       if !content_listed(items = out, wanted = id) {
@@ -1046,13 +1081,51 @@ fn content_called_outer_params(name: String, env: TypeEnv, calls: ContentCalls) 
   }
 }
 
-fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Int] {
-  if Array::length(params) == 0 {
-    return []
+/// A locally declared helper can return a fresh holder after storing module
+/// storage inside it. Use the same store graph as a region-local binding.
+fn content_call_result_has_outer(name: String, params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Bool {
+  match MutMap::get(calls.result_memo, k = name) {
+    Some(found) => found,
+    None => if content_listed(items = calls.result_active, wanted = name) {
+      Array::set(calls.result_recursive, at = 0, value = Array::get(calls.result_recursive, at = 0) + 1)
+      false
+    } else {
+      let recursion_before = Array::get(calls.result_recursive, at = 0)
+      let mark = Array::length(calls.result_active)
+      Array::push(calls.result_active, value = name)
+      let module_env = if Array::length(retention_module_env_cell) > 0 {
+        Array::get(retention_module_env_cell, at = 0)
+      } else {
+        env
+      }
+      let found = content_result_has_outer(params = params, body = body, env = module_env, calls = calls)
+      Array::truncate(calls.result_active, length = mark)
+      if Array::get(calls.result_recursive, at = 0) == recursion_before {
+        MutMap::set(calls.result_memo, k = name, v = found)
+      }
+      found
+    }
   }
+}
+
+fn content_result_has_outer(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Bool {
   let names = for param in params {
     retention_param_base(param.0)
   }
+  let scope = content_summary_scope(names = names, env = env)
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls)
+  if Array::length(facts.store_target_alias) == 0 {
+    return false
+  }
+  let result = content_value_fact(value = body, env = scope, facts = facts)
+  let result_index = Array::length(facts.locals)
+  let id = content_push(name = "#result", facts = facts)
+  content_bind(id = id, value = result, facts = facts)
+  let held = content_held_regions(facts = facts, env = scope, s = SubstEmpty)
+  Array::length(Array::get(held, at = result_index)) > 0
+}
+
+fn content_summary_scope(names: Array[String], env: TypeEnv) -> TypeEnv {
   let mut scope = env_bind(env = env, name = "#active_region", ty = CtNamed("#content_summary", [
   ]))
   // A syntactic summary has no inferred parameter types. Treat a formal as
@@ -1060,6 +1133,17 @@ fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, e
   for name in names {
     scope = env_bind(env = scope, name = name, ty = CtVar(-1))
   }
+  scope
+}
+
+fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Int] {
+  if Array::length(params) == 0 {
+    return []
+  }
+  let names = for param in params {
+    retention_param_base(param.0)
+  }
+  let scope = content_summary_scope(names = names, env = env)
   let facts = content_collect(names = names, scope = body, env = scope, calls = calls)
   if Array::length(facts.store_target_alias) == 0 {
     return []
