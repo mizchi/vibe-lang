@@ -205,7 +205,17 @@ fn prelude_reuse_type_has_row(_ ty: TypeExpr) -> Bool {
 /// top-level function (`let x = f`): either keeps a statement from being
 /// quiet. `effect` counts only the first; both are false for a quiet body.
 fn prelude_reuse_expr_flags(expr: Expr, scope: PreludeReuseScope, out: Array[Bool]) -> Unit {
-  match prelude_reuse_exception_throw(expr) {
+  // Only a `perform` call can be a lowered `throw`, so every other node goes
+  // straight to the walk (the check ran on every node, 0.1 s per build).
+  let thrown = match expr {
+    ECall(EIdent(nm, _), _, _, _) => if nm == "perform" {
+      prelude_reuse_exception_throw(expr)
+    } else {
+      None
+    },
+    _ => None
+  }
+  match thrown {
     // A lowered `throw`: only its payload can hold effect syntax.
     Some(payload) => {
       for p in payload {
@@ -283,12 +293,26 @@ fn prelude_reuse_expr_flags_at(expr: Expr, scope: PreludeReuseScope, out: Array[
 
 /// Effect syntax anywhere in `stmt`: the expression flags of its body, its
 /// annotation's rows, or a declaration whose types carry a row.
-export fn prelude_reuse_effectful(stmt: Stmt, scope: PreludeReuseScope) -> Bool {
+/// The expression flags of `stmt`'s body (`prelude_reuse_expr_flags`): effect
+/// syntax, then a local alias of a top-level function; both false for a
+/// statement with no body. A build takes them once per statement and hands
+/// them to `prelude_reuse_effectful` and `prelude_reuse_quiet`.
+export fn prelude_reuse_flags(stmt: Stmt, scope: PreludeReuseScope) -> (Bool, Bool) {
   match prelude_reuse_body(stmt) {
-    Some((ann, body)) => {
+    Some((_, body)) => {
       let flags = [false, false]
       prelude_reuse_expr_flags(expr = body, scope = scope, out = flags)
-      Array::get(flags, at = 0) || prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
+      (Array::get(flags, at = 0), Array::get(flags, at = 1))
+    },
+    None => (false, false)
+  }
+}
+
+export fn prelude_reuse_effectful(stmt: Stmt, flags: (Bool, Bool), scope: PreludeReuseScope) -> Bool {
+  match prelude_reuse_body(stmt) {
+    Some((ann, _)) => {
+      let (effect, _) = flags
+      effect || prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
     },
     None => match stmt {
       SStruct(_, _, fields, _, _, _) => {
@@ -396,17 +420,16 @@ fn prelude_reuse_all_digits(text: String, from: Int) -> Bool {
   ok
 }
 
-export fn prelude_reuse_quiet(stmt: Stmt, refs: (Array[String], Bool), scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
+export fn prelude_reuse_quiet(stmt: Stmt, refs: (Array[String], Bool), flags: (Bool, Bool), scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
   match prelude_reuse_body(stmt) {
     // A marker only the checker reads (positional parameters, a test's
     // declared row, qualified pattern references): the passes skip it, so
     // no edit of it reaches them.
     None => prelude_reuse_checker_marker(stmt),
-    Some((ann, body)) => {
-      let flags = [false, false]
-      prelude_reuse_expr_flags(expr = body, scope = scope, out = flags)
+    Some((ann, _)) => {
+      let (effect, alias) = flags
       let (names, opaque) = refs
-      let mut ok = !Array::get(flags, at = 0) && !Array::get(flags, at = 1) && !opaque && !prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
+      let mut ok = !effect && !alias && !opaque && !prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
       for r in names {
         ok = ok && !MutSet::has(avoid, x = r)
       }
