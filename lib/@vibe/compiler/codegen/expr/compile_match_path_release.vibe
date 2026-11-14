@@ -176,6 +176,25 @@ export fn mpr_compile_arm(buf: Bytes, pat: Pat, body: Expr, names_mark: Int, loc
   }
 }
 
+/// A catch-all binder borrows the scrutinee. Retain it at each identifiable
+/// consuming use so a skipped branch or an early exit reserves nothing.
+export fn mpr_catch_consumes(body: Expr, name: String, count: Int, bmasks: Array[Int], ctx: CompileCtx) -> Array[Int] {
+  let offs: Array[Int] = []
+  if count <= 0 || mpr_name_taken(ctx = ctx, name = name) {
+    return offs
+  }
+  let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = false)
+  if Array::length(offs) < count || array_contains_int_mpr(arr = offs, v = -1) {
+    return []
+  }
+  let shadows: Array[String] = []
+  let _ = md_collect_shadow_names(e = body, out = shadows)
+  if array_contains_str(arr = shadows, s = name) {
+    return []
+  }
+  offs
+}
+
 /// The wasm local `bind_match_pat` bound `name` to: its last entry at or
 /// after `from`, or -1 when the pattern pass bound no such local.
 fn mpr_binder_slot(local_names: Array[String], from: Int, name: String) -> Int {

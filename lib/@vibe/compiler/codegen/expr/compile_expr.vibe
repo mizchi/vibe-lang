@@ -1014,7 +1014,7 @@ fn compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], nex
 /// local here (a lambda body compiled in its own CompileCtx) emits nothing:
 /// the drop then fires on a path that also consumed, which is the shape the
 /// planner declines by refusing any binding with an unmarkable occurrence.
-fn ce_mark_path_consume(buf: Bytes, expr: Expr, name: String, ctx: CompileCtx) -> Unit with Exception {
+fn ce_mark_path_consume(buf: Bytes, expr: Expr, name: String, local_idx: Int, ctx: CompileCtx) -> Unit with Exception {
   if ctx.enable_rc && Array::length(ctx.rc_path_flag_names) > 0 {
     let off = get_eident_off(expr)
     if off >= 0 {
@@ -1041,6 +1041,8 @@ fn ce_mark_path_consume(buf: Bytes, expr: Expr, name: String, ctx: CompileCtx) -
         }
         if slot >= 0 {
           emit_rc_path_mark(buf = buf, flag = slot, counted = array_count_str(arr = ctx.rc_path_drop_names, s = name) > 1)
+        } else if slot == -2 - local_idx {
+          emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
@@ -1141,7 +1143,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       } else {
         ()
       }
-      ce_mark_path_consume(buf = buf, expr = expr, name = name, ctx = ctx)
+      ce_mark_path_consume(buf = buf, expr = expr, name = name, local_idx = local_idx, ctx = ctx)
       next_local
     } else {
       let mut __ci_idx = -1

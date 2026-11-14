@@ -1,5 +1,14 @@
 import @vibe/compiler/checker {
-  retention_type_hides_region, retention_value_regions
+  content_outer_param_indices,
+  region_callee_returns_own_storage,
+  region_content_outer_regions,
+  retention_arg_predates,
+  retention_begin_module,
+  retention_end_module,
+  retention_note_module_env,
+  retention_summary_refuses,
+  retention_type_hides_region,
+  retention_value_regions
 }
 import @vibe/compiler/core {
   Expr, Pat, Subst, Type, TypeDef, TypeEnv, env_bind
@@ -176,4 +185,94 @@ test "recursive self references add no region but external captures do" {
   ], s = SubstEmpty), [])
   assert_eq(retention_value_regions(expr = capturing, env = review_region_env(), defs = [
   ], s = SubstEmpty), ["#region_review"])
+}
+
+test "a container stored in a holder inherits mutations through that holder" {
+  let head = "fn main() -> Int { let sink: Array[() -> Int] = []; let _ = region r { let values = MutList::empty(r); let inner: Array[Array[() -> Int]] = []; let holder: Array[Array[Array[() -> Int]]] = []; "
+  let tail = "Array::push(Array::get(inner, at = 0), value = () -> Int { MutList::length(values) }); 0 }; 42 }"
+  assert(check_source_err_contains(source = head + "Array::push(holder, value = inner); Array::push(Array::get(holder, at = 0), value = sink); " + tail, needle = "region escapes its scope"))
+}
+
+test "a labeled callback receives the provenance of its accompanying container" {
+  let head = "fn each(xs: Array[Array[Array[() -> Int]]], f: (Array[Array[() -> Int]]) -> Unit) -> Unit { f(Array::get(xs, at = 0)) }\nfn main() -> Int { let sink: Array[() -> Int] = []; let _ = region r { let values = MutList::empty(r); let holder: Array[Array[Array[() -> Int]]] = []; "
+  assert(check_source_err_contains(source = head + "each(xs = holder, f = (x) -> { Array::push(x, value = sink) }); Array::push(Array::get(Array::get(holder, at = 0), at = 0), value = () -> Int { MutList::length(values) }); 0 }; 42 }", needle = "region escapes its scope"))
+}
+
+test "block result provenance resolves its lexical binder" {
+  assert(check_source_ok("fn main() -> Int { let sink: Array[() -> Int] = []; let _ = region r { let values = MutList::empty(r); let holder: Array[Array[() -> Int]] = []; Array::push(holder, value = { let sink: Array[() -> Int] = []; sink }); Array::push(Array::get(holder, at = 0), value = () -> Int { MutList::length(values) }); 0 }; 42 }"))
+}
+
+test "an invoked lambda returning outer storage taints its holder" {
+  assert(check_source_err_contains(source = "fn main() -> Int { let sink: Array[() -> Int] = []; let _ = region r { let values = MutList::empty(r); let holder: Array[Array[() -> Int]] = []; Array::push(holder, value = (() -> sink)()); Array::push(Array::get(holder, at = 0), value = () -> Int { MutList::length(values) }); 0 }; 42 }", needle = "region escapes its scope"))
+}
+
+test "a helper may append a region value to a fresh holder containing outer storage" {
+  let head = "fn append(dst: Array[Array[() -> Int]], value: Array[() -> Int]) -> Unit { Array::push(dst, value) }\n"
+  assert(check_source_ok(head + "fn main() -> Int { let sink: Array[() -> Int] = []; let _ = region r { let values = MutList::empty(r); let holder: Array[Array[() -> Int]] = []; Array::push(holder, value = sink); append(holder, [() -> Int { MutList::length(values) }]); 0 }; 42 }"))
+}
+
+test "a local callee shadows a module_env summary even without an import marker" {
+  let saved = retention_begin_module([])
+  let module_env = env_bind(env = EnvEmpty, name = "getter", ty = CtFn([], CtArray(CtInt), None))
+  let module_env = env_bind(env = module_env, name = "#retains:getter", ty = CtNamed("", [
+  ]))
+  retention_note_module_env(module_env)
+  assert(!region_callee_returns_own_storage(callee = "getter", env = module_env))
+  let local = env_bind(env = module_env, name = "__capture_boundary__", ty = CtBool)
+  let local = env_bind(env = local, name = "getter", ty = CtFn([], CtArray(CtInt), None))
+  assert(region_callee_returns_own_storage(callee = "getter", env = local))
+  retention_end_module(saved)
+}
+
+test "imported helper content rows taint only their receiving arguments" {
+  let saved = retention_begin_module([])
+  let module_env = env_bind(env = EnvEmpty, name = "fill", ty = CtFn([
+    CtArray(CtArray(CtInt))
+  ], CtUnit, None))
+  let module_env = env_bind(env = module_env, name = "#retains:fill", ty = CtNamed("g>0", [
+  ]))
+  retention_note_module_env(module_env)
+  let active = env_bind(env = module_env, name = "#active_region", ty = CtNamed("#region_review", [
+  ]))
+  let local = env_bind(env = active, name = "holder", ty = CtArray(CtArray(CtInt)))
+  let scope = ECall(EIdent("fill", 1), [EIdent("holder", 2)], 1, [])
+  let (same, held) = region_content_outer_regions(name = "holder", scope = scope, env = local, s = SubstEmpty)
+  assert_eq(same, [])
+  assert_eq(held, ["#region_review"])
+  let marked = env_bind(env = local, name = "__region_outer_content__holder", ty = CtTuple([
+    CtNamed("#region_review", [])
+  ]))
+  assert_eq(retention_arg_predates(arg = EIdent("holder", 2), env = marked), [])
+  assert_eq(retention_arg_predates(arg = EDot(EIdent("holder", 2), "part", 3, 4), env = marked), [
+    "#region_review"
+  ])
+  retention_end_module(saved)
+}
+
+test "helper outer stores follow the receiving parameter and respect local shadowing" {
+  let module_env = env_bind(env = EnvEmpty, name = "sink", ty = CtArray(CtInt))
+  let write = ECall(EIdent("Array::push", 1), [
+    EIdent("dst", 2),
+    EIdent("sink", 3)
+  ], 1, [])
+  let ps = [("dst", None)]
+  assert_eq(content_outer_param_indices(params = ps, body = write, env = module_env), [
+    0
+  ])
+  let local_write = ELet("dst", EArray([]), write, 4)
+  assert_eq(content_outer_param_indices(params = ps, body = local_write, env = module_env), [
+  ])
+}
+
+test "an unresolved method receiver preserves returned module storage" {
+  let head = "let sink: Array[() -> Int] = []; struct Holder { n: Int } fn Holder::sink(self: Holder) -> Array[() -> Int] { sink }\n"
+  assert(check_source_err_contains(source = head + "fn main() -> Int { let get = (h) -> h.sink(); let box = Holder::{ n: 0 }; let _ = region r { let values = MutList::empty(r); Array::push(get(box), value = () -> Int { MutList::length(values) }); 0 }; 42 }", needle = "region escapes its scope"))
+}
+
+test "import summaries distinguish an append from a write through existing contents" {
+  let carried = [[], ["#region_review"]]
+  let direct: Array[Array[String]] = [[], []]
+  let contents = [["#region_review"], []]
+  assert_eq(retention_summary_refuses(summary = "1>0", carried = carried, predates = direct, contents = contents), 0)
+  assert_eq(retention_summary_refuses(summary = "1>0,1>c0", carried = carried, predates = direct, contents = contents), 1)
 }

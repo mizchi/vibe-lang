@@ -17,7 +17,7 @@
 // judged: a program's own function of that spelling is its own business.
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, builtin_result_is_its_only_effect, call_arg_value
+  Expr, Pat, TypeEnv, builtin_result_is_its_only_effect, call_arg_value
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -28,14 +28,30 @@ import @vibe/compiler/checker/diagnostics {
   off_marker_len
 }
 
+import @vibe/compiler/checker/resume {
+  arm_refs_resume_value, pat_binds_resume
+}
+
 import @vibe/compiler/checker/effects {
   collect_pat_binds_into
 }
 
 /// Refuse every call of a functional builtin whose value `stmt`, a statement
-/// of a block, throws away. A statement's own inner statements are judged
-/// when the checker reaches their block, so only the value it ends in is
-/// read here.
+/// of a block or a loop body, throws away. A statement's own inner statements
+/// are judged when the checker reaches their block, so only the value it ends
+/// in is read here -- through bindings, assignments and statement `if` /
+/// `match` branches.
+///
+/// One walker judges every discarded value, so each site is reported once.
+/// It starts exactly where a value is thrown away -- the left side of a block
+/// statement (`check_seq_spine`) and a `while` body -- and follows that value
+/// to its end: through bindings, assignments, statement `if` / `match`
+/// branches, and into a `for`, whose body's values are dropped with the
+/// `for`'s own. A `for` reached here sits in a discarded position by
+/// construction; a `for` used as an expression is never reached, since no
+/// walk starts at an expression (ADR-0116). The checker does not refuse a
+/// `for` body again where it types the `for`: two authorities disagreed about
+/// which `for` each owned, and a `for` after an assignment fell between them.
 export fn refuse_discarded_functional_result(stmt: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
   refuse_discarded_in(stmt = stmt, env = env, shadowed = [], errors = errors)
 }
@@ -77,6 +93,18 @@ fn refuse_discarded_in(stmt: Expr, env: TypeEnv, shadowed: Array[String], errors
     // An assignment's continuation is the rest of its block; it binds nothing.
     EAssign(_, _, rest, _) => refuse_discarded_in(stmt = rest, env = env, shadowed = shadowed, errors = errors),
     EAssignOp(_, _, _, rest, _) => refuse_discarded_in(stmt = rest, env = env, shadowed = shadowed, errors = errors),
+    // A `handle`'s value is its body's when the body completes, unless an arm
+    // binds `resume` as a value: calling that continuation hands the body's
+    // value to the arm, which may keep it (`let k = resume; let r = k(v)`),
+    // so the body is walked only when no arm does. A tail `resume(v)` passes
+    // the body's value straight through as the arm's own. The arms are not
+    // walked: whether an arm's value is the `handle`'s depends on how it
+    // resumes, and a wrong guess would refuse a program that is fine.
+    EHandle(hbody, harms) => if !handle_arm_keeps_body_value(harms) {
+      refuse_discarded_in(stmt = hbody, env = env, shadowed = shadowed, errors = errors)
+    } else {
+      ()
+    },
     // A `while` body is judged where the loop itself is checked
     // (`check_expr_capture`), in or out of statement position.
     _ => ()
@@ -132,4 +160,18 @@ fn discarded_result_message(name: String, args: Array[Expr], noff: Int) -> Strin
 /// use the value, or drop the statement.
 fn discarded_value_message(name: String, noff: Int) -> String {
   "bind the result of `" + name + "` (`let r = " + name + "(..)`) or delete the statement: `" + name + "` only returns a value and changes nothing, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
+}
+
+/// Does an arm of this `handle` bind its continuation as a value? Such an arm
+/// receives the body's value from the continuation call and may keep it.
+fn handle_arm_keeps_body_value(_ harms: Array[(Pat, Expr)]) -> Bool {
+  let mut keeps = false
+  for arm in harms {
+    if arm_refs_resume_value(e = arm.1, sh = pat_binds_resume(arm.0)) {
+      keeps = true
+    } else {
+      ()
+    }
+  }
+  keeps
 }
