@@ -81,17 +81,34 @@ fn retaining_write_operation_mask(_ operation: Int) -> Int {
 
 /// The retained-argument mask of a call by `name` inside an active region,
 /// with the checker's `operation` for it. A spelling with no answer of its own
-/// is asked through the aliases it may name (`retaining_write_alias_operation`).
+/// is asked through the aliases it may name (`retaining_write_alias_target`):
 ///
-/// That includes a program binding of a builtin spelling (`operation < 0`):
-/// Codex on #3984 found `let MutList::push = Array::push` answered -1, so the
-/// call stored nothing here, and the body recheck trusts the builtin it
-/// follows the alias to. A program `fn` of that spelling names no alias, so it
-/// still answers 0 and is judged by its body.
+/// - an alias of a builtin operation answers that operation's mask. That
+///   includes a program binding of a builtin spelling (`operation < 0`):
+///   Codex on #3984 found `let MutList::push = Array::push` answered -1, so
+///   the call stored nothing here, and the body recheck trusts the builtin it
+///   follows the alias to;
+/// - #3255: an alias of a spelling the ladder lists -- an imported library
+///   wrapper such as `MutMap::set` or `MutSet::add`, by a local or top-level
+///   `let` -- answers the ladder for THAT spelling. It used to name no
+///   ladder entry, so `let put = MutMap::set; put(outer, 1, cell)` stored a
+///   region value into an outer map and was accepted.
+///
+/// A program `fn` of a ladder spelling still answers the ladder for its
+/// spelling, as before: the region gate's fail-closed rows
+/// (`fixtures/err_region_escape_*_write.vibe`, #1938) stand in for the library
+/// wrappers with such functions, whose bodies keep nothing.
 export fn retaining_write_call_mask(env: TypeEnv, name: String, operation: Int) -> Int {
   let named = retaining_write_argument_mask(source_name = name, operation = operation)
   if named == 0 && operation <= 0 && env_has_active_region(env) {
-    retaining_write_operation_mask(retaining_write_alias_operation(env = env, name = name))
+    let (alias_operation, target) = retaining_write_alias_target(env = env, name = name)
+    if alias_operation > 0 {
+      retaining_write_operation_mask(alias_operation)
+    } else if target != "" && target != name {
+      retaining_write_argument_mask(source_name = target, operation = 0)
+    } else {
+      0
+    }
   } else {
     named
   }
@@ -110,10 +127,20 @@ export fn retaining_write_call_mask(env: TypeEnv, name: String, operation: Int) 
 /// one (a parameter, a closure) ends the chain, as does any value that is not
 /// a bare name.
 export fn retaining_write_alias_operation(env: TypeEnv, name: String) -> Int {
+  let (operation, _) = retaining_write_alias_target(env = env, name = name)
+  operation
+}
+
+/// Where a call by `name` lands, following the aliases
+/// `retaining_write_alias_operation` describes: the builtin operation it
+/// reaches (0 for none), and the spelling the chain ends at, or "" when it
+/// ends at a local binding that is no alias (a parameter, a closure).
+fn retaining_write_alias_target(env: TypeEnv, name: String) -> (Int, String) {
   let mut scope = env
   let mut current = name
   let mut local = true
   let mut operation = 0
+  let mut target = ""
   let mut depth = 0
   let mut done = false
   while !done && depth <= 8 {
@@ -152,13 +179,14 @@ export fn retaining_write_alias_operation(env: TypeEnv, name: String) -> Int {
           } else {
             ()
           }
+          target = current
           done = true
         }
       }
     }
     depth = depth + 1
   }
-  operation
+  (operation, target)
 }
 
 /// The name a top-level `let` of `name` aliases, or "".

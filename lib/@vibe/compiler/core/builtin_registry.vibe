@@ -161,412 +161,524 @@ fn reg_p5(a: Type, b: Type, c: Type, d: Type, e: Type) -> Array[Type] {
   arr
 }
 
+/// #2503: the rows as text, one per line -- `NAME TYPE FLAGS`, `#` lines are
+/// comments -- decoded once into `registry_typed_rows`. As a literal they were
+/// one 66 KB function body of constructor calls the compiler had to compile
+/// and run; as text they are a data segment. TYPE is a prefix code:
+/// `i` Int, `s` String, `u` Unit, `b` Bool, `y` Bytes, `d` Double, `f` Float,
+/// `c` Char, `I` Int32, `U` UInt32, `?` unknown, `oKIND;` an opaque runtime
+/// value (unknown to the checker; KIND names it), `S` a stdin stream, `vN;` row
+/// variable N, `A`/`O` + type for Array/Option, `NNAME;K;` + K types for a named
+/// type, and `FK;` + K parameter types + result + row (`-` none, `!NAME;`) for
+/// a function. FLAGS are the seven Bool columns below, `T`/`F` in order.
+let registry_rows_text: String = #|Env::get F1;ss!Env; TFTFFFF
+                                 #|Env::args_len F0;i!Env; TFTFFFF
+                                 #|Env::args_get F1;is!Env; TFTFFFF
+                                 #|Fs::read_file F1;ss!Fs; TFTFFFF
+                                 #|Fs::exists F1;sb!Fs; TFTFFFF
+                                 #|Fs::stat_token F1;si!Fs; TFTFFFF
+                                 #|# Checker-visible callsite lowering: raw directory import + String::split.
+                                 #|# Neither backend registers a separate func-table entry for this surface.
+                                 #|Fs::readdir F1;sAs!Fs; FFTFFFF
+                                 #|# #795: alias-collision-proof surface for the same import.
+                                 #|vibe_fs_stat_token_raw F1;si!Fs; TFTFFFF
+                                 #|Fs::write_file F2;ssu!Fs; TFTFFFF
+                                 #|# Registered but deliberately unused by compiler sources until the cache
+                                 #|# publisher adopts it, preserving seed compatibility.
+                                 #|Fs::publish_immutable_text F2;ssb!Fs; TFTFFFF
+                                 #|Fs::write_bytes F2;syu!Fs; TFTFFFF
+                                 #|Fs::read_bytes F1;sy!Fs; TFTFFFF
+                                 #|vibe_fs_read_dir_raw F1;ss!Fs; TFFFFFF
+                                 #|sh F1;ss!Process; TFTFFFF
+                                 #|vibe_sh_lines_raw F1;ss!Process; TFFFFFF
+                                 #|# #865: structured subprocess result. `vibe_sh_capture_raw` runs the
+                                 #|# command ONCE (unlike a naive 3-accessor design that would re-run it)
+                                 #|# and parks {exit_code, stdout, stderr} behind a handle -- same
+                                 #|# handle+accessor shape as the #794 HTTP client imports below, chosen so
+                                 #|# a structured result doesn't require struct-returning host ABI work.
+                                 #|# checker_visible=true (unlike vibe_sh_lines_raw's raw half) because these
+                                 #|# are plain qualified names (no bare "sh"/"sh_lines" collision risk), so
+                                 #|# ordinary vibe source (lib/@vibe/process/process.vibe) calls them
+                                 #|# directly, mirroring lib/@vibe/http/http.vibe's `vibe_http_*_raw`
+                                 #|# direct-call convention -- no compile_call.vibe special-casing needed.
+                                 #|vibe_sh_capture_raw F1;si!Process; TFTFFFF
+                                 #|vibe_sh_capture_exit_code_raw F1;ii!Process; TFTFFFF
+                                 #|vibe_sh_capture_stdout_raw F1;is!Process; TFTFFFF
+                                 #|vibe_sh_capture_stderr_raw F1;is!Process; TFTFFFF
+                                 #|vibe_sh_capture_close_raw F1;iu!Process; TFTFFFF
+                                 #|# #903/#865: propagate a guest-chosen exit code to the real OS process
+                                 #|# exit status (unlike a `main() -> Int` return, which `_start` only
+                                 #|# PRINTS -- see ADR-0069's entry_returns_unit comment in
+                                 #|# codegen/wasi/linked_compile.vibe). Traps via the host runner's
+                                 #|# existing exit-trap mechanism (Rust `viberun`: reuses ExitTrap, the
+                                 #|# same trap the legacy `__moonbit_sys_unstable::exit` import already
+                                 #|# used; JS runner: `process.exit(code)` directly) -- never returns.
+                                 #|vibe_process_exit_raw F1;iu!Process; TFTFFFF
+                                 #|Stdin::read_stream F1;is!Stdin; TFTFFFF
+                                 #|Stdout::write_stream F1;su!Stdout; TFTFFFF
+                                 #|Stdout::write_char F1;iu!Stdout; TFTFFFF
+                                 #|# #865: Stderr, mirroring Stdout::write_stream / Stdout::write_char exactly
+                                 #|# (own host effect name "Stderr" so a function using only stderr does not
+                                 #|# need to declare `with Stdout`).
+                                 #|Stderr::write_stream F1;su!Stderr; TFTFFFF
+                                 #|Stderr::write_char F1;iu!Stderr; TFTFFFF
+                                 #|# #1460 Phase 1: the `Console` capability -- one effect covering the three
+                                 #|# tty streams, replacing Stdin/Stdout/Stderr. Both name sets are live here
+                                 #|# ON PURPOSE and only for the length of the migration:
+                                 #|#
+                                 #|#   the committed seed knows ONLY the legacy three, and the seed is what
+                                 #|#   compiles this file. So the compiler must learn `Console` in a build the
+                                 #|#   seed can still produce, that build becomes the next seed, and only THEN
+                                 #|#   can lib/ (this file included) move to `Console::*`. Deleting the legacy
+                                 #|#   entries in the same commit that adds these would make the compiler
+                                 #|#   unbuildable from its own seed.
+                                 #|#
+                                 #|# The stderr pair cannot keep its operation spelling once the effects
+                                 #|# merge -- `Console::write_stream` is already taken by stdout -- so the
+                                 #|# error side is named apart rather than disambiguated by effect.
+                                 #|#
+                                 #|# Phase 3 removes the six legacy entries above and this comment with them.
+                                 #|Console::read_stream F1;is!Console; TFTFFFF
+                                 #|Console::read_char F0;i!Console; TFTFFFF
+                                 #|Console::write_stream F1;su!Console; TFTFFFF
+                                 #|Console::write_char F1;iu!Console; TFTFFFF
+                                 #|Console::write_err_stream F1;su!Console; TFTFFFF
+                                 #|Console::write_err_char F1;iu!Console; TFTFFFF
+                                 #|resolve_path F1;ss- TFFFFFF
+                                 #|Fs::remove F1;su!Fs; TFTFFFF
+                                 #|Fs::remove_file F1;su!Fs; TFTFFFF
+                                 #|Fs::remove_tree F1;su!Fs; TFTFFFF
+                                 #|Fs::mkdir_p F1;su!Fs; TFTFFFF
+                                 #|Fs::mkdir F1;su!Fs; TFTFFFF
+                                 #|Fs::chdir F1;su!Fs; TFTFFFF
+                                 #|Fs::copy F2;ssu!Fs; TFTFFFF
+                                 #|Fs::append F2;ssu!Fs; TFTFFFF
+                                 #|Fs::rename F2;ssu!Fs; TFTFFFF
+                                 #|Fs::is_dir F1;sb!Fs; TFTFFFF
+                                 #|Fs::is_file F1;sb!Fs; TFTFFFF
+                                 #|Fs::getcwd F0;s!Fs; TFTFFFF
+                                 #|# Socket client host imports (vibe.tcp_*) -- same "checker-legal (see
+                                 #|# builtins/declarations.vibe), zero codegen wiring" gap the Fs::* rows
+                                 #|# above closed. #1232 review: raw dunder names, NOT `Socket::tcp_connect`
+                                 #|# -- lib/@vibe/socket's package index.vpkg ALSO declares `effect
+                                 #|# TcpSocket { Connect(String,Int)->Int; Read(Int,Int)->String;
+                                 #|# Write(Int,String)->Unit; Close(Int)->Unit }` for its in-package
+                                 #|# mock-handler tests, and that effect's operations are STRUCTURALLY
+                                 #|# IDENTICAL in signature to these builtins -- a qualified call under the
+                                 #|# `Socket::` name let the checker's effect-row resolution match BOTH the
+                                 #|# builtin's own row and TcpSocket's, unioning a spurious `{ TcpSocket }`
+                                 #|# requirement onto every caller. Same collision class Http's client-side
+                                 #|# functions (lib/@vibe/http/http.vibe) already document and avoid via
+                                 #|# `vibe_http_*_raw` naming -- follow that precedent here too.
+                                 #|# checker_visible=true: no bare-name collision risk, so ordinary vibe
+                                 #|# source (lib/@vibe/socket/tcp.vibe's low-level layer) calls them
+                                 #|# directly, same convention as Fs::*/Http's client raw calls -- no
+                                 #|# compile_call.vibe special-casing needed. Supersedes the now-dead
+                                 #|# Socket::tcp_* arms in checker/builtin_sigs/builtins_net.vibe (lookup_registry_builtin
+                                 #|# runs first; this file's file-header comment: per-namespace checker
+                                 #|# lookup files "must not re-add" arms for registry names).
+                                 #|vibe_tcp_connect_raw F2;sii!Socket; TFTFFFF
+                                 #|vibe_tcp_read_raw F2;iis!Socket; TFTFFFF
+                                 #|vibe_tcp_write_raw F2;isu!Socket; TFTFFFF
+                                 #|vibe_tcp_close_raw F1;iu!Socket; TFTFFFF
+                                 #|# #794: HTTP client host imports (vibe.http_*) -- host builtins are
+                                 #|# linear-only by design (the gc lane is the pure-test lane).
+                                 #|vibe_http_request_raw F4;ssssi!Http; TFTFFFF
+                                 #|vibe_http_response_status_raw F1;ii!Http; TFTFFFF
+                                 #|vibe_http_response_header_raw F2;iss!Http; TFTFFFF
+                                 #|vibe_http_response_body_raw F1;is!Http; TFTFFFF
+                                 #|vibe_http_close_raw F1;iu!Http; TFTFFFF
+                                 #|Profiler::now_us F0;i!Profiler; TFTFTFF
+                                 #|Profiler::NowUs F0;i- TFFFFFF
+                                 #|# Current bump-heap pointer (bytes) — the allocation analog of now_us,
+                                 #|# for per-phase memory attribution in profiles/benches.
+                                 #|Profiler::heap_bytes F0;i!Profiler; TFTFTFF
+                                 #|Profiler::HeapBytes F0;i- TFFFFFF
+                                 #|sleep F1;iu!Async; TFTTFFF
+                                 #|# #1227: same host import as `sleep`, but row-free -- see
+                                 #|# checker/builtin_sigs/builtins_system.vibe for why the row cannot be discharged.
+                                 #|sleep_blocking F1;iu- TFTTFFF
+                                 #|# ADR-0089 step 4 (#1218): raw halves of `host_future_get` (the checker
+                                 #|# surface lives in checker/builtin_sigs/builtins_async.vibe; compile_call lowers it to
+                                 #|# a [state=2, handle] future cell over vibe_hf_get_raw). Both are
+                                 #|# codegen-internal (checker_visible=false): user source never spells
+                                 #|# them, they appear only in injected AST (the entry boundary's
+                                 #|# `__entry_settle`) and the compile_call lowering. They lower to the
+                                 #|# `vibe.host_future_get` / `vibe.host_future_wait` host imports, which
+                                 #|# only the component adapter module provides (spec §3.13/§3.14) -- a
+                                 #|# plain-wasm host has no waitable machinery to implement them with.
+                                 #|vibe_hf_get_raw F0;i- TFFTFFF
+                                 #|vibe_hf_wait_raw F1;ii- TFFTFFF
+                                 #|# #1537: the group-wide half of the wait. `vibe_hf_arm_raw(h)` joins a
+                                 #|# pending host future to the adapter's shared waitable set (1 = its value
+                                 #|# already landed, 0 = armed); `vibe_hf_wait_any_raw()` blocks until one
+                                 #|# armed future lands and returns its handle, whose value
+                                 #|# `vibe_hf_wait_raw` then takes without blocking. Codegen-internal like the
+                                 #|# pair above: they appear only as the bodies linked_compile gives
+                                 #|# @vibe/concurrent's `__conc_host_*` hooks.
+                                 #|vibe_hf_arm_raw F1;ii- TFFTFFF
+                                 #|vibe_hf_wait_any_raw F0;i- TFFTFFF
+                                 #|# #1537: the stream counterpart of vibe_hf_arm_raw -- start a one-byte read
+                                 #|# of a host stream and join it to the shared set (1 = the next
+                                 #|# vibe_hs_read_raw answers without blocking, 0 = armed).
+                                 #|vibe_hs_arm_raw F1;ii- TFFTFFF
+                                 #|# #1537: start a timer of `ms` in the same shared set, so a group with
+                                 #|# sleeping tasks and host waiters wakes at whichever comes first (its id,
+                                 #|# a never-repeating n + 4096, when pending; 1 = already over). Its completion is
+                                 #|# named by that id.
+                                 #|vibe_hf_sleep_arm_raw F1;ii- TFFTFFF
+                                 #|vibe_hf_sleep_cancel_raw F1;ii- TFFTFFF
+                                 #|# #1537: nobody waits on this host future any more (its last waiting task
+                                 #|# was cancelled): cancel its pending read and release the readable end.
+                                 #|vibe_hf_cancel_raw F1;ii- TFFTFFF
+                                 #|# #1537: the only task that could read this host stream was cancelled:
+                                 #|# cancel its armed read and release the readable end.
+                                 #|vibe_hs_cancel_raw F1;ii- TFFTFFF
+                                 #|# #2066: append one byte to the component adapter's argument buffer, which
+                                 #|# the next `wit_response_arg_get$` getter lowers as its string parameter.
+                                 #|vibe_hf_arg_push_raw F1;ii- TFFTFFF
+                                 #|vibe_hs_claim_raw F1;ii- TFFTFFF
+                                 #|# ADR-0089 Decision 3 (#1218): the shared READ half of the named host
+                                 #|# streams (`host_stream_named` / `host_stream_next`, spec §3.18) -- one
+                                 #|# byte per call, -1 at end of stream. Codegen-internal like the vibe_hf_*
+                                 #|# pair above: appears only in the injected `__entry_settle` stream arm,
+                                 #|# lowers to the `vibe.host_stream_read` host import that only the
+                                 #|# component adapter provides. The per-name GET halves
+                                 #|# (`vibe_hs_get_raw$<name>`) are program-minted and registered
+                                 #|# dynamically in linked_compile, exactly like `vibe_hf_get_raw$<name>`.
+                                 #|vibe_hs_read_raw F1;ii- TFFTFFF
+                                 #|# ADR-0089 Decision 3 follow-up (#1218): the shared CLOSE half. Releases
+                                 #|# the readable end of a host stream the guest stopped reading before end
+                                 #|# of stream (`host_stream_close`, spec §3.18) -- the read half only drops
+                                 #|# the end when it reaches EOS, so a partially consumed stream used to
+                                 #|# hold its handle for the component instance's whole lifetime. Same
+                                 #|# codegen-internal shape as the read half (injected `__hs_close` only),
+                                 #|# and NOT async: dropping a readable end never blocks.
+                                 #|vibe_hs_close_raw F1;ii- TFFTFFF
+                                 #|# #1539 checker-hidden stdin provider core route. The component adapter
+                                 #|# owns the canonical stream plus completion future behind an opaque ID.
+                                 #|vibe_stdin_provider_acquire_raw F0;i- TFFTFFF
+                                 #|vibe_stdin_provider_read_raw F1;ii- TFFTFFF
+                                 #|vibe_stdin_provider_close_raw F1;ii- TFFTFFF
+                                 #|# Public source surface over that exact route. The unspellable CtStruct
+                                 #|# identity prevents Int/HostStream/user types from forging a handle; the
+                                 #|# runtime value remains one tagged scalar provider ID. Acquisition owns
+                                 #|# only Stdin authority; operations that may settle carry only Async.
+                                 #|Stdin::read_via_stream F0;S!Stdin; TFTTFFF
+                                 #|StdinStream::next F1;Si!Async; TFTTFFF
+                                 #|StdinStream::close F1;Su!Async; TFTTFFF
+                                 #|# Additive compiler-owned byte-chunk operation. Each call owns the Async
+                                 #|# evidence because it may suspend while reading or settling EOF.
+                                 #|StdinStream::read_chunk F2;SiOs!Async; FFTFFFF
+                                 #|Stdin::read_char F0;i!Stdin; TFTFFFF
+                                 #|simd_skip_ws F3;yiii- TTTFTFF
+                                 #|simd_scan_alnum F3;yiii- TTTFTFF
+                                 #|simd_scan_alnum_str F3;siii- TTTFTFF
+                                 #|simd_scan_string_special_str F3;siii- TTTFTFF
+                                 #|simd_scan_line_end_str F3;siii- TTTFTFF
+                                 #|str_lex_diff F2;ssi- TTTTTFF
+                                 #|# Internal cache primitive. It packs both 31-bit hashes into one Int;
+                                 #|# formatting remains in @vibe/cache to preserve the public key contract.
+                                 #|# The source fallback is a local function with the same name; user code
+                                 #|# must not resolve this linear-only runtime row, especially on the GC lane.
+                                 #|__compact_fingerprint_hash F1;si- TFFFFFF
+                                 #|# #973: erased-generic `[T: Ord]`/`[T: Add]` runtime dispatch for `<` `>`
+                                 #|# `<=` `>=` `+` (desugar_trait_dict.vibe rewrites the binop when the
+                                 #|# operand's static type is the bare, unresolved type parameter itself --
+                                 #|# see the doc comment on gen_generic_rel_diff_body). Both lanes: the gc
+                                 #|# lane runs desugar_trait_dicts too (gc_only.vibe), and its strings use the
+                                 #|# same packed layout, so it shares the linear bodies (#3158).
+                                 #|__generic_rel_diff F2;iii- TTTTTFF
+                                 #|__generic_add F2;iii- TTTTFFF
+                                 #|print_int F1;iu- TTFFTFF
+                                 #|print_str F1;su- TTFFTFF
+                                 #|String::length F1;si- TTTTTFF
+                                 #|String::equals F2;ssb- TTTTTFF
+                                 #|String::concat F2;sss- TTTTFFF
+                                 #|Array::with_capacity F1;iAv0;- TTTFFFT
+                                 #|array_new F0;Av0;- TTTFFFF
+                                 #|Array::length F1;Av0;i- TTTTTFF
+                                 #|Array::get F2;Av0;iv0;- TTTTTTF
+                                 #|Array::push F2;Av0;v0;u- TTTFFFT
+                                 #|Array::push_all F2;Av0;Av0;u- TTTFFFF
+                                 #|Array::set F3;Av0;iv0;u- TTTTTFT
+                                 #|Float64::to_int F1;di- TTTTTFF
+                                 #|Int::to_float64 F1;id- TTTTFFF
+                                 #|# #2344: scalar bit primitives. Both lanes -- these are ordinary wasm
+                                 #|# instructions, not SIMD, and rank/select needs them far more than it needs
+                                 #|# a vector (bench/bench_simd_rank.vibe: i64.popcnt carries 344x of 438x).
+                                 #|Int::popcount F1;ii- TTTFTFF
+                                 #|Int::ctz F1;ii- TTTFTFF
+                                 #|Int::clz F1;ii- TTTFTFF
+                                 #|String::char_code_at F2;sii- TTTTTFF
+                                 #|String::from_char_code F1;is- TTTTFFF
+                                 #|String::substring F3;siis- TTTTFFF
+                                 #|Array::truncate F2;Av0;iu- TTTFTFF
+                                 #|String::join F2;Asss- TTTTFFF
+                                 #|# #1513: POLYMORPHIC — `eq` is the structural equality builtin and is applied
+                                 #|# to enums / structs / strings, not just Int. The `CtInt` placeholder here was
+                                 #|# harmless while nothing read these parameter types; once the checker's
+                                 #|# fast-path argument check started consulting the registry it turned into a
+                                 #|# false rejection (measured: `eq(Color::Red, c)` in
+                                 #|# docs/language-tour/basics.vibe.md).
+                                 #|#
+                                 #|# #2442: the two positions are ONE variable, not two `reg_any()`s. Written
+                                 #|# as independent unknowns the row said only "two arguments of some type",
+                                 #|# which `registry_builtin_pure_arity` refuses outright (`types_mention_unknown`)
+                                 #|# -- so `eq` had no value form even with the bare-name clause gone, measured
+                                 #|# `registry_builtin_pure_arity("eq") = -1` on ae838ff. It is also the
+                                 #|# `FrozenArray` lesson #2451 records one screen up: a value form typed from
+                                 #|# independent unknowns loses the relationship, and `let f = eq` would then
+                                 #|# check `f(1, "x")` clean. One variable says what `eq` means -- both operands
+                                 #|# are the same type.
+                                 #|#
+                                 #|# Direct calls are unchanged: every consumer but `registry_builtin_scheme`
+                                 #|# reads the ERASED view, where `type_erase_vars` puts `CtUnknown` back, so
+                                 #|# `eq(Color::Red, c)` keeps tolerating exactly what it tolerated. Parameter
+                                 #|# COUNT and return type are unchanged, so the derived `builtin_registry()`
+                                 #|# view the codegen lanes read is byte-identical.
+                                 #|eq F2;v0;v0;b- TTTFTFF
+                                 #|String::ends_with F2;ssb- TTTTTFF
+                                 #|String::last_index_of F2;ssi- TTTTTFF
+                                 #|String::index_of F2;ssi- TTTTTFF
+                                 #|String::contains F2;ssb- TTTTTFF
+                                 #|String::starts_with F2;ssb- TTTTTFF
+                                 #|String::split F2;ssAs- TTTTFFF
+                                 #|String::trim F1;ss- TTTTFFF
+                                 #|compiler_sources F0;s- TFFFFFF
+                                 #|ArrayBuilder::new F0;oArrayBuilder;- TTTFFFT
+                                 #|ArrayBuilder::push F2;oArrayBuilder;?u- TTTFFFT
+                                 #|ArrayBuilder::freeze F1;oArrayBuilder;A?- TTTFFFT
+                                 #|# #906: FrozenArray[T] -- a checker-only phantom-type wrapper over
+                                 #|# Array[T]'s exact same runtime layout (same technique as ArrayBuilder
+                                 #|# just above: from_array/to_array are pure identity casts, get/length
+                                 #|# alias Array::get/Array::length's own bodies -- see
+                                 #|# gc/backend_body.vibe and wasi/linked_compile.vibe). checker.vibe's
+                                 #|# FrozenArray::* ECall branches still refine the DIRECT call with the real
+                                 #|# per-call-site element type -- they are tolerant where these rows are not
+                                 #|# (measured: `FrozenArray::length` on an `Array[Int]` checks clean), so they
+                                 #|# are not redundant yet. #2451 gave the rows real variables for the VALUE
+                                 #|# form, which had no refinement to fall back on: before that,
+                                 #|# `let freeze = FrozenArray::from_array` then
+                                 #|# `let fz: FrozenArray[String] = freeze([1, 2])` checked clean and read the
+                                 #|# Ints as Strings. These rows also exist so both codegen lanes' func-table
+                                 #|# registration (which is DRIVEN by this registry, #415 B-1) has a row to
+                                 #|# loop over.
+                                 #|FrozenArray::from_array F1;Av0;NFrozenArray;1;v0;- TTTFFFF
+                                 #|FrozenArray::get F2;NFrozenArray;1;v0;iv0;- TTTFTFF
+                                 #|FrozenArray::length F1;NFrozenArray;1;v0;i- TTTFTFF
+                                 #|FrozenArray::to_array F1;NFrozenArray;1;v0;Av0;- TTTFFFF
+                                 #|Array::slice F3;Av0;iiAv0;- TTTFFFT
+                                 #|Array::concat F2;Av0;Av0;Av0;- TTTTFFF
+                                 #|Bytes::new F0;y- TTTFFFF
+                                 #|Bytes::with_capacity F1;iy- TTTFFFF
+                                 #|Bytes::from_array F1;Aiy- TTTFFFF
+                                 #|Bytes::to_array F1;yAi- TTTFFFF
+                                 #|Bytes::length F1;yi- TTTTTFF
+                                 #|Bytes::get F2;yii- TTTTTFF
+                                 #|Bytes::set F3;yiiu- TTTFTFT
+                                 #|Bytes::push F2;yiu- TTTFFFF
+                                 #|Bytes::append F2;yyu- TTTFFFF
+                                 #|Bytes::concat F2;yyy- TTTFFFF
+                                 #|Bytes::slice F3;yiiy- TTTFFFF
+                                 #|Bytes::index_of_bytes F2;yyi- TTTTTFF
+                                 #|Bytes::index_of F2;yii- TTTTTFF
+                                 #|Bytes::count F2;yii- TTTTTFF
+                                 #|Bytes::last_index_of F2;yii- TTTTTFF
+                                 #|Bytes::compare F2;yyi- TTTTTFF
+                                 #|__to_string F1;?s- TTTTFFF
+                                 #|vibe_rc_drop F1;?u- TFFFTFF
+                                 #|vibe_rc_alloc F1;ii- TFFFFFF
+                                 #|vibe_rc_dup F1;?u- TFFFTFF
+                                 #|vibe_heap_grow_check F0;u- TFFFTFF
+                                 #|not F1;bb- FTTTTFF
+                                 #|Bytes::blit F4;yyiiu- TTTFFFF
+                                 #|Bytes::fill F3;yiiu- FTTFFFF
+                                 #|Float64::from_i64_bits F1;id- FTTFFFF
+                                 #|Float64::to_float32 F1;df- FTFFFFF
+                                 #|Float32::to_float64 F1;fd- FTFFFFF
+                                 #|Char::to_int F1;ci- FTTTTFF
+                                 #|Char::from_int F1;ic- FTTTTFF
+                                 #|Int::to_float32 F1;if- FTTTFFF
+                                 #|# #3730: the 32-bit integer conversions. Widening is total; narrowing is
+                                 #|# checked (`None` out of range) or wrapping by name. All of them, and
+                                 #|# `to_string`, are rewritten to `Int` operations after the check
+                                 #|# (`rewrite_int32_stmts`), so no lane lowers these names.
+                                 #|Int32::to_int F1;Ii- FFTTFFF
+                                 #|UInt32::to_int F1;Ui- FFTTFFF
+                                 #|Int::to_int32 F1;iOI- FFTTFFF
+                                 #|Int::to_uint32 F1;iOU- FFTTFFF
+                                 #|Int::wrap_int32 F1;iI- FFTTFFF
+                                 #|Int::wrap_uint32 F1;iU- FFTTFFF
+                                 #|Int32::to_string F1;Is- FFTTFFF
+                                 #|UInt32::to_string F1;Us- FFTTFFF
+                                 #|FixedArray::make F2;i?A?- FTTFFFF
+                                 #|FixedArray::length F1;A?i- FTTFTFF
+                                 #|FixedArray::get F2;A?i?- FTTFTFF
+                                 #|FixedArray::set F3;A?i?u- FTTFTFF
+                                 #|FixedArray::unsafe_set F3;A?i?u- FTTFTFF
+                                 #|FixedArray::blit F5;A?iA?iiu- FTTFTFF
+                                 #|# #835: Int64Array rides on the same linear-memory Array representation
+                                 #|# as FixedArray (Array[Int] already stores the full 62-bit tagged Int
+                                 #|# per cell, no i32-cell truncation in these backends — unlike the
+                                 #|# retired MoonBit host, which needed a distinct i64-cell object layout).
+                                 #|# So this is a pure name-level alias onto Array::make/length/get/set,
+                                 #|# just typed concretely as Array[Int] instead of FixedArray's generic
+                                 #|# Array[Unknown] (cheatsheet documents it strictly for Int word buffers).
+                                 #|Int64Array::make F2;iiAi- FTTFFFF
+                                 #|Int64Array::length F1;Aii- FTTFTFF
+                                 #|Int64Array::get F2;Aiii- FTTFTFF
+                                 #|Int64Array::set F3;Aiiiu- FTTFTFF
+                                 #|StringBuilder::new F0;oStringBuilder;- FTTFFFT
+                                 #|StringBuilder::push F2;oStringBuilder;su- FTTFFFT
+                                 #|StringBuilder::freeze F1;oStringBuilder;s- FTTFFFT
+                                 #|Map::get F2;oMap;??- FTTTFTF
+                                 #|Map::keys F1;oMap;A?- FTTFFFF
+                                 #|MapBuilder::new F0;oMapBuilder;- FTTFFFF
+                                 #|MapBuilder::set F3;oMapBuilder;??u- FTTFFFF
+                                 #|MapBuilder::freeze F1;oMapBuilder;oMap;- FTTFFFF
+                                 #|# #1310: has_key/get read the builder without freezing (O(n) scan over
+                                 #|# the same handle-indirect storage MapBuilder::set already walks -- see
+                                 #|# its search loop in expr/compile_call.vibe / gc/backend_call.vibe).
+                                 #|# `get` returns Option[V] (built via a synthesized Some/None `ce` call,
+                                 #|# same technique as int_parse_expr / Array::find), not the "0 on miss"
+                                 #|# raw-value convention Map::get uses. #2334: the key is `any` here, as
+                                 #|# `Map::get`'s is: the map arms (checker_call_map.vibe) check it against
+                                 #|# the builder's key slot.
+                                 #|MapBuilder::has_key F2;oMapBuilder;?b- FTTFTFF
+                                 #|MapBuilder::get F2;oMapBuilder;?O?- FTTFFFF
+                                 #|abort F1;su- FFTFTFT
+                                 #|assert F1;bu- FTTFTFT
+                                 #|assert_true F1;bu- FTTFTFF
+                                 #|assert_eq F2;??u- FTTFTFF
+                                 #|# #2107: not `None`. Codegen lowers both names onto the tty host
+                                 #|# imports, and `builtin_purity` already classifies them impure, so a
+                                 #|# `None` row here was the checker alone claiming these are pure. It let
+                                 #|# a `fn main allows ()` write to the terminal with a clean `vibe check`.
+                                 #|# The row is `Console`, the spelling the book and the diagnostic use.
+                                 #|println F1;su!Console; FTTFTFF
+                                 #|print F1;su!Console; FTTFTFF
+                                 #|map_has F2;oMap;?b- FTTFTFF
+                                 #|# Private opt-in native CPU service for independent lowering instances.
+                                 #|# Append to preserve existing resolved builtin identifiers.
+                                 #|compiler_lowering_run F1;ii!Exception; TFTFFFF
+
 /// typed row: (name, checker signature, in_linear_table, in_gc_table,
 /// checker_visible, is_pure, is_non_allocating, is_borrow_ret, is_safe_mut).
 /// The last four are the #2584 classification columns: a new builtin is a
-/// new row, and the four lists (pure / non-allocating / borrow-returning /
-/// safe-mut) are derived from these flags plus a small extras set of names
-/// that are not registry rows. `builtin_registry_typed` still returns the
-/// five-tuple lane view; the columns stay on this table.
+/// new row in `registry_rows_text`, and the four lists (pure /
+/// non-allocating / borrow-returning / safe-mut) are derived from these flags
+/// plus a small extras set of names that are not registry rows.
+/// `builtin_registry_typed` still returns the five-tuple lane view; the
+/// columns stay on this table.
 ///
 /// Module-level `let`: initialized ONCE (see
 /// fixtures/module_let_memo_test.vibe) -- lookup_registry_builtin runs on
-/// every unresolved-name lookup in the checker, and rebuilding 116 rows of
-/// nested CtFn/Array values per call was allocation churn heavy enough to
-/// crash the RC-mode in-process compiler tests.
-let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool, Bool, Bool, Bool, Bool)] = [
-  ("Env::get", CtFn(reg_p1(CtString), CtString, Some("Env")), true, false, true, false, false, false, false),
-  ("Env::args_len", CtFn(reg_p0(), CtInt, Some("Env")), true, false, true, false, false, false, false),
-  ("Env::args_get", CtFn(reg_p1(CtInt), CtString, Some("Env")), true, false, true, false, false, false, false),
-  ("Fs::read_file", CtFn(reg_p1(CtString), CtString, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::exists", CtFn(reg_p1(CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::stat_token", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true, false, false, false, false),
-  // Checker-visible callsite lowering: raw directory import + String::split.
-  // Neither backend registers a separate func-table entry for this surface.
-  ("Fs::readdir", CtFn(reg_p1(CtString), CtArray(CtString), Some("Fs")), false, false, true, false, false, false, false),
-  // #795: alias-collision-proof surface for the same import.
-  ("vibe_fs_stat_token_raw", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::write_file", CtFn(reg_p2(a = CtString, b = CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  // Registered but deliberately unused by compiler sources until the cache
-  // publisher adopts it, preserving seed compatibility.
-  ("Fs::publish_immutable_text", CtFn(reg_p2(a = CtString, b = CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::write_bytes", CtFn(reg_p2(a = CtString, b = CtBytes), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::read_bytes", CtFn(reg_p1(CtString), CtBytes, Some("Fs")), true, false, true, false, false, false, false),
-  ("vibe_fs_read_dir_raw", CtFn(reg_p1(CtString), CtString, Some("Fs")), true, false, false, false, false, false, false),
-  ("sh", CtFn(reg_p1(CtString), CtString, Some("Process")), true, false, true, false, false, false, false),
-  ("vibe_sh_lines_raw", CtFn(reg_p1(CtString), CtString, Some("Process")), true, false, false, false, false, false, false),
-  // #865: structured subprocess result. `vibe_sh_capture_raw` runs the
-  // command ONCE (unlike a naive 3-accessor design that would re-run it)
-  // and parks {exit_code, stdout, stderr} behind a handle -- same
-  // handle+accessor shape as the #794 HTTP client imports below, chosen so
-  // a structured result doesn't require struct-returning host ABI work.
-  // checker_visible=true (unlike vibe_sh_lines_raw's raw half) because these
-  // are plain qualified names (no bare "sh"/"sh_lines" collision risk), so
-  // ordinary vibe source (lib/@vibe/process/process.vibe) calls them
-  // directly, mirroring lib/@vibe/http/http.vibe's `vibe_http_*_raw`
-  // direct-call convention -- no compile_call.vibe special-casing needed.
-  ("vibe_sh_capture_raw", CtFn(reg_p1(CtString), CtInt, Some("Process")), true, false, true, false, false, false, false),
-  ("vibe_sh_capture_exit_code_raw", CtFn(reg_p1(CtInt), CtInt, Some("Process")), true, false, true, false, false, false, false),
-  ("vibe_sh_capture_stdout_raw", CtFn(reg_p1(CtInt), CtString, Some("Process")), true, false, true, false, false, false, false),
-  ("vibe_sh_capture_stderr_raw", CtFn(reg_p1(CtInt), CtString, Some("Process")), true, false, true, false, false, false, false),
-  ("vibe_sh_capture_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Process")), true, false, true, false, false, false, false),
-  // #903/#865: propagate a guest-chosen exit code to the real OS process
-  // exit status (unlike a `main() -> Int` return, which `_start` only
-  // PRINTS -- see ADR-0069's entry_returns_unit comment in
-  // codegen/wasi/linked_compile.vibe). Traps via the host runner's
-  // existing exit-trap mechanism (Rust `viberun`: reuses ExitTrap, the
-  // same trap the legacy `__moonbit_sys_unstable::exit` import already
-  // used; JS runner: `process.exit(code)` directly) -- never returns.
-  ("vibe_process_exit_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Process")), true, false, true, false, false, false, false),
-  ("Stdin::read_stream", CtFn(reg_p1(CtInt), CtString, Some("Stdin")), true, false, true, false, false, false, false),
-  ("Stdout::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Stdout")), true, false, true, false, false, false, false),
-  ("Stdout::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Stdout")), true, false, true, false, false, false, false),
-  // #865: Stderr, mirroring Stdout::write_stream / Stdout::write_char exactly
-  // (own host effect name "Stderr" so a function using only stderr does not
-  // need to declare `with Stdout`).
-  ("Stderr::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Stderr")), true, false, true, false, false, false, false),
-  ("Stderr::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Stderr")), true, false, true, false, false, false, false),
-  // #1460 Phase 1: the `Console` capability -- one effect covering the three
-  // tty streams, replacing Stdin/Stdout/Stderr. Both name sets are live here
-  // ON PURPOSE and only for the length of the migration:
-  //
-  //   the committed seed knows ONLY the legacy three, and the seed is what
-  //   compiles this file. So the compiler must learn `Console` in a build the
-  //   seed can still produce, that build becomes the next seed, and only THEN
-  //   can lib/ (this file included) move to `Console::*`. Deleting the legacy
-  //   entries in the same commit that adds these would make the compiler
-  //   unbuildable from its own seed.
-  //
-  // The stderr pair cannot keep its operation spelling once the effects
-  // merge -- `Console::write_stream` is already taken by stdout -- so the
-  // error side is named apart rather than disambiguated by effect.
-  //
-  // Phase 3 removes the six legacy entries above and this comment with them.
-  ("Console::read_stream", CtFn(reg_p1(CtInt), CtString, Some("Console")), true, false, true, false, false, false, false),
-  ("Console::read_char", CtFn(reg_p0(), CtInt, Some("Console")), true, false, true, false, false, false, false),
-  ("Console::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Console")), true, false, true, false, false, false, false),
-  ("Console::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Console")), true, false, true, false, false, false, false),
-  ("Console::write_err_stream", CtFn(reg_p1(CtString), CtUnit, Some("Console")), true, false, true, false, false, false, false),
-  ("Console::write_err_char", CtFn(reg_p1(CtInt), CtUnit, Some("Console")), true, false, true, false, false, false, false),
-  ("resolve_path", CtFn(reg_p1(CtString), CtString, None), true, false, false, false, false, false, false),
-  ("Fs::remove", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::remove_file", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::remove_tree", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::mkdir_p", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::mkdir", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::chdir", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::copy", CtFn(reg_p2(a = CtString, b = CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::append", CtFn(reg_p2(a = CtString, b = CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::rename", CtFn(reg_p2(a = CtString, b = CtString), CtUnit, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::is_dir", CtFn(reg_p1(CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::is_file", CtFn(reg_p1(CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false),
-  ("Fs::getcwd", CtFn(reg_p0(), CtString, Some("Fs")), true, false, true, false, false, false, false),
-  // Socket client host imports (vibe.tcp_*) -- same "checker-legal (see
-  // builtins/declarations.vibe), zero codegen wiring" gap the Fs::* rows
-  // above closed. #1232 review: raw dunder names, NOT `Socket::tcp_connect`
-  // -- lib/@vibe/socket's package index.vpkg ALSO declares `effect
-  // TcpSocket { Connect(String,Int)->Int; Read(Int,Int)->String;
-  // Write(Int,String)->Unit; Close(Int)->Unit }` for its in-package
-  // mock-handler tests, and that effect's operations are STRUCTURALLY
-  // IDENTICAL in signature to these builtins -- a qualified call under the
-  // `Socket::` name let the checker's effect-row resolution match BOTH the
-  // builtin's own row and TcpSocket's, unioning a spurious `{ TcpSocket }`
-  // requirement onto every caller. Same collision class Http's client-side
-  // functions (lib/@vibe/http/http.vibe) already document and avoid via
-  // `vibe_http_*_raw` naming -- follow that precedent here too.
-  // checker_visible=true: no bare-name collision risk, so ordinary vibe
-  // source (lib/@vibe/socket/tcp.vibe's low-level layer) calls them
-  // directly, same convention as Fs::*/Http's client raw calls -- no
-  // compile_call.vibe special-casing needed. Supersedes the now-dead
-  // Socket::tcp_* arms in checker/builtin_sigs/builtins_net.vibe (lookup_registry_builtin
-  // runs first; this file's file-header comment: per-namespace checker
-  // lookup files "must not re-add" arms for registry names).
-  ("vibe_tcp_connect_raw", CtFn(reg_p2(a = CtString, b = CtInt), CtInt, Some("Socket")), true, false, true, false, false, false, false),
-  ("vibe_tcp_read_raw", CtFn(reg_p2(a = CtInt, b = CtInt), CtString, Some("Socket")), true, false, true, false, false, false, false),
-  ("vibe_tcp_write_raw", CtFn(reg_p2(a = CtInt, b = CtString), CtUnit, Some("Socket")), true, false, true, false, false, false, false),
-  ("vibe_tcp_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Socket")), true, false, true, false, false, false, false),
-  // #794: HTTP client host imports (vibe.http_*) -- host builtins are
-  // linear-only by design (the gc lane is the pure-test lane).
-  ("vibe_http_request_raw", CtFn(reg_p4(a = CtString, b = CtString, c = CtString, d = CtString), CtInt, Some("Http")), true, false, true, false, false, false, false),
-  ("vibe_http_response_status_raw", CtFn(reg_p1(CtInt), CtInt, Some("Http")), true, false, true, false, false, false, false),
-  ("vibe_http_response_header_raw", CtFn(reg_p2(a = CtInt, b = CtString), CtString, Some("Http")), true, false, true, false, false, false, false),
-  ("vibe_http_response_body_raw", CtFn(reg_p1(CtInt), CtString, Some("Http")), true, false, true, false, false, false, false),
-  ("vibe_http_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Http")), true, false, true, false, false, false, false),
-  ("Profiler::now_us", CtFn(reg_p0(), CtInt, Some("Profiler")), true, false, true, false, true, false, false),
-  ("Profiler::NowUs", CtFn(reg_p0(), CtInt, None), true, false, false, false, false, false, false),
-  // Current bump-heap pointer (bytes) — the allocation analog of now_us,
-  // for per-phase memory attribution in profiles/benches.
-  ("Profiler::heap_bytes", CtFn(reg_p0(), CtInt, Some("Profiler")), true, false, true, false, true, false, false),
-  ("Profiler::HeapBytes", CtFn(reg_p0(), CtInt, None), true, false, false, false, false, false, false),
-  ("sleep", CtFn(reg_p1(CtInt), CtUnit, Some("Async")), true, false, true, true, false, false, false),
-  // #1227: same host import as `sleep`, but row-free -- see
-  // checker/builtin_sigs/builtins_system.vibe for why the row cannot be discharged.
-  ("sleep_blocking", CtFn(reg_p1(CtInt), CtUnit, None), true, false, true, true, false, false, false),
-  // ADR-0089 step 4 (#1218): raw halves of `host_future_get` (the checker
-  // surface lives in checker/builtin_sigs/builtins_async.vibe; compile_call lowers it to
-  // a [state=2, handle] future cell over vibe_hf_get_raw). Both are
-  // codegen-internal (checker_visible=false): user source never spells
-  // them, they appear only in injected AST (the entry boundary's
-  // `__entry_settle`) and the compile_call lowering. They lower to the
-  // `vibe.host_future_get` / `vibe.host_future_wait` host imports, which
-  // only the component adapter module provides (spec §3.13/§3.14) -- a
-  // plain-wasm host has no waitable machinery to implement them with.
-  ("vibe_hf_get_raw", CtFn(reg_p0(), CtInt, None), true, false, false, true, false, false, false),
-  ("vibe_hf_wait_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // #1537: the group-wide half of the wait. `vibe_hf_arm_raw(h)` joins a
-  // pending host future to the adapter's shared waitable set (1 = its value
-  // already landed, 0 = armed); `vibe_hf_wait_any_raw()` blocks until one
-  // armed future lands and returns its handle, whose value
-  // `vibe_hf_wait_raw` then takes without blocking. Codegen-internal like the
-  // pair above: they appear only as the bodies linked_compile gives
-  // @vibe/concurrent's `__conc_host_*` hooks.
-  ("vibe_hf_arm_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  ("vibe_hf_wait_any_raw", CtFn(reg_p0(), CtInt, None), true, false, false, true, false, false, false),
-  // #1537: the stream counterpart of vibe_hf_arm_raw -- start a one-byte read
-  // of a host stream and join it to the shared set (1 = the next
-  // vibe_hs_read_raw answers without blocking, 0 = armed).
-  ("vibe_hs_arm_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // #1537: start a timer of `ms` in the same shared set, so a group with
-  // sleeping tasks and host waiters wakes at whichever comes first (its id,
-  // a never-repeating n + 4096, when pending; 1 = already over). Its completion is
-  // named by that id.
-  ("vibe_hf_sleep_arm_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  ("vibe_hf_sleep_cancel_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // #1537: nobody waits on this host future any more (its last waiting task
-  // was cancelled): cancel its pending read and release the readable end.
-  ("vibe_hf_cancel_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // #1537: the only task that could read this host stream was cancelled:
-  // cancel its armed read and release the readable end.
-  ("vibe_hs_cancel_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // #2066: append one byte to the component adapter's argument buffer, which
-  // the next `wit_response_arg_get$` getter lowers as its string parameter.
-  ("vibe_hf_arg_push_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  ("vibe_hs_claim_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // ADR-0089 Decision 3 (#1218): the shared READ half of the named host
-  // streams (`host_stream_named` / `host_stream_next`, spec §3.18) -- one
-  // byte per call, -1 at end of stream. Codegen-internal like the vibe_hf_*
-  // pair above: appears only in the injected `__entry_settle` stream arm,
-  // lowers to the `vibe.host_stream_read` host import that only the
-  // component adapter provides. The per-name GET halves
-  // (`vibe_hs_get_raw$<name>`) are program-minted and registered
-  // dynamically in linked_compile, exactly like `vibe_hf_get_raw$<name>`.
-  ("vibe_hs_read_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // ADR-0089 Decision 3 follow-up (#1218): the shared CLOSE half. Releases
-  // the readable end of a host stream the guest stopped reading before end
-  // of stream (`host_stream_close`, spec §3.18) -- the read half only drops
-  // the end when it reaches EOS, so a partially consumed stream used to
-  // hold its handle for the component instance's whole lifetime. Same
-  // codegen-internal shape as the read half (injected `__hs_close` only),
-  // and NOT async: dropping a readable end never blocks.
-  ("vibe_hs_close_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // #1539 checker-hidden stdin provider core route. The component adapter
-  // owns the canonical stream plus completion future behind an opaque ID.
-  ("vibe_stdin_provider_acquire_raw", CtFn(reg_p0(), CtInt, None), true, false, false, true, false, false, false),
-  ("vibe_stdin_provider_read_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  ("vibe_stdin_provider_close_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, true, false, false, false),
-  // Public source surface over that exact route. The unspellable CtStruct
-  // identity prevents Int/HostStream/user types from forging a handle; the
-  // runtime value remains one tagged scalar provider ID. Acquisition owns
-  // only Stdin authority; operations that may settle carry only Async.
-  ("Stdin::read_via_stream", CtFn(reg_p0(), reg_stdin_stream(), Some("Stdin")), true, false, true, true, false, false, false),
-  ("StdinStream::next", CtFn(reg_p1(reg_stdin_stream()), CtInt, Some("Async")), true, false, true, true, false, false, false),
-  ("StdinStream::close", CtFn(reg_p1(reg_stdin_stream()), CtUnit, Some("Async")), true, false, true, true, false, false, false),
-  // Additive compiler-owned byte-chunk operation. Each call owns the Async
-  // evidence because it may suspend while reading or settling EOF.
-  ("StdinStream::read_chunk", CtFn(reg_p2(a = reg_stdin_stream(), b = CtInt), CtOption(CtString), Some("Async")), false, false, true, false, false, false, false),
-  ("Stdin::read_char", CtFn(reg_p0(), CtInt, Some("Stdin")), true, false, true, false, false, false, false),
-  ("simd_skip_ws", CtFn(reg_p3(a = CtBytes, b = CtInt, c = CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("simd_scan_alnum", CtFn(reg_p3(a = CtBytes, b = CtInt, c = CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("simd_scan_alnum_str", CtFn(reg_p3(a = CtString, b = CtInt, c = CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("simd_scan_string_special_str", CtFn(reg_p3(a = CtString, b = CtInt, c = CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("simd_scan_line_end_str", CtFn(reg_p3(a = CtString, b = CtInt, c = CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("str_lex_diff", CtFn(reg_p2(a = CtString, b = CtString), CtInt, None), true, true, true, true, true, false, false),
-  // Internal cache primitive. It packs both 31-bit hashes into one Int;
-  // formatting remains in @vibe/cache to preserve the public key contract.
-  // The source fallback is a local function with the same name; user code
-  // must not resolve this linear-only runtime row, especially on the GC lane.
-  ("__compact_fingerprint_hash", CtFn(reg_p1(CtString), CtInt, None), true, false, false, false, false, false, false),
-  // #973: erased-generic `[T: Ord]`/`[T: Add]` runtime dispatch for `<` `>`
-  // `<=` `>=` `+` (desugar_trait_dict.vibe rewrites the binop when the
-  // operand's static type is the bare, unresolved type parameter itself --
-  // see the doc comment on gen_generic_rel_diff_body). Both lanes: the gc
-  // lane runs desugar_trait_dicts too (gc_only.vibe), and its strings use the
-  // same packed layout, so it shares the linear bodies (#3158).
-  ("__generic_rel_diff", CtFn(reg_p2(a = CtInt, b = CtInt), CtInt, None), true, true, true, true, true, false, false),
-  ("__generic_add", CtFn(reg_p2(a = CtInt, b = CtInt), CtInt, None), true, true, true, true, false, false, false),
-  ("print_int", CtFn(reg_p1(CtInt), CtUnit, None), true, true, false, false, true, false, false),
-  ("print_str", CtFn(reg_p1(CtString), CtUnit, None), true, true, false, false, true, false, false),
-  ("String::length", CtFn(reg_p1(CtString), CtInt, None), true, true, true, true, true, false, false),
-  ("String::equals", CtFn(reg_p2(a = CtString, b = CtString), CtBool, None), true, true, true, true, true, false, false),
-  ("String::concat", CtFn(reg_p2(a = CtString, b = CtString), CtString, None), true, true, true, true, false, false, false),
-  ("Array::with_capacity", CtFn(reg_p1(CtInt), CtArray(reg_var(0)), None), true, true, true, false, false, false, true),
-  ("array_new", CtFn(reg_p0(), CtArray(reg_var(0)), None), true, true, true, false, false, false, false),
-  ("Array::length", CtFn(reg_p1(CtArray(reg_var(0))), CtInt, None), true, true, true, true, true, false, false),
-  ("Array::get", CtFn(reg_p2(a = CtArray(reg_var(0)), b = CtInt), reg_var(0), None), true, true, true, true, true, true, false),
-  ("Array::push", CtFn(reg_p2(a = CtArray(reg_var(0)), b = reg_var(0)), CtUnit, None), true, true, true, false, false, false, true),
-  ("Array::push_all", CtFn(reg_p2(a = CtArray(reg_var(0)), b = CtArray(reg_var(0))), CtUnit, None), true, true, true, false, false, false, false),
-  ("Array::set", CtFn(reg_p3(a = CtArray(reg_var(0)), b = CtInt, c = reg_var(0)), CtUnit, None), true, true, true, true, true, false, true),
-  ("Float64::to_int", CtFn(reg_p1(CtDouble), CtInt, None), true, true, true, true, true, false, false),
-  ("Int::to_float64", CtFn(reg_p1(CtInt), CtDouble, None), true, true, true, true, false, false, false),
-  // #2344: scalar bit primitives. Both lanes -- these are ordinary wasm
-  // instructions, not SIMD, and rank/select needs them far more than it needs
-  // a vector (bench/bench_simd_rank.vibe: i64.popcnt carries 344x of 438x).
-  ("Int::popcount", CtFn(reg_p1(CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("Int::ctz", CtFn(reg_p1(CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("Int::clz", CtFn(reg_p1(CtInt), CtInt, None), true, true, true, false, true, false, false),
-  ("String::char_code_at", CtFn(reg_p2(a = CtString, b = CtInt), CtInt, None), true, true, true, true, true, false, false),
-  ("String::from_char_code", CtFn(reg_p1(CtInt), CtString, None), true, true, true, true, false, false, false),
-  ("String::substring", CtFn(reg_p3(a = CtString, b = CtInt, c = CtInt), CtString, None), true, true, true, true, false, false, false),
-  ("Array::truncate", CtFn(reg_p2(a = CtArray(reg_var(0)), b = CtInt), CtUnit, None), true, true, true, false, true, false, false),
-  ("String::join", CtFn(reg_p2(a = CtArray(CtString), b = CtString), CtString, None), true, true, true, true, false, false, false),
-  // #1513: POLYMORPHIC — `eq` is the structural equality builtin and is applied
-  // to enums / structs / strings, not just Int. The `CtInt` placeholder here was
-  // harmless while nothing read these parameter types; once the checker's
-  // fast-path argument check started consulting the registry it turned into a
-  // false rejection (measured: `eq(Color::Red, c)` in
-  // docs/language-tour/basics.vibe.md).
-  //
-  // #2442: the two positions are ONE variable, not two `reg_any()`s. Written
-  // as independent unknowns the row said only "two arguments of some type",
-  // which `registry_builtin_pure_arity` refuses outright (`types_mention_unknown`)
-  // -- so `eq` had no value form even with the bare-name clause gone, measured
-  // `registry_builtin_pure_arity("eq") = -1` on ae838ff. It is also the
-  // `FrozenArray` lesson #2451 records one screen up: a value form typed from
-  // independent unknowns loses the relationship, and `let f = eq` would then
-  // check `f(1, "x")` clean. One variable says what `eq` means -- both operands
-  // are the same type.
-  //
-  // Direct calls are unchanged: every consumer but `registry_builtin_scheme`
-  // reads the ERASED view, where `type_erase_vars` puts `CtUnknown` back, so
-  // `eq(Color::Red, c)` keeps tolerating exactly what it tolerated. Parameter
-  // COUNT and return type are unchanged, so the derived `builtin_registry()`
-  // view the codegen lanes read is byte-identical.
-  ("eq", CtFn(reg_p2(a = reg_var(0), b = reg_var(0)), CtBool, None), true, true, true, false, true, false, false),
-  ("String::ends_with", CtFn(reg_p2(a = CtString, b = CtString), CtBool, None), true, true, true, true, true, false, false),
-  ("String::last_index_of", CtFn(reg_p2(a = CtString, b = CtString), CtInt, None), true, true, true, true, true, false, false),
-  ("String::index_of", CtFn(reg_p2(a = CtString, b = CtString), CtInt, None), true, true, true, true, true, false, false),
-  ("String::contains", CtFn(reg_p2(a = CtString, b = CtString), CtBool, None), true, true, true, true, true, false, false),
-  ("String::starts_with", CtFn(reg_p2(a = CtString, b = CtString), CtBool, None), true, true, true, true, true, false, false),
-  ("String::split", CtFn(reg_p2(a = CtString, b = CtString), CtArray(CtString), None), true, true, true, true, false, false, false),
-  ("String::trim", CtFn(reg_p1(CtString), CtString, None), true, true, true, true, false, false, false),
-  ("compiler_sources", CtFn(reg_p0(), CtString, None), true, false, false, false, false, false, false),
-  ("ArrayBuilder::new", CtFn(reg_p0(), reg_opaque("ArrayBuilder"), None), true, true, true, false, false, false, true),
-  ("ArrayBuilder::push", CtFn(reg_p2(a = reg_opaque("ArrayBuilder"), b = reg_any()), CtUnit, None), true, true, true, false, false, false, true),
-  ("ArrayBuilder::freeze", CtFn(reg_p1(reg_opaque("ArrayBuilder")), CtArray(reg_any()), None), true, true, true, false, false, false, true),
-  // #906: FrozenArray[T] -- a checker-only phantom-type wrapper over
-  // Array[T]'s exact same runtime layout (same technique as ArrayBuilder
-  // just above: from_array/to_array are pure identity casts, get/length
-  // alias Array::get/Array::length's own bodies -- see
-  // gc/backend_body.vibe and wasi/linked_compile.vibe). checker.vibe's
-  // FrozenArray::* ECall branches still refine the DIRECT call with the real
-  // per-call-site element type -- they are tolerant where these rows are not
-  // (measured: `FrozenArray::length` on an `Array[Int]` checks clean), so they
-  // are not redundant yet. #2451 gave the rows real variables for the VALUE
-  // form, which had no refinement to fall back on: before that,
-  // `let freeze = FrozenArray::from_array` then
-  // `let fz: FrozenArray[String] = freeze([1, 2])` checked clean and read the
-  // Ints as Strings. These rows also exist so both codegen lanes' func-table
-  // registration (which is DRIVEN by this registry, #415 B-1) has a row to
-  // loop over.
-  ("FrozenArray::from_array", CtFn(reg_p1(CtArray(reg_var(0))), CtNamed("FrozenArray", reg_p1(reg_var(0))), None), true, true, true, false, false, false, false),
-  ("FrozenArray::get", CtFn(reg_p2(a = CtNamed("FrozenArray", reg_p1(reg_var(0))), b = CtInt), reg_var(0), None), true, true, true, false, true, false, false),
-  ("FrozenArray::length", CtFn(reg_p1(CtNamed("FrozenArray", reg_p1(reg_var(0)))), CtInt, None), true, true, true, false, true, false, false),
-  ("FrozenArray::to_array", CtFn(reg_p1(CtNamed("FrozenArray", reg_p1(reg_var(0)))), CtArray(reg_var(0)), None), true, true, true, false, false, false, false),
-  ("Array::slice", CtFn(reg_p3(a = CtArray(reg_var(0)), b = CtInt, c = CtInt), CtArray(reg_var(0)), None), true, true, true, false, false, false, true),
-  ("Array::concat", CtFn(reg_p2(a = CtArray(reg_var(0)), b = CtArray(reg_var(0))), CtArray(reg_var(0)), None), true, true, true, true, false, false, false),
-  ("Bytes::new", CtFn(reg_p0(), CtBytes, None), true, true, true, false, false, false, false),
-  ("Bytes::with_capacity", CtFn(reg_p1(CtInt), CtBytes, None), true, true, true, false, false, false, false),
-  ("Bytes::from_array", CtFn(reg_p1(CtArray(CtInt)), CtBytes, None), true, true, true, false, false, false, false),
-  ("Bytes::to_array", CtFn(reg_p1(CtBytes), CtArray(CtInt), None), true, true, true, false, false, false, false),
-  ("Bytes::length", CtFn(reg_p1(CtBytes), CtInt, None), true, true, true, true, true, false, false),
-  ("Bytes::get", CtFn(reg_p2(a = CtBytes, b = CtInt), CtInt, None), true, true, true, true, true, false, false),
-  ("Bytes::set", CtFn(reg_p3(a = CtBytes, b = CtInt, c = CtInt), CtUnit, None), true, true, true, false, true, false, true),
-  ("Bytes::push", CtFn(reg_p2(a = CtBytes, b = CtInt), CtUnit, None), true, true, true, false, false, false, false),
-  ("Bytes::append", CtFn(reg_p2(a = CtBytes, b = CtBytes), CtUnit, None), true, true, true, false, false, false, false),
-  ("Bytes::concat", CtFn(reg_p2(a = CtBytes, b = CtBytes), CtBytes, None), true, true, true, false, false, false, false),
-  ("Bytes::slice", CtFn(reg_p3(a = CtBytes, b = CtInt, c = CtInt), CtBytes, None), true, true, true, false, false, false, false),
-  ("Bytes::index_of_bytes", CtFn(reg_p2(a = CtBytes, b = CtBytes), CtInt, None), true, true, true, true, true, false, false),
-  ("Bytes::index_of", CtFn(reg_p2(a = CtBytes, b = CtInt), CtInt, None), true, true, true, true, true, false, false),
-  ("Bytes::count", CtFn(reg_p2(a = CtBytes, b = CtInt), CtInt, None), true, true, true, true, true, false, false),
-  ("Bytes::last_index_of", CtFn(reg_p2(a = CtBytes, b = CtInt), CtInt, None), true, true, true, true, true, false, false),
-  ("Bytes::compare", CtFn(reg_p2(a = CtBytes, b = CtBytes), CtInt, None), true, true, true, true, true, false, false),
-  ("__to_string", CtFn(reg_p1(reg_any()), CtString, None), true, true, true, true, false, false, false),
-  ("vibe_rc_drop", CtFn(reg_p1(reg_any()), CtUnit, None), true, false, false, false, true, false, false),
-  ("vibe_rc_alloc", CtFn(reg_p1(CtInt), CtInt, None), true, false, false, false, false, false, false),
-  ("vibe_rc_dup", CtFn(reg_p1(reg_any()), CtUnit, None), true, false, false, false, true, false, false),
-  ("vibe_heap_grow_check", CtFn(reg_p0(), CtUnit, None), true, false, false, false, true, false, false),
-  ("not", CtFn(reg_p1(CtBool), CtBool, None), false, true, true, true, true, false, false),
-  ("Bytes::blit", CtFn(reg_p4(a = CtBytes, b = CtBytes, c = CtInt, d = CtInt), CtUnit, None), true, true, true, false, false, false, false),
-  ("Bytes::fill", CtFn(reg_p3(a = CtBytes, b = CtInt, c = CtInt), CtUnit, None), false, true, true, false, false, false, false),
-  ("Float64::from_i64_bits", CtFn(reg_p1(CtInt), CtDouble, None), false, true, true, false, false, false, false),
-  ("Float64::to_float32", CtFn(reg_p1(CtDouble), CtFloat, None), false, true, false, false, false, false, false),
-  ("Float32::to_float64", CtFn(reg_p1(CtFloat), CtDouble, None), false, true, false, false, false, false, false),
-  ("Char::to_int", CtFn(reg_p1(CtChar), CtInt, None), false, true, true, true, true, false, false),
-  ("Char::from_int", CtFn(reg_p1(CtInt), CtChar, None), false, true, true, true, true, false, false),
-  ("Int::to_float32", CtFn(reg_p1(CtInt), CtFloat, None), false, true, true, true, false, false, false),
-  // #3730: the 32-bit integer conversions. Widening is total; narrowing is
-  // checked (`None` out of range) or wrapping by name. All of them, and
-  // `to_string`, are rewritten to `Int` operations after the check
-  // (`rewrite_int32_stmts`), so no lane lowers these names.
-  ("Int32::to_int", CtFn(reg_p1(CtInt32), CtInt, None), false, false, true, true, false, false, false),
-  ("UInt32::to_int", CtFn(reg_p1(CtUInt32), CtInt, None), false, false, true, true, false, false, false),
-  ("Int::to_int32", CtFn(reg_p1(CtInt), CtOption(CtInt32), None), false, false, true, true, false, false, false),
-  ("Int::to_uint32", CtFn(reg_p1(CtInt), CtOption(CtUInt32), None), false, false, true, true, false, false, false),
-  ("Int::wrap_int32", CtFn(reg_p1(CtInt), CtInt32, None), false, false, true, true, false, false, false),
-  ("Int::wrap_uint32", CtFn(reg_p1(CtInt), CtUInt32, None), false, false, true, true, false, false, false),
-  ("Int32::to_string", CtFn(reg_p1(CtInt32), CtString, None), false, false, true, true, false, false, false),
-  ("UInt32::to_string", CtFn(reg_p1(CtUInt32), CtString, None), false, false, true, true, false, false, false),
-  ("FixedArray::make", CtFn(reg_p2(a = CtInt, b = reg_any()), CtArray(reg_any()), None), false, true, true, false, false, false, false),
-  ("FixedArray::length", CtFn(reg_p1(CtArray(reg_any())), CtInt, None), false, true, true, false, true, false, false),
-  ("FixedArray::get", CtFn(reg_p2(a = CtArray(reg_any()), b = CtInt), reg_any(), None), false, true, true, false, true, false, false),
-  ("FixedArray::set", CtFn(reg_p3(a = CtArray(reg_any()), b = CtInt, c = reg_any()), CtUnit, None), false, true, true, false, true, false, false),
-  ("FixedArray::unsafe_set", CtFn(reg_p3(a = CtArray(reg_any()), b = CtInt, c = reg_any()), CtUnit, None), false, true, true, false, true, false, false),
-  ("FixedArray::blit", CtFn(reg_p5(a = CtArray(reg_any()), b = CtInt, c = CtArray(reg_any()), d = CtInt, e = CtInt), CtUnit, None), false, true, true, false, true, false, false),
-  // #835: Int64Array rides on the same linear-memory Array representation
-  // as FixedArray (Array[Int] already stores the full 62-bit tagged Int
-  // per cell, no i32-cell truncation in these backends — unlike the
-  // retired MoonBit host, which needed a distinct i64-cell object layout).
-  // So this is a pure name-level alias onto Array::make/length/get/set,
-  // just typed concretely as Array[Int] instead of FixedArray's generic
-  // Array[Unknown] (cheatsheet documents it strictly for Int word buffers).
-  ("Int64Array::make", CtFn(reg_p2(a = CtInt, b = CtInt), CtArray(CtInt), None), false, true, true, false, false, false, false),
-  ("Int64Array::length", CtFn(reg_p1(CtArray(CtInt)), CtInt, None), false, true, true, false, true, false, false),
-  ("Int64Array::get", CtFn(reg_p2(a = CtArray(CtInt), b = CtInt), CtInt, None), false, true, true, false, true, false, false),
-  ("Int64Array::set", CtFn(reg_p3(a = CtArray(CtInt), b = CtInt, c = CtInt), CtUnit, None), false, true, true, false, true, false, false),
-  ("StringBuilder::new", CtFn(reg_p0(), reg_opaque("StringBuilder"), None), false, true, true, false, false, false, true),
-  ("StringBuilder::push", CtFn(reg_p2(a = reg_opaque("StringBuilder"), b = CtString), CtUnit, None), false, true, true, false, false, false, true),
-  ("StringBuilder::freeze", CtFn(reg_p1(reg_opaque("StringBuilder")), CtString, None), false, true, true, false, false, false, true),
-  ("Map::get", CtFn(reg_p2(a = reg_opaque("Map"), b = reg_any()), reg_any(), None), false, true, true, true, false, true, false),
-  ("Map::keys", CtFn(reg_p1(reg_opaque("Map")), CtArray(reg_any()), None), false, true, true, false, false, false, false),
-  ("MapBuilder::new", CtFn(reg_p0(), reg_opaque("MapBuilder"), None), false, true, true, false, false, false, false),
-  ("MapBuilder::set", CtFn(reg_p3(a = reg_opaque("MapBuilder"), b = reg_any(), c = reg_any()), CtUnit, None), false, true, true, false, false, false, false),
-  ("MapBuilder::freeze", CtFn(reg_p1(reg_opaque("MapBuilder")), reg_opaque("Map"), None), false, true, true, false, false, false, false),
-  // #1310: has_key/get read the builder without freezing (O(n) scan over
-  // the same handle-indirect storage MapBuilder::set already walks -- see
-  // its search loop in expr/compile_call.vibe / gc/backend_call.vibe).
-  // `get` returns Option[V] (built via a synthesized Some/None `ce` call,
-  // same technique as int_parse_expr / Array::find), not the "0 on miss"
-  // raw-value convention Map::get uses. #2334: the key is `any` here, as
-  // `Map::get`'s is: the map arms (checker_call_map.vibe) check it against
-  // the builder's key slot.
-  ("MapBuilder::has_key", CtFn(reg_p2(a = reg_opaque("MapBuilder"), b = reg_any()), CtBool, None), false, true, true, false, true, false, false),
-  ("MapBuilder::get", CtFn(reg_p2(a = reg_opaque("MapBuilder"), b = reg_any()), CtOption(reg_any()), None), false, true, true, false, false, false, false),
-  ("abort", CtFn(reg_p1(CtString), CtUnit, None), false, false, true, false, true, false, true),
-  ("assert", CtFn(reg_p1(CtBool), CtUnit, None), false, true, true, false, true, false, true),
-  ("assert_true", CtFn(reg_p1(CtBool), CtUnit, None), false, true, true, false, true, false, false),
-  ("assert_eq", CtFn(reg_p2(a = reg_any(), b = reg_any()), CtUnit, None), false, true, true, false, true, false, false),
-  // #2107: not `None`. Codegen lowers both names onto the tty host
-  // imports, and `builtin_purity` already classifies them impure, so a
-  // `None` row here was the checker alone claiming these are pure. It let
-  // a `fn main allows ()` write to the terminal with a clean `vibe check`.
-  // The row is `Console`, the spelling the book and the diagnostic use.
-  ("println", CtFn(reg_p1(CtString), CtUnit, Some("Console")), false, true, true, false, true, false, false),
-  ("print", CtFn(reg_p1(CtString), CtUnit, Some("Console")), false, true, true, false, true, false, false),
-  ("map_has", CtFn(reg_p2(a = reg_opaque("Map"), b = reg_any()), CtBool, None), false, true, true, false, true, false, false),
-  // Private opt-in native CPU service for independent lowering instances.
-  // Append to preserve existing resolved builtin identifiers.
-  ("compiler_lowering_run", CtFn(reg_p1(CtInt), CtInt, Some("Exception")), true, false, true, false, false, false, false)
-]
+/// every unresolved-name lookup in the checker, and rebuilding the rows per
+/// call was allocation churn heavy enough to crash the RC-mode in-process
+/// compiler tests.
+let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool, Bool, Bool, Bool, Bool)] = registry_rows_decode(registry_rows_text)
+
+fn registry_rows_decode(_ text: String) -> Array[(String, Type, Bool, Bool, Bool, Bool, Bool, Bool, Bool)] {
+  let out: Array[(String, Type, Bool, Bool, Bool, Bool, Bool, Bool, Bool)] = []
+  for line in String::split(text, sep = "\n") {
+    if String::length(line) > 0 && !String::starts_with(line, prefix = "#") {
+      let cols = String::split(line, sep = " ")
+      let pos = [0]
+      let ty = registry_type_decode(s = Array::get(cols, at = 1), pos = pos)
+      let f = Array::get(cols, at = 2)
+      Array::push(out, value = (Array::get(cols, at = 0), ty, registry_flag(f = f, at = 0), registry_flag(f = f, at = 1), registry_flag(f = f, at = 2), registry_flag(f = f, at = 3), registry_flag(f = f, at = 4), registry_flag(f = f, at = 5), registry_flag(f = f, at = 6)))
+    }
+  }
+  out
+}
+
+fn registry_flag(f: String, at: Int) -> Bool {
+  String::byte_at(f, at = at) == 84
+}
+
+/// The text up to the next `;` from `pos`, which moves past it.
+fn registry_type_word(s: String, pos: Array[Int]) -> String {
+  let start = Array::get(pos, at = 0)
+  let mut k = start
+  while String::byte_at(s, at = k) != 59 {
+    k = k + 1
+  }
+  Array::set(pos, at = 0, value = k + 1)
+  String::substring(s, start = start, end = k)
+}
+
+fn registry_type_count(s: String, pos: Array[Int]) -> Int {
+  match Int::parse(registry_type_word(s = s, pos = pos)) {
+    Some(n) => n,
+    None => 0
+  }
+}
+
+fn registry_types_decode(s: String, pos: Array[Int], n: Int) -> Array[Type] {
+  let out: Array[Type] = []
+  let mut k = 0
+  while k < n {
+    Array::push(out, value = registry_type_decode(s = s, pos = pos))
+    k = k + 1
+  }
+  out
+}
+
+/// One type of `registry_rows_text`'s prefix code, read from `pos`.
+fn registry_type_decode(s: String, pos: Array[Int]) -> Type {
+  let c = String::byte_at(s, at = Array::get(pos, at = 0))
+  Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+  if c == 105 {
+    CtInt
+  } else if c == 115 {
+    CtString
+  } else if c == 117 {
+    CtUnit
+  } else if c == 98 {
+    CtBool
+  } else if c == 121 {
+    CtBytes
+  } else if c == 100 {
+    CtDouble
+  } else if c == 102 {
+    CtFloat
+  } else if c == 99 {
+    CtChar
+  } else if c == 73 {
+    CtInt32
+  } else if c == 85 {
+    CtUInt32
+  } else if c == 111 {
+    reg_opaque(registry_type_word(s = s, pos = pos))
+  } else if c == 83 {
+    reg_stdin_stream()
+  } else if c == 118 {
+    reg_var(registry_type_count(s = s, pos = pos))
+  } else if c == 65 {
+    CtArray(registry_type_decode(s = s, pos = pos))
+  } else if c == 79 {
+    CtOption(registry_type_decode(s = s, pos = pos))
+  } else if c == 78 {
+    let name = registry_type_word(s = s, pos = pos)
+    let n = registry_type_count(s = s, pos = pos)
+    CtNamed(name, registry_types_decode(s = s, pos = pos, n = n))
+  } else if c == 70 {
+    let n = registry_type_count(s = s, pos = pos)
+    let params = registry_types_decode(s = s, pos = pos, n = n)
+    let ret = registry_type_decode(s = s, pos = pos)
+    let row_mark = String::byte_at(s, at = Array::get(pos, at = 0))
+    Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+    let row = if row_mark == 33 {
+      Some(registry_type_word(s = s, pos = pos))
+    } else {
+      None
+    }
+    CtFn(params, ret, row)
+  } else {
+    reg_any()
+  }
+}
 
 /// #2451: the memo for the ERASED view below. Filled on first use rather than
 /// at module init so it cannot depend on module-level `let` ordering.

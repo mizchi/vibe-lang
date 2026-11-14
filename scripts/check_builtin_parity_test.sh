@@ -2,11 +2,11 @@
 # Red test for scripts/check_builtin_parity.vibex (#2248, #2584; #3672 ported
 # the gate).
 #
-# The registry row is a 9-tuple since #2584. The gate used to anchor on
-# `bool, bool, bool)`, which consumed the LAST three bools of a 9-tuple as
-# if they were the lane flags. Measured on #2845: Array::push (and every
-# other allocating, non-borrow-returning name) was reported as a dead row
-# claiming neither lane, while the first three bools still said both lanes.
+# The registry row carries seven flags since #2584 (a `NAME TYPE FLAGS` line of
+# `registry_rows_text` since #2503). The gate once anchored on the LAST three
+# of them as if they were the lane flags. Measured on #2845: Array::push (and
+# every other allocating, non-borrow-returning name) was reported as a dead
+# row claiming neither lane, while the first three flags still said both.
 #
 # Two mutations, on a COPY of the real registry. Each asserts the mutation
 # LANDED before trusting the failure, and the gate is green on the unmutated
@@ -45,19 +45,16 @@ import re, sys
 path, which = sys.argv[1], sys.argv[2]
 s = open(path, encoding="utf-8").read()
 before = s
-# Preserve the type expression, including any argument labels inside it.
-# The mutation concerns the tuple shape and lane flags, not that syntax.
-row = re.search(
-    r'(?P<head>\("Array::push", CtFn\(.*\)), true, true, true, false, false, false, true\)',
-    s)
+# Only the FLAGS column changes; the type code is kept as written.
+row = re.search(r'(?P<head>#\|Array::push \S+ )(?P<flags>TTTFFFT)\n', s)
 if row is None:
-    sys.stderr.write("builtin-parity-selftest: Array::push 9-tuple not found\n")
+    sys.stderr.write("builtin-parity-selftest: Array::push row not found\n")
     sys.exit(2)
 needle = row.group(0)
 if which == "shape":
-    repl = row.group("head") + ", true, true, true)"
+    repl = row.group("head") + "TTT\n"
 elif which == "neither":
-    repl = row.group("head") + ", false, false, true, false, false, false, true)"
+    repl = row.group("head") + "FFTFFFT\n"
 else:
     sys.stderr.write(f"builtin-parity-selftest: unknown mutation '{which}'\n")
     sys.exit(2)
@@ -81,10 +78,10 @@ PY
   echo "builtin-parity-selftest:   red ok: $name"
 }
 
-# A 5-tuple row must not be silently skipped: parsed-count vs named-CtFn
-# count is the shape check that `len(rows) < 90` cannot provide (dropping
-# one of 170+ still clears 90).
-run_case shape   shape   "9-tuple"
+# A row with too few flags must not be silently skipped: parsed rows vs row
+# lines is the shape check that `len(rows) < 90` cannot provide (dropping
+# one of 190+ still clears 90).
+run_case shape   shape   "seven T/F flags"
 # Lane flags are the FIRST three bools. Clearing them on Array::push must
 # name that row as a dead neither-lane entry.
 run_case neither neither "NEITHER lane"

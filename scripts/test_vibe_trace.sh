@@ -16,6 +16,14 @@
 # Installs a FRESH CLI wasm (the committed seed predates the funcmap sidecar) into
 # a throwaway VIBE_HOME/VIBE_BIN_DIR so it never touches a real install. Mirrors
 # tests/integration/install/install_test.sh's install pattern.
+# VIBE_TRACE_TEST_CLI_WASM=<stage2.wasm> installs that compiler instead of
+# building one (which compiler answered: AGENTS.md).
+#
+# The same program runs on the wasm-gc lane too (VIBE_BACKEND=gc). That lane
+# writes its function-name subsection only when asked (#4127 / #4140), and
+# `vibe run` asks, as the linear lane keeps its name section for `vibe run`.
+# Without that, every gc frame read `<wasm function N>` and nothing named
+# `boom`.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,7 +38,8 @@ if [ ! -x "$RT" ] || [ -n "$(find runtime/viberun/src -name "*.rs" -newer "$RT" 
 fi
 
 # 2. a fresh CLI wasm carrying the funcmap sidecar support
-cli="$(bash scripts/build_cli_wasm.sh)"
+cli="${VIBE_TRACE_TEST_CLI_WASM:-}"
+[ -n "$cli" ] || cli="$(bash scripts/build_cli_wasm.sh)"
 [ -s "$cli" ] || { echo "FAIL: no CLI wasm built" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
@@ -40,6 +49,9 @@ export VIBE_BIN_DIR="$WORK/bin"
 # Keep the runner from dumping its own multi-line Rust backtrace so the assertion
 # scans only the wasm trap frames.
 unset RUST_BACKTRACE || true
+# A gate must not inherit its environment (#2252): these pick the lane and
+# whether names are written.
+unset VIBE_BACKEND VIBE_WASM_NAMES || true
 
 echo "[test] installing fresh CLI into $VIBE_HOME"
 bash install/install.sh --cli-wasm "$cli" >/dev/null 2>&1
@@ -77,6 +89,32 @@ if printf '%s\n' "$err" | grep -qF "$want"; then
 else
   echo "FAIL: expected stderr to contain '$want'" >&2
   echo "      (the wasm name section must name the frame and the .funcmap sidecar must map boom->1)" >&2
+  exit 1
+fi
+
+# 3. the wasm-gc lane: the same trap, the same named and annotated frame.
+set +e
+gc_err="$(VIBE_BACKEND=gc "$VIBE" run "$proj/prog.vibex" 2>&1 >/dev/null)"
+gc_status=$?
+set -e
+
+echo "----- captured stderr (gc) -----"
+printf '%s\n' "$gc_err"
+echo "--------------------------------"
+
+if [ "$gc_status" -eq 0 ]; then
+  echo "FAIL: trapping program exited 0 on the gc lane (expected non-zero)" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$gc_err" | grep -qF "wasm backtrace"; then
+  echo "FAIL: the gc lane printed no wasm backtrace, so this case proves nothing" >&2
+  exit 1
+fi
+if printf '%s\n' "$gc_err" | grep -qF "$want"; then
+  echo "ok: gc trap backtrace names and annotates the trapping function: '$want'"
+else
+  echo "FAIL: expected the gc lane's stderr to contain '$want'" >&2
+  echo "      (vibe run must have the gc lane write its function-name subsection, #4127)" >&2
   exit 1
 fi
 

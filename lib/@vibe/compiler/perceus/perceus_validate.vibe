@@ -41,6 +41,10 @@
 // no planned drop is not checked: codegen then decides its epilogue drop
 // itself (#725 / #1085). A parameterized `loop`'s result slot (#3168) holds
 // nothing until a `break v` stores into it and one reference after.
+// A `for` element is a view into the iterable that codegen binds each
+// iteration and registers loop-borrowed (#715): it holds nothing, its plan
+// rows are never realized, and each owning occurrence in the body must be
+// one of the retained positions above (`rv_check_elem`).
 //
 // Early exits (slice 3). A `return`, and a `break` / `continue` at the loop
 // depth a binding was declared at, leave its scope past the scope-end drops;
@@ -103,6 +107,10 @@ import ./perceus_analyze_calls.vibe {
 
 import ./perceus_pc_emit.vibe {
   perceus_loop_result_slot
+}
+
+import ./perceus_sf_derive.vibe {
+  perceus_last_plan_classes
 }
 
 import ./perceus_pctx.vibe {
@@ -191,7 +199,10 @@ struct RvState {
   mut ord_bad: Bool;
   // How many `handle` bodies enclose the walk: a throw inside one may be
   // caught there.
-  mut handle_depth: Int
+  mut handle_depth: Int;
+  // `x` is a `for` element: its scope is the loop body, it holds no
+  // reference of its own, and it is loop-carried there (`rv_check_elem`).
+  mut elem: Bool
 }
 
 fn rv_out(c: Int, marked: Int, brk: Int, acq: Int, path: String) -> RvOut {
@@ -670,6 +681,21 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
         Some(i) => Array::push(st.bound, value = i),
         None => ()
       }
+      // The element `x` is in scope for one iteration of the body, and is
+      // loop-carried there from its first occurrence on: codegen binds it
+      // as a view into the iterable and registers it loop-borrowed
+      // (compile_forin_loop, #715), so the body's owning occurrences are the
+      // retained sites a loop-carried binding has.
+      let elem_scope = st.elem && vn == st.x
+      let saved_active = st.active
+      if elem_scope {
+        st.active = true
+        st.found = true
+        st.decl_loop = st.loop_depth - 1
+        st.decl_exit = st.exit_depth
+      } else {
+        ()
+      }
       // A collected body value is pushed into the result array, which
       // retains a loop-carried name there like any array item; a discarded
       // one is dropped unreleased.
@@ -677,6 +703,12 @@ fn rv_walk_node(st: RvState, e: Expr, consume: Bool) -> Array[RvOut] {
         rv_item(st = st, e = fb)
       } else {
         rv_walk(st = st, e = fb, consume = false)
+      }
+      if elem_scope {
+        st.scope_out = bo
+        st.active = saved_active
+      } else {
+        ()
       }
       Array::truncate(st.bound, length = mark)
       st.loop_depth = st.loop_depth - 1
@@ -1051,7 +1083,15 @@ fn rv_let(st: RvState, n: String, v: Expr, b: Expr, consume: Bool) -> Array[RvOu
         // The dead-alias elision: neither side does anything.
         rv_unit()
       } else {
-        // A transfer; in a loop it runs once per iteration.
+        // A transfer; in a loop it runs once per iteration. A `for`
+        // element holds no reference to transfer: whether codegen retains
+        // it for the alias depends on the alias's own class
+        // (`classify_let_value_heap`, #3114), which this walk does not read.
+        if st.elem && st.active {
+          rv_note(st = st, reason = "loop element: moved into a let alias")
+        } else {
+          ()
+        }
         Array::push(st.cons_offs, value = soff)
         [
           rv_out(c = 1, marked = rv_mark(st = st, off = soff), brk = 0, acq = 0, path = "")
@@ -1114,7 +1154,8 @@ fn rv_slot_store(st: RvState, v: Expr, b: Expr, consume: Bool) -> Array[RvOut] {
 
 /// The binders of a function body outside its lambdas, in pre-order. Kind 0 a
 /// plain `let` (its value and body kept), 1 a `let mut`, 2 a `let rec`, 3 a
-/// match or handler pattern binder, 4 a loop binder.
+/// match or handler pattern binder, 4 a `for` index or a loop parameter, 5 a
+/// `for` element.
 struct RvDecls {
   names: Array[String];
   kinds: Array[Int];
@@ -1168,7 +1209,7 @@ fn rv_collect(d: RvDecls, e: Expr) -> Unit {
     },
     EForIn(vn, ix, it, fb) => {
       rv_collect(d = d, e = it)
-      rv_decl(d = d, n = vn, kind = 4, v = EUnit, b = EUnit)
+      rv_decl(d = d, n = vn, kind = 5, v = EUnit, b = EUnit)
       match ix {
         Some(i) => rv_decl(d = d, n = i, kind = 4, v = EUnit, b = EUnit),
         None => ()
@@ -1388,7 +1429,8 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
     exits_left: exits_left,
     exit_ord: 0,
     ord_bad: false,
-    handle_depth: 0
+    handle_depth: 0,
+    elem: false
   }
 }
 
@@ -1555,6 +1597,63 @@ fn rv_check_slot(fname: String, x: String, params: Array[(String, Option[TypeExp
       rv_check(fname = fname, st = st, init = 0, borrowed = false, param = false, plan = plan, drop_from = 0, out = out)
     }
   }
+}
+
+/// A `for` element `x`. Codegen binds it to `Array::get(arr, i)` each
+/// iteration -- a view into the iterable that holds no reference of its own
+/// -- and registers it loop-borrowed, so an owning occurrence at a call or
+/// constructor argument, an aggregate item or a collected body value is
+/// retained there and consumes nothing of the element (compile_forin_loop,
+/// #715). The element's own plan rows are never realized: codegen reads
+/// dup and drop rows at a `let`, a `let mut` or a parameter only, and a
+/// name another binding shares is not checked. So its ledger, per
+/// iteration, is held 0 and released 0: the walk must find every owning
+/// occurrence at a retained site, and any other owning occurrence (a branch
+/// or block value, a `return` / `break` operand, a `let` alias, a closure
+/// capture) is not checked rather than read as a release.
+fn rv_check_elem(fname: String, x: String, params: Array[(String, Option[TypeExpr])], body: Expr, plan: Array[PerceusAction], class_names: Array[String], bfns: Array[String], masks: Array[Int], out: Array[String]) -> Unit {
+  let reason = if rv_class_count(names = class_names, x = x) > 1 {
+    "name shared"
+  } else {
+    let row_reason = rv_row_reason(plan = plan, x = x)
+    if row_reason != "" {
+      row_reason
+    } else {
+      let st = rv_new_state(x = x, slot = false, params = params, plan = plan, bfns = bfns, bmasks = masks)
+      st.elem = true
+      let _ = rv_walk(st = st, e = body, consume = true)
+      if !st.found {
+        "not planned"
+      } else if st.reason != "" {
+        st.reason
+      } else if Array::length(st.xrow_ords) > 0 {
+        // Codegen keeps no exit-release entry for a `for` element.
+        "loop element: exit row"
+      } else if !rv_elem_spends_nothing(st.scope_out) {
+        "loop element consumed outside a retained site"
+      } else {
+        ""
+      }
+    }
+  }
+  if reason != "" {
+    Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + reason))
+  } else {
+    ()
+  }
+}
+
+/// Does every way through one iteration consume nothing of the element and
+/// store nothing into it?
+fn rv_elem_spends_nothing(_ outs: Array[RvOut]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(outs) {
+    let o = Array::get(outs, at = i)
+    ok = o.c == 0 && o.acq == 0
+    i = i + 1
+  }
+  ok
 }
 
 fn rv_strip_label(_ pn: String) -> String {
@@ -1735,12 +1834,18 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
       } else {
         ()
       }
+    } else if kind == 5 {
+      if heap {
+        rv_check_elem(fname = fname, x = x, params = params, body = body, plan = plan, class_names = class_names, bfns = borrow_param_fns, masks = masks, out = out)
+      } else {
+        ()
+      }
     } else if kind == 2 || kind == 4 {
       if heap {
         let why = if kind == 2 {
           "let rec"
         } else {
-          "loop binder (a for element or a loop parameter)"
+          "loop binder (a for index or a loop parameter)"
         }
         Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + why))
       } else {
@@ -1849,4 +1954,123 @@ fn rv_param_names(_ params: Array[(String, Option[TypeExpr])]) -> Array[String] 
     i = i + 1
   }
   out
+}
+
+//# Self-check during a compile (#3718)
+
+/// #3718: whether the compile running in this process validates each plan it
+/// builds. Off unless `cli_main` reads `VIBE_RC_SELFCHECK_OUT`, so a
+/// production compile does no extra work. `vibe rc-validate` cannot answer for
+/// the compiler itself: checking the flat selfhost source in one process
+/// exhausts the wasm32 heap. Checking each plan where codegen builds it costs
+/// one function's ledger at a time.
+let perceus_selfcheck_on: Array[Bool] = [false]
+
+/// The lines the self-check collected, in compile order: the same forms
+/// `perceus_validate_fn` returns.
+let perceus_selfcheck_lines: Array[String] = []
+
+/// The number of plans the self-check validated, so a gate can tell "checked
+/// and clean" from "never ran".
+let perceus_selfcheck_count: Array[Int] = [0]
+
+/// The shard this process checks: plan number `i` (in build order) is checked
+/// when `i % of == shard`. The compiler checking itself runs on the bump lane,
+/// which never frees, and one compile of the flat source leaves only a few
+/// hundred MB of the wasm32 heap; so a gate splits the plans over several
+/// compiles. `[0, 1]` checks every plan.
+let perceus_selfcheck_shard: Array[Int] = [0, 1]
+
+/// The number of plans built so far while the self-check is on, checked or not.
+let perceus_selfcheck_seen: Array[Int] = [0]
+
+/// When set, the shard's plans are named (`plan I NAME`) instead of checked:
+/// a shard whose check traps writes no report, so this is how a gate failure
+/// is narrowed to the function it was checking.
+let perceus_selfcheck_list_only: Array[Bool] = [false]
+
+/// Functions whose plan the self-check does not check, each reported as
+/// `exempt NAME`. A plan whose check alone exhausts the heap left over by the
+/// compile around it is checked by `vibe rc-validate` in a process of its own
+/// instead; the gate keeps the list (scripts/rc_selfcheck_exempt.txt).
+let perceus_selfcheck_exempt: Array[String] = []
+
+/// Exempt the plans of these functions (see `perceus_selfcheck_exempt`).
+export fn perceus_selfcheck_set_exempt(names: Array[String]) -> Unit {
+  for n in names {
+    Array::push(perceus_selfcheck_exempt, value = n)
+  }
+  ()
+}
+
+/// Name the shard's plans instead of checking them (see
+/// `perceus_selfcheck_list_only`).
+export fn perceus_selfcheck_list_plans() -> Unit {
+  Array::set(perceus_selfcheck_list_only, at = 0, value = true)
+}
+
+/// Turn the self-check on for every plan built from now on, checking the plans
+/// of shard `shard` out of `of` (see `perceus_selfcheck_shard`).
+export fn perceus_selfcheck_enable(shard: Int, of: Int) -> Unit {
+  Array::set(perceus_selfcheck_on, at = 0, value = true)
+  Array::set(perceus_selfcheck_shard, at = 0, value = shard)
+  Array::set(perceus_selfcheck_shard, at = 1, value = if of < 1 {
+    1
+  } else {
+    of
+  })
+}
+
+/// Is the self-check on?
+export fn perceus_selfcheck_enabled() -> Bool {
+  Array::get(perceus_selfcheck_on, at = 0)
+}
+
+/// Validate the plan built JUST before this call (its binding classes are
+/// read off the planner's cached context, which the next plan resets) and
+/// keep its lines.
+export fn perceus_selfcheck_plan(fname: String, params: Array[(String, Option[TypeExpr])], body: Expr, plan: Array[PerceusAction], param_drop_start: Int, borrow_param_fns: Array[String], masks: Array[Int]) -> Unit {
+  let seen = Array::get(perceus_selfcheck_seen, at = 0)
+  Array::set(perceus_selfcheck_seen, at = 0, value = seen + 1)
+  if seen % Array::get(perceus_selfcheck_shard, at = 1) != Array::get(perceus_selfcheck_shard, at = 0) {
+    return ()
+  }
+  let mut exempt = false
+  for n in perceus_selfcheck_exempt {
+    if n == fname {
+      exempt = true
+    }
+  }
+  if exempt {
+    Array::push(perceus_selfcheck_lines, value = "exempt " + fname)
+    return ()
+  }
+  if Array::get(perceus_selfcheck_list_only, at = 0) {
+    Array::push(perceus_selfcheck_lines, value = "plan " + Int::to_string(seen) + " " + fname)
+    return ()
+  }
+  let class_names: Array[String] = []
+  let class_bits: Array[Int] = []
+  perceus_last_plan_classes(out_names = class_names, out_bits = class_bits)
+  for line in perceus_validate_fn(fname = fname, params = params, body = body, plan = plan, param_drop_start = param_drop_start, class_names = class_names, class_bits = class_bits, borrow_param_fns = borrow_param_fns, masks = masks) {
+    Array::push(perceus_selfcheck_lines, value = line)
+  }
+  Array::set(perceus_selfcheck_count, at = 0, value = Array::get(perceus_selfcheck_count, at = 0) + 1)
+}
+
+/// The collected report: a `plans N of M` header line (N checked of the M
+/// built), then one line per finding and one `exempt NAME` line per plan not
+/// checked by name.
+export fn perceus_selfcheck_report() -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, value = "plans ")
+  StringBuilder::push(out, value = Int::to_string(Array::get(perceus_selfcheck_count, at = 0)))
+  StringBuilder::push(out, value = " of ")
+  StringBuilder::push(out, value = Int::to_string(Array::get(perceus_selfcheck_seen, at = 0)))
+  StringBuilder::push(out, value = "\n")
+  for line in perceus_selfcheck_lines {
+    StringBuilder::push(out, value = line)
+    StringBuilder::push(out, value = "\n")
+  }
+  StringBuilder::freeze(out)
 }
