@@ -1271,6 +1271,9 @@ scps_check_reject "err_effect_needing_value_match_binder.vibe" "passed as a VALU
 scps_check_reject "err_effect_needing_value_array_read.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valread"
 scps_check_reject "err_effect_needing_value_alias_in_data.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valalias"
 scps_check_reject "err_effect_needing_value_if_in_data.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valif"
+scps_check_reject "err_effect_needing_value_alias_two_hops.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valhops"
+scps_check_reject "err_effect_needing_value_block_in_data.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valblock"
+scps_check_reject "err_effect_needing_value_pattern_shadow.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpatshadow"
 # Annotated / eta-wrapped needing-value pins now live in
 # fixtures/effect_needing_value_annotated_test.vibe and
 # fixtures/effect_needing_value_escape_wrapped_test.vibe (#1973).
