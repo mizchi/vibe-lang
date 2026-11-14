@@ -1119,6 +1119,55 @@ stage2s were built with names and run on the same source tree.
 Not done: a default, and a patcher of the linked output itself. On the
 numbers above, that patcher can save at most a few percent of a warm build.
 
+**Delivering a rebuild as a delta.** A fixed width keeps every unedited body at
+its length, so one could expect a binary patch from the old module to the new
+one to shrink. Measured with zstd at level 19, window 2^27, long-distance
+matching on, the old module as the dictionary (the `zstd --patch-from` shape).
+Every patch was decompressed and checked against the new module. Sizes are of
+modules without their custom sections, as a release build ships them. The
+inputs are the edit sets of the two corpora above, built at `a497c68` (lexer)
+and `616d2e2` (compiler), all classes padded at W=3.
+
+| edit | lexer W=0 | lexer W=3 | compiler W=0 | compiler W=3 |
+|---|---:|---:|---:|---:|
+| body only | 678 B | 707 B | 1,069 B | 1,075 B |
+| +1 fn after the band | 81,954 | 80,955 | 44,079 | 44,126 |
+| +1 fn ahead of the band | 82,246 | 82,395 | 135,700 | 136,187 |
+| module reorder | 6,181 | 6,179 | — | — |
+| +400 fn | 105,649 | 105,343 | 177,339 | 174,462 |
+| +300-byte literal | 50,033 | 47,783 | 93,949 | 93,232 |
+| +1 thunk | 83,896 | 84,275 | 2,295 | 2,296 |
+| +1 effect | 82,790 | 83,280 | 1,047 | 1,053 |
+| +1 unused enum (constructor tags move) | 10,561 | 10,268 | 4,592 | 4,707 |
+| +1 used enum (tags and a function) | 91,991 | 91,803 | 4,592 | 4,707 |
+| +1 30-parameter function | 83,700 | 82,782 | 135,731 | 136,288 |
+
+The whole module compresses to 1,172,198 bytes (lexer, W=0) and 1,955,831
+(compiler, W=0). The compiler rows for thunk, effect and enum are the
+`base64.vibe` edits, which `cli_main` does not reach.
+
+- **A fixed width does not shrink the delta.** W=0 and W=3 agree within ±3%
+  in every row but two: the literal (−4.5%) and the lexer's body-only row
+  (+29 bytes, +4.3%). A long-distance-matching compressor
+  encodes a shifted run as cheaply as an unshifted one, so keeping body
+  lengths fixed leaves it almost nothing to save.
+- **The delta is the renumbering.** An edit that moves no index is about
+  1 KB. One that moves function indices costs 44–177 KB, even where no
+  length moves (+1 fn after the band): every body that calls a moved function
+  changes at the call's immediate, and those changed bytes are what the patch
+  carries. Moving only constructor tags (the unused enum) costs about 10 KB;
+  adding a function besides (the used enum) brings it back to 92 KB.
+- **A delta is worth shipping at either width.** Even the edits that renumber
+  ship 2–9% of the compressed module.
+- **The padding costs little once compressed.** W=3 adds 6% to the module but
+  0.6% (lexer, 1,179,792 bytes) and 0.7% (compiler, 1,968,889) to its zstd
+  size.
+
+What would shrink an edit's delta is a stable index assignment: a new function
+takes an index past the existing ones and a removed one leaves its index
+unused, so calls into the unedited code keep their immediates. That would bring
+the renumbering edits toward the body-only row. It is not measured here.
+
 ##### Does a body actually relocate? (#2669, slice 1b)
 
 The round-trip above proves the walk does not desynchronise. The cross-build
@@ -2427,7 +2476,7 @@ reproduce entry-rooted DCE independently in each module, so it prints
 `unmeasured` when that condition holds. A `dce_entry=0` comparison describes the
 unpruned closure, not every `vibe build` of that closure.
 
-### Reusing the prelude's effect passes across builds (#4042, #4043)
+### Reusing the prelude's effect passes across builds (#4042, #4043, #4123)
 
 Suspend CPS and the evidence pass are whole-program, and rewrite about 100 of
 16,000 statements. `VIBE_PRELUDE_REUSE` (default `off`) keeps their output per
@@ -2443,12 +2492,19 @@ rule):
   replayed and, if not, why; in `verify` mode, `; verified` or the first
   statement that differed.
 
+An exception throw is not effect syntax for this rule (#4123). The desugar
+lowers `throw(v)` to `perform <Exception>::Throw(v)`, but the passes read
+whether a callee throws only off its declared row, which replay compares. So
+an edit inside a function that throws replays, while one that adds or drops
+`Exception` in its row does not.
+
 **The gate: `scripts/prelude_reuse_oracle.mjs`** (stage2-oracles, with
 `scripts/prelude_reuse_oracle_test.sh` as its red self-test).
 
 - **Edits:** a small program with a handler is edited step by step: a pure
-  body, a comment, an added helper, the performing body, then a pure body
-  again. Three caches follow the sequence: `on`, `verify` and `off`.
+  body, a comment, an added helper, the performing body, a pure body again,
+  a `with Exception` body, then a function that gains `with Exception`.
+  Three caches follow the sequence: `on`, `verify` and `off`.
   - A step that must replay and does not fails the oracle, since its
     comparison would prove nothing.
   - Every `on` module must equal the `off` one in bytes and in its executed
@@ -2459,10 +2515,10 @@ rule):
   built oldest first in `verify` mode, through one cache. Every build must
   succeed. An older tree that this compiler cannot build is skipped and
   reported. HEAD's tree must build, and at least two trees must. Most real
-  commits miss, so HEAD's tree is then edited twice where a replay is
-  expected: a comment above everything in `core/hex.vibe`, then a function
-  appended to it. Each build must replay and verify, over the whole CLI
-  closure.
+  commits miss, so HEAD's tree is then edited where a replay is expected: a
+  comment above everything in `core/hex.vibe`, a function appended to it,
+  and a `let` inside its `with Exception` function `hex_digit_value`. Each
+  build must replay and verify, over the whole CLI closure.
 
 Reuse stays opt-in until this gate has stayed green.
 

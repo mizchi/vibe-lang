@@ -26,7 +26,8 @@
 //             least two trees must, or nothing was compared. Most real
 //             commits miss, so HEAD's tree is then edited twice where a
 //             replay is expected -- a comment above everything in
-//             `core/hex.vibe`, then a function appended to it -- and each
+//             `core/hex.vibe`, a function appended to it, and a `let` inside
+//             its `with Exception` function `hex_digit_value` -- and each
 //             build must replay and verify, on the whole CLI closure.
 //
 // The body cache and the checked-module cache are off for the edits section,
@@ -68,6 +69,7 @@ if (!Number.isInteger(commitCount) || commitCount < 2) fail("PRELUDE_REUSE_ORACL
 // `pr_run` handles the `Ask` effect `pr_ask` performs, so both are statements
 // the passes rewrite or read; `main` reaches them. `pr_scale` and `pr_label`
 // are pure and reach nothing the passes read, so an edit there may replay.
+// `pr_guard` is `with Exception`, which the passes read only off its row.
 // `pr_run` holds a string literal, `"qq"`: the self-test corrupts it inside a
 // stored record (a well-formed record that replays a wrong statement) and
 // requires this oracle to fail.
@@ -78,7 +80,11 @@ function libSource(state) {
     "  Get() -> Int",
     "}",
     "",
-    `export fn pr_scale(_ n: Int) -> Int {\n  n * ${state.scale}\n}`,
+    state.scaleThrows
+      ? `export fn pr_scale(_ n: Int) -> Int with Exception {\n  if n < 0 {\n    throw("negative")\n  } else {\n    n * ${state.scale}\n  }\n}`
+      : `export fn pr_scale(_ n: Int) -> Int {\n  n * ${state.scale}\n}`,
+    "",
+    `export fn pr_guard(_ n: Int) -> Int with Exception {\n  if n < 0 {\n    throw("negative")\n  } else {\n    n + ${state.guard}\n  }\n}`,
     "",
     state.helper ? "fn pr_twice(_ s: String) -> String {\n  s + s\n}\n" : "",
     `export fn pr_label(_ n: Int) -> String {\n  ${state.helper ? 'pr_twice("ab")' : '"ab"'}\n}`,
@@ -99,10 +105,10 @@ function libSource(state) {
 }
 
 const appSource = [
-  "import ./lib.vibe { pr_scale, pr_label, pr_run }",
+  "import ./lib.vibe { pr_scale, pr_label, pr_run, pr_guard }",
   "",
-  "fn main() -> Int {",
-  "  pr_scale(3) + String::length(pr_label(2)) * 100 + pr_run(5) * 10000",
+  "fn main() -> Int allows Exception {",
+  "  pr_scale(3) + String::length(pr_label(2)) * 100 + pr_run(5) * 10000 + pr_guard(4) * 1000000",
   "}",
   "",
 ].join("\n");
@@ -110,19 +116,25 @@ const appSource = [
 // What the fixture computes in `state`, from its own definitions.
 function expectedResult(state) {
   const label = state.helper ? 4 : 2;
-  return 3 * state.scale + label * 100 + (5 * 2 + state.emit + 2) * 10000;
+  return 3 * state.scale + label * 100 + (5 * 2 + state.emit + 2) * 10000 + (4 + state.guard) * 1000000;
 }
 
 // Each step's state, and whether `on` must replay there. A step that must
 // replay but misses fails the oracle: its comparison would prove nothing
 // about replay.
+const S0 = { scale: 2, comment: false, helper: false, emit: 1, guard: 1, scaleThrows: false };
 const steps = [
-  { name: "cold", state: { scale: 2, comment: false, helper: false, emit: 1 }, replay: false },
-  { name: "pure-body", state: { scale: 3, comment: false, helper: false, emit: 1 }, replay: true },
-  { name: "comment", state: { scale: 3, comment: true, helper: false, emit: 1 }, replay: true },
-  { name: "added-helper", state: { scale: 3, comment: true, helper: true, emit: 1 }, replay: true },
-  { name: "performing-body", state: { scale: 3, comment: true, helper: true, emit: 4 }, replay: false },
-  { name: "pure-body-after-miss", state: { scale: 5, comment: true, helper: true, emit: 4 }, replay: true },
+  { name: "cold", state: S0, replay: false },
+  { name: "pure-body", state: { ...S0, scale: 3 }, replay: true },
+  { name: "comment", state: { ...S0, scale: 3, comment: true }, replay: true },
+  { name: "added-helper", state: { ...S0, scale: 3, comment: true, helper: true }, replay: true },
+  { name: "performing-body", state: { ...S0, scale: 3, comment: true, helper: true, emit: 4 }, replay: false },
+  { name: "pure-body-after-miss", state: { ...S0, scale: 5, comment: true, helper: true, emit: 4 }, replay: true },
+  // #4123: `Exception` in a row is not effect syntax, so an edit inside a
+  // `with Exception` body replays; one that gives a function that row
+  // changes the signature callers read, and must not.
+  { name: "exception-body", state: { ...S0, scale: 5, comment: true, helper: true, emit: 4, guard: 2 }, replay: true },
+  { name: "exception-row", state: { ...S0, scale: 6, comment: true, helper: true, emit: 4, guard: 2, scaleThrows: true }, replay: false },
 ];
 
 // ---- builds ----------------------------------------------------------------
@@ -332,6 +344,12 @@ function runCommits(stage2, work) {
   const headEdits = [
     ["comment", (src) => `// an edit that only moves offsets\n${src}`],
     ["appended-function", (src) => `${src}\nfn prelude_reuse_oracle_probe(_ n: Int) -> Int {\n  n + 1\n}\n`],
+    // #4123: inside a `with Exception` function's body.
+    ["exception-body", (src) => {
+      const head = "fn hex_digit_value(_ c: Int) -> Int with Exception {\n";
+      if (!src.includes(head)) fail(`${hex} no longer declares ${head.trim()}: pick another \`with Exception\` function for the HEAD edits`);
+      return src.replace(head, `${head}  let prelude_reuse_oracle_unused = c + 0\n`);
+    }],
   ];
   for (const [name, change] of headEdits) {
     writeFileSync(hex, change(readFileSync(hex, "utf8")));
