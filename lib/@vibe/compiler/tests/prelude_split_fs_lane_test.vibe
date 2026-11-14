@@ -6,6 +6,14 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   compile_source_wasi_only_rc
 }
 
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi, compile_source_wasi_mode
+}
+
+import @vibe/compiler/core {
+  set_program_extern_effect_packages
+}
+
 // #2575 item 2 step 3b: the question every other check on this line has been
 // unable to ask.
 //
@@ -212,4 +220,27 @@ test "an extern effect a package declares is imported under the package's name" 
   let standalone = compile_source_wasi_only_rc(source = "extern effect Probe {\n  ping(String) -> String\n}\n\nfn main() -> Unit allows Console + Probe {\n  println(Probe::ping(\"vibe\"))\n}\n", entry_name = "main", checked_error_row = false)
   inspect(bytes_contain(hay = standalone, needle = "vibe:effect:./Probe"), content = "true")
   inspect(bytes_contain(hay = standalone, needle = "vibe:effect:@acme/xe_pkg/Probe"), content = "false")
+}
+
+// #4082: whatever a merge recorded -- here seeded directly, as a merged
+// compile that stopped before binding would leave it -- a source compiled on
+// its own, through any standalone entry, imports its `extern effect` under
+// `./<Effect>`. Each entry clears the record before it compiles.
+fn standalone_probe_source() -> String {
+  "extern effect Probe {\n  ping(String) -> String\n}\n\nfn main() -> Unit allows Console + Probe {\n  println(Probe::ping(\"vibe\"))\n}\n"
+}
+
+test "a standalone source compile ignores a recorded package" {
+  set_program_extern_effect_packages([("Probe", "@acme/xe_stale")])
+  let rc = compile_source_wasi_only_rc(source = standalone_probe_source(), entry_name = "main", checked_error_row = false)
+  inspect(bytes_contain(hay = rc, needle = "vibe:effect:@acme/xe_stale/Probe"), content = "false")
+  inspect(bytes_contain(hay = rc, needle = "vibe:effect:./Probe"), content = "true")
+  set_program_extern_effect_packages([("Probe", "@acme/xe_stale")])
+  let wasi = compile_source_wasi(source = standalone_probe_source(), entry_name = "main", checked_error_row = false)
+  inspect(bytes_contain(hay = wasi, needle = "vibe:effect:@acme/xe_stale/Probe"), content = "false")
+  inspect(bytes_contain(hay = wasi, needle = "vibe:effect:./Probe"), content = "true")
+  set_program_extern_effect_packages([("Probe", "@acme/xe_stale")])
+  let mvp = compile_source_wasi_mode(source = standalone_probe_source(), entry_name = "main", mode = "mvp", checked_error_row = false)
+  inspect(bytes_contain(hay = mvp, needle = "vibe:effect:@acme/xe_stale/Probe"), content = "false")
+  inspect(bytes_contain(hay = mvp, needle = "vibe:effect:./Probe"), content = "true")
 }
