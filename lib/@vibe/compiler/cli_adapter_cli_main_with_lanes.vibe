@@ -2451,28 +2451,27 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
   }
 }
 
-/// #3718: refuse a `VIBE_RC_SELFCHECK_OUT` that names the compile's input or
-/// output, or a directory, before the compile and again before the report is
-/// written. The telemetry sidecar's resolved comparison is compiled only into
-/// `VIBE_CFG=telemetry` builds, so this compares the spellings: the variable
-/// is set by scripts/check_rc_selfcheck.sh, which names a fresh temp file.
+#cfg(telemetry)
+/// #3718: refuse a `VIBE_RC_SELFCHECK_OUT` that is the compile's input or
+/// output by file identity (another spelling or a symlink of it included), a
+/// directory, or a derived sidecar, before the compile and again before the
+/// report is written -- the telemetry sidecar's guard, applied to this
+/// destination.
 fn refuse_rc_selfcheck_destination_conflict(_ destination: String) -> Unit with Fs + Env + Exception {
-  let input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT"))
-  let output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT"))
-  let conflict = if destination == input {
-    "the compile's input"
-  } else if destination == output {
-    "the compile's output"
-  } else if Fs::is_dir(destination) {
-    "a directory"
-  } else {
-    ""
-  }
+  let conflict = telemetry_destination_conflict(destination = destination, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = "")
   if conflict != "" {
     throw(String::concat("VIBE_RC_SELFCHECK_OUT must not name ", conflict))
   } else {
     ()
   }
+}
+
+#cfg(not(telemetry))
+/// #3718: the destination guard is compiled only into `VIBE_CFG=telemetry`
+/// builds, so this one refuses the self-check rather than write the report
+/// unguarded. scripts/check_rc_selfcheck.sh drives the generation's stage2.
+fn refuse_rc_selfcheck_destination_conflict(_ destination: String) -> Unit with Fs + Env + Exception {
+  throw(telemetry_build_refusal("VIBE_RC_SELFCHECK_OUT"))
 }
 
 /// #3718: `VIBE_RC_SELFCHECK_SHARD=k/N` checks plans k, k+N, k+2N, ...;
