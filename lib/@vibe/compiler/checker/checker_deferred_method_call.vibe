@@ -169,9 +169,12 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
     while i < Array::length(kept) {
       match Array::get(kept, at = i) {
         DeferredPattern(pattern) => match subst_apply(s = cur_s, ty = CtVar(pattern.recv)) {
-          CtVar(_) => {
+          // Some existing lanes erase types (for example, generic effect
+          // payloads). An unsettled pattern there can inspect a sealed value
+          // only when this module sees an opaque declaration.
+          CtVar(_) => if Array::any(pattern.defs, f = (def) -> def is TDOpaque(_, _, _, _)) {
             Array::push(errors, value = unresolved_pattern_message(off = pattern.off))
-          },
+          } else (),
           resolved => judge_deferred_pattern(row = pattern, recv = resolved, kept = kept, errors = errors)
         },
         _ => ()
