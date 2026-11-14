@@ -32,11 +32,15 @@
 //# that spelling.
 
 import @vibe/compiler/core {
-  BindingOrigin, Expr, Type, TypeEnv, TypeExpr, env_lookup, env_lookup_binding, env_name_index_find, expr_children
+  BindingOrigin, Expr, Type, TypeEnv, TypeExpr, env_bind, env_lookup, env_lookup_binding, env_name_index_find, expr_children
 }
 
 import @vibe/compiler/checker/builtin_sigs {
   lookup_builtin
+}
+
+import @vibe/compiler/checker/traits {
+  env_marker_before
 }
 
 import ./checker_region_retention_arms.vibe {
@@ -210,6 +214,69 @@ export fn region_outer_content_marker(_ name: String) -> String {
   String::concat("__region_outer_content__", name)
 }
 
+/// Regions the container's contents may predate. Bind block locals before
+/// reading their result so an outer marker cannot describe a shadowing name.
+export fn retention_arg_content(arg: Expr, env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  retention_arg_content_into(arg = arg, env = env, out = out)
+  out
+}
+
+fn retention_arg_content_into(arg: Expr, env: TypeEnv, out: Array[String]) -> Unit {
+  match arg {
+    EIdent(name, _) => match env_marker_before(env = env, marker = region_outer_content_marker(name), name = name) {
+      Some(CtTuple(regions)) => {
+        for r in regions {
+          match r {
+            CtNamed(n, _) => if !retention_content_has(out = out, name = n) {
+              Array::push(out, value = n)
+            },
+            _ => ()
+          }
+        }
+        ()
+      },
+      _ => ()
+    },
+    EIf(_, a, b) => {
+      retention_arg_content_into(arg = a, env = env, out = out)
+      retention_arg_content_into(arg = b, env = env, out = out)
+    },
+    ESeq(_, body) => retention_arg_content_into(arg = body, env = env, out = out),
+    EAssign(n, v, body, _) => {
+      let regions = retention_arg_content(arg = v, env = env)
+      let scope = retention_arg_content_mark(name = n, regions = regions, env = env)
+      retention_arg_content_into(arg = body, env = scope, out = out)
+    },
+    EAssignOp(_, _, _, body, _) => retention_arg_content_into(arg = body, env = env, out = out),
+    ELet(n, v, body, _) => retention_arg_content_let(name = n, value = v, body = body, env = env, out = out),
+    ELetMut(n, v, body, _) => retention_arg_content_let(name = n, value = v, body = body, env = env, out = out),
+    _ => ()
+  }
+}
+
+fn retention_content_has(out: Array[String], name: String) -> Bool {
+  for item in out {
+    if item == name {
+      return true
+    }
+  }
+  false
+}
+
+fn retention_arg_content_let(name: String, value: Expr, body: Expr, env: TypeEnv, out: Array[String]) -> Unit {
+  let regions = retention_arg_content(arg = value, env = env)
+  let bound = env_bind(env = env, name = name, ty = CtVar(-1))
+  let scope = retention_arg_content_mark(name = name, regions = regions, env = bound)
+  retention_arg_content_into(arg = body, env = scope, out = out)
+}
+
+fn retention_arg_content_mark(name: String, regions: Array[String], env: TypeEnv) -> TypeEnv {
+  env_bind(env = env, name = region_outer_content_marker(name), ty = CtTuple(for rname in regions {
+    CtNamed(rname, [])
+  }))
+}
+
 /// The prefix of the binding that carries a function's retention summary
 /// (`retention_summary_marker`).
 export fn region_summary_prefix() -> String {
@@ -220,6 +287,18 @@ export fn region_summary_prefix() -> String {
 /// supplied.
 export fn region_module_storage_row() -> String {
   "g>r"
+}
+
+/// The result owns fresh storage that may contain a module-level location.
+export fn region_result_content_row() -> String {
+  "g>cr"
+}
+
+export fn region_import_result_has_outer_contents(callee: String, env: TypeEnv) -> Bool {
+  match region_import_path(env = env, name = callee) {
+    Some(_) => region_summary_has_row(callee = callee, env = env, wanted = region_result_content_row()) == Some(true),
+    None => false
+  }
 }
 
 /// Whether a call of `callee`, bound in `env` and with no function literal
@@ -260,11 +339,15 @@ export fn region_callee_returns_own_storage(callee: String, env: TypeEnv) -> Boo
 /// Whether the summary bound for `callee` in `env` has the `g>r` row; None
 /// when no summary is bound.
 fn region_summary_storage(callee: String, env: TypeEnv) -> Option[Bool] {
+  region_summary_has_row(callee = callee, env = env, wanted = region_module_storage_row())
+}
+
+fn region_summary_has_row(callee: String, env: TypeEnv, wanted: String) -> Option[Bool] {
   match env_lookup(env = env, name = String::concat(region_summary_prefix(), callee)) {
     Some(CtNamed(summary, _)) => {
       let mut found = false
       for row in String::split(summary, sep = ",") {
-        found = found || row == region_module_storage_row()
+        found = found || row == wanted
       }
       Some(found)
     },
@@ -381,6 +464,14 @@ export fn region_method_callee(recv: Expr, method: String, env: TypeEnv) -> Stri
     },
     _ => ""
   }
+  region_method_name(head = head, method = method)
+}
+
+export fn region_typed_method_name(ty: Type, method: String) -> String {
+  region_method_name(head = region_type_head(ty), method = method)
+}
+
+fn region_method_name(head: String, method: String) -> String {
   if head == "" {
     ""
   } else {
