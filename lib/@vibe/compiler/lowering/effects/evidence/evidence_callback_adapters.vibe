@@ -1,0 +1,102 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, expr_children_into, row_free_callback_offset
+}
+
+import @vibe/core {
+  struct MutSet
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  row_free_callback_capture_prefix
+}
+
+import ./evidence_declared_slots.vibe {
+  edp_slot_wrapper
+}
+
+import ./evidence_slot_refusals.vibe {
+  edp_alias_fn_type, edp_parameter_type, edp_slot_row_stampable
+}
+
+let edp_callback_offsets: Array[MutSet[Int]] = []
+
+export fn edp_callback_offsets_set(_ offsets: MutSet[Int]) -> Unit {
+  Array::truncate(edp_callback_offsets, length = 0)
+  Array::push(edp_callback_offsets, value = offsets)
+}
+
+// A callback accepted by the checker may appear in a call through a local
+// parameter absent from the global slot-callee index.
+export fn edp_expr_has_callback_adapter(e: Expr, offsets: MutSet[Int]) -> Bool {
+  if MutSet::size(offsets) == 0 {
+    return false
+  }
+  let stack = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack) - 1
+    let cur = Array::get(stack, at = n)
+    Array::truncate(stack, length = n)
+    match cur {
+      ECall(_, args, _, _) => for arg0 in args {
+        let arg = match arg0 {
+          ELabeledArg(_, _, value) => value,
+          _ => arg0
+        }
+        let off = row_free_callback_offset(arg)
+        if off >= 0 && MutSet::has(offsets, x = off) {
+          return true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    expr_children_into(expr = cur, out = stack)
+  }
+  false
+}
+
+fn edp_needs_callback_adapter(_ value: Expr) -> Bool {
+  let off = row_free_callback_offset(value)
+  off >= 0 && Array::length(edp_callback_offsets) != 0 && MutSet::has(Array::get(edp_callback_offsets, at = 0), x = off)
+}
+
+export fn edp_row_free_callback_adapter(value: Expr, arity: Int, row: String, fresh_name: () -> String) -> Option[Expr] {
+  if edp_needs_callback_adapter(value) {
+    // The compiler-only name tells the eligibility scan that calling the
+    // captured value cannot request the slot's effect.
+    let name = row_free_callback_capture_prefix + fresh_name()
+    Some(ELet(name, value, edp_slot_wrapper(name = name, arity = arity, row = row), -1))
+  } else {
+    None
+  }
+}
+
+fn edp_callback_callable_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  match ty {
+    TyFn(_, _, _) => Some(ty),
+    _ => edp_alias_fn_type(stmts = stmts, ty = ty)
+  }
+}
+
+export fn edp_parameter_callback_slot(stmts: Array[Stmt], binding: Int, pos: Int) -> Option[(Int, String)] {
+  let callable = match edp_parameter_type(binding) {
+    Some(ty) => edp_callback_callable_type(stmts = stmts, ty = ty),
+    None => None
+  }
+  match callable {
+    Some(TyFn(params, _, _)) => if pos >= 0 && pos < Array::length(params) {
+      match edp_callback_callable_type(stmts = stmts, ty = Array::get(params, at = pos)) {
+        Some(TyFn(args, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some((Array::length(args), row))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
