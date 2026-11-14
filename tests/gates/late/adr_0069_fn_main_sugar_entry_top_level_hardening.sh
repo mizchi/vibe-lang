@@ -1264,35 +1264,51 @@ scps_check_reject "err_effect_closure_literal_launder.vibe" "cannot see through"
 # to a row-FREE fn-typed slot used to compile clean and trap at runtime with
 # a wasm signature mismatch. Reject it, and keep the annotated form working.
 scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
-# #4065: the same closure read back out of data -- a `for` binder, a `match`
-# binder, an element read -- is refused under the same rule; it used to trap.
-scps_check_reject "err_effect_needing_value_for_binder.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valfor"
-scps_check_reject "err_effect_needing_value_match_binder.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valmatch"
-scps_check_reject "err_effect_needing_value_array_read.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valread"
-scps_check_reject "err_effect_needing_value_alias_in_data.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valalias"
-scps_check_reject "err_effect_needing_value_if_in_data.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valif"
-scps_check_reject "err_effect_needing_value_alias_two_hops.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valhops"
-scps_check_reject "err_effect_needing_value_block_in_data.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valblock"
-scps_check_reject "err_effect_needing_value_pattern_shadow.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpatshadow"
-scps_check_reject "err_effect_needing_value_stored_by_push.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpush"
-scps_check_reject "err_effect_needing_value_pushed_alias.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpushalias"
-scps_check_reject "err_effect_needing_value_pushed_in_branch.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpushbranch"
-scps_check_reject "err_effect_needing_value_pushed_alias_chain.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpushchain"
-scps_check_reject "err_effect_needing_value_pushed_shadowed_alias.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpushshadow"
-scps_check_reject "err_effect_needing_value_pushed_in_match.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpushmatch"
-scps_check_reject "err_effect_needing_value_pushed_in_for.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpushfor"
-scps_check_reject "err_effect_needing_value_pushed_arg_block.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpusharg"
-scps_check_reject "err_effect_needing_value_pushed_loop_carried.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valpushloop"
-scps_check_reject "err_effect_needing_value_pushed_block_local.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valblocklocal"
-scps_check_reject "err_effect_needing_value_pushed_by_handler_arm.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valhandlerarm"
-scps_check_reject "err_effect_needing_value_stored_for_binder.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valforbinder"
-scps_check_reject "err_effect_needing_value_pushed_arg_loop.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valargloop"
-scps_check_reject "err_effect_needing_value_for_iterable_shadowed.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valforitershadow"
-scps_check_reject "err_effect_needing_value_pushed_arg_block_if.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valargblockif"
-scps_check_reject "err_effect_needing_value_pushed_arg_local_alias.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valarglocalalias"
-scps_check_reject "err_effect_needing_value_pushed_in_condition.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valincondition"
-scps_check_reject "err_effect_needing_value_loop_param_continued.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valloopcontinued"
-scps_check_reject "err_effect_needing_value_assigned_in_loop.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valassignedloop"
+# #4138: an unannotated closure created inside its handle keeps the plain
+# calling convention, including through aliases, containers and stores.
+scps_bound_callback() {
+  local fixture="$1" want="$2"
+  local stem="${fixture%.vibe}"
+  local output
+  sed '/^_start()$/d' "fixtures/$fixture" > "$scpsdir/$stem.vibe"
+  gate_fs_compile "$scpsdir/$stem.vibe" "$scpsdir/$stem.wasm" _start
+  gate_require_artifact "$scpsdir/$stem.wasm" "$fixture did not compile"
+  output="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$scpsdir/$stem.wasm" 2>&1)" || {
+    echo "[compiler-gate] FAIL: $fixture trapped: $output" >&2
+    exit 1
+  }
+  if [ "$(printf '%s\n' "$output" | head -n 1)" != "$want" ]; then
+    echo "[compiler-gate] FAIL: $fixture returned '$output', expected $want" >&2
+    exit 1
+  fi
+}
+scps_bound_callback "effect_bound_callback_for_binder.vibe" 106
+scps_bound_callback "effect_bound_callback_match_binder.vibe" 106
+scps_bound_callback "effect_bound_callback_array_read.vibe" 106
+scps_bound_callback "effect_bound_callback_alias_in_data.vibe" 106
+scps_bound_callback "effect_bound_callback_if_in_data.vibe" 106
+scps_bound_callback "effect_bound_callback_alias_two_hops.vibe" 106
+scps_bound_callback "effect_bound_callback_block_in_data.vibe" 106
+scps_bound_callback "effect_bound_callback_pattern_shadow.vibe" 106
+scps_bound_callback "effect_bound_callback_stored_by_push.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_alias.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_in_branch.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_alias_chain.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_shadowed_alias.vibe" 107
+scps_bound_callback "effect_bound_callback_pushed_in_match.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_in_for.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_arg_block.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_loop_carried.vibe" 213
+scps_bound_callback "effect_bound_callback_pushed_block_local.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_by_handler_arm.vibe" 106
+scps_bound_callback "effect_bound_callback_stored_for_binder.vibe" 213
+scps_bound_callback "effect_bound_callback_pushed_arg_loop.vibe" 106
+scps_bound_callback "effect_bound_callback_for_iterable_shadowed.vibe" 213
+scps_bound_callback "effect_bound_callback_pushed_arg_block_if.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_arg_local_alias.vibe" 106
+scps_bound_callback "effect_bound_callback_pushed_in_condition.vibe" 106
+scps_bound_callback "effect_bound_callback_loop_param_continued.vibe" 106
+scps_bound_callback "effect_bound_callback_assigned_in_loop.vibe" 106
 # Annotated / eta-wrapped needing-value pins now live in
 # fixtures/effect_needing_value_annotated_test.vibe and
 # fixtures/effect_needing_value_escape_wrapped_test.vibe (#1973).

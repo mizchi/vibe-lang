@@ -1,0 +1,95 @@
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn apply_row(f: () -> Int with Ask) -> Int with Ask {
+  f() + 1000
+}
+
+export fn by_name() -> Int {
+  let mut total = 0
+  let k = 3
+  handle {
+    let g = () -> perform Ask::Get() + k
+    total = apply(f = g)
+    ()
+  } with { Ask::Get() => resume(5) }
+  total
+}
+
+export fn literal() -> Int {
+  let mut total = 0
+  let k = 3
+  handle {
+    total = apply(f = () -> perform Ask::Get() + k)
+    ()
+  } with { Ask::Get() => resume(5) }
+  total
+}
+
+export fn pure_data() -> Int {
+  let mut total = 0
+  handle {
+    let xs = [() -> 7]
+    let x = Array::get(xs, at = 0)
+    total = apply_row(f = x)
+    ()
+  } with { Ask::Get() => resume(5) }
+  total
+}
+
+fn ask_at_call() -> Int with Ask {
+  perform Ask::Get()
+}
+
+fn declared_row_from_data() -> Int {
+  handle {
+    let callbacks = [ask_at_call]
+    let callback = Array::get(callbacks, at = 0)
+    handle {
+      apply_row(f = callback)
+    } with { Ask::Get() => resume(7) }
+  } with { Ask::Get() => resume(5) }
+}
+
+test "#4138: a capturing callback passed by name keeps its handler" {
+  assert_eq(by_name(), 108)
+}
+
+test "#4138: a capturing literal callback keeps its handler" {
+  assert_eq(literal(), 108)
+}
+
+test "#4132: a row-free function read out of an array can fill a row slot" {
+  assert_eq(pure_data(), 1007)
+}
+
+test "#4132: a declared row function read out of an array uses the handler at the call" {
+  assert_eq(declared_row_from_data(), 1007)
+}
+
+test "#4132: adapting a callback read evaluates the argument once" {
+  let callbacks = [() -> 7]
+  let mut reads = 0
+  let pick = () -> {
+    reads += 1
+    Array::get(callbacks, at = 0)
+  }
+  let total = handle {
+    apply_row(f = pick())
+  } with { Ask::Get() => resume(5) }
+  assert_eq(total, 1007)
+  assert_eq(reads, 1)
+}
+
+test "#4132: a bound row-free callback can be forwarded by name" {
+  let f = () -> 7
+  let total = handle {
+    apply_row(f = f)
+  } with { Ask::Get() => resume(5) }
+  assert_eq(total, 1007)
+}

@@ -1,8 +1,10 @@
-// #4065: an argument block stores the handle-bound closure inside a loop and
-// then reads it back. The read hands the closure at its evidence arity to a
-// row-free parameter, which is refused at build time.
+// A handle-bound closure keeps its handler and can be called through this data path.
 effect Ask {
   Get() -> Int
+}
+
+effect Put {
+  Store() -> Int
 }
 
 fn apply(f: () -> Int) -> Int {
@@ -13,13 +15,15 @@ let _start = () -> Int {
   handle {
     let g = () -> perform Ask::Get() + 1
     let xs: Array[() -> Int] = [() -> 7]
-    apply(f = {
-      for i in [0] {
+    handle {
+      let _ = perform Put::Store()
+      apply(f = Array::get(xs, at = 1))
+    } with {
+      Put::Store() => {
         Array::push(xs, value = g)
+        resume(0)
       }
-      ()
-      Array::get(xs, at = 1)
-    })
+    }
   } with {
     Ask::Get() => resume(5)
   }

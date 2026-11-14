@@ -10,7 +10,8 @@ import @vibe/compiler/core {
   generated_owner_current,
   generated_owner_enter,
   generated_owner_of,
-  is_runtime_scheduled_effect
+  is_runtime_scheduled_effect,
+  typed_render_row_offset
 }
 
 import @vibe/core {
@@ -32,7 +33,8 @@ import @vibe/compiler/lowering/effects/queries {
   edp_mf_set_stmt,
   edp_pat_binds,
   edp_rq_fold,
-  edp_str_array_contains
+  edp_str_array_contains,
+  row_free_callback_capture_prefix
 }
 
 import ./evidence_fn_statement_index.vibe {
@@ -242,6 +244,8 @@ export fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
   out
 }
 
+let edp_callback_offsets: Array[MutSet[Int]] = []
+
 // review-lint: allow-program-walk (drives the pass: builds its tables, then rewrites each statement in turn)
 /// #3370: a closure literal with no written row, passed at a parameter of a
 /// top-level function whose declared type carries a row, takes that row.
@@ -256,10 +260,12 @@ export fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
 /// labeled argument is matched to its parameter by name; a callee a binding
 /// in scope shadows is left alone. A row-free top-level function passed by
 /// name there is wrapped the same way (#3424, `edp_slot_wrapper`).
-export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], facts: Option[Array[EdpStmtFacts]]) -> Unit {
+export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], facts: Option[Array[EdpStmtFacts]], callback_offsets: MutSet[Int]) -> Unit {
   // #3424: the top-level functions with no row of their own. Passed by name
   // at a row-typed parameter, one is compiled without the dict the callee
   // passes, so the slot gets a wrapper literal that takes it.
+  Array::truncate(edp_callback_offsets, length = 0)
+  Array::push(edp_callback_offsets, value = callback_offsets)
   let pure_names = MutSet::new_string()
   for def in fn_defs {
     let (_, _, _, fname, _, frow) = def
@@ -1804,7 +1810,7 @@ fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_index: MutMap[
         let mut ai = 0
         while ai < Array::length(args) {
           match Array::get(args, at = ai) {
-            EIdent(an, _) => if an == name {
+            EIdent(an, ao) => if an == name && !edp_needs_callback_adapter(EIdent(an, ao)) {
               Array::push(rows, value = if labeled {
                 ""
               } else {
@@ -1813,7 +1819,7 @@ fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_index: MutMap[
             } else {
               ()
             },
-            ELabeledArg(l, _, EIdent(an, _)) => if an == name {
+            ELabeledArg(l, _, EIdent(an, ao)) => if an == name && !edp_needs_callback_adapter(EIdent(an, ao)) {
               Array::push(rows, value = edp_slot_row_or_empty(stmts = stmts, fn_index = fn_index, callee = cn, pos = edp_param_index_by_label(stmts = stmts, fn_index = fn_index, callee = cn, label = l)))
             } else {
               ()
@@ -1975,6 +1981,22 @@ fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Arra
   }
 }
 
+fn edp_needs_callback_adapter(_ value: Expr) -> Bool {
+  let off = typed_render_row_offset(value)
+  off >= 0 && Array::length(edp_callback_offsets) != 0 && MutSet::has(Array::get(edp_callback_offsets, at = 0), x = off)
+}
+
+fn edp_adapt_row_free_callback(value: Expr, arity: Int, row: String) -> Option[Expr] {
+  if edp_needs_callback_adapter(value) {
+    // This compiler-only name also tells the eligibility scan that
+    // calling the captured value cannot request the slot's effect.
+    let name = row_free_callback_capture_prefix + edp_snap_fresh_name("callback")
+    Some(ELet(name, value, edp_slot_wrapper(name = name, arity = arity, row = row), -1))
+  } else {
+    None
+  }
+}
+
 /// One argument at a parameter whose function type is `slot` (its arity and
 /// row), or left as written when the slot carries no stampable row. The slot
 /// is read first, so a literal is copied (`edp_copy_local_helpers`, which
@@ -1984,59 +2006,62 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
   let callee = edp_take_slot_callee()
   match slot {
     None => a,
-    Some((arity, row)) => match a {
-      EFn(tps, tbs, ps, ret, None, b) => {
-        let lit = if edp_literal_calls_local(lit = a, body = b, scope = scope) {
-          edp_copy_local_helpers(tps = tps, tbs = tbs, ps = ps, ret = ret, body = b, scope = scope)
+    Some((arity, row)) => match edp_adapt_row_free_callback(value = a, arity = arity, row = row) {
+      Some(adapted) => adapted,
+      None => match a {
+        EFn(tps, tbs, ps, ret, None, b) => {
+          let lit = if edp_literal_calls_local(lit = a, body = b, scope = scope) {
+            edp_copy_local_helpers(tps = tps, tbs = tbs, ps = ps, ret = ret, body = b, scope = scope)
+          } else {
+            Some(a)
+          }
+          match lit {
+            Some(EFn(ltps, ltbs, lps, lret, None, lb)) => EFn(ltps, ltbs, lps, lret, Some(row), lb),
+            _ => {
+              edp_refuse_uncopied_literal(callee = callee, row = row, called = edp_uncopiable_local(body = b, ps = ps, scope = scope))
+              a
+            }
+          }
+        },
+        EIdent(an, _) => if MutSet::has(pure_names, x = an) && !edp_scope_has(scope = scope, name = an) {
+          edp_slot_wrapper(name = an, arity = arity, row = row)
         } else {
-          Some(a)
-        }
-        match lit {
-          Some(EFn(ltps, ltbs, lps, lret, None, lb)) => EFn(ltps, ltbs, lps, lret, Some(row), lb),
-          _ => {
-            edp_refuse_uncopied_literal(callee = callee, row = row, called = edp_uncopiable_local(body = b, ps = ps, scope = scope))
-            a
+          if edp_scope_has(scope = scope, name = an) {
+            edp_refuse_rowless_param(name = an, slot = edp_scope_last_index(scope = scope, name = an), callee = callee, row = row)
+            match edp_local_lit_at(name = an, slot = edp_scope_last_index(scope = scope, name = an)) {
+              Some(EFn(_, _, _, _, None, _)) => edp_refuse_unstamped_slot_literal(name = an, src = an, callee = callee, row = row),
+              Some(EFn(_, _, _, _, _, _)) => (),
+              Some(_) => if edp_value_is_row_free(value = a, scope = scope, pure_names = pure_names) && (!String::starts_with(callee, prefix = edp_field_site_prefix()) || !edp_field_alias_has_rowfree_literal(name = an, slot = edp_scope_last_index(scope = scope, name = an))) {
+                edp_refuse_rowless_local_field(name = an, callee = callee, row = row)
+              },
+              _ => ()
+            }
+          } else {
+            ()
           }
-        }
-      },
-      EIdent(an, _) => if MutSet::has(pure_names, x = an) && !edp_scope_has(scope = scope, name = an) {
-        edp_slot_wrapper(name = an, arity = arity, row = row)
-      } else {
-        if edp_scope_has(scope = scope, name = an) {
-          edp_refuse_rowless_param(name = an, slot = edp_scope_last_index(scope = scope, name = an), callee = callee, row = row)
-          match edp_local_lit_at(name = an, slot = edp_scope_last_index(scope = scope, name = an)) {
-            Some(EFn(_, _, _, _, None, _)) => edp_refuse_unstamped_slot_literal(name = an, src = an, callee = callee, row = row),
-            Some(EFn(_, _, _, _, _, _)) => (),
-            Some(_) => if edp_value_is_row_free(value = a, scope = scope, pure_names = pure_names) && (!String::starts_with(callee, prefix = edp_field_site_prefix()) || !edp_field_alias_has_rowfree_literal(name = an, slot = edp_scope_last_index(scope = scope, name = an))) {
-              edp_refuse_rowless_local_field(name = an, callee = callee, row = row)
-            },
-            _ => ()
+          a
+        },
+        ECall(EIdent(fname, _), _, _, _) => {
+          if !edp_scope_has(scope = scope, name = fname) && Array::length(edp_snap_program) > 0 {
+            let (pstmts, pdefs) = Array::get(edp_snap_program, at = 0)
+            edp_refuse_rowless_result(stmts = pstmts, fn_defs = pdefs, fname = fname, callee = callee, row = row)
+          } else if Array::length(edp_snap_program) > 0 {
+            let (pstmts, _) = Array::get(edp_snap_program, at = 0)
+            if edp_local_factory_result(slot = edp_scope_last_index(scope = scope, name = fname), stmts = pstmts) == 0 {
+              edp_refuse_rowless_factory_result(name = fname, callee = callee, row = row)
+            }
           }
-        } else {
-          ()
-        }
-        a
-      },
-      ECall(EIdent(fname, _), _, _, _) => {
-        if !edp_scope_has(scope = scope, name = fname) && Array::length(edp_snap_program) > 0 {
-          let (pstmts, pdefs) = Array::get(edp_snap_program, at = 0)
-          edp_refuse_rowless_result(stmts = pstmts, fn_defs = pdefs, fname = fname, callee = callee, row = row)
-        } else if Array::length(edp_snap_program) > 0 {
-          let (pstmts, _) = Array::get(edp_snap_program, at = 0)
-          if edp_local_factory_result(slot = edp_scope_last_index(scope = scope, name = fname), stmts = pstmts) == 0 {
-            edp_refuse_rowless_factory_result(name = fname, callee = callee, row = row)
+          a
+        },
+        ECall(EDot(_, m, _, _), _, _, _) => {
+          if Array::length(edp_snap_program) > 0 {
+            let (pstmts, pdefs) = Array::get(edp_snap_program, at = 0)
+            edp_refuse_rowless_method_result(stmts = pstmts, fn_defs = pdefs, m = m, callee = callee, row = row)
           }
-        }
-        a
-      },
-      ECall(EDot(_, m, _, _), _, _, _) => {
-        if Array::length(edp_snap_program) > 0 {
-          let (pstmts, pdefs) = Array::get(edp_snap_program, at = 0)
-          edp_refuse_rowless_method_result(stmts = pstmts, fn_defs = pdefs, m = m, callee = callee, row = row)
-        }
-        a
-      },
-      _ => a
+          a
+        },
+        _ => a
+      }
     }
   }
 }

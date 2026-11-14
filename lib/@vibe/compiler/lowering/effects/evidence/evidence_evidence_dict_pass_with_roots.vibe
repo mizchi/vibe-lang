@@ -17,7 +17,8 @@ import @vibe/compiler/core {
   generated_owner_tag,
   is_exception_effect_name,
   is_exception_throw_operation,
-  lookup_registry_builtin
+  lookup_registry_builtin,
+  row_free_callback_key
 }
 
 import @vibe/core {
@@ -576,6 +577,11 @@ fn evidence_split_handler_sets_in(stmts: Array[Stmt], statements: Array[Int], bi
 }
 
 export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]) -> Array[String] {
+  evidence_dict_pass_with_callback_rows(stmts = stmts, roots = roots, offsets = [
+  ], keys = [])
+}
+
+export fn evidence_dict_pass_with_callback_rows(stmts: Array[Stmt], roots: Array[String], offsets: Array[Int], keys: Array[String]) -> Array[String] {
   let errs = empty_str_array()
   // #3176: a call spelled like an audited pure builtin reaches the program's
   // own function when the program declares one; judge it by that row.
@@ -745,7 +751,17 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   let fn_row_labels = edp_fn_row_label_table(fn_defs = fn_defs, es_names = edp_es_names, es_members_list = edp_es_members_list)
   // #3370: a row-free closure literal at a row-typed parameter takes that
   // row, so the type-directed sweep gives it the dict its callee passes.
-  edp_stamp_slot_rows(stmts = stmts, fn_defs = fn_defs, facts = Some(statement_facts))
+  let callback_offsets = MutSet::new_int()
+  let mut ri = 0
+  while ri < Array::length(offsets) {
+    if Array::get(keys, at = ri) == row_free_callback_key {
+      MutSet::insert(callback_offsets, x = Array::get(offsets, at = ri))
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  edp_stamp_slot_rows(stmts = stmts, fn_defs = fn_defs, facts = Some(statement_facts), callback_offsets = callback_offsets)
   // Reachability from the statement facts (#4040): every write since the
   // last refresh went through edp_mf_set_stmt or appended.
   edp_mf_refresh(facts = statement_facts, stmts = stmts)

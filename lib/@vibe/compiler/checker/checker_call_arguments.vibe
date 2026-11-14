@@ -14,7 +14,8 @@ import @vibe/compiler/core {
   expr_any_node,
   fresh_var,
   refine_trait_bounds_from_receiver,
-  subst_apply
+  subst_apply,
+  typed_render_row_offset
 }
 import ./checker_int32.vibe {
   int32_literal_adapt
@@ -410,6 +411,20 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
     // parameter's type, range-checked. An annotated `let` is such a call
     // (`ascribe_wrap`), so `let x: Int32 = 5` checks the same way.
     let at = int32_literal_adapt(e = arg, expected = expected, actual = at_raw, s = ns, errors = errors, off = -1)
+    match (capture, expected) {
+      (Some(rows), CtFn(_, _, Some(_))) => match subst_apply(s = ns, ty = at) {
+        CtFn(_, _, None) => {
+          let off = typed_render_row_offset(arg)
+          if off >= 0 {
+            Array::push(rows.row_free_callback_offsets, value = off)
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
     if saved_child >= 0 {
       let _ = call_argument_capture_cursor(capture = capture, next = saved_child); ()
     } else {
