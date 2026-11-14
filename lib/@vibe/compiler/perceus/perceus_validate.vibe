@@ -109,6 +109,10 @@ import ./perceus_pc_emit.vibe {
   perceus_loop_result_slot
 }
 
+import ./perceus_sf_derive.vibe {
+  perceus_last_plan_classes
+}
+
 import ./perceus_pctx.vibe {
   pa_is_consume_mark,
   pa_is_drop,
@@ -1950,4 +1954,123 @@ fn rv_param_names(_ params: Array[(String, Option[TypeExpr])]) -> Array[String] 
     i = i + 1
   }
   out
+}
+
+//# Self-check during a compile (#3718)
+
+/// #3718: whether the compile running in this process validates each plan it
+/// builds. Off unless `cli_main` reads `VIBE_RC_SELFCHECK_OUT`, so a
+/// production compile does no extra work. `vibe rc-validate` cannot answer for
+/// the compiler itself: checking the flat selfhost source in one process
+/// exhausts the wasm32 heap. Checking each plan where codegen builds it costs
+/// one function's ledger at a time.
+let perceus_selfcheck_on: Array[Bool] = [false]
+
+/// The lines the self-check collected, in compile order: the same forms
+/// `perceus_validate_fn` returns.
+let perceus_selfcheck_lines: Array[String] = []
+
+/// The number of plans the self-check validated, so a gate can tell "checked
+/// and clean" from "never ran".
+let perceus_selfcheck_count: Array[Int] = [0]
+
+/// The shard this process checks: plan number `i` (in build order) is checked
+/// when `i % of == shard`. The compiler checking itself runs on the bump lane,
+/// which never frees, and one compile of the flat source leaves only a few
+/// hundred MB of the wasm32 heap; so a gate splits the plans over several
+/// compiles. `[0, 1]` checks every plan.
+let perceus_selfcheck_shard: Array[Int] = [0, 1]
+
+/// The number of plans built so far while the self-check is on, checked or not.
+let perceus_selfcheck_seen: Array[Int] = [0]
+
+/// When set, the shard's plans are named (`plan I NAME`) instead of checked:
+/// a shard whose check traps writes no report, so this is how a gate failure
+/// is narrowed to the function it was checking.
+let perceus_selfcheck_list_only: Array[Bool] = [false]
+
+/// Functions whose plan the self-check does not check, each reported as
+/// `exempt NAME`. A plan whose check alone exhausts the heap left over by the
+/// compile around it is checked by `vibe rc-validate` in a process of its own
+/// instead; the gate keeps the list (scripts/rc_selfcheck_exempt.txt).
+let perceus_selfcheck_exempt: Array[String] = []
+
+/// Exempt the plans of these functions (see `perceus_selfcheck_exempt`).
+export fn perceus_selfcheck_set_exempt(names: Array[String]) -> Unit {
+  for n in names {
+    Array::push(perceus_selfcheck_exempt, value = n)
+  }
+  ()
+}
+
+/// Name the shard's plans instead of checking them (see
+/// `perceus_selfcheck_list_only`).
+export fn perceus_selfcheck_list_plans() -> Unit {
+  Array::set(perceus_selfcheck_list_only, at = 0, value = true)
+}
+
+/// Turn the self-check on for every plan built from now on, checking the plans
+/// of shard `shard` out of `of` (see `perceus_selfcheck_shard`).
+export fn perceus_selfcheck_enable(shard: Int, of: Int) -> Unit {
+  Array::set(perceus_selfcheck_on, at = 0, value = true)
+  Array::set(perceus_selfcheck_shard, at = 0, value = shard)
+  Array::set(perceus_selfcheck_shard, at = 1, value = if of < 1 {
+    1
+  } else {
+    of
+  })
+}
+
+/// Is the self-check on?
+export fn perceus_selfcheck_enabled() -> Bool {
+  Array::get(perceus_selfcheck_on, at = 0)
+}
+
+/// Validate the plan built JUST before this call (its binding classes are
+/// read off the planner's cached context, which the next plan resets) and
+/// keep its lines.
+export fn perceus_selfcheck_plan(fname: String, params: Array[(String, Option[TypeExpr])], body: Expr, plan: Array[PerceusAction], param_drop_start: Int, borrow_param_fns: Array[String], masks: Array[Int]) -> Unit {
+  let seen = Array::get(perceus_selfcheck_seen, at = 0)
+  Array::set(perceus_selfcheck_seen, at = 0, value = seen + 1)
+  if seen % Array::get(perceus_selfcheck_shard, at = 1) != Array::get(perceus_selfcheck_shard, at = 0) {
+    return ()
+  }
+  let mut exempt = false
+  for n in perceus_selfcheck_exempt {
+    if n == fname {
+      exempt = true
+    }
+  }
+  if exempt {
+    Array::push(perceus_selfcheck_lines, value = "exempt " + fname)
+    return ()
+  }
+  if Array::get(perceus_selfcheck_list_only, at = 0) {
+    Array::push(perceus_selfcheck_lines, value = "plan " + Int::to_string(seen) + " " + fname)
+    return ()
+  }
+  let class_names: Array[String] = []
+  let class_bits: Array[Int] = []
+  perceus_last_plan_classes(out_names = class_names, out_bits = class_bits)
+  for line in perceus_validate_fn(fname = fname, params = params, body = body, plan = plan, param_drop_start = param_drop_start, class_names = class_names, class_bits = class_bits, borrow_param_fns = borrow_param_fns, masks = masks) {
+    Array::push(perceus_selfcheck_lines, value = line)
+  }
+  Array::set(perceus_selfcheck_count, at = 0, value = Array::get(perceus_selfcheck_count, at = 0) + 1)
+}
+
+/// The collected report: a `plans N of M` header line (N checked of the M
+/// built), then one line per finding and one `exempt NAME` line per plan not
+/// checked by name.
+export fn perceus_selfcheck_report() -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, value = "plans ")
+  StringBuilder::push(out, value = Int::to_string(Array::get(perceus_selfcheck_count, at = 0)))
+  StringBuilder::push(out, value = " of ")
+  StringBuilder::push(out, value = Int::to_string(Array::get(perceus_selfcheck_seen, at = 0)))
+  StringBuilder::push(out, value = "\n")
+  for line in perceus_selfcheck_lines {
+    StringBuilder::push(out, value = line)
+    StringBuilder::push(out, value = "\n")
+  }
+  StringBuilder::freeze(out)
 }

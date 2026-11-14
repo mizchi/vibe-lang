@@ -873,3 +873,55 @@ testCheckGenerationChoice = new pkf.Task {
   cmd = "bash scripts/check_generation_choice_test.sh"
   inputs { ...compilerProbeInputs; ...scriptSources; ...generationChoiceScanned }
 }
+
+testSelfbuildMeasurement = new pkf.Task {
+  name = "test-selfbuild-measurement"
+  description = "selfbuild measurement receipts, profile attribution and monotonic host clocks"
+  cmd =
+    "python3 -m unittest discover -s bench/perf -p 'test_selfbuild*.py' && bash scripts/test_trace_spans.sh"
+  cache = false
+  inputs {
+    "bench/perf/selfbuild_*.py"
+    "bench/perf/test_selfbuild*.py"
+    "scripts/trace_lib.sh"
+    "scripts/trace_span.sh"
+    "scripts/trace_report.mjs"
+    "scripts/test_trace_spans.sh"
+  }
+}
+
+testSeedValidationReuse = new pkf.Task {
+  name = "test-seed-validation-reuse"
+  description =
+    "validation reuse binds source, seed, entry, runner and options; failures preserve old outputs"
+  cmd = "python3 -m unittest discover -s scripts -p 'seed_validation_*test.py'"
+  cache = false
+  inputs {
+    "scripts/seed_validation_receipt.py"
+    "scripts/seed_validation_receipt_test.py"
+    "scripts/seed_validation_integration_test.py"
+    "scripts/generations.sh"
+    "scripts/generate_bundle.sh"
+    "scripts/wasm_vibe_host_*.js"
+  }
+}
+
+// #851: scripts/bench_selfhost_compile_hotspots.sh no longer exists; repointed
+// to scripts/profile_compile.sh (the current hotspot-table + memory
+// high-water profiler documented in .claude/skills/compiler-perf-profiling),
+// which takes a required <stage2.wasm> argument, hence acceptsArgs.
+benchSelfhostCompileHotspots = new pkf.Task {
+  name = "bench-compile-hotspots"
+  cmd = "bash scripts/profile_compile.sh $@"
+  acceptsArgs = true
+  // `cache = false`, like every other measurement task that takes an argument
+  // (kpi-selfcompile, measure-fs-heap, kpi-edit-cycle). No input list can key
+  // this one correctly: the stage2 to profile arrives as an ARGUMENT, so two
+  // runs against different compilers would share a cache key and the second
+  // would replay the first's numbers -- the "which compiler answered" trap
+  // (AGENTS.md), in the one task whose entire output is a measurement. It ran
+  // with `inputs { ...vibeSources; ...scriptSources }`, which also omitted
+  // bootstrap/seed.json, and check_task_inputs.sh has been red on main since
+  // (#2577).
+  cache = false
+}
