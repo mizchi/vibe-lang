@@ -1881,6 +1881,36 @@ done
 rm -rf "$abdir"
 echo "[compiler-gate] aggregate branch-tail retain guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ab_used B)"
 
+# 40f0s. #1980: a projection `let` (`let v = h.inner`, a struct destructure's
+#        binders) consumed on one branch releases what the path did not
+#        spend. It takes a reference of its own at the binding, and the plan
+#        gives it a counted path drop, but the `let` lowering declined that
+#        drop for a projection value, so every path that skipped the consume
+#        kept the reference. Unfixed, the fixture measured 3,522,728 B at
+#        N=20000, fixed 2,728 B; the bound is 8,000. Its controls keep the
+#        consumed values past the call, so the shadow run is what proves no
+#        path drop released a value still held.
+echo "[compiler-gate] 40f0s/40 a projection let consumed on one branch releases what the path kept (#1980)"
+gate_workdir pjdir "_build/_gate_rc_projection_let"
+for pj_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$pj_lane" "fixtures/rc_projection_let_path_drop_test.vibe" "$pjdir/pj.wasm" main
+  gate_require_artifact "$pjdir/pj.wasm" "rc_projection_let_path_drop fixture did not compile on the $pj_lane lane (#1980)"
+  gate_run pj_out last "$pjdir/pj.wasm"
+  gate_require_eq "$pj_out" "0" "rc_projection_let_path_drop got '$pj_out' on the $pj_lane lane (want 0). A trap means a projection let's path drop released a value a path still held (#1980)."
+  if [ "$pj_lane" = rc ]; then
+    pj_json="$(node scripts/measure_heap.mjs "$pjdir/pj.wasm" main 2>/dev/null)"
+    pj_used="$(printf '%s' "$pj_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$pj_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_projection_let_path_drop heap ($pj_json)" >&2; exit 1
+    fi
+    if [ "$pj_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_projection_let_path_drop heap_used=$pj_used >= 8000 (#1980: a projection let keeps the reference of a consume its path skipped; measured 3522728 at N=20000 when it did)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$pjdir"
+echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pj_used B at N=20000)"
+
 # 40f0t. #4153 / #1980: a function whose result paths read into a binding of
 #        its own -- a `let` of a fresh value, a match binder of one, a view of
 #        either -- is not borrow-returning. The classifier judged such a tail

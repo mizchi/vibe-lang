@@ -544,7 +544,21 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // with the mask removed, `let mk = mk(3)` under a heap-returning global
     // `mk` compiles 18 B smaller, which is the guarded drop not being emitted.
     let pd_candidate = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(arr = ctx.rc_path_drop_names, s = name)
-    let path_value_ok = if pd_candidate {
+    //
+    // #1980: a projection value (`let v = h.inner`, and every binder of a
+    // struct destructure, `let H::{ inner } = h`) holds a reference of its
+    // own too: `classify_let_value_heap`'s projection arm gives every `EDot`
+    // value a heap class and either takes the reference a read off an owned
+    // temporary carries or retains the field at the binding. So the guarded
+    // drop has a reference to release, as for an allocation. Only the
+    // value's TOP node counts: a projection inside a branch or a block is not
+    // retained by that arm, and stays `path_value_owned`'s question.
+    // (Admitting it before #4141 freed `LinkedBodyInputs.struct_names`
+    // early: the leak this releases was what balanced the emission layout's
+    // unretained copy of that array.)
+    let path_value_ok = if pd_candidate && is_edot(value_sd) {
+      true
+    } else if pd_candidate {
       let pd_self = Array::get(local_names, at = local_idx)
       Array::set(local_names, at = local_idx, value = "")
       let r = path_value_owned(e = value_rw, local_names = local_names, bound = array_empty(), ctx = ctx)
