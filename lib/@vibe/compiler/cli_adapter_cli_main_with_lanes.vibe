@@ -86,6 +86,10 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode, entry_cacheable_for_fs
 }
 
+import @vibe/compiler/perceus {
+  perceus_selfcheck_enable, perceus_selfcheck_list_plans, perceus_selfcheck_report, perceus_selfcheck_set_exempt
+}
+
 import @vibe/compiler/normalize {
   normalize_source
 }
@@ -2350,7 +2354,49 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
     vibe_process_exit_raw(code)
     code
   } else {
-    cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full, format_tool = adapter_format, lsp_tool = lsp_main)
+    // #3718: `VIBE_RC_SELFCHECK_OUT=<path>` validates every function plan this
+    // compile builds against the linear ownership discipline and writes the
+    // report there (scripts/check_rc_selfcheck.sh reads it). Unset, codegen
+    // does no extra work.
+    let selfcheck_out = Env::get("VIBE_RC_SELFCHECK_OUT")
+    if selfcheck_out != "" {
+      let (shard, of) = rc_selfcheck_shard(Env::get("VIBE_RC_SELFCHECK_SHARD"))
+      perceus_selfcheck_enable(shard = shard, of = of)
+      // `VIBE_RC_SELFCHECK_LIST=1` names the shard's plans instead of
+      // checking them, to find the function a trapping shard was checking.
+      if Env::get("VIBE_RC_SELFCHECK_LIST") == "1" {
+        perceus_selfcheck_list_plans()
+      }
+      // `VIBE_RC_SELFCHECK_EXEMPT=a,b` leaves those functions' plans
+      // unchecked, each reported as `exempt NAME`.
+      let exempt = Env::get("VIBE_RC_SELFCHECK_EXEMPT")
+      if exempt != "" {
+        perceus_selfcheck_set_exempt(names = String::split(exempt, sep = ","))
+      }
+    }
+    let code = cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full, format_tool = adapter_format, lsp_tool = lsp_main)
+    if selfcheck_out != "" {
+      Fs::write_file(selfcheck_out, contents = perceus_selfcheck_report())
+    }
+    code
+  }
+}
+
+/// #3718: `VIBE_RC_SELFCHECK_SHARD=k/N` checks plans k, k+N, k+2N, ...;
+/// unset or unreadable checks every plan.
+fn rc_selfcheck_shard(_ raw: String) -> (Int, Int) {
+  let parts = String::split(raw, sep = "/")
+  if Array::length(parts) != 2 {
+    (0, 1)
+  } else {
+    match (Int::parse(Array::get(parts, at = 0)), Int::parse(Array::get(parts, at = 1))) {
+      (Some(k), Some(n)) => if n >= 1 && k >= 0 && k < n {
+        (k, n)
+      } else {
+        (0, 1)
+      },
+      _ => (0, 1)
+    }
   }
 }
 

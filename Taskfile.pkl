@@ -1057,6 +1057,31 @@ local testCheckRcValidateCorpus = new Task {
   }
   deps { selfhostGeneration }
 }
+// #3718: the compiler's OWN plans, checked while stage2 compiles the flat
+// selfhost source -- `vibe rc-validate` on that source exhausts the wasm32 heap,
+// so codegen checks each plan as it builds it (VIBE_RC_SELFCHECK_OUT).
+local checkRcSelfcheck = new Task {
+  name = "check-rc-selfcheck"
+  description = "no Perceus plan of the selfhost compiler releases a reference it does not hold"
+  cmd = "bash scripts/check_rc_selfcheck.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+  }
+  deps { selfhostGeneration }
+}
+// Not `scriptTask`: the green case and the real report both come from a
+// compile, so it probes the compiler and declares the dependency.
+local testCheckRcSelfcheck = new Task {
+  name = "test-check-rc-selfcheck"
+  cmd = "bash scripts/check_rc_selfcheck_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/rc_double_release_bounded_test.vibe"
+  }
+  deps { selfhostGeneration }
+}
 // #2510/#2735: an opt-in observation must never destroy what it observes.
 // `VIBE_INCREMENTAL_TELEMETRY_OUT` names a file the CLI deletes before the
 // compile and writes after it, and the two sit ~600 lines apart in cli_main,
@@ -2651,6 +2676,8 @@ local releaseCheck = new Task {
     testCheckBodylessImplRefusal
     checkRcValidateCorpus
     testCheckRcValidateCorpus
+    checkRcSelfcheck
+    testCheckRcSelfcheck
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
     checkHostRemoveParity
@@ -2821,6 +2848,8 @@ tasks {
   testCheckBodylessImplRefusal
   checkRcValidateCorpus
   testCheckRcValidateCorpus
+  checkRcSelfcheck
+  testCheckRcSelfcheck
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
   checkHostRemoveParity
