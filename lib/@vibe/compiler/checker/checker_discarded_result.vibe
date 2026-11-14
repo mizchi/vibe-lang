@@ -8,13 +8,16 @@
 // fixture whose maps it had meant to fill.
 //
 // So a call to one of them whose value is thrown away is refused, with the
-// edit. A statement of a block (`taken = ..` missing), and the value of a
+// edit. #4146 widens the class to every builtin whose only effect is its
+// value (`String::concat`, `Array::get`, ...), read off the builtin registry
+// (`builtin_result_is_its_only_effect`): such a statement does nothing
+// either. A statement of a block (`taken = ..` missing), and the value of a
 // statement-position `if` / `match` branch, `for` or `while` body, are thrown
 // away; `let _ = Map::set(..)` still discards on purpose. Only the builtin is
 // judged: a program's own function of that spelling is its own business.
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, call_arg_value
+  Expr, TypeEnv, builtin_result_is_its_only_effect, call_arg_value
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -33,6 +36,8 @@ export fn refuse_discarded_functional_result(stmt: Expr, env: TypeEnv, errors: A
   match stmt {
     ECall(EIdent(name, noff), args, _, _) => if discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
       Array::push(errors, value = discarded_result_message(name = name, args = args, noff = noff))
+    } else if builtin_result_is_its_only_effect(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
+      Array::push(errors, value = discarded_value_message(name = name, noff = noff))
     },
     ESeq(_, rest) => refuse_discarded_functional_result(stmt = rest, env = env, errors = errors),
     ELet(_, _, body, _) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
@@ -78,4 +83,10 @@ fn discarded_result_message(name: String, args: Array[Expr], noff: Int) -> Strin
     "`" + receiver + "`"
   }
   edit + ": `" + name + "` returns a new map and leaves " + unchanged + " unchanged, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
+}
+
+/// #4146: the refusal for a builtin that only returns a value, the edit first:
+/// use the value, or drop the statement.
+fn discarded_value_message(name: String, noff: Int) -> String {
+  "bind the result of `" + name + "` (`let r = " + name + "(..)`) or delete the statement: `" + name + "` only returns a value and changes nothing, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
 }
