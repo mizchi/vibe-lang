@@ -40,7 +40,7 @@
 //# a store the order of the statements hides.
 
 import @vibe/compiler/core {
-  Expr, Pat, Subst, Type, TypeEnv, TypeExpr, env_bind, env_lookup, env_type_defs, expr_children, subst_apply
+  Expr, Pat, Subst, Type, TypeEnv, TypeExpr, ascription_call_value, env_bind, env_lookup, env_type_defs, expr_children, subst_apply
 }
 
 import ./checker_region_call_result.vibe {
@@ -70,6 +70,7 @@ import ./checker_merge_capture_provenance.vibe {
   held_result_param_indices,
   literal_item_is_inert,
   literal_item_is_scalar,
+  literal_item_type,
   type_can_carry_region
 }
 
@@ -102,13 +103,31 @@ import ./checker_retaining_write.vibe {
 /// predates -- and the regions a value its scope assigns to it predates; and
 /// a holder of outer storage for the regions what its scope stores in it, or
 /// in a part of it, predates (`region_outer_content_mark`).
-export fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: Type, known: Array[String], s: Subst) -> TypeEnv {
+export fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: Type, known: Array[String], init: Expr, init_env: TypeEnv, s: Subst) -> TypeEnv {
   if env_has_active_region(env) && type_can_carry_region(ty) {
     let (same, holds) = region_content_outer_regions(name = name, scope = scope, env = env, s = s)
     content_union(out = same, items = known)
+    content_initializer_regions_into(init = init, env = init_env, out = holds)
     region_outer_content_mark(env = region_outer_alias_mark(env = env, name = name, regions = same), name = name, regions = holds)
   } else {
     region_outer_alias_mark(env = env, name = name, regions = known)
+  }
+}
+
+fn content_initializer_regions_into(init: Expr, env: TypeEnv, out: Array[String]) -> Unit {
+  match init {
+    ECall(EIdent(name, off), args, _, _) => match ascription_call_value(callee = EIdent(name, off), args = args) {
+      Some(inner) => content_initializer_regions_into(init = inner, env = env, out = out),
+      None => if retention_name_scope(env = env, name = name) != 1 && content_result_may_hold(name = name, env = env) {
+        match retention_decl_value(name) {
+          Some(EFn(tparams, _, params, _, _, body)) => if content_call_result_has_outer(name = name, tparams = tparams, params = params, body = body, env = env, calls = content_calls_new()) {
+            content_union(out = out, items = retention_active_region_names(env))
+          },
+          _ => ()
+        }
+      },
+    },
+    _ => ()
   }
 }
 
@@ -155,7 +174,7 @@ fn region_outer_content_mark(env: TypeEnv, name: String, regions: Array[String])
 /// by its occurrence, not its spelling (`content_resolve`), so an inner
 /// `let xs = sink` does not taint an outer `xs`.
 export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String]) {
-  let facts = content_collect(names = [name], scope = scope, env = env, calls = content_calls_new(), track_results = true, typed_formals = 0)
+  let facts = content_collect(names = [name], scope = scope, env = env, calls = content_calls_new(), track_results = true, type_aliases = false)
   let held = content_held_regions(facts = facts, env = env, s = s)
   let same: Array[String] = []
   let mut b = 0
@@ -190,7 +209,7 @@ fn content_calls_new() -> ContentCalls {
   }
 }
 
-fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: Bool, typed_formals: Int) -> ContentFacts {
+fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: Bool, type_aliases: Bool) -> ContentFacts {
   ContentFacts::{
     bind_names: [],
     bind_own_storage: [],
@@ -205,12 +224,14 @@ fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: B
     next_id: [0],
     calls,
     track_results,
-    typed_formals
+    type_aliases,
+    return_ids: [],
+    alias_types: MutMap::new_string()
   }
 }
 
-fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls, track_results: Bool, typed_formals: Int) -> ContentFacts {
-  let facts = content_facts_new(names = names, calls = calls, track_results = track_results, typed_formals = typed_formals)
+fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls, track_results: Bool, type_aliases: Bool) -> ContentFacts {
+  let facts = content_facts_new(names = names, calls = calls, track_results = track_results, type_aliases = type_aliases)
   content_facts_into(expr = scope, facts = facts, env = env)
   facts
 }
@@ -324,7 +345,9 @@ struct ContentFacts {
   next_id: Array[Int];
   calls: ContentCalls;
   track_results: Bool;
-  typed_formals: Int
+  type_aliases: Bool;
+  return_ids: Array[String];
+  alias_types: MutMap[String, Type]
 }
 
 fn content_union(out: Array[String], items: Array[String]) -> Unit {
@@ -478,19 +501,92 @@ fn content_outer_into(value: Expr, env: TypeEnv, out: Array[String], s: Subst) -
 
 /// Every binding and store of `expr` into `facts`, each name resolved to the
 /// binder occurrence in scope where it is written.
+fn content_walk_result(expr: Expr, facts: ContentFacts, env: TypeEnv) -> (Bool, Array[String]) {
+  match expr {
+    ELet(x, v, body, off) => {
+      let value = content_walk_result(expr = v, facts = facts, env = env)
+      let mark = Array::length(facts.scope_ids)
+      content_bind_let(name = x, off = off, expr = v, value = value, env = env, facts = facts)
+      let result = content_walk_result(expr = body, facts = facts, env = env)
+      content_pop(mark = mark, facts = facts)
+      result
+    },
+    ELetMut(x, v, body, off) => {
+      let value = content_walk_result(expr = v, facts = facts, env = env)
+      let mark = Array::length(facts.scope_ids)
+      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = value, facts = facts)
+      let result = content_walk_result(expr = body, facts = facts, env = env)
+      content_pop(mark = mark, facts = facts)
+      result
+    },
+    ESeq(a, b) => {
+      content_facts_into(expr = a, facts = facts, env = env)
+      content_walk_result(expr = b, facts = facts, env = env)
+    },
+    EIf(c, a, b) => {
+      content_facts_into(expr = c, facts = facts, env = env)
+      let left = content_walk_result(expr = a, facts = facts, env = env)
+      let right = content_walk_result(expr = b, facts = facts, env = env)
+      content_union(out = left.1, items = right.1)
+      (left.0 || right.0, left.1)
+    },
+    EMatch(scrut, arms) => content_match_result(scrut = scrut, arms = arms, facts = facts, env = env),
+    EReturn(v) => {
+      let result = content_walk_result(expr = v, facts = facts, env = env)
+      content_record_return(value = result, facts = facts)
+      result
+    },
+    _ => {
+      content_facts_into(expr = expr, facts = facts, env = env)
+      content_value_fact(value = expr, env = env, facts = facts)
+    }
+  }
+}
+
+fn content_match_result(scrut: Expr, arms: Array[(Pat, Expr)], facts: ContentFacts, env: TypeEnv) -> (Bool, Array[String]) {
+  let aliases: Array[String] = []
+  let mut own = false
+  content_facts_into(expr = scrut, facts = facts, env = env)
+  for arm in arms {
+    let mark = Array::length(facts.scope_ids)
+    content_pattern_binds(pat = arm.0, value = scrut, facts = facts, env = env)
+    let result = content_walk_result(expr = arm.1, facts = facts, env = env)
+    own = own || result.0
+    content_union(out = aliases, items = result.1)
+    content_pop(mark = mark, facts = facts)
+  }
+  (own, aliases)
+}
+
+fn content_record_return(value: (Bool, Array[String]), facts: ContentFacts) -> Unit {
+  if Array::length(facts.return_ids) > 0 {
+    let id = Array::get(facts.return_ids, at = Array::length(facts.return_ids) - 1)
+    if id != "" {
+      content_bind(id = id, value = value, facts = facts)
+    }
+  }
+}
+
+fn content_facts_value(expr: Expr, facts: ContentFacts, env: TypeEnv) -> (Bool, Array[String]) {
+  if facts.track_results {
+    content_walk_result(expr = expr, facts = facts, env = env)
+  } else {
+    content_facts_into(expr = expr, facts = facts, env = env)
+    content_value_fact(value = expr, env = env, facts = facts)
+  }
+}
+
 fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
   match expr {
     ELet(x, v, body, off) => {
-      content_facts_into(expr = v, facts = facts, env = env)
-      let value = content_value_fact(value = v, env = env, facts = facts)
+      let value = content_facts_value(expr = v, facts = facts, env = env)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = value, facts = facts)
+      content_bind_let(name = x, off = off, expr = v, value = value, env = env, facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
     ELetMut(x, v, body, off) => {
-      content_facts_into(expr = v, facts = facts, env = env)
-      let value = content_value_fact(value = v, env = env, facts = facts)
+      let value = content_facts_value(expr = v, facts = facts, env = env)
       let mark = Array::length(facts.scope_ids)
       content_bind(id = content_push_let(name = x, off = off, facts = facts), value = value, facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
@@ -515,8 +611,7 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
       content_facts_into(expr = body, facts = facts, env = env)
     },
     EForIn(x, index, iter, body) => {
-      content_facts_into(expr = iter, facts = facts, env = env)
-      let value = content_value_fact(value = iter, env = env, facts = facts)
+      let value = content_facts_value(expr = iter, facts = facts, env = env)
       let mark = Array::length(facts.scope_ids)
       content_bind(id = content_push(name = x, facts = facts), value = value, facts = facts)
       match index {
@@ -567,6 +662,14 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
+    EReturn(result) => {
+      if Array::length(facts.return_ids) > 0 {
+        let value = content_walk_result(expr = result, facts = facts, env = env)
+        content_record_return(value = value, facts = facts)
+      } else {
+        content_facts_into(expr = result, facts = facts, env = env)
+      }
+    },
     EFn(_, _, ps, _, _, body) => content_lambda_facts(ps = ps, body = body, bound = [
     ], facts = facts, env = env),
     ECall(callee, args, _, _) => content_call_facts(callee = callee, args = args, facts = facts, env = env),
@@ -594,7 +697,12 @@ fn content_lambda_facts(ps: Array[(String, Option[TypeExpr])], body: Expr, bound
     }
     i = i + 1
   }
+  let returns = Array::length(facts.return_ids)
+  if returns > 0 {
+    Array::push(facts.return_ids, value = "")
+  }
   content_facts_into(expr = body, facts = facts, env = env)
+  Array::truncate(facts.return_ids, length = returns)
   content_pop(mark = mark, facts = facts)
 }
 
@@ -667,7 +775,7 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
     ELet(x, v, body, off) => {
       let bound = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = bound, facts = facts)
+      content_bind_let(name = x, off = off, expr = v, value = bound, env = env, facts = facts)
       if off < 0 {
         content_facts_into(expr = body, facts = facts, env = env)
       }
@@ -691,25 +799,23 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
     EAssignOp(_, _, _, body, _) => return content_value_fact(value = body, env = env, facts = facts),
     EReturn(result) => return content_value_fact(value = result, env = env, facts = facts),
     EMatch(scrut, arms) => if facts.track_results {
-      let aliases: Array[String] = []
-      let mut own = false
-      for arm in arms {
-        let mark = Array::length(facts.scope_ids)
-        content_pattern_binds(pat = arm.0, value = scrut, facts = facts, env = env)
-        // The stores and the result must share the very same pattern binders.
-        content_facts_into(expr = arm.1, facts = facts, env = env)
-        let result = content_value_fact(value = arm.1, env = env, facts = facts)
-        own = own || result.0
-        content_union(out = aliases, items = result.1)
-        content_pop(mark = mark, facts = facts)
-      }
-      return (own, aliases)
+      return content_match_result(scrut = scrut, arms = arms, facts = facts, env = env)
     } else {
       ()
     },
     _ => ()
   }
   (content_own_storage(value = value, env = env, facts = facts), content_alias_names(value = value, env = env, facts = facts))
+}
+
+fn content_bind_let(name: String, off: Int, expr: Expr, value: (Bool, Array[String]), env: TypeEnv, facts: ContentFacts) -> Unit {
+  let alias_type = content_alias_type(value = expr, env = env, facts = facts)
+  let id = content_push_let(name = name, off = off, facts = facts)
+  match alias_type {
+    Some(t) => MutMap::set(facts.alias_types, k = id, v = t),
+    None => ()
+  }
+  content_bind(id = id, value = value, facts = facts)
 }
 
 fn content_bind(id: String, value: (Bool, Array[String]), facts: ContentFacts) -> Unit {
@@ -946,23 +1052,40 @@ fn content_value_is_scalar(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bo
 }
 
 fn content_env_scalar(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
+  match content_type_env(value = value, env = env, facts = facts) {
+    Some(scope) => literal_item_is_scalar(item = value, env = scope),
+    None => false
+  }
+}
+
+fn content_alias_type(value: Expr, env: TypeEnv, facts: ContentFacts) -> Option[Type] {
+  if !facts.type_aliases {
+    return None
+  }
+  // A mutable alias can change its source after initialization.
+  match value {
+    EIdent(_, _) => match content_type_env(value = value, env = env, facts = facts) {
+      Some(scope) => literal_item_type(item = value, env = scope),
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn content_type_env(value: Expr, env: TypeEnv, facts: ContentFacts) -> Option[TypeEnv] {
   let names: Array[String] = []
   content_value_names_into(e = value, out = names)
-  let mut unshadowed = true
+  let mut scope = env
   for n in names {
-    if facts.typed_formals == 0 {
-      unshadowed = unshadowed && content_resolve(name = n, facts = facts) == n
-    } else {
-      let mut i = Array::length(facts.scope_names) - 1
-      let mut found = false
-      while !found && i >= facts.typed_formals {
-        found = Array::get(facts.scope_names, at = i) == n
-        i = i - 1
+    let id = content_resolve(name = n, facts = facts)
+    if id != n {
+      match MutMap::get(facts.alias_types, k = id) {
+        Some(t) => scope = env_bind(env = scope, name = n, ty = t),
+        None => return None
       }
-      unshadowed = unshadowed && !found
     }
   }
-  unshadowed && literal_item_is_scalar(item = value, env = env)
+  Some(scope)
 }
 
 fn content_value_names_into(e: Expr, out: Array[String]) -> Unit {
@@ -1149,13 +1272,14 @@ fn content_result_has_outer(tparams: Array[String], params: Array[(String, Optio
     scope = env_bind(env = scope, name = Array::get(names, at = i), ty = ty)
     i = i + 1
   }
-  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = true, typed_formals = Array::length(names))
-  if Array::length(facts.store_target_alias) == 0 {
-    return false
-  }
-  let result = content_value_fact(value = body, env = scope, facts = facts)
+  let facts = content_facts_new(names = names, calls = calls, track_results = true, type_aliases = true)
   let result_index = Array::length(facts.locals)
   let id = content_push(name = "#result", facts = facts)
+  Array::push(facts.return_ids, value = id)
+  let result = content_walk_result(expr = body, facts = facts, env = scope)
+  if result.0 {
+    return true
+  }
   content_bind(id = id, value = result, facts = facts)
   let held = content_held_regions(facts = facts, env = scope, s = SubstEmpty)
   Array::length(Array::get(held, at = result_index)) > 0
@@ -1180,7 +1304,7 @@ fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, e
     retention_param_base(param.0)
   }
   let scope = content_summary_scope(names = names, env = env)
-  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = false, typed_formals = 0)
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = false, type_aliases = false)
   if Array::length(facts.store_target_alias) == 0 {
     return []
   }
