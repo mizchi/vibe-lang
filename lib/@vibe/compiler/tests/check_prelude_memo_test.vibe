@@ -1,0 +1,100 @@
+//# #2507: `vibe check` keeps the effect-lowering prelude's clean verdict
+//# under the linked-output memo's input identity, and replays it only for
+//# that identity. A refusal is never stored.
+//#
+//# Rows run `check_file_fs_mode`, the FS lane `vibe check` takes. The
+//# refusing program is #4065's direct call through a binder, which typechecks
+//# and is refused by the prelude: `vibe check` reports it only because the
+//# prelude runs.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  check_file_fs_mode, linked_output_memo_identity, linked_output_memo_lookup, linked_output_memo_store
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
+//# Helpers
+
+fn cpm_bytes(_ s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, value = String::byte_at(s, at = i))
+    i = i + 1
+  }
+  out
+}
+
+let cpm_leaf_path: String = "/tmp/vibe_check_prelude_memo_leaf.vibe"
+
+let cpm_main_path: String = "/tmp/vibe_check_prelude_memo_main.vibe"
+
+fn cpm_leaf(_ k: Int) -> String {
+  "export fn leaf_value(x: Int) -> Int {\n  x + \{k}\n}\n"
+}
+
+/// `refused` swaps in the shape the prelude refuses: a handle-bound closure
+/// read out of an array and called directly inside its `handle`.
+fn cpm_main(refused: Bool) -> String {
+  let body = if refused {
+    "  let mut total = 0\n  handle {\n    let g = () -> perform Ask::Get() + 1\n    for x in [g] {\n      total = total + x()\n    }\n    ()\n  } with {\n    Ask::Get() => resume(leaf_value(x = 5))\n  }\n  total\n"
+  } else {
+    "  leaf_value(x = 41)\n"
+  }
+  "import ./vibe_check_prelude_memo_leaf.vibe {\n  leaf_value\n}\n\neffect Ask {\n  Get() -> Int\n}\n\nfn main() -> Int {\n" + body + "}\n"
+}
+
+fn cpm_write(k: Int, refused: Bool) -> Unit with Fs {
+  Fs::write_bytes(cpm_leaf_path, bytes = cpm_bytes(cpm_leaf(k)))
+  Fs::write_bytes(cpm_main_path, bytes = cpm_bytes(cpm_main(refused = refused)))
+}
+
+fn cpm_identity() -> String with Env + Exception + Fs {
+  linked_output_memo_identity(lane = "check-prelude", entry_path = cpm_main_path, entry_name = "main", grants = [
+  ], source_groups = collect_source_groups_fs(cpm_main_path, checked_error_row = false), exports_stripped = false)
+}
+
+fn cpm_stored() -> Bool with Env + Exception + Fs {
+  linked_output_memo_lookup(lane = "check-prelude", entry_path = cpm_main_path, entry_name = "main", identity = cpm_identity(), checked_error_row = false) is Some(_)
+}
+
+/// `clean`, or the refusal `vibe check` would report.
+fn cpm_check() -> String with Env + Fs {
+  handle {
+    let _ = check_file_fs_mode(cpm_main_path, checked_error_row = false)
+    "clean"
+  } with { Exception::Throw(msg) => msg }
+}
+
+//# Tests
+
+test "#2507: a clean check stores its verdict under the program's identity" {
+  cpm_write(k = 1, refused = false)
+  inspect(cpm_check(), content = "clean")
+  inspect(cpm_stored(), content = "true")
+  // An unchanged re-check replays it and is still clean.
+  inspect(cpm_check(), content = "clean")
+}
+
+test "#2507: a refusal is reported and never stored" {
+  cpm_write(k = 2, refused = true)
+  inspect(cpm_check() != "clean", content = "true")
+  inspect(cpm_stored(), content = "false")
+  // Checking it again runs the prelude again and refuses again.
+  inspect(cpm_check() != "clean", content = "true")
+}
+
+test "#2507: a stored verdict answers only for its own identity" {
+  // A clean verdict planted for the refusing program's exact identity is
+  // replayed -- the prelude does not run, which is what the memo is for...
+  cpm_write(k = 3, refused = true)
+  linked_output_memo_store(lane = "check-prelude", entry_path = cpm_main_path, entry_name = "main", identity = cpm_identity(), wasm = Bytes::new(), checked_error_row = false)
+  inspect(cpm_check(), content = "clean")
+  // ...and an edit to a dependency is a new identity, so the prelude runs
+  // and the refusal comes back.
+  cpm_write(k = 4, refused = true)
+  inspect(cpm_stored(), content = "false")
+  inspect(cpm_check() != "clean", content = "true")
+}

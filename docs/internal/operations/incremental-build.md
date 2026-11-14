@@ -2608,6 +2608,17 @@ measure the back end's own reuse; the KPI turns the memo on for its `cold` and
 reading the never-set `VIBE_PROFILE_MEMORY_MARK:linked_output_memo_hit` (the
 node runner echoes it under `VIBE_DEBUG_ENV=1`).
 
+`vibe check` keeps a verdict under the same identity, in a slot of its own
+(lane `check-prelude`), and the same switch governs it (#2507). After the module
+walk, the check merges the whole program and runs the effect-lowering prelude a
+build runs, to report a handle or suspend shape codegen would reject. That pass
+is whole-program, so module reuse did not shorten it. Measured on the CLI
+closure, it and its merge were about 92 % of an unchanged re-check, and the
+module walk was 3.8 %. Only a clean verdict is stored; a refusal is reported and
+never kept. An unchanged re-check of the CLI closure went from 9.6 s to 1.7 s.
+An edit is a new identity and runs the prelude again: it is decided over the
+merged program, not per module.
+
 ### What the run refuses to report (#2836 §2)
 
 Both names in "warm ÷ cold" have to be earned, and until #2836 neither was
