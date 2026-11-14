@@ -452,50 +452,45 @@ fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, depth: Int
 /// `cl_own_return_stmts`' mixed set, whose owning-return marker retains each
 /// result path, and callers release it. Declining only ever costs a retain.
 fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> Bool {
-  let tails: Array[Expr] = [top]
-  let mut found = false
-  let mut i = 0
-  while !found && i < Array::length(tails) {
-    match Array::get(tails, at = i) {
-      ELet(_, _, b, _) => Array::push(tails, value = b),
-      ELetMut(_, _, b, _) => Array::push(tails, value = b),
-      ELetRec(_, _, b) => Array::push(tails, value = b),
-      ESeq(_, b) => Array::push(tails, value = b),
-      EAssign(_, _, b, _) => Array::push(tails, value = b),
-      EAssignOp(_, _, _, b, _) => Array::push(tails, value = b),
-      EIf(_, t, el) => {
-        Array::push(tails, value = t)
-        Array::push(tails, value = el)
-      },
-      EMatch(_, arms) => for arm in arms {
-        Array::push(tails, value = arm.1)
-      },
-      // A bare name declines only when it provably reaches an owned binding:
-      // the owning-return marker retains a name only when codegen knows it
-      // as borrowed, so a flow-dependent one (`let mut out = Array::get(a,
-      // 0)`) keeps the borrow-returning verdict. A field read or a
-      // borrow-returning call declines on an unknown root too, because the
-      // marker retains it whatever it reads into.
-      EIdent(n, _) => if bret_resolve_root(known = known, body = body, name = n, depth = 0) == bk_owned {
-        found = true
-      } else {
-        ()
-      },
-      leaf => if bret_is_view_expr(known = known, e = leaf) {
-        let roots: Array[String] = []
-        bret_view_roots(known = known, e = leaf, out = roots)
-        for r in roots {
-          if !found && bret_resolve_root(known = known, body = body, name = r, depth = 0) != bk_view {
-            found = true
-          }
-        }
-      } else {
-        ()
+  match top {
+    ELet(_, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
+    ELetMut(_, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
+    ELetRec(_, _, b) => bret_tail_reads_owned_local(known = known, body = body, top = b),
+    ESeq(_, b) => bret_tail_reads_owned_local(known = known, body = body, top = b),
+    EAssign(_, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
+    EAssignOp(_, _, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
+    EIf(_, t, el) => bret_tail_reads_owned_local(known = known, body = body, top = t) || bret_tail_reads_owned_local(known = known, body = body, top = el),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, at = i)
+        found = bret_tail_reads_owned_local(known = known, body = body, top = arm_body)
+        i = i + 1
       }
+      found
+    },
+    // A bare name declines only when it provably reaches an owned binding:
+    // the owning-return marker retains a name only when codegen knows it as
+    // borrowed, so a flow-dependent one (`let mut out = Array::get(a, 0)`)
+    // keeps the borrow-returning verdict. A field read or a borrow-returning
+    // call declines on an unknown root too, because the marker retains it
+    // whatever it reads into.
+    EIdent(n, _) => bret_resolve_root(known = known, body = body, name = n, depth = 0) == bk_owned,
+    _ => if bret_is_view_expr(known = known, e = top) {
+      let roots: Array[String] = []
+      bret_view_roots(known = known, e = top, out = roots)
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(roots) {
+        found = bret_resolve_root(known = known, body = body, name = Array::get(roots, at = i), depth = 0) != bk_view
+        i = i + 1
+      }
+      found
+    } else {
+      false
     }
-    i = i + 1
   }
-  found
 }
 
 /// The two Map iterator accessors have source-ownership guards in both linear
