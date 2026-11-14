@@ -89,17 +89,25 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       if first != "" {
         first
       } else {
-        // A store inside one branch (`Array::push(xs, value = g)`) may not
-        // have run in the other, nor after the `if`: each branch's bindings
-        // end with it.
+        // A store inside one branch (`Array::push(xs, value = g)`) has not run
+        // in the other, so each branch is walked without the other's stores;
+        // after the `if` either may have run, so both are kept.
         let mark = Array::length(edp_escape_tainted)
         let in_then = edp_needing_escape(e = t, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        let then_stores: Array[(String, String, Option[Expr])] = []
+        let mut k = mark
+        while k < Array::length(edp_escape_tainted) {
+          Array::push(then_stores, value = Array::get(edp_escape_tainted, at = k))
+          k = k + 1
+        }
         edp_escape_untaint(mark)
         if in_then != "" {
           in_then
         } else {
           let in_else = edp_needing_escape(e = el, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
-          edp_escape_untaint(mark)
+          for entry in then_stores {
+            Array::push(edp_escape_tainted, value = entry)
+          }
           in_else
         }
       }
