@@ -1,0 +1,54 @@
+// RC guard (#4153): one result path reads into a local, the other hands back
+// a parameter the caller keeps using.
+//
+// The local path declines the borrow-returning verdict, so the whole function
+// goes through the owning-return marker, and the parameter path's bare name is
+// one the marker does not retain. Callers then release the result, so this
+// checks that the parameter is still released exactly once: the caller reads
+// `p` after the call, and an extra release would free what it reads.
+//
+// Before #4153 the local path was the use-after-free: `main` answered 5000
+// on rc and shadow, not 0. The parameter path still leaks 44 B a call, so the
+// gate checks only the answer here (`rc_owned_local_tail_view_test.vibe`
+// carries the heap bound for the other shapes).
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+fn mixed_param_tail(_ p: Array[Int], _ i: Int) -> Array[Int] {
+  let v = [mka(i), mka(i + 2)]
+  if i % 2 == 0 {
+    Array::get(v, at = 1)
+  } else {
+    p
+  }
+}
+
+fn probe(_ i: Int) -> Int {
+  let p = mka(i + 4)
+  let x = mixed_param_tail(p, i)
+  let fresh = [mka(i + 7), mka(i + 9), mka(i + 11)]
+  // i even: x = mka(i + 2); i odd: x = p = mka(i + 4).
+  let k = if i % 2 == 0 {
+    0
+  } else {
+    2
+  }
+  (Array::get(x, at = 0) - i - 2 - k) + (Array::get(p, at = 0) - i - 4) + Array::length(fresh) - 3
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 2000 {
+    acc = acc + probe(i)
+    i = i + 1
+  }
+  acc
+}
+
+test "a local path and a parameter path release the parameter once (#4153)" {
+  inspect(probe(4), content = "0")
+  inspect(probe(5), content = "0")
+  inspect(main(), content = "0")
+}
