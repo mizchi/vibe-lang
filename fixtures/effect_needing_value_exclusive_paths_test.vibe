@@ -131,3 +131,39 @@ test "a conditional argument's branches are read apart" {
 test "a call before a store in an argument block reads the earlier state" {
   inspect(earlier_call_in_argument(), content = "3")
 }
+
+test "a store into a shadowing array leaves the outer argument result plain" {
+  let answer = handle {
+    let g = () -> perform Ask::Get() + 1
+    apply(f = {
+      let xs: Array[() -> Int] = [() -> 7]
+      if true {
+        let xs: Array[() -> Int] = []
+        Array::push(xs, value = g)
+      } else {
+        ()
+      }
+      Array::get(xs, at = 0)
+    })
+  } with { Ask::Get() => resume(5) }
+  inspect(answer, content = "107")
+}
+
+fn conditional_binding(flag: Bool) -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    let f = if flag {
+      Array::push(xs, value = g)
+      () -> 7
+    } else {
+      Array::get(xs, at = 0)
+    }
+    apply(f = f)
+  } with { Ask::Get() => resume(5) }
+}
+
+test "a conditional initializer reads either branch before its stores are joined" {
+  inspect(conditional_binding(flag = false), content = "142")
+  inspect(conditional_binding(flag = true), content = "107")
+}

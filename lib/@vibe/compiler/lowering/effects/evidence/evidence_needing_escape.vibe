@@ -168,22 +168,28 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       b
     ], needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     ELet(n, v, b, _) => {
+      let before = edp_escape_snapshot()
+      let root = edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_restore(before)
       let first = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
       if first != "" {
         first
       } else {
-        let mark = edp_escape_taint(name = n, root = edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs), init = Some(v))
+        let mark = edp_escape_taint(name = n, root = root, init = Some(v))
         let hit = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
         edp_escape_untaint(mark)
         hit
       }
     },
     ELetMut(n, v, b, _) => {
+      let before = edp_escape_snapshot()
+      let root = edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_restore(before)
       let first = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
       if first != "" {
         first
       } else {
-        let mark = edp_escape_taint(name = n, root = edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs), init = Some(v))
+        let mark = edp_escape_taint(name = n, root = root, init = Some(v))
         let hit = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
         edp_escape_untaint(mark)
         hit
@@ -194,14 +200,15 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
     EBinOp(_, l, r, _) => edp_needing_escape_or(a = edp_needing_escape(e = l, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = r, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     EUnaryOp(_, x) => edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
     EAssign(n, v, c, _) => {
+      let before = edp_escape_snapshot()
+      let root = edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_restore(before)
       let first = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
       if first != "" {
         first
       } else {
         // The binding holds the assigned value from here on.
-        let mark = edp_escape_taint(name = n, root = edp_data_root_items(items = [
-          v
-        ], needing = needing, stmts = stmts, fn_defs = fn_defs), init = Some(v))
+        let mark = edp_escape_taint(name = n, root = root, init = Some(v))
         let hit = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
         edp_escape_untaint(mark)
         hit
@@ -999,19 +1006,122 @@ fn edp_needing_escape_handle(body: Expr, arms: Array[(Pat, Expr)], needing: Arra
   hit
 }
 
-/// Apply every store an expression makes (`Array::push(xs, value = g)`),
-/// wherever it sits inside -- a sequence, a branch, a loop, a match arm --
-/// without checking anything. A branch's or a loop's store counts as made:
-/// the reader takes the conservative side.
+fn edp_apply_stores_binding(name: String, init: Expr, body: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+  let before = edp_escape_snapshot()
+  let root = edp_data_root_items(items = [init], needing = needing, stmts = stmts, fn_defs = fn_defs)
+  edp_escape_restore(before)
+  edp_apply_stores(e = init, needing = needing, stmts = stmts, fn_defs = fn_defs)
+  let mark = edp_escape_taint(name = name, root = root, init = Some(init))
+  edp_apply_stores(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs)
+  edp_escape_untaint(mark)
+}
+
+/// Apply stores made before an expression's result, preserving its lexical
+/// bindings. A store through a local alias can still update an outer array.
 fn edp_apply_stores(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
   match e {
-    ECall(EIdent(cn, _), args, _, _) => edp_escape_store_taint(callee_nm = cn, args = args, needing = needing, stmts = stmts, fn_defs = fn_defs),
-    _ => ()
+    ELet(n, v, b, _) => edp_apply_stores_binding(name = n, init = v, body = b, needing = needing, stmts = stmts, fn_defs = fn_defs),
+    ELetMut(n, v, b, _) => edp_apply_stores_binding(name = n, init = v, body = b, needing = needing, stmts = stmts, fn_defs = fn_defs),
+    EAssign(n, v, b, _) => edp_apply_stores_binding(name = n, init = v, body = b, needing = needing, stmts = stmts, fn_defs = fn_defs),
+    ELetRec(n, v, b) => {
+      let mark = edp_escape_taint(name = n, root = "", init = None)
+      edp_apply_stores(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_apply_stores(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_untaint(mark)
+    },
+    EIf(c, t, el) => {
+      edp_apply_stores(e = c, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let before = edp_escape_snapshot()
+      edp_apply_stores(e = t, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let after_then = edp_escape_snapshot()
+      edp_escape_restore(before)
+      edp_apply_stores(e = el, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_join(after_then)
+    },
+    EMatch(scrutinee, arms) => {
+      edp_apply_stores(e = scrutinee, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let before = edp_escape_snapshot()
+      let outs: Array[Array[(String, String, Option[Expr])]] = []
+      for arm in arms {
+        let (pat, body) = arm
+        edp_escape_restore(before)
+        let mark = Array::length(edp_escape_tainted)
+        edp_pat_taint_flush(p = pat, e = scrutinee, needing = needing, stmts = stmts, fn_defs = fn_defs)
+        edp_apply_stores(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs)
+        edp_escape_untaint(mark)
+        Array::push(outs, value = edp_escape_snapshot())
+      }
+      edp_escape_join_all(before = before, outs = outs)
+    },
+    EForIn(n, index, iter, body) => {
+      edp_apply_stores(e = iter, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let root = edp_data_root_items(items = [iter], needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let mark = edp_escape_taint(name = n, root = root, init = None)
+      match index {
+        Some(i) => {
+          let _ = edp_escape_taint(name = i, root = "", init = None)
+          ()
+        },
+        None => ()
+      }
+      edp_apply_stores(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_untaint(mark)
+    },
+    ELoop(pairs, body) => {
+      let mark = Array::length(edp_escape_tainted)
+      let roots = for pair in pairs {
+        let (_, init) = pair
+        edp_apply_stores(e = init, needing = needing, stmts = stmts, fn_defs = fn_defs)
+        edp_data_root_items(items = [init], needing = needing, stmts = stmts, fn_defs = fn_defs)
+      }
+      let mut i = 0
+      for pair in pairs {
+        let (name, _) = pair
+        let _ = edp_escape_taint(name = name, root = Array::get(roots, at = i), init = Some(pair.1))
+        i = i + 1
+      }
+      edp_apply_stores(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_untaint(mark)
+    },
+    EHandle(body, arms) => {
+      edp_apply_stores(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      for item in arms {
+        let (pat, arm) = item
+        let mark = Array::length(edp_escape_tainted)
+        let names: Array[String] = []
+        edp_pat_binds(p = pat, out = names)
+        for name in names {
+          let _ = edp_escape_taint(name = name, root = "", init = None)
+          ()
+        }
+        edp_apply_stores(e = arm, needing = needing, stmts = stmts, fn_defs = fn_defs)
+        edp_escape_untaint(mark)
+      }
+      ()
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mark = Array::length(edp_escape_tainted)
+      for param in params {
+        let (name, _) = param
+        let _ = edp_escape_taint(name = name, root = "", init = None)
+        ()
+      }
+      edp_apply_stores(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_untaint(mark)
+    },
+    ECall(EIdent(cn, _), args, _, _) => {
+      for arg in args {
+        edp_apply_stores(e = arg, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      }
+      edp_escape_store_taint(callee_nm = cn, args = args, needing = needing, stmts = stmts, fn_defs = fn_defs)
+    },
+    _ => {
+      for child in expr_children(e) {
+        edp_apply_stores(e = child, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      }
+      ()
+    }
   }
-  for child in expr_children(e) {
-    edp_apply_stores(e = child, needing = needing, stmts = stmts, fn_defs = fn_defs)
-  }
-  ()
 }
 
 export fn edp_needing_escape_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
