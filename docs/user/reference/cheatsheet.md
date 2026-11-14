@@ -3276,9 +3276,13 @@ An `Int` / `Char` / `Bool` key is compared as an exact value, on the default
 backend and on wasm-gc alike. On the default backend a map past 8 entries
 finds a scalar key through a hash index, as it does a String key. Two
 places do not take one yet, and each says so at build time: a linked build
-with no type check of its text; and a generic function whose type parameter is a map's key, called at
-that key (its one lowered body compares keys as Strings) -- write the function
-for `Map[Int, V]`, or key the map by `String`. Such a function is also refused
+with no type check of its text; and a generic function whose type parameter is
+a map's key and that WRITES through it (`Map::set`, any `MapBuilder` call),
+called at that key -- write the function for `Map[Int, V]`, or key the map by
+`String`. A generic function that only READS through that parameter (`get`,
+`has_key`, `delete`, `m[k]`) takes every key above: its one lowered body reads
+the map's own key class at run time (#4121), and an empty `Map::new()` answers
+as the concrete call does. A function keyed by its type parameter is refused
 when it is exported or passed as a value, where its calls cannot be checked;
 call it directly, inside its own module. A key the checker only inferred
 (`Map::set(Map::new(), 1.5, v)`) is refused like a written one.

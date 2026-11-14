@@ -641,6 +641,38 @@ done
 rm -rf "$mgdir"
 echo "[compiler-gate] Map::get missing-key trap ok (linear and gc)"
 
+# #4121: a GENERIC `Map::get` on an empty `Map::new()` misses the way the
+# concrete call does. The empty map carries no key-class mark, so the read
+# dispatches to the String path; on both lanes it must print `before`, trap
+# with the concrete miss message, and never print `after`.
+echo "[compiler-gate] a generic Map::get on an empty map traps like the concrete one (#4121)"
+gate_workdir megdir "_build/_gate_map_empty_generic_get"
+for meg_backend in linear gc; do
+  meg_wasm="$megdir/miss_$meg_backend.wasm"
+  if [ "$meg_backend" = gc ]; then
+    gate_fs_compile_gc fixtures/map_formal_key_empty_get_trap.vibe "$meg_wasm" main
+  else
+    gate_fs_compile fixtures/map_formal_key_empty_get_trap.vibe "$meg_wasm" main
+  fi
+  gate_require_artifact "$meg_wasm" "fixtures/map_formal_key_empty_get_trap.vibe did not compile on $meg_backend (#4121)"
+  meg_status=0
+  meg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$meg_wasm" 2>&1)" || meg_status=$?
+  if ! printf '%s\n' "$meg_out" | grep -qF 'before: false'; then
+    echo "[compiler-gate] FAIL: the empty map's has_key did not answer false on $meg_backend (#4121): $meg_out" >&2
+    exit 1
+  fi
+  if [ "$meg_status" -eq 0 ] || printf '%s\n' "$meg_out" | grep -qF 'after:'; then
+    echo "[compiler-gate] FAIL: a generic get on an empty map answered instead of trapping on $meg_backend (#4121): $meg_out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$meg_out" | grep -qF 'Map::get: key not found'; then
+    echo "[compiler-gate] FAIL: a generic get on an empty map trapped without the miss message on $meg_backend (#4121): $meg_out" >&2
+    exit 1
+  fi
+done
+rm -rf "$megdir"
+echo "[compiler-gate] generic empty-map get trap ok (linear and gc)"
+
 # #3126: an `Int` `/` or `%` whose divisor is zero names the operation and the
 # operator's `path:line:col` before it traps, on both lanes. It used to trap
 # with the engine's bare `divide by zero` and no position at all -- the linear
