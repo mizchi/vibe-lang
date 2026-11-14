@@ -423,7 +423,7 @@ fn edp_fn_value_used_in(expr: Expr, fname: String, ctors: Array[String]) -> Bool
     },
     EMatch(scrutinee, arms) => edp_fn_value_used_in(expr = scrutinee, fname = fname, ctors = ctors) || edp_fn_value_used_in_arms(arms = arms, fname = fname, ctors = ctors),
     EHandle(body, arms) => edp_fn_value_used_in(expr = body, fname = fname, ctors = ctors) || edp_fn_value_used_in_arms(arms = arms, fname = fname, ctors = ctors),
-    EForIn(name, index_name, iter, body) => edp_fn_value_used_in(expr = iter, fname = fname, ctors = ctors) || (name != fname && index_name != Some(fname) && edp_fn_value_used_in(expr = body, fname = fname, ctors = edp_usage_ctor_for(ctors = ctors, name = name, index_name = index_name))),
+    EForIn(name, index_name, iter, body, _) => edp_fn_value_used_in(expr = iter, fname = fname, ctors = ctors) || (name != fname && index_name != Some(fname) && edp_fn_value_used_in(expr = body, fname = fname, ctors = edp_usage_ctor_for(ctors = ctors, name = name, index_name = index_name))),
     ELoop(pairs, body) => {
       let mut found = false
       let mut shadowed = false
@@ -681,7 +681,7 @@ fn edp_sweep_row_lits_expr(e: Expr, ename: String, dict_pname: String, call_safe
       edp_sweep_row_lits_expr(e = a, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list)
     }, off, callee_resolution),
     EWhile(c, b) => EWhile(edp_sweep_row_lits_expr(e = c, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list), edp_sweep_row_lits_expr(e = b, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_sweep_row_lits_expr(e = it, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list), edp_sweep_row_lits_expr(e = b, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list)),
+    EForIn(n, idx, it, b, for_off) => EForIn(n, idx, edp_sweep_row_lits_expr(e = it, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list), edp_sweep_row_lits_expr(e = b, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list), for_off),
     ELoop(pairs, b) => ELoop(for pr in pairs {
       let (n, v) = pr
       (n, edp_sweep_row_lits_expr(e = v, ename = ename, dict_pname = dict_pname, call_safe = call_safe, es_names = es_names, es_members_list = es_members_list))
@@ -813,7 +813,7 @@ fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, di
       (p, edp_migrate_closure_binding_expr(expr = ex, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list))
     }),
     EWhile(c, b) => EWhile(edp_migrate_closure_binding_expr(expr = c, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list), edp_migrate_closure_binding_expr(expr = b, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_migrate_closure_binding_expr(expr = it, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list), edp_migrate_closure_binding_expr(expr = b, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list)),
+    EForIn(n, idx, it, b, for_off) => EForIn(n, idx, edp_migrate_closure_binding_expr(expr = it, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list), edp_migrate_closure_binding_expr(expr = b, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list), for_off),
     ELoop(pairs, b) => ELoop(for p in pairs {
       let (n, v) = p
       (n, edp_migrate_closure_binding_expr(expr = v, xname = xname, ename = ename, dict_pname = dict_pname, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list))
@@ -1300,7 +1300,7 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
       (p, edp_rewrite_needing_body(expr = ex, ename = ename, dict_pname = dict_pname, needing = needing))
     }),
     EWhile(c, b) => EWhile(edp_rewrite_needing_body(expr = c, ename = ename, dict_pname = dict_pname, needing = needing), edp_rewrite_needing_body(expr = b, ename = ename, dict_pname = dict_pname, needing = needing)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_needing_body(expr = it, ename = ename, dict_pname = dict_pname, needing = needing), edp_rewrite_needing_body(expr = b, ename = ename, dict_pname = dict_pname, needing = needing)),
+    EForIn(n, idx, it, b, for_off) => EForIn(n, idx, edp_rewrite_needing_body(expr = it, ename = ename, dict_pname = dict_pname, needing = needing), edp_rewrite_needing_body(expr = b, ename = ename, dict_pname = dict_pname, needing = needing), for_off),
     ELoop(pairs, b) => ELoop(for p in pairs {
       let (n, v) = p
       (n, edp_rewrite_needing_body(expr = v, ename = ename, dict_pname = dict_pname, needing = needing))
@@ -1634,7 +1634,7 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
       (p, edp_rewrite_handle_body(expr = ex, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing))
     }),
     EWhile(c, b) => EWhile(edp_rewrite_handle_body(expr = c, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), edp_rewrite_handle_body(expr = b, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_handle_body(expr = it, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), edp_rewrite_handle_body(expr = b, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing)),
+    EForIn(n, idx, it, b, for_off) => EForIn(n, idx, edp_rewrite_handle_body(expr = it, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), edp_rewrite_handle_body(expr = b, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), for_off),
     ELoop(pairs, b) => ELoop(for p in pairs {
       let (n, v) = p
       (n, edp_rewrite_handle_body(expr = v, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing))
@@ -1839,7 +1839,7 @@ fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -
       (p, edp_find_rewrite_handles(expr = ex, ename = ename, needing = needing))
     }),
     EWhile(c, b) => EWhile(edp_find_rewrite_handles(expr = c, ename = ename, needing = needing), edp_find_rewrite_handles(expr = b, ename = ename, needing = needing)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_find_rewrite_handles(expr = it, ename = ename, needing = needing), edp_find_rewrite_handles(expr = b, ename = ename, needing = needing)),
+    EForIn(n, idx, it, b, for_off) => EForIn(n, idx, edp_find_rewrite_handles(expr = it, ename = ename, needing = needing), edp_find_rewrite_handles(expr = b, ename = ename, needing = needing), for_off),
     ECall(callee, args, off, callee_resolution) => ECall(edp_find_rewrite_handles(expr = callee, ename = ename, needing = needing), for a in args {
       edp_find_rewrite_handles(expr = a, ename = ename, needing = needing)
     }, off, callee_resolution),

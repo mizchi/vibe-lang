@@ -339,9 +339,9 @@ export fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: St
       EFn(tps, tbs, params, ret, eff, lc_retarget_call(e = b, active = active && !shadowed, from_name = from_name, to_name = to_name, wrap = wrap))
     },
     EWhile(c, b) => EWhile(lc_retarget_call(e = c, active = active, from_name = from_name, to_name = to_name, wrap = wrap), lc_retarget_call(e = b, active = active, from_name = from_name, to_name = to_name, wrap = wrap)),
-    EForIn(x, ix, it, b) => {
+    EForIn(x, ix, it, b, for_off) => {
       let inner = active && x != from_name
-      EForIn(x, ix, lc_retarget_call(e = it, active = active, from_name = from_name, to_name = to_name, wrap = wrap), lc_retarget_call(e = b, active = inner, from_name = from_name, to_name = to_name, wrap = wrap))
+      EForIn(x, ix, lc_retarget_call(e = it, active = active, from_name = from_name, to_name = to_name, wrap = wrap), lc_retarget_call(e = b, active = inner, from_name = from_name, to_name = to_name, wrap = wrap), for_off)
     },
     ELoop(pairs, b) => {
       let out: Array[(String, Expr)] = array_empty()
@@ -501,7 +501,7 @@ export fn lc_expr_has_async_handle(_ e: Expr) -> Bool {
     },
     EFn(_, _, _, _, _, b) => lc_expr_has_async_handle(b),
     EWhile(c, b) => lc_expr_has_async_handle(c) || lc_expr_has_async_handle(b),
-    EForIn(_, _, it, b) => lc_expr_has_async_handle(it) || lc_expr_has_async_handle(b),
+    EForIn(_, _, it, b, _) => lc_expr_has_async_handle(it) || lc_expr_has_async_handle(b),
     ELoop(pairs, b) => {
       let mut hit = lc_expr_has_async_handle(b)
       let mut i = 0
@@ -652,7 +652,7 @@ export fn lc_mark_calls(e: Expr, targets: Array[String], hits: Array[Bool], ment
       lc_mark_calls(e = c, targets = targets, hits = hits, mentions = mentions)
       lc_mark_calls(e = b, targets = targets, hits = hits, mentions = mentions)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(_, _, it, b, _) => {
       lc_mark_calls(e = it, targets = targets, hits = hits, mentions = mentions)
       lc_mark_calls(e = b, targets = targets, hits = hits, mentions = mentions)
     },
@@ -838,7 +838,7 @@ fn lc_expr_collect_hf_names(e: Expr, active: Bool, target: String, out: Array[St
       lc_expr_collect_hf_names(e = c, active = active, target = target, out = out)
       lc_expr_collect_hf_names(e = b, active = active, target = target, out = out)
     },
-    EForIn(x, _, it, b) => {
+    EForIn(x, _, it, b, _) => {
       lc_expr_collect_hf_names(e = it, active = active, target = target, out = out)
       lc_expr_collect_hf_names(e = b, active = active && x != target, target = target, out = out)
     },
@@ -1096,7 +1096,7 @@ fn lc_expr_collect_hs_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
       lc_expr_collect_hs_names(e = c, active = active, out = out)
       lc_expr_collect_hs_names(e = b, active = active, out = out)
     },
-    EForIn(x, _, it, b) => {
+    EForIn(x, _, it, b, _) => {
       lc_expr_collect_hs_names(e = it, active = active, out = out)
       lc_expr_collect_hs_names(e = b, active = active && x != "host_stream_named", out = out)
     },
@@ -1386,7 +1386,7 @@ fn lc_expr_mentions_name(e: Expr, target: String) -> Bool {
     EMatch(s, arms) => lc_expr_mentions_name(e = s, target = target) || lc_arms_mention_name(arms = arms, target = target),
     EHandle(b, arms) => lc_expr_mentions_name(e = b, target = target) || lc_arms_mention_name(arms = arms, target = target),
     EWhile(c, b) => lc_expr_mentions_name(e = c, target = target) || lc_expr_mentions_name(e = b, target = target),
-    EForIn(n, ix, it, b) => n == target || lc_option_name_equals(opt = ix, target = target) || lc_expr_mentions_name(e = it, target = target) || lc_expr_mentions_name(e = b, target = target),
+    EForIn(n, ix, it, b, _) => n == target || lc_option_name_equals(opt = ix, target = target) || lc_expr_mentions_name(e = it, target = target) || lc_expr_mentions_name(e = b, target = target),
     ELoop(pairs, b) => lc_pairs_mention_name(pairs = pairs, target = target) || lc_expr_mentions_name(e = b, target = target),
     EAssign(n, v, b, _) => n == target || lc_expr_mentions_name(e = v, target = target) || lc_expr_mentions_name(e = b, target = target),
     EAssignOp(n, _, v, b, _) => n == target || lc_expr_mentions_name(e = v, target = target) || lc_expr_mentions_name(e = b, target = target),
@@ -1707,7 +1707,7 @@ export fn lc_rename_sleep_scoped(_ e: Expr) -> Expr {
       EMatch(lc_rename_sleep_scoped(s), out)
     },
     EWhile(c, b) => EWhile(lc_rename_sleep_scoped(c), lc_rename_sleep_scoped(b)),
-    EForIn(x, ix, it, b) => EForIn(x, ix, lc_rename_sleep_scoped(it), lc_rename_sleep_scoped(b)),
+    EForIn(x, ix, it, b, for_off) => EForIn(x, ix, lc_rename_sleep_scoped(it), lc_rename_sleep_scoped(b), for_off),
     ELoop(pairs, b) => {
       let out: Array[(String, Expr)] = array_empty()
       let mut i = 0
@@ -1834,7 +1834,7 @@ export fn lc_expr_has_spawn_suspend(_ e: Expr) -> Bool {
     EAssign(_, v, b, _) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
     EAssignOp(_, _, v, b, _) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
     EWhile(c, b) => lc_expr_has_spawn_suspend(c) || lc_expr_has_spawn_suspend(b),
-    EForIn(_, _, it, b) => lc_expr_has_spawn_suspend(it) || lc_expr_has_spawn_suspend(b),
+    EForIn(_, _, it, b, _) => lc_expr_has_spawn_suspend(it) || lc_expr_has_spawn_suspend(b),
     ELoop(pairs, b) => lc_pairs_have_spawn_suspend(pairs) || lc_expr_has_spawn_suspend(b),
     EMatch(sc, arms) => lc_expr_has_spawn_suspend(sc) || lc_arms_have_spawn_suspend(arms),
     EHandle(b, arms) => lc_expr_has_spawn_suspend(b) || lc_arms_have_spawn_suspend(arms),

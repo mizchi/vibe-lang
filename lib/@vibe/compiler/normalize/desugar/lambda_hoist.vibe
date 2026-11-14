@@ -117,7 +117,7 @@ fn dlh_has_perform(_ expr: Expr) -> Bool {
     EAssignOp(_, _, v, c, _) => dlh_has_perform(v) || dlh_has_perform(c),
     ESeq(a, b) => dlh_has_perform(a) || dlh_has_perform(b),
     EWhile(c, b) => dlh_has_perform(c) || dlh_has_perform(b),
-    EForIn(_, _, it, b) => dlh_has_perform(it) || dlh_has_perform(b),
+    EForIn(_, _, it, b, _) => dlh_has_perform(it) || dlh_has_perform(b),
     EDot(o, _, _, _) => dlh_has_perform(o),
     ELabeledArg(_, _, e) => dlh_has_perform(e),
     EReturn(e) => dlh_has_perform(e),
@@ -233,7 +233,7 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
       dlh_collect_performed_effect_names(expr = c, out = out)
       dlh_collect_performed_effect_names(expr = b, out = out)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(_, _, it, b, _) => {
       dlh_collect_performed_effect_names(expr = it, out = out)
       dlh_collect_performed_effect_names(expr = b, out = out)
     },
@@ -392,7 +392,7 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
       dlh_scan_free(expr = c, bound = bound, bad = bad)
       dlh_scan_free(expr = b, bound = bound, bad = bad)
     },
-    EForIn(name, idxn, it, b) => {
+    EForIn(name, idxn, it, b, _) => {
       dlh_scan_free(expr = it, bound = bound, bad = bad)
       let mut b2 = dlh_with(arr = bound, name = name)
       b2 = match idxn {
@@ -522,7 +522,7 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
     EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_subst(expr = v, from = from, to = to), dlh_subst(expr = c, from = from, to = to), target_off),
     ESeq(a, b) => ESeq(dlh_subst(expr = a, from = from, to = to), dlh_subst(expr = b, from = from, to = to)),
     EWhile(c, b) => EWhile(dlh_subst(expr = c, from = from, to = to), dlh_subst(expr = b, from = from, to = to)),
-    EForIn(name, idxn, it, b) => {
+    EForIn(name, idxn, it, b, for_off) => {
       let shadow = name == from || (match idxn {
         Some(inm) => inm == from,
         None => false
@@ -531,7 +531,7 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
         b
       } else {
         dlh_subst(expr = b, from = from, to = to)
-      })
+      }, for_off)
     },
     EDot(o, f, off, fdoff) => EDot(dlh_subst(expr = o, from = from, to = to), f, off, fdoff),
     ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_subst(expr = e, from = from, to = to)),
@@ -692,7 +692,7 @@ fn dlh_prepend_and_rename_calls(expr: Expr, marker: String, fresh: String, extra
     EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = c, marker = marker, fresh = fresh, extra_names = extra_names), target_off),
     ESeq(a, b) => ESeq(dlh_prepend_and_rename_calls(expr = a, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
     EWhile(c, b) => EWhile(dlh_prepend_and_rename_calls(expr = c, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
-    EForIn(n, idxn, it, b) => EForIn(n, idxn, dlh_prepend_and_rename_calls(expr = it, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
+    EForIn(n, idxn, it, b, for_off) => EForIn(n, idxn, dlh_prepend_and_rename_calls(expr = it, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names), for_off),
     EDot(o, f, off, fdoff) => EDot(dlh_prepend_and_rename_calls(expr = o, marker = marker, fresh = fresh, extra_names = extra_names), f, off, fdoff),
     ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
     EReturn(e) => EReturn(dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
@@ -1331,7 +1331,7 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
     EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = c, hoisted = hoisted, ctr = ctr), target_off),
     ESeq(a, b) => ESeq(dlh_hoist_expr(expr = a, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)),
     EWhile(c, b) => EWhile(dlh_hoist_expr(expr = c, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)),
-    EForIn(name, idxn, it, b) => EForIn(name, idxn, dlh_hoist_expr(expr = it, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)),
+    EForIn(name, idxn, it, b, for_off) => EForIn(name, idxn, dlh_hoist_expr(expr = it, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr), for_off),
     EDot(o, f, off, fdoff) => EDot(dlh_hoist_expr(expr = o, hoisted = hoisted, ctr = ctr), f, off, fdoff),
     ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
     EReturn(e) => EReturn(dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),

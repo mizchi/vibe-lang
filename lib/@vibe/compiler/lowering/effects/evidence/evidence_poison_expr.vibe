@@ -95,7 +95,7 @@ fn edp_body_may_perform(body: Expr, ename: String, perf_fns: Array[String], iner
       EIf(c, t, e2) => edp_body_may_perform(body = c, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = t, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = e2, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
       EMatch(s, arms) => edp_body_may_perform(body = s, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_may_perform_arms(arms = arms, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
       EWhile(c, b) => edp_body_may_perform(body = c, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = b, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
-      EForIn(_, _, it, b) => edp_body_may_perform(body = it, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = b, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
+      EForIn(_, _, it, b, _) => edp_body_may_perform(body = it, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = b, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
       ELoop(pairs, b) => edp_may_perform_pairs(pairs = pairs, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = b, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
       ELet(_, v, b, _) => edp_body_may_perform(body = v, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = b, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
       ELetMut(_, v, b, _) => edp_body_may_perform(body = v, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names) || edp_body_may_perform(body = b, ename = ename, perf_fns = perf_fns, inert = inert, fn_names = fn_names),
@@ -441,7 +441,7 @@ fn edp_erase_effect_handles_expr(expr: Expr, ename: String, analyze: Bool, perf_
       (p, edp_erase_effect_handles_expr(expr = ex, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names))
     }),
     EWhile(c, b) => EWhile(edp_erase_effect_handles_expr(expr = c, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names), edp_erase_effect_handles_expr(expr = b, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_erase_effect_handles_expr(expr = it, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names), edp_erase_effect_handles_expr(expr = b, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names)),
+    EForIn(n, idx, it, b, for_off) => EForIn(n, idx, edp_erase_effect_handles_expr(expr = it, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names), edp_erase_effect_handles_expr(expr = b, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names), for_off),
     ELoop(pairs, b) => ELoop(for pr in pairs {
       let (n, v) = pr
       (n, edp_erase_effect_handles_expr(expr = v, ename = ename, analyze = analyze, perf_fns = perf_fns, inert = inert, fn_names = fn_names))
@@ -691,7 +691,7 @@ fn edp_collect_prefixed_expr(expr: Expr, prefix: String, out: Array[String]) -> 
       edp_collect_prefixed_expr(expr = c, prefix = prefix, out = out)
       edp_collect_prefixed_expr(expr = b, prefix = prefix, out = out)
     },
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, _) => {
       edp_prefix_push(nm = n, prefix = prefix, out = out)
       match idx {
         Some(iname) => edp_prefix_push(nm = iname, prefix = prefix, out = out),
@@ -883,7 +883,7 @@ export fn edp_ar_expr(expr: Expr, seed: Array[String], env_names: Array[String],
     }),
     EIf(c, t, e2) => EIf(edp_ar_expr(expr = c, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken), edp_ar_expr(expr = t, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken), edp_ar_expr(expr = e2, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken)),
     EWhile(c, b) => EWhile(edp_ar_expr(expr = c, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken), edp_ar_expr(expr = b, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken)),
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, for_off) => {
       let it2 = edp_ar_expr(expr = it, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken)
       let base = Array::length(env_names)
       let n2 = edp_ar_bind(name = n, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken)
@@ -894,7 +894,7 @@ export fn edp_ar_expr(expr: Expr, seed: Array[String], env_names: Array[String],
       let b2 = edp_ar_expr(expr = b, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken)
       Array::truncate(env_names, length = base)
       Array::truncate(env_repl, length = base)
-      EForIn(n2, idx2, it2, b2)
+      EForIn(n2, idx2, it2, b2, for_off)
     },
     ELoop(pairs, b) => {
       let inits2: Array[Expr] = []
@@ -1424,7 +1424,7 @@ export fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(E
       edp_collect_handle_sites_expr(expr = c, ename = ename, out = out)
       edp_collect_handle_sites_expr(expr = b, ename = ename, out = out)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(_, _, it, b, _) => {
       edp_collect_handle_sites_expr(expr = it, ename = ename, out = out)
       edp_collect_handle_sites_expr(expr = b, ename = ename, out = out)
     },
@@ -1842,7 +1842,7 @@ fn edp_collect_poison_expr(e: Expr, ename: String, needing: Array[String], es_na
       edp_collect_poison_expr(e = c, ename = ename, needing = needing, es_names = es_names, es_members_list = es_members_list, poison = poison)
       edp_collect_poison_expr(e = b, ename = ename, needing = needing, es_names = es_names, es_members_list = es_members_list, poison = poison)
     },
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, _) => {
       edp_poison_add(nm = n, poison = poison)
       match idx {
         Some(ix) => edp_poison_add(nm = ix, poison = poison),
@@ -2016,7 +2016,7 @@ fn edp_row_lit_scan_expr(e: Expr, ename: String, needing: Array[String], es_name
       edp_row_lit_scan_expr(e = c, ename = ename, needing = needing, es_names = es_names, es_members_list = es_members_list, binds = binds, lits = lits)
       edp_row_lit_scan_expr(e = b, ename = ename, needing = needing, es_names = es_names, es_members_list = es_members_list, binds = binds, lits = lits)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(_, _, it, b, _) => {
       edp_row_lit_scan_expr(e = it, ename = ename, needing = needing, es_names = es_names, es_members_list = es_members_list, binds = binds, lits = lits)
       edp_row_lit_scan_expr(e = b, ename = ename, needing = needing, es_names = es_names, es_members_list = es_members_list, binds = binds, lits = lits)
     },

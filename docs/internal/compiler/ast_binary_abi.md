@@ -1,4 +1,4 @@
-# AST Binary ABI v3
+# AST Binary ABI v6
 
 Stable binary encoding for the vibe surface-syntax AST — `Array[Stmt]` and
 the `Stmt` / `Expr` / `Pat` / `TypeExpr` trees underneath it, as declared
@@ -35,14 +35,17 @@ be added, removed or renamed without this document following it.
 ```
 +----------------+------------------+----------------+
 | magic (4B)     | version (varint) | module body    |
-| "vAST"         | = 5              |                |
+| "vAST"         | = 6              |                |
 +----------------+------------------+----------------+
 ```
 
 Magic: ASCII `'v' 'A' 'S' 'T'` (`0x76 0x41 0x53 0x54`). Followed by a
-varint version number; this document defines **version 5**. The
+varint version number; this document defines **version 6**. The
 deserializer rejects any other magic or any version it doesn't
 recognize.
+
+**v5 -> v6**: `EForIn` appends the byte offset of the `for` keyword as an
+`svarint` (#4156), with `-1` for synthesized loops. The deserializer rejects v5.
 
 **v4 -> v5**: `SEffectDef` appends its owner as a `bool`, `true` for a
 host-provided `extern effect` (ADR-0124, #2656). The deserializer rejects v4
@@ -245,7 +248,7 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 | 0x11 | `EHandle(Expr, Array[(Pat, Expr)])` | `Expr(body) array<(Pat, Expr)>(arms)` |
 | 0x12 | `EWhile(Expr, Expr)` | `Expr(cond) Expr(body)` |
 | 0x13 | `ELoop(Array[(String, Expr)], Expr)` | `array<(string, Expr)>(params) Expr(body)` |
-| 0x14 | `EForIn(String, Option[String], Expr, Expr)` | `string(value_name) optstr(index_name) Expr(iterable) Expr(body)` |
+| 0x14 | `EForIn(String, Option[String], Expr, Expr, Int)` | `string(value_name) optstr(index_name) Expr(iterable) Expr(body) svarint(keyword_byte_offset)` |
 | 0x15 | `ECall(Expr, Array[Expr], Int, Array[Int])` | `Expr(callee) array<Expr>(args) svarint(byte_offset) array<svarint>(callee_resolution)` |
 | 0x16 | `EBinOp(String, Expr, Expr, Int)` | `string(op) Expr(lhs) Expr(rhs) svarint(operator_byte_offset)` |
 | 0x17 | `EUnaryOp(String, Expr)` | `string(op) Expr(operand)` |

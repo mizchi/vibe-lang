@@ -206,7 +206,7 @@ fn collect_names(expr: Expr, out: Array[String]) -> Unit {
       }
       go(b)
     },
-    EForIn(v, i, it, b) => {
+    EForIn(v, i, it, b, _) => {
       Array::push(out, value = v)
       match i {
         Some(n) => Array::push(out, value = n),
@@ -430,9 +430,9 @@ fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decrea
 ///
 /// `head_mark` / `body_mark` are the binder-row marks taken before the loop
 /// variables and before the body (`contract_rows`).
-fn attach_for_contract(value_name: String, index_name: Option[String], iterable: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int, clause_rows: Array[Array[SourceBinder]], head_mark: Int, body_mark: Int, context: Option[ParserBinderContext]) -> Expr {
+fn attach_for_contract(value_name: String, index_name: Option[String], iterable: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int, for_off: Int, clause_rows: Array[Array[SourceBinder]], head_mark: Int, body_mark: Int, context: Option[ParserBinderContext]) -> Expr {
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
-    EForIn(value_name, index_name, iterable, body)
+    EForIn(value_name, index_name, iterable, body, for_off)
   } else {
     let names = match index_name {
       Some(i) => [value_name, i],
@@ -446,7 +446,7 @@ fn attach_for_contract(value_name: String, index_name: Option[String], iterable:
     // The body's value is kept across the checkpoint: a `for` over an Array
     // collects it.
     let body_value = "\{stem}_body"
-    let looped = EForIn(value_name, index_name, iterable, ELet(body_value, check_before_continue(expr = body, check = check), ESeq(call(), EIdent(body_value, 0 - 1)), 0 - 1))
+    let looped = EForIn(value_name, index_name, iterable, ELet(body_value, check_before_continue(expr = body, check = check), ESeq(call(), EIdent(body_value, 0 - 1)), 0 - 1), for_off)
     with_measure_cells(inner = ELet(check, lam, ESeq(call(), looped), 0 - 1), decreases = decreases, stem = stem)
   }
 }
@@ -469,7 +469,7 @@ fn check_before_continue(expr: Expr, check: String) -> Expr {
       let (pname, pv) = p
       (pname, go(pv))
     }, b),
-    EForIn(v, i, it, b) => EForIn(v, i, go(it), b),
+    EForIn(v, i, it, b, for_off) => EForIn(v, i, go(it), b, for_off),
     EFn(_, _, _, _, _, _) => expr,
     EInt(_) => expr,
     EFloat(_) => expr,

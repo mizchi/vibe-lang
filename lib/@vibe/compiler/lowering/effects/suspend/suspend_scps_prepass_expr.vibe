@@ -949,7 +949,7 @@ fn scps_slot_sites_ok(e: Expr, fname: String, slot: Int, has_encl: Bool, encl_pa
       ok
     },
     EWhile(c, b) => scps_slot_sites_ok(e = c, fname = fname, slot = slot, has_encl = has_encl, encl_params = encl_params, encl_body = encl_body, eff = eff, needing = needing, ctx = ctx, encl_name = encl_name, visiting = visiting) && scps_slot_sites_ok(e = b, fname = fname, slot = slot, has_encl = has_encl, encl_params = encl_params, encl_body = encl_body, eff = eff, needing = needing, ctx = ctx, encl_name = encl_name, visiting = visiting),
-    EForIn(nm, idx, it, b) => {
+    EForIn(nm, idx, it, b, _) => {
       let shadowed = nm == fname || match idx {
         Some(inm) => inm == fname,
         None => false
@@ -1708,7 +1708,7 @@ fn scps_rewrite_rest(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, A
       (p, rex)
     }),
     EWhile(c, b) => EWhile(scps_rewrite(e = c, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope, return_frame = return_frame), scps_rewrite(e = b, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope, return_frame = return_frame)),
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, for_off) => {
       let rit = scps_rewrite(e = it, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope, return_frame = return_frame)
       let fmark = Array::length(scope)
       Array::push(scope, value = (n, "", false))
@@ -1718,7 +1718,7 @@ fn scps_rewrite_rest(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, A
       }
       let rb = scps_rewrite(e = b, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope, return_frame = return_frame)
       Array::truncate(scope, length = fmark)
-      EForIn(n, idx, rit, rb)
+      EForIn(n, idx, rit, rb, for_off)
     },
     ECall(callee, args, off, callee_resolution) => ECall(scps_rewrite(e = callee, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope, return_frame = return_frame), for a in args {
       scps_rewrite(e = a, ctx = ctx, st = st, cps_effs = cps_effs, scope = scope, return_frame = return_frame)
@@ -2022,7 +2022,7 @@ fn scps_find_local_lambda(e: Expr, nm: String, found: Array[(String, Expr)], oth
         i = i + 1
       }
     },
-    EForIn(n, idx, _, _) => if n == nm || match idx {
+    EForIn(n, idx, _, _, _) => if n == nm || match idx {
       Some(ix) => ix == nm,
       None => false
     } {
@@ -2655,9 +2655,9 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
       (p, scps_prepass_expr(e = ex, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scps_scope_bind_pat(scope = scope, p = p)))
     }),
     EWhile(c, b) => EWhile(scps_prepass_expr(e = c, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scope), scps_prepass_expr(e = b, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scope)),
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, for_off) => {
       let inner = scps_scope_bind_opt(scope = scps_scope_bind(scope = scope, name = n, kind = 0), name = idx, kind = 0)
-      EForIn(n, idx, scps_prepass_expr(e = it, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scope), scps_prepass_expr(e = b, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = inner))
+      EForIn(n, idx, scps_prepass_expr(e = it, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scope), scps_prepass_expr(e = b, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = inner), for_off)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, scps_prepass_expr(e = l, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scope), scps_prepass_expr(e = r, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scope), boff),
     EUnaryOp(op, x) => EUnaryOp(op, scps_prepass_expr(e = x, ecfgs = ecfgs, ctx = ctx, st = st, split_effs = split_effs, scope = scope)),
@@ -2784,7 +2784,7 @@ fn scps_guard_untriggered(e: Expr, guard_effs: Array[String], errs: Array[String
       scps_guard_untriggered(e = c, guard_effs = guard_effs, errs = errs)
       scps_guard_untriggered(e = b, guard_effs = guard_effs, errs = errs)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(_, _, it, b, _) => {
       scps_guard_untriggered(e = it, guard_effs = guard_effs, errs = errs)
       scps_guard_untriggered(e = b, guard_effs = guard_effs, errs = errs)
     },
