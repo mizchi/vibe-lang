@@ -1,0 +1,88 @@
+//# The function-name subsection on the gc lane (#4127)
+//
+// The linear lane always writes the standard "name" custom section and the
+// release strip drops it unless `VIBE_WASM_NAMES=1` (ADR-0077). The gc lane
+// is not stripped -- its output is written as emitted -- so it writes the
+// section only when asked: `cli_main` reads the flag once and sets the cell
+// below, which keeps codegen Env-free and leaves a build without the flag
+// byte-identical to one that never had this. With the section, a gc trap
+// backtrace names its functions, and `scripts/wasm_index_stability.mjs` and
+// a CPU profile can match functions by name.
+
+import @vibe/core {
+  array_empty
+}
+
+/// Whether the gc backend writes the function-name subsection.
+let gc_function_names_cell: Array[Bool] = [false]
+
+/// Turn the gc lane's function-name subsection on or off for every compile
+/// this process runs (`VIBE_WASM_NAMES=1`, read once by `cli_main`).
+export fn set_gc_function_names(_ on: Bool) -> Unit {
+  Array::set(gc_function_names_cell, at = 0, value = on)
+}
+
+/// Whether the gc lane writes the function-name subsection.
+export fn gc_function_names_enabled() -> Bool {
+  Array::get(gc_function_names_cell, at = 0)
+}
+
+/// The name of every function the gc module defines, in index order, from
+/// the first one after the imports: the generated runtime bodies
+/// (`__gc_gen_<ordinal>`, one-based as their table is), the program's
+/// functions, `_start`, the lambda bodies (`__lambda_slot__<i>`, the name the
+/// linear lane gives a slot outside its lambda plan) and, when there is one,
+/// the guarded module init. Each name is distinct, so a tool that matches
+/// functions by name never folds two together: a synthesized name that a
+/// program function already spells (a test-only module's own `_start`
+/// runner, or a program declaring `_start` or `__gc_gen_1`) takes a trailing
+/// `_` until it is free, the way `gc_test_runner_name` picks the runner's.
+export fn gc_function_names(num_generated: Int, fn_names: Array[String], num_lambdas: Int, has_global_init: Bool) -> Array[String] {
+  let mut taken: Map[String, Bool] = Map::new()
+  for n in fn_names {
+    taken = Map::set(taken, key = n, value = true)
+  }
+  let synthesized: Array[String] = array_empty()
+  let mut gi = 0
+  while gi < num_generated {
+    Array::push(synthesized, value = String::concat("__gc_gen_", Int::to_string(gi + 1)))
+    gi = gi + 1
+  }
+  Array::push(synthesized, value = "_start")
+  let mut li = 0
+  while li < num_lambdas {
+    Array::push(synthesized, value = String::concat("__lambda_slot__", Int::to_string(li)))
+    li = li + 1
+  }
+  if has_global_init {
+    Array::push(synthesized, value = "__gc_global_init")
+  }
+  // Each synthesized name takes trailing `_`s until no program function and
+  // no earlier synthesized name spells it. `Map::set` is functional, so the
+  // set is rebound.
+  let free: Array[String] = array_empty()
+  for base in synthesized {
+    let mut name = base
+    while Map::has_key(taken, key = name) {
+      name = String::concat(name, "_")
+    }
+    taken = Map::set(taken, key = name, value = true)
+    Array::push(free, value = name)
+  }
+  // Index order: generated bodies, program functions, `_start`, lambda
+  // bodies, then the module init.
+  let names: Array[String] = array_empty()
+  let mut k = 0
+  while k < num_generated {
+    Array::push(names, value = Array::get(free, at = k))
+    k = k + 1
+  }
+  for n in fn_names {
+    Array::push(names, value = n)
+  }
+  while k < Array::length(free) {
+    Array::push(names, value = Array::get(free, at = k))
+    k = k + 1
+  }
+  names
+}

@@ -43,7 +43,13 @@ import @vibe/core {
 }
 
 import ./prelude_reuse_admit.vibe {
-  prelude_reuse_avoid, prelude_reuse_effectful, prelude_reuse_quiet, prelude_reuse_scope, prelude_reuse_signature
+  prelude_reuse_avoid,
+  prelude_reuse_effectful,
+  prelude_reuse_flags,
+  prelude_reuse_quiet,
+  prelude_reuse_refs,
+  prelude_reuse_scope,
+  prelude_reuse_signature
 }
 
 import @vibe/compiler/normalize/desugar {
@@ -58,7 +64,7 @@ import @vibe/parser {
 /// per input statement, "" for a statement with no key, which `plain` then
 /// holds as it was (every other slot of `plain` is a placeholder). Per input
 /// statement, too: `names` pairs it across builds (`prelude_reuse_identity`),
-/// `sigs` is its signature and `quiet` whether an edit of it may be replayed
+/// `sigs` is a fingerprint of its signature and `quiet` whether an edit of it may be replayed
 /// (prelude_reuse_admit.vibe); `avoid` is the build's names to avoid. The
 /// output is one entry per produced statement, in order: `kinds` is 0 for an input
 /// left alone (`refs` is its index), 1 for a rewritten input (`refs` is its
@@ -183,9 +189,11 @@ export fn prelude_reuse_passes(stmts: Array[Stmt], row_offsets: Array[Int], row_
     Array::truncate(prelude_reuse_armed, length = 0)
     let inputs: Array[Stmt] = Array::slice(stmts, start = 0, end = Array::length(stmts))
     let keys = prelude_statement_keys(stmts = inputs, row_offsets = row_offsets, row_keys = row_keys)
+    // Digested once: the replay compares them and the record stores them.
+    let digests = prelude_reuse_digests(keys)
     let replayed = match previous {
       Some(record) => if record.header == header {
-        prelude_reuse_replay_with(record = record, inputs = inputs, keys = keys)
+        prelude_reuse_replay_with(record = record, inputs = inputs, keys = keys, digests = digests)
       } else {
         prelude_reuse_noted("missed: the record was made for another entry or setting")
         None
@@ -205,7 +213,7 @@ export fn prelude_reuse_passes(stmts: Array[Stmt], row_offsets: Array[Int], row_
       Some((outs, updated)) => if prelude_reuse_is_verifying() {
         // Verify: the passes' output is produced, and the replay is left
         // beside it for the caller to compare.
-        let errs = prelude_reuse_run_and_record(header = header, inputs = inputs, keys = keys, stmts = stmts, run = run)
+        let errs = prelude_reuse_run_and_record(header = header, inputs = inputs, keys = keys, digests = digests, stmts = stmts, run = run)
         Array::push(prelude_reuse_checked, value = (outs, Array::slice(stmts, start = 0, end = Array::length(stmts))))
         if Array::length(errs) == 0 {
           errs
@@ -226,16 +234,16 @@ export fn prelude_reuse_passes(stmts: Array[Stmt], row_offsets: Array[Int], row_
         Array::push(prelude_reuse_made, value = updated)
         []
       },
-      None => prelude_reuse_run_and_record(header = header, inputs = inputs, keys = keys, stmts = stmts, run = run)
+      None => prelude_reuse_run_and_record(header = header, inputs = inputs, keys = keys, digests = digests, stmts = stmts, run = run)
     }
   }
 }
 
 /// Run the passes over `stmts` and record what they made of `inputs`.
-fn prelude_reuse_run_and_record(header: String, inputs: Array[Stmt], keys: Array[PreludeStmtKey], stmts: Array[Stmt], run: () -> Array[String] with Exception) -> Array[String] with Exception {
+fn prelude_reuse_run_and_record(header: String, inputs: Array[Stmt], keys: Array[PreludeStmtKey], digests: Array[String], stmts: Array[Stmt], run: () -> Array[String] with Exception) -> Array[String] with Exception {
   let errs = run()
   if Array::length(errs) == 0 {
-    match prelude_reuse_record_of(header = header, inputs = inputs, keys = keys, outputs = stmts) {
+    match prelude_reuse_record_with(header = header, inputs = inputs, keys = keys, digests = digests, outputs = stmts) {
       Some(record) => {
         Array::push(prelude_reuse_made, value = record)
         prelude_reuse_noted(prelude_reuse_outcome() + "; recorded")
@@ -261,12 +269,19 @@ export fn prelude_reuse_key_digest(_ key: PreludeStmtKey) -> String {
     // Each value whole: its low and middle 31 bits and its sign bit, as
     // three words, so values that agree modulo a prime still differ (Codex
     // on #4086: 1000000000 and 3147483647 reduced to one word).
+    // The three words are unrolled rather than iterated from an array
+    // literal, which allocated once per value.
     for v in key.ints {
-      for x in [v&2147483647, (v>>31)&2147483647, (v>>62)&1] {
-        h1 = (h1 * 131 + x + 1) % 2147483647
-        h2 = (h2 * 65599 + x + i + 1) % 2147483629
-        i = i + 1
-      }
+      let x0 = v&2147483647
+      h1 = (h1 * 131 + x0 + 1) % 2147483647
+      h2 = (h2 * 65599 + x0 + i + 1) % 2147483629
+      let x1 = (v>>31)&2147483647
+      h1 = (h1 * 131 + x1 + 1) % 2147483647
+      h2 = (h2 * 65599 + x1 + i + 2) % 2147483629
+      let x2 = (v>>62)&1
+      h1 = (h1 * 131 + x2 + 1) % 2147483647
+      h2 = (h2 * 65599 + x2 + i + 3) % 2147483629
+      i = i + 3
     }
     "\{Array::length(key.ints)}:\{h1}:\{h2}|\{compact_string_fingerprint(key.text)}"
   }
@@ -275,7 +290,7 @@ export fn prelude_reuse_key_digest(_ key: PreludeStmtKey) -> String {
 /// The produced statements, or None when `record` does not describe this
 /// input (`prelude_reuse_replay_with`).
 export fn prelude_reuse_replay(record: PreludeReuseRecord, inputs: Array[Stmt], keys: Array[PreludeStmtKey]) -> Option[Array[Stmt]] {
-  match prelude_reuse_replay_with(record = record, inputs = inputs, keys = keys) {
+  match prelude_reuse_replay_with(record = record, inputs = inputs, keys = keys, digests = prelude_reuse_digests(keys)) {
     Some((outs, _)) => Some(outs),
     None => None
   }
@@ -302,16 +317,28 @@ fn prelude_reuse_same_at(record: PreludeReuseRecord, i: Int, inputs: Array[Stmt]
 /// statement it pairs with by name, and, when it has no such partner, adds a
 /// name nothing relevant reaches. The passes leave a quiet statement as it
 /// is, so it is produced as it stands.
-fn prelude_reuse_replay_with(record: PreludeReuseRecord, inputs: Array[Stmt], keys: Array[PreludeStmtKey]) -> Option[(Array[Stmt], PreludeReuseRecord)] {
+/// A statement's signature (`prelude_reuse_signature`) as a fingerprint: the
+/// record compares signatures, never reads them, so it keeps two hashes and
+/// a length rather than the text.
+fn prelude_reuse_sig_digest(_ stmt: Stmt) -> String {
+  compact_string_fingerprint(prelude_reuse_signature(stmt))
+}
+
+/// Each key's digest (`prelude_reuse_key_digest`), in order.
+fn prelude_reuse_digests(_ keys: Array[PreludeStmtKey]) -> Array[String] {
+  let out: Array[String] = []
+  for k in keys {
+    Array::push(out, value = prelude_reuse_key_digest(k))
+  }
+  out
+}
+
+fn prelude_reuse_replay_with(record: PreludeReuseRecord, inputs: Array[Stmt], keys: Array[PreludeStmtKey], digests: Array[String]) -> Option[(Array[Stmt], PreludeReuseRecord)] {
   let n_old = Array::length(record.keys)
   let n_new = Array::length(inputs)
   if Array::length(keys) != n_new || Array::length(record.plain) != n_old || Array::length(record.names) != n_old || Array::length(record.sigs) != n_old || Array::length(record.quiet) != n_old {
     prelude_reuse_noted("missed: the record is malformed")
     return None
-  }
-  let digests: Array[String] = []
-  for k in keys {
-    Array::push(digests, value = prelude_reuse_key_digest(k))
   }
   let mut p = 0
   while p < n_old && p < n_new && prelude_reuse_same_at(record = record, i = p, inputs = inputs, digests = digests, j = p) {
@@ -379,11 +406,11 @@ fn prelude_reuse_replay_with(record: PreludeReuseRecord, inputs: Array[Stmt], ke
       if kept >= 0 {
         MutSet::insert(kept_old, x = kept)
         Array::set(from_old, at = j, value = kept)
-      } else if !prelude_reuse_quiet(stmt = stmt, scope = scope, avoid = avoid) {
+      } else if !prelude_reuse_quiet(stmt = stmt, refs = prelude_reuse_refs(stmt), flags = prelude_reuse_flags(stmt = stmt, scope = scope), scope = scope, avoid = avoid) {
         ok = false
         prelude_reuse_noted("missed: the edited `" + name + "` is one the passes read")
       } else if partner >= 0 {
-        if Array::get(record.sigs, at = partner) != prelude_reuse_signature(stmt) {
+        if Array::get(record.sigs, at = partner) != prelude_reuse_sig_digest(stmt) {
           ok = false
           prelude_reuse_noted("missed: the edit changes the signature of `" + name + "`")
         } else ()
@@ -514,7 +541,7 @@ fn prelude_reuse_replay_with(record: PreludeReuseRecord, inputs: Array[Stmt], ke
       Array::push(quiet, value = Array::get(record.quiet, at = i))
     } else {
       Array::push(names, value = prelude_reuse_identity(stmt))
-      Array::push(sigs, value = prelude_reuse_signature(stmt))
+      Array::push(sigs, value = prelude_reuse_sig_digest(stmt))
       Array::push(quiet, value = true)
     }
     j3 = j3 + 1
@@ -606,6 +633,11 @@ fn prelude_reuse_offsets_within(stmt: Stmt, allowed: Array[Int]) -> Bool {
 /// The record of a run that turned `inputs` into `outputs`, or None when a
 /// produced statement cannot be recorded exactly (see the file comment).
 export fn prelude_reuse_record_of(header: String, inputs: Array[Stmt], keys: Array[PreludeStmtKey], outputs: Array[Stmt]) -> Option[PreludeReuseRecord] {
+  prelude_reuse_record_with(header = header, inputs = inputs, keys = keys, digests = prelude_reuse_digests(keys), outputs = outputs)
+}
+
+/// `prelude_reuse_record_of` with the keys' digests already taken.
+fn prelude_reuse_record_with(header: String, inputs: Array[Stmt], keys: Array[PreludeStmtKey], digests: Array[String], outputs: Array[Stmt]) -> Option[PreludeReuseRecord] {
   let n = Array::length(inputs)
   let record = PreludeReuseRecord::{
     header: header,
@@ -621,7 +653,7 @@ export fn prelude_reuse_record_of(header: String, inputs: Array[Stmt], keys: Arr
   }
   let mut i = 0
   while i < n {
-    let digest = prelude_reuse_key_digest(Array::get(keys, at = i))
+    let digest = Array::get(digests, at = i)
     Array::push(record.keys, value = digest)
     Array::push(record.plain, value = if digest == "" {
       Array::get(inputs, at = i)
@@ -629,7 +661,7 @@ export fn prelude_reuse_record_of(header: String, inputs: Array[Stmt], keys: Arr
       SExport([])
     })
     Array::push(record.names, value = prelude_reuse_identity(Array::get(inputs, at = i)))
-    Array::push(record.sigs, value = prelude_reuse_signature(Array::get(inputs, at = i)))
+    Array::push(record.sigs, value = prelude_reuse_sig_digest(Array::get(inputs, at = i)))
     i = i + 1
   }
   let mut ok = true
@@ -695,18 +727,27 @@ fn prelude_reuse_note_quiet(record: PreludeReuseRecord, inputs: Array[Stmt]) -> 
   }
   let scope = prelude_reuse_scope(inputs)
   let relevant: Array[Bool] = []
+  // Each statement's expression flags, taken once for both questions.
+  let flags: Array[(Bool, Bool)] = []
   let mut i = 0
   while i < n {
-    Array::push(relevant, value = !Array::get(left_alone, at = i) || prelude_reuse_effectful(stmt = Array::get(inputs, at = i), scope = scope))
+    let stmt_flags = prelude_reuse_flags(stmt = Array::get(inputs, at = i), scope = scope)
+    Array::push(flags, value = stmt_flags)
+    Array::push(relevant, value = !Array::get(left_alone, at = i) || prelude_reuse_effectful(stmt = Array::get(inputs, at = i), flags = stmt_flags, scope = scope))
     i = i + 1
   }
-  let avoid = prelude_reuse_avoid(stmts = inputs, relevant = relevant)
+  // Each statement's references, taken once for both questions below.
+  let refs: Array[(Array[String], Bool)] = []
+  for s in inputs {
+    Array::push(refs, value = prelude_reuse_refs(s))
+  }
+  let avoid = prelude_reuse_avoid(stmts = inputs, refs = refs, relevant = relevant)
   for a in MutSet::to_array(avoid) {
     Array::push(record.avoid, value = a)
   }
   let mut k = 0
   while k < n {
-    Array::push(record.quiet, value = !Array::get(relevant, at = k) && prelude_reuse_quiet(stmt = Array::get(inputs, at = k), scope = scope, avoid = avoid))
+    Array::push(record.quiet, value = !Array::get(relevant, at = k) && prelude_reuse_quiet(stmt = Array::get(inputs, at = k), refs = Array::get(refs, at = k), flags = Array::get(flags, at = k), scope = scope, avoid = avoid))
     k = k + 1
   }
 }

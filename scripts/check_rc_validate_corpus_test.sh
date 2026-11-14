@@ -122,6 +122,29 @@ fi
 grep -qF 'found a plan that releases more than it holds' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 1c failed for the wrong reason"; }
 
+# RED 1e: a loop plan. `loop_continue`'s `v` is declared in a `while` body
+# that a `continue` leaves before the branch consuming it, so its ledger is
+# one iteration's. Deleting its dups is a plan that releases more than it
+# holds on the iteration that consumes it, and the gate must refuse it.
+LOOP_FIXTURE="fixtures/rc_branch_dup_exit_leak_test.vibe"
+[ -f "$LOOP_FIXTURE" ] || fail "the loop red fixture $LOOP_FIXTURE is gone; pick another fixture whose plan has a dup on a checked binding declared in a loop body"
+grep -qE '^fn loop_continue\(' "$LOOP_FIXTURE" || fail "RED 1e: $LOOP_FIXTURE no longer defines loop_continue"
+run_verb "$WORK/lplain.txt" --fn loop_continue "$LOOP_FIXTURE" || { cat "$WORK/lplain.txt.err" >&2; fail "RED 1e: the unmutated verb call failed"; }
+if [ -s "$WORK/lplain.txt" ]; then
+  cat "$WORK/lplain.txt" >&2
+  fail "RED 1e: the unmutated loop_continue is not clean; it is not a control"
+fi
+run_verb "$WORK/lmutated.txt" --mutate drop-dups --fn loop_continue "$LOOP_FIXTURE" \
+  || { cat "$WORK/lmutated.txt.err" >&2; fail "RED 1e: the mutated verb call failed"; }
+grep -qE '^loop_continue v [^ ]+: owned value released [0-9]+ more than held$' "$WORK/lmutated.txt" \
+  || { cat "$WORK/lmutated.txt" >&2; fail "RED 1e mutation did not land (no over-release line for loop_continue v under --mutate drop-dups)"; }
+if run_gate "$GATE" "$LOOP_FIXTURE" --mutate drop-dups; then
+  cat "$WORK/out" >&2
+  fail "RED 1e: the gate passed a loop plan that releases more than it holds"
+fi
+grep -qF 'found a plan that releases more than it holds' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 1e failed for the wrong reason"; }
+
 # RED 1d: a heap value planned as scalar (#3718 slice 4). The #3240 fixture's
 # `unwrap_callback` takes an `Option` of a closure -- the parameter #3241
 # fixed the classification of -- so reading every heap class as scalar must
@@ -172,4 +195,4 @@ fi
 grep -qF 'no fixtures matched' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"; }
 
-echo "[rc-validate-corpus-test] ok (green control + 7 red cases, each mutation verified to land)"
+echo "[rc-validate-corpus-test] ok (green control + 8 red cases, each mutation verified to land)"

@@ -12,7 +12,9 @@
 #                    ingestion-pipeline telemetry encoder, the scheduler
 #                    trace's row encoders, the heap-mark emitter, and the
 #                    incremental typecheck sidecar's encoder and destination
-#                    guard, and the invalidation trace's encoders (#2498).
+#                    guard, the invalidation trace's encoders, the ingestion
+#                    fingerprint sidecar's encoder, and the artifact-input
+#                    trace lane (#2498).
 #   3. lost       -- a named wasm with no async component composition: the
 #                    presence check must say the production lane is gone.
 #   4. accepted   -- the full CLI stage2, invoked as `cli_main`: it serves
@@ -24,9 +26,12 @@
 #                    fail.
 #                    It also writes the scheduler trace, emits heap marks
 #                    and publishes the incremental typecheck sidecar and the
-#                    invalidation trace, so --scheduler-trace-only,
-#                    --memory-marks-only, --incremental-telemetry-only and
-#                    --invalidation-trace-only must fail.
+#                    invalidation trace and the ingestion fingerprint
+#                    sidecar, so --scheduler-trace-only, --memory-marks-only,
+#                    --incremental-telemetry-only, --invalidation-trace-only
+#                    and --ingestion-fingerprint-only must fail; it also
+#                    compiles the artifact-input trace lane, so
+#                    --artifact-input-trace-only must fail.
 #   4c. stale     -- the compile-only artifact rebuilt from its own flat
 #                    module source with the scheduler-trace and heap-mark
 #                    refusals moved back in front of the shared
@@ -38,7 +43,17 @@
 #                    guard, so the probe naming the compile input deletes it
 #                    and --incremental-telemetry-only must fail. It also
 #                    refuses VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT before the
-#                    cleanup, so --invalidation-trace-only must fail.
+#                    cleanup, so --invalidation-trace-only must fail, and
+#                    VIBE_INGESTION_TELEMETRY_OUT before any clear, so its own
+#                    stale sidecar survives and --ingestion-fingerprint-only
+#                    must fail, and VIBE_ARTIFACT_INPUT_TRACE_OUT before its
+#                    clear, so --artifact-input-trace-only must fail.
+#   4d. masked    -- the compile-only artifact rebuilt with the scheduler-trace
+#                    refusal emptied: the request then reaches the
+#                    artifact-input trace refusal, ordered last, which also
+#                    names VIBE_CFG=telemetry. --scheduler-trace-only must
+#                    still fail, because each refusal must name its own
+#                    request.
 #   5. control    -- the real compile-only artifact passes.
 #
 # Fixture: a fresh named compile-only artifact built with the selected compiler
@@ -159,6 +174,9 @@ check_leak telemetry_destination_conflict
 check_leak incremental_invalidation_trace_json
 check_leak incremental_trace_json_string
 check_leak incremental_typecheck_telemetry_v1_json
+check_leak cache_ingestion_fingerprint_telemetry_json
+check_leak ingestion_telemetry_counter_
+check_leak compile_file_fs_mode_cached_artifact_input_trace
 
 # 3. lost: a named build with no forbidden name and no async component lane.
 # The same probe shape as a leak, under a name no pattern matches, so the
@@ -207,11 +225,26 @@ expect_fail scheduler_trace "VIBE_SCHEDULER_TRACE was ACCEPTED" --artifact "$STA
 expect_fail memory_marks "VIBE_PROFILE_MEMORY_MARKS=1 was ACCEPTED" --artifact "$STAGE2" --entry cli_main --memory-marks-only
 expect_fail incremental "VIBE_INCREMENTAL_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --incremental-telemetry-only
 expect_fail invalidation "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --invalidation-trace-only
+expect_fail ingestion_fingerprint "VIBE_INGESTION_TELEMETRY_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --ingestion-fingerprint-only
+expect_fail input_trace "VIBE_ARTIFACT_INPUT_TRACE_OUT was ACCEPTED" --artifact "$STAGE2" --entry cli_main --artifact-input-trace-only
 
 # 4c. stale: refuse VIBE_SCHEDULER_TRACE and VIBE_PROFILE_MEMORY_MARKS=1
 # before the stale-sidecar cleanup. One mutant carries both early refusals.
 # The mutation is applied to the flat module source the fixture was built
 # from, then compiled exactly as scripts/build_compile_only.sh compiles it.
+# Compile a mutated flat module source exactly as scripts/build_compile_only.sh
+# compiles the real one.
+compile_mutant() { # <label> <module source> <out.wasm>
+  local label="$1" src="$2" out="$3"
+  _selector_order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
+  env $(printf '%s\n' $_selector_order | sed 's/^/-u /' | tr '\n' ' ') \
+    VIBE_RC=0 VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    VIBE_WASM_PRE_GROW_PAGES=0 VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE=1 VIBE_SKIP_RUN_INIT=1 \
+    VIBE_NODE_WASM_FLAGS="--experimental-wasm-exnref --stack-size=131072" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$src" "$out" cli_main_compile_only >"$TMP/$label.build.log" 2>&1 || true
+  [ -s "$out" ] || { echo "check_compile_only_lanes_test: FAIL ($label): the mutated artifact did not compile" >&2; cat "$out.diag" >&2 2>/dev/null; tail -5 "$TMP/$label.build.log" >&2; exit 1; }
+}
+
 check_stale_refusal() {
   local SRC="$TMP/vibe_compile_only.names.module_source.vibe"
   local MUT="$TMP/stale_refusal.module_source.vibe" OUT="$TMP/stale_refusal.wasm"
@@ -224,27 +257,49 @@ const anchor = '{ let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OU
 const refusal = text.match(/scheduler_trace_refusal_exp_[A-Za-z0-9_]+/);
 const marks = text.match(/profile_memory_marks_refusal_[A-Za-z0-9_]+/);
 const invalidation = text.match(/invalidation_trace_refusal_[A-Za-z0-9_]+/);
-if (text.split(anchor).length !== 2 || !refusal || !marks || !invalidation) {
+const fingerprint = text.match(/ingestion_fingerprint_telemetry_refusal_[A-Za-z0-9_]+/);
+const inputTrace = text.match(/input_trace_sidecar_refusal_[A-Za-z0-9_]+/);
+if (text.split(anchor).length !== 2 || !refusal || !marks || !invalidation || !fingerprint || !inputTrace) {
   console.error("check_compile_only_lanes_test: FAIL (stale): the mutation anchor is not unique in the module source");
   process.exit(1);
 }
-const early = `{ if (Env::get("VIBE_SCHEDULER_TRACE") != "") { throw(${refusal[0]}()) } else { () }; if (Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1") { throw(${marks[0]}()) } else { () }; if (Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT") != "") { throw(${invalidation[0]}()) } else { () }; let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT"); if (fs_telemetry_out != "") { Fs::remove_file(fs_telemetry_out) } else { () };`;
+const early = `{ if (Env::get("VIBE_SCHEDULER_TRACE") != "") { throw(${refusal[0]}()) } else { () }; if (Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1") { throw(${marks[0]}()) } else { () }; if (Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT") != "") { throw(${invalidation[0]}()) } else { () }; if (Env::get("VIBE_INGESTION_TELEMETRY_OUT") != "") { throw(${fingerprint[0]}()) } else { () }; let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT"); if (fs_telemetry_out != "") { Fs::remove_file(fs_telemetry_out) } else { () }; if (Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT") != "") { throw(${inputTrace[0]}()) } else { () };`;
 fs.writeFileSync(out, text.replace(anchor, early));
 NODE
   cmp -s "$SRC" "$MUT" && { echo "check_compile_only_lanes_test: FAIL (stale): the mutation did not change the module source" >&2; exit 1; }
-  _selector_order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
-  env $(printf '%s\n' $_selector_order | sed 's/^/-u /' | tr '\n' ' ') \
-    VIBE_RC=0 VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-    VIBE_WASM_PRE_GROW_PAGES=0 VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE=1 VIBE_SKIP_RUN_INIT=1 \
-    VIBE_NODE_WASM_FLAGS="--experimental-wasm-exnref --stack-size=131072" \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$MUT" "$OUT" cli_main_compile_only >"$TMP/stale.build.log" 2>&1 || true
-  [ -s "$OUT" ] || { echo "check_compile_only_lanes_test: FAIL (stale): the mutated artifact did not compile" >&2; cat "$OUT.diag" >&2 2>/dev/null; tail -5 "$TMP/stale.build.log" >&2; exit 1; }
+  compile_mutant stale "$MUT" "$OUT"
   expect_fail stale "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --scheduler-trace-only
   expect_fail stale_marks "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --memory-marks-only
   expect_fail unguarded_clear "DELETED or rewrote it" --artifact "$OUT" --entry cli_main_compile_only --incremental-telemetry-only
   expect_fail stale_invalidation "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --invalidation-trace-only
+  expect_fail stale_ingestion_fingerprint "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --ingestion-fingerprint-only
+  expect_fail stale_input_trace "survived the refused invocation" --artifact "$OUT" --entry cli_main_compile_only --artifact-input-trace-only
 }
 check_stale_refusal
+
+# 4d. masked: empty the scheduler-trace refusal. Its probe then reaches the
+# artifact-input trace refusal (ordered last, also naming the flag), and only
+# the own-name assertion can tell the two apart.
+check_masked_refusal() {
+  local SRC="$TMP/vibe_compile_only.names.module_source.vibe"
+  local MUT="$TMP/masked_refusal.module_source.vibe" OUT="$TMP/masked_refusal.wasm"
+  node - "$SRC" "$MUT" <<'NODE'
+const fs = require("fs");
+const [src, out] = process.argv.slice(2);
+const lines = fs.readFileSync(src, "utf8").split("\n");
+const at = lines.findIndex(l => /^export let rec scheduler_trace_refusal_[A-Za-z0-9_]+ = \(\) -> String \{/.test(l));
+if (at < 0 || !lines[at].includes("VIBE_SCHEDULER_TRACE")) {
+  console.error("check_compile_only_lanes_test: FAIL (masked): no one-line scheduler_trace_refusal definition naming VIBE_SCHEDULER_TRACE");
+  process.exit(1);
+}
+lines[at] = lines[at].replace(/= \(\) -> String \{.*\}\s*$/, '= () -> String { "" }');
+fs.writeFileSync(out, lines.join("\n"));
+NODE
+  cmp -s "$SRC" "$MUT" && { echo "check_compile_only_lanes_test: FAIL (masked): the mutation did not change the module source" >&2; exit 1; }
+  compile_mutant masked "$MUT" "$OUT"
+  expect_fail masked "was refused, but not by its own name" --artifact "$OUT" --entry cli_main_compile_only --scheduler-trace-only
+}
+check_masked_refusal
 
 # 5. control.
 if ! bash "$GATE" --artifact "$ART" --entry cli_main_compile_only >"$TMP/control.log" 2>&1; then
