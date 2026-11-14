@@ -55,7 +55,14 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         if bare == "" {
           hit = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
         } else if callee_nm != "" && edp_arg_slot_accepts_needing(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm, pos = i, ename = ename, es_names = es_names, es_members_list = es_members_list) {
-          ()
+          // The slot takes the value; a call nested inside it is still
+          // checked (`keep(pair = (xs, apply(f = ..)))`).
+          match a {
+            EIdent(_, _) => (),
+            _ => {
+              hit = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+            }
+          }
         } else {
           hit = bare
         }
@@ -115,7 +122,20 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
     ESeq(a, b) => edp_needing_escape_or(a = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     EBinOp(_, l, r, _) => edp_needing_escape_or(a = edp_needing_escape(e = l, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = r, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     EUnaryOp(_, x) => edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    EAssign(_, v, c, _) => edp_needing_escape_or(a = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
+    EAssign(n, v, c, _) => {
+      let first = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      if first != "" {
+        first
+      } else {
+        // The binding holds the assigned value from here on.
+        let mark = edp_escape_taint(name = n, root = edp_data_root_items(items = [
+          v
+        ], needing = needing, stmts = stmts, fn_defs = fn_defs), init = Some(v))
+        let hit = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        edp_escape_untaint(mark)
+        hit
+      }
+    },
     EAssignOp(_, _, v, c, _) => edp_needing_escape_or(a = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     EDot(o, _, _, _) => edp_needing_escape(e = o, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
     ELabeledArg(_, _, v) => edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
@@ -167,6 +187,20 @@ fn edp_escape_tainted_root(_ name: String) -> String {
   ""
 }
 
+/// The needing function a local is a plain alias of (`let a = g`), or "".
+/// The alias itself still reaches a call slot as the name it aliases (the
+/// eta-wrap follows it), so only storing it as data reads through it.
+fn edp_escape_alias_of(name: String, needing: Array[String]) -> String {
+  match edp_escape_tainted_init(name) {
+    Some(EIdent(src, _)) => if edp_str_array_contains(arr = needing, v = src) {
+      src
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
 /// The value a local was bound to, when it is known (innermost binding).
 fn edp_escape_tainted_init(_ name: String) -> Option[Expr] {
   let mut i = Array::length(edp_escape_tainted)
@@ -216,19 +250,18 @@ fn edp_data_root(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: A
         EIdent(cn, _) => cn,
         _ => ""
       }
+      // A constructor or a builtin (`Some(g)`, `Array::get(xs, at = 0)`)
+      // stores or reads its argument; a call to a function the program
+      // defines returns whatever its body makes (`make(xs)` may build a fresh
+      // closure), and this pass does not follow its return flow, so its
+      // result is not taken to be a read.
       if edp_callee_stores_data(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm) {
         edp_data_root_items(items = args, needing = needing, stmts = stmts, fn_defs = fn_defs)
       } else {
-        let mut hit = ""
-        for a in args {
-          if hit == "" {
-            hit = edp_data_root_read(e = a, needing = needing, stmts = stmts, fn_defs = fn_defs)
-          }
-        }
-        hit
+        ""
       }
     },
-    ELabeledArg(_, _, v) => edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs),
+    ELabeledArg(_, _, v) => edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs),
     EDot(o, field, _, _) => match edp_escape_resolve(o) {
       ETuple(items) => match Int::parse(field) {
         Some(k) => if k >= 0 && k < Array::length(items) {
@@ -244,20 +277,9 @@ fn edp_data_root(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: A
       },
       _ => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
     },
-    EIf(_, t, el) => edp_needing_escape_or(a = edp_data_root(e = t, needing = needing, stmts = stmts, fn_defs = fn_defs), b = edp_data_root(e = el, needing = needing, stmts = stmts, fn_defs = fn_defs)),
-    _ => ""
-  }
-}
-
-/// An argument of an ordinary call: only a container it reads from (a tainted
-/// local, or data holding a needing name) makes the result a read of it --
-/// `Array::get(xs, at = 0)`, not `make(g)`.
-fn edp_data_root_read(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> String {
-  match e {
-    EIdent(an, _) => edp_escape_tainted_root(an),
-    ELabeledArg(_, _, v) => edp_data_root_read(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs),
-    ETuple(_) => edp_data_root(e = e, needing = needing, stmts = stmts, fn_defs = fn_defs),
-    EArray(_) => edp_data_root(e = e, needing = needing, stmts = stmts, fn_defs = fn_defs),
+    EIf(_, t, el) => edp_needing_escape_or(a = edp_data_root_items(items = [t], needing = needing, stmts = stmts, fn_defs = fn_defs), b = edp_data_root_items(items = [
+      el
+    ], needing = needing, stmts = stmts, fn_defs = fn_defs)),
     _ => ""
   }
 }
@@ -272,7 +294,12 @@ fn edp_data_root_items(items: Array[Expr], needing: Array[String], stmts: Array[
         EIdent(an, _) => if edp_str_array_contains(arr = needing, v = an) {
           an
         } else {
-          edp_escape_tainted_root(an)
+          let alias = edp_escape_alias_of(name = an, needing = needing)
+          if alias != "" {
+            alias
+          } else {
+            edp_escape_tainted_root(an)
+          }
         },
         _ => edp_data_root(e = item, needing = needing, stmts = stmts, fn_defs = fn_defs)
       }
@@ -333,8 +360,27 @@ fn edp_pat_taint(p: Pat, e: Expr, needing: Array[String], stmts: Array[Stmt], fn
     },
     (PWild, _) => (),
     (POr(a, b), _) => {
+      // Either alternative may be the one that matched: a binder keeps the
+      // root either one gives it.
+      let start = Array::length(edp_escape_tainted)
       edp_pat_taint(p = a, e = e, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let mid = Array::length(edp_escape_tainted)
       edp_pat_taint(p = b, e = e, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let mut k = mid
+      while k < Array::length(edp_escape_tainted) {
+        let (name, root, init) = Array::get(edp_escape_tainted, at = k)
+        if root == "" {
+          let mut m = start
+          while m < mid {
+            let (other, other_root, _) = Array::get(edp_escape_tainted, at = m)
+            if other == name && other_root != "" {
+              Array::set(edp_escape_tainted, at = k, value = (name, other_root, init))
+            }
+            m = m + 1
+          }
+        }
+        k = k + 1
+      }
     },
     (PTuple(ps), ETuple(es)) => if Array::length(ps) == Array::length(es) {
       let mut k = 0
