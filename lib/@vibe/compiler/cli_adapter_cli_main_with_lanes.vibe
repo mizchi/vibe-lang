@@ -149,6 +149,7 @@ import ./cli_adapter_fs_lane_request.vibe {
   adapter_split_nonempty_lines,
   adapter_string_to_bytes,
   apply_reloc_slot_width_env,
+  apply_wasm_names_env,
   cli_adapter_FsLane,
   cli_adapter_SsLane,
   cli_adapter_join_alloc_spans,
@@ -164,6 +165,7 @@ import ./cli_adapter_fs_lane_request.vibe {
   fs_lane_request,
   fs_path_is_unresolved_link,
   fs_paths_name_same_file,
+  input_trace_sidecar_refusal,
   join_binding_occurrences,
   join_escape_spans,
   join_lines,
@@ -265,6 +267,50 @@ fn incremental_telemetry_write(destination: String, contents: String) -> Unit wi
 /// No sidecar in this build: the request was refused before the work.
 fn incremental_telemetry_write(destination: String, contents: String) -> Unit with Fs {
   ()
+}
+
+// --- #2498: the ingestion fingerprint sidecar -----------------------------
+//
+// `VIBE_INGESTION_TELEMETRY_OUT` (+ nonce, check-only lane) counts what
+// `fingerprint_file_fs` read and hashed and how the ingestion stamp cache
+// answered (#1379). Only a compiler built with `VIBE_CFG=telemetry` publishes
+// it -- the generation's stage2, which scripts/ingestion_stamp_oracle.mjs,
+// edit_cycle_kpi.mjs, ingestion_pipeline_telemetry_integration.mjs and
+// check_telemetry_sidecar_guards.sh drive. A build without it refuses the
+// request by name, after its stale sidecar is cleared and before any work,
+// as the ingestion-pipeline sibling does. The encoder
+// (`cache_ingestion_fingerprint_telemetry_json` and the persistent-cache
+// wrapper) is then reached only from the `#cfg(telemetry)` publication below,
+// so the compile-only artifact defines none of it. Its declarations stay --
+// tests/source_text_memo_test.vibe and tests/source_fingerprint_memo_route_test.vibe
+// read it on the default cfg -- and so do the counters it reads, which those
+// tests drive; in this build nothing turns them on.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_INGESTION_TELEMETRY_OUT`, or `""` when
+/// it can.
+fn ingestion_fingerprint_telemetry_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_INGESTION_TELEMETRY_OUT`, or `""` when
+/// it can. This build has no sidecar writer, so it always refuses.
+fn ingestion_fingerprint_telemetry_refusal() -> String {
+  telemetry_build_refusal("VIBE_INGESTION_TELEMETRY_OUT")
+}
+
+#cfg(telemetry)
+/// Write this successful check's ingestion fingerprint sidecar to `path`.
+fn ingestion_fingerprint_telemetry_publish(path: String, nonce: String) -> Unit with Exception + Fs {
+  Fs::write_file(path, contents = ingestion_fingerprint_telemetry_json(nonce))
+}
+
+#cfg(not(telemetry))
+/// No sidecar writer in this build: refuse, as the request should already
+/// have been.
+fn ingestion_fingerprint_telemetry_publish(path: String, nonce: String) -> Unit with Exception + Fs {
+  throw(ingestion_fingerprint_telemetry_refusal())
 }
 
 // --- #2498: the incremental invalidation trace ----------------------------
@@ -401,6 +447,20 @@ fn has_control_character(_ value: String) -> Bool {
     i = i + 1
   }
   found
+}
+
+#cfg(telemetry)
+/// Write this successful compile's artifact-input trace to `path`, as the
+/// final publication of the compile (the lane produced `contents`).
+fn input_trace_sidecar_publish(path: String, contents: String) -> Unit with Fs {
+  Fs::write_file(path, contents = contents)
+}
+
+#cfg(not(telemetry))
+/// No artifact-input trace in this build: the request was refused before the
+/// work, so nothing reaches here.
+fn input_trace_sidecar_publish(path: String, contents: String) -> Unit with Fs {
+  ()
 }
 
 // --- #2498: heap marks (VIBE_PROFILE_MEMORY_MARKS=1, #1553) ---------------
@@ -898,12 +958,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // downstream code that hasn't annotated yet. Set before ANY compile
   // path runs so every lane (file compile, FS compile, diagnostics, lsp)
   // sees the same mode.
-  let artifact_input_trace_checked_error_row_mode = if Env::get("VIBE_CHECK_ERROR_ROW") == "0" {
-    "unchecked"
-  } else {
-    "checked"
-  }
-  let checked_error_row = artifact_input_trace_checked_error_row_mode == "checked"
+  let checked_error_row = Env::get("VIBE_CHECK_ERROR_ROW") != "0"
   // Checking and cache identity share this invocation snapshot.
   // #906 Phase 0: dependency-visit-order oracle. A non-zero seed permutes
   // each node's dep visit order (set_dep_order_seed, runtime/typecheck_fs.vibe);
@@ -915,14 +970,6 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   let dep_seed_text = Env::get("VIBE_DEP_ORDER_SEED")
   // Canonical trace spelling is the effective parsed decimal, so absent,
   // invalid, and zero spellings collapse to the production default `0`.
-  let artifact_input_trace_dep_order_seed = match Int::parse(dep_seed_text) {
-    Some(dep_seed) => if dep_seed == 0 {
-      "0"
-    } else {
-      __to_string(dep_seed)
-    },
-    None => "0"
-  }
   if dep_seed_text == "" {
     ()
   } else {
@@ -947,14 +994,9 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   // before db_typecheck_fs is called, so a syntax error still fails the build
   // at that earlier point and only the first one is reported. Collecting
   // there is a loader change, not a walk change.
-  let artifact_input_trace_diagnostics_mode = if Env::get("VIBE_DIAGNOSTICS_ALL") == "1" {
-    "all"
-  } else {
-    "fail-fast"
-  }
   // Presentation/scheduling policy is not a successful typing identity, but
   // its process-wide cell still needs an explicit per-invocation reset.
-  set_collect_module_diagnostics(artifact_input_trace_diagnostics_mode == "all")
+  set_collect_module_diagnostics(Env::get("VIBE_DIAGNOSTICS_ALL") == "1")
   // #2510: the incremental typecheck telemetry request joins the shared
   // clear-then-validate discipline rather than re-deriving it in a branch.
   // Cleared HERE, before any validation below can throw and before every
@@ -1033,7 +1075,13 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
     ()
   }
   if ingestion_telemetry_out != "" {
-    if Env::get("VIBE_CHECK_ONLY") != "1" {
+    // #2498: a compiler flattened without `VIBE_CFG=telemetry` has no sidecar
+    // writer. Refuse here, after the stale sidecar is gone and before any
+    // work, rather than answer the request with zeros or with nothing.
+    let fingerprint_refusal = ingestion_fingerprint_telemetry_refusal()
+    if fingerprint_refusal != "" {
+      throw(fingerprint_refusal)
+    } else if Env::get("VIBE_CHECK_ONLY") != "1" {
       throw("VIBE_INGESTION_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
     } else if ingestion_telemetry_nonce == "" || has_control_character(ingestion_telemetry_nonce) {
       throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
@@ -1136,6 +1184,23 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
   }
   if marks_refusal != "" {
     throw(marks_refusal)
+  } else {
+    ()
+  }
+  // #2498: the artifact-input trace is refused LAST, after every other
+  // observation's refusal. Its stale sidecar was cleared with the others
+  // above, in every build, and its request shape validated there; ordering
+  // its refusal after the rest keeps each of those refusals the one a
+  // combined request reports (scripts/check_compile_only_lanes.sh plants this
+  // trace as the stale sibling of every refusal probe, and asserts each probe
+  // is refused by its own name).
+  let input_trace_refusal = if artifact_input_trace_out != "" {
+    input_trace_sidecar_refusal()
+  } else {
+    ""
+  }
+  if input_trace_refusal != "" {
+    throw(input_trace_refusal)
   } else {
     ()
   }
@@ -1433,7 +1498,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // marker. A sidecar write failure therefore fails this check, never
       // leaves a stale/partial success observation.
       if ingestion_telemetry_out != "" {
-        Fs::write_file(ingestion_telemetry_out, contents = ingestion_fingerprint_telemetry_json(ingestion_telemetry_nonce))
+        ingestion_fingerprint_telemetry_publish(path = ingestion_telemetry_out, nonce = ingestion_telemetry_nonce)
       } else {
         ()
       }
@@ -1593,8 +1658,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // `modules_planned` is added. So this reports the real walk rather than
       // a lane that happens to look similar.
       //
-      let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
-      let fs_lane = fs_lane_request(mark_memory = mark_memory, artifact_input_trace_out = artifact_input_trace_out, artifact_input_trace_nonce = artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode = artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode = artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed = artifact_input_trace_dep_order_seed)
+      let fs_lane = fs_lane_request(mark_memory = mark_memory)
       // Record the lane that will actually produce `bytes`; raw Env presence
       // is not an artifact property when selectors are combined.
       let fs_coverage_selected = match fs_lane {
@@ -1698,7 +1762,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String, Bool, Bool
       // The compiler artifact is committed first; this requested observation
       // sidecar is deliberately the final publication operation.
       if artifact_input_trace_out != "" {
-        Fs::write_file(artifact_input_trace_out, contents = artifact_input_trace)
+        input_trace_sidecar_publish(path = artifact_input_trace_out, contents = artifact_input_trace)
       } else {
         ()
       }
@@ -2332,6 +2396,8 @@ fn host_argv() -> Array[String] with Env {
 export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler {
   // #3941: one width for every compile this process runs.
   apply_reloc_slot_width_env()
+  // #4127: and one answer to whether the gc lane names its functions.
+  apply_wasm_names_env()
   if user_dispatch_is_verb(host_argv_first()) {
     // #2513: the `#cfg` flag set for every module this invocation parses;
     // cli_main_with_lanes does the same for the positional protocol.

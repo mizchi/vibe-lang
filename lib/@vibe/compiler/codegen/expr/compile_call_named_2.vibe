@@ -346,6 +346,140 @@ fn cc_map_set_copy_path(buf: Bytes, ctx: CompileCtx, map_l: Int, key_l: Int, val
   }
 }
 
+/// #4121: push the i32 test "is the untagged map at `map_l` scalar-keyed?"
+/// (`map_scalar_slot_bit` of its slot word). An unmarked map -- every String
+/// map, and an empty `Map::new()` -- answers 0.
+fn cc_map_emit_is_scalar(buf: Bytes, map_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  emit_i32_const(buf = buf, value = map_scalar_slot_bit)
+  emit_i32_and(buf)
+}
+
+/// The body of `Map::get` after its operands are in the locals from `nl`
+/// (map untagged at `nl`, key at `nl + 1`; count, index and index pointer
+/// after). `scalar_key` picks the exact i64 comparison; `check_class` traps a
+/// String-keyed read of a scalar-keyed map (#2334), which a #4121 dynamic read
+/// has already told apart. Leaves the value as one i64.
+fn cc_map_get_body(buf: Bytes, ctx: CompileCtx, nl: Int, scalar_key: Bool, check_class: Bool, eq_fn: Int, miss_print_idx: Int, miss_msg_slot: Int) -> Unit {
+  let map_local = nl
+  let key_local = nl + 1
+  let count_local = nl + 2
+  let idx_local = nl + 3
+  let map_get_eq_idx = if scalar_key {
+    0 - 1
+  } else {
+    eq_fn
+  }
+  emit_local_get(buf = buf, idx = map_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf = buf, idx = count_local)
+  if check_class && !scalar_key {
+    cc_map_trap_if_scalar(buf = buf, map_l = map_local)
+  } else {
+    ()
+  }
+  if ctx.map_probe_func_idx >= 0 {
+    let idxptr_local = nl + 4
+    emit_local_get(buf = buf, idx = map_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf = buf, align = 2, offset = 4)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf = buf, idx = idxptr_local)
+    if scalar_key {
+      // #2334: drop the scalar-key bit; the probe helper reads it itself.
+      emit_local_get(buf = buf, idx = idxptr_local)
+      emit_i64_const(buf = buf, value = 0 - 2)
+      emit_i64_and(buf)
+      emit_local_set(buf = buf, idx = idxptr_local)
+    } else ()
+    emit_local_get(buf = buf, idx = idxptr_local)
+    emit_i64_eqz(buf)
+    emit_if_i64(buf)
+    cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
+    emit_else(buf)
+    emit_local_get(buf = buf, idx = map_local)
+    emit_local_get(buf = buf, idx = count_local)
+    emit_local_get(buf = buf, idx = key_local)
+    emit_call(buf = buf, func_idx = ctx.map_probe_func_idx)
+    emit_local_set(buf = buf, idx = idx_local)
+    emit_local_get(buf = buf, idx = idx_local)
+    emit_i64_const(buf = buf, value = 0)
+    emit_i64_lt_s(buf)
+    emit_if_i64(buf)
+    // #2990: see `cc_map_get_linear_scan`.
+    cc_map_get_miss_trap(buf = buf, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
+    emit_else(buf)
+    emit_local_get(buf = buf, idx = map_local)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf = buf, idx = idx_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf = buf, value = 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf = buf, align = 3, offset = 16)
+    emit_end(buf)
+    emit_end(buf)
+  } else {
+    cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
+  }
+}
+
+/// The body of `Map::has_key`, laid out like `cc_map_get_body` (index pointer
+/// at `nl + 4`, always reserved). Leaves a raw untagged 0/1 i64.
+fn cc_map_has_body(buf: Bytes, ctx: CompileCtx, nl: Int, scalar_key: Bool, check_class: Bool, eq_fn: Int) -> Unit {
+  let map_l = nl; let key_l = nl + 1; let cnt_l = nl + 2; let i_l = nl + 3
+  let idxptr_l = nl + 4
+  let eq_fi = if scalar_key {
+    0 - 1
+  } else {
+    eq_fn
+  }
+  emit_local_get(buf = buf, idx = map_l); emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 0); emit_i64_extend_i32_u(buf); emit_local_set(buf = buf, idx = cnt_l)
+  if check_class && !scalar_key {
+    cc_map_trap_if_scalar(buf = buf, map_l = map_l)
+  } else {
+    ()
+  }
+  if ctx.map_probe_func_idx >= 0 {
+    emit_local_get(buf = buf, idx = map_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf = buf, align = 2, offset = 4)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf = buf, idx = idxptr_l)
+    if scalar_key {
+      // #2334: drop the scalar-key bit; the probe helper reads it itself.
+      emit_local_get(buf = buf, idx = idxptr_l)
+      emit_i64_const(buf = buf, value = 0 - 2)
+      emit_i64_and(buf)
+      emit_local_set(buf = buf, idx = idxptr_l)
+    } else ()
+    emit_local_get(buf = buf, idx = idxptr_l)
+    emit_i64_eqz(buf)
+    emit_if_i64(buf)
+    cc_map_has_linear_scan(buf = buf, map_local = map_l, key_local = key_l, count_local = cnt_l, idx_local = i_l, eq_idx = eq_fi)
+    emit_else(buf)
+    emit_local_get(buf = buf, idx = map_l)
+    emit_local_get(buf = buf, idx = cnt_l)
+    emit_local_get(buf = buf, idx = key_l)
+    emit_call(buf = buf, func_idx = ctx.map_probe_func_idx)
+    emit_i64_const(buf = buf, value = 0)
+    emit_i64_ge_s(buf)
+    emit_if_i64(buf)
+    emit_i64_const(buf = buf, value = 1)
+    emit_else(buf)
+    emit_i64_const(buf = buf, value = 0)
+    emit_end(buf)
+    emit_end(buf)
+  } else {
+    cc_map_has_linear_scan(buf = buf, map_local = map_l, key_local = key_l, count_local = cnt_l, idx_local = i_l, eq_idx = eq_fi)
+  }
+}
+
 export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
   if fname == "__let_refuted" {
     // #3626: a refutable `let` whose pattern did not match. Print the line
@@ -1450,153 +1584,75 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf = buf, idx = cnt_l)
     nl + 2
   }
-  else if fname == "Map::get" || fname == "Map::__scalar_get" {
+  else if fname == "Map::get" || fname == "Map::__scalar_get" || fname == "Map::__dynamic_get" {
     // #2334: `Map::__scalar_get` is a `Map::get` whose key the checker typed
     // `Int` / `Char` / `Bool`: an exact i64 comparison, never the index.
+    // #4121: `Map::__dynamic_get` is one whose key is a generic body's type
+    // parameter; it reads the map's own key-class mark at run time.
     let scalar_key = fname == "Map::__scalar_get"
+    let dynamic_key = fname == "Map::__dynamic_get"
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
     let (map_get_eq_fn, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
-    let map_get_eq_idx = if scalar_key {
-      0 - 1
-    } else {
-      map_get_eq_fn
-    }
     let (miss_print_idx, miss_msg_slot) = cc_map_get_miss_parts(ctx)
     let map_local = nl
     let key_local = nl + 1
-    let count_local = nl + 2
-    let idx_local = nl + 3
     Array::push(local_names, value = "__map_ref")
     Array::push(local_names, value = "__map_key")
     Array::push(local_names, value = "__map_cnt")
     Array::push(local_names, value = "__map_i")
+    if ctx.map_probe_func_idx >= 0 {
+      Array::push(local_names, value = "__map_idxptr")
+    } else ()
     emit_local_set(buf = buf, idx = key_local)
     emit_local_set(buf = buf, idx = map_local)
     emit_local_get(buf = buf, idx = map_local)
     emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
     emit_local_set(buf = buf, idx = map_local)
-    emit_local_get(buf = buf, idx = map_local)
-    emit_i32_wrap_i64(buf)
-    emit_i32_load(buf = buf, align = 2, offset = 0)
-    emit_i64_extend_i32_u(buf)
-    emit_local_set(buf = buf, idx = count_local)
-    if !scalar_key {
-      cc_map_trap_if_scalar(buf = buf, map_l = map_local)
+    if dynamic_key {
+      cc_map_emit_is_scalar(buf = buf, map_l = map_local)
+      emit_if_i64(buf)
+      cc_map_get_body(buf = buf, ctx = ctx, nl = nl, scalar_key = true, check_class = false, eq_fn = map_get_eq_fn, miss_print_idx = miss_print_idx, miss_msg_slot = miss_msg_slot)
+      emit_else(buf)
+      cc_map_get_body(buf = buf, ctx = ctx, nl = nl, scalar_key = false, check_class = false, eq_fn = map_get_eq_fn, miss_print_idx = miss_print_idx, miss_msg_slot = miss_msg_slot)
+      emit_end(buf)
     } else {
-      ()
+      cc_map_get_body(buf = buf, ctx = ctx, nl = nl, scalar_key = scalar_key, check_class = true, eq_fn = map_get_eq_fn, miss_print_idx = miss_print_idx, miss_msg_slot = miss_msg_slot)
     }
     if ctx.map_probe_func_idx >= 0 {
-      let idxptr_local = nl + 4
-      Array::push(local_names, value = "__map_idxptr")
-      emit_local_get(buf = buf, idx = map_local)
-      emit_i32_wrap_i64(buf)
-      emit_i32_load(buf = buf, align = 2, offset = 4)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf = buf, idx = idxptr_local)
-      if scalar_key {
-        // #2334: drop the scalar-key bit; the probe helper reads it itself.
-        emit_local_get(buf = buf, idx = idxptr_local)
-        emit_i64_const(buf = buf, value = 0 - 2)
-        emit_i64_and(buf)
-        emit_local_set(buf = buf, idx = idxptr_local)
-      } else ()
-      emit_local_get(buf = buf, idx = idxptr_local)
-      emit_i64_eqz(buf)
-      emit_if_i64(buf)
-      cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
-      emit_else(buf)
-      emit_local_get(buf = buf, idx = map_local)
-      emit_local_get(buf = buf, idx = count_local)
-      emit_local_get(buf = buf, idx = key_local)
-      emit_call(buf = buf, func_idx = ctx.map_probe_func_idx)
-      emit_local_set(buf = buf, idx = idx_local)
-      emit_local_get(buf = buf, idx = idx_local)
-      emit_i64_const(buf = buf, value = 0)
-      emit_i64_lt_s(buf)
-      emit_if_i64(buf)
-      // #2990: see `cc_map_get_linear_scan`.
-      cc_map_get_miss_trap(buf = buf, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
-      emit_else(buf)
-      emit_local_get(buf = buf, idx = map_local)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf = buf, idx = idx_local)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf = buf, align = 3, offset = 16)
-      emit_end(buf)
-      emit_end(buf)
       nl + 5
     } else {
-      cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
       nl + 4
     }
   }
-  else if fname == "Map::has_key" || fname == "Map::has" || (fname == "map_has" && local_idx_hint < 0) || fname == "Map::__scalar_has_key" {
+  else if fname == "Map::has_key" || fname == "Map::has" || (fname == "map_has" && local_idx_hint < 0) || fname == "Map::__scalar_has_key" || fname == "Map::__dynamic_has_key" {
     // #3565: a local binding spelled `map_has` is the program's value (the
     // resolved call calls it); `is_inlined_scalar_builtin` keeps the capture
     // scan from inventing one inside a lambda.
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
-    // #2334: see `Map::__scalar_get` above.
+    // #2334 / #4121: see `Map::__scalar_get` above.
     let scalar_key = fname == "Map::__scalar_has_key"
+    let dynamic_key = fname == "Map::__dynamic_has_key"
     let (eq_fn, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
-    let eq_fi = if scalar_key {
-      0 - 1
-    } else {
-      eq_fn
-    }
-    let map_l = nl; let key_l = nl + 1; let cnt_l = nl + 2; let i_l = nl + 3
+    let map_l = nl; let key_l = nl + 1; let i_l = nl + 3
     // idxptr_l is only READ when ctx.map_probe_func_idx >= 0, but reserved
     // unconditionally so this arm always returns the same local count.
-    let idxptr_l = nl + 4
     Array::push(local_names, value = "__hk_map"); Array::push(local_names, value = "__hk_key")
     Array::push(local_names, value = "__hk_cnt"); Array::push(local_names, value = "__hk_i")
     Array::push(local_names, value = "__hk_idxptr")
     emit_local_set(buf = buf, idx = key_l); emit_local_set(buf = buf, idx = map_l)
     emit_local_get(buf = buf, idx = map_l); emit_i64_const(buf = buf, value = -2); emit_i64_and(buf); emit_local_set(buf = buf, idx = map_l)
-    emit_local_get(buf = buf, idx = map_l); emit_i32_wrap_i64(buf)
-    emit_i32_load(buf = buf, align = 2, offset = 0); emit_i64_extend_i32_u(buf); emit_local_set(buf = buf, idx = cnt_l)
-    if !scalar_key {
-      cc_map_trap_if_scalar(buf = buf, map_l = map_l)
-    } else {
-      ()
-    }
-    if ctx.map_probe_func_idx >= 0 {
-      emit_local_get(buf = buf, idx = map_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_load(buf = buf, align = 2, offset = 4)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf = buf, idx = idxptr_l)
-      if scalar_key {
-        // #2334: drop the scalar-key bit; the probe helper reads it itself.
-        emit_local_get(buf = buf, idx = idxptr_l)
-        emit_i64_const(buf = buf, value = 0 - 2)
-        emit_i64_and(buf)
-        emit_local_set(buf = buf, idx = idxptr_l)
-      } else ()
-      emit_local_get(buf = buf, idx = idxptr_l)
-      emit_i64_eqz(buf)
+    if dynamic_key {
+      cc_map_emit_is_scalar(buf = buf, map_l = map_l)
       emit_if_i64(buf)
-      cc_map_has_linear_scan(buf = buf, map_local = map_l, key_local = key_l, count_local = cnt_l, idx_local = i_l, eq_idx = eq_fi)
+      cc_map_has_body(buf = buf, ctx = ctx, nl = nl, scalar_key = true, check_class = false, eq_fn = eq_fn)
       emit_else(buf)
-      emit_local_get(buf = buf, idx = map_l)
-      emit_local_get(buf = buf, idx = cnt_l)
-      emit_local_get(buf = buf, idx = key_l)
-      emit_call(buf = buf, func_idx = ctx.map_probe_func_idx)
-      emit_i64_const(buf = buf, value = 0)
-      emit_i64_ge_s(buf)
-      emit_if_i64(buf)
-      emit_i64_const(buf = buf, value = 1)
-      emit_else(buf)
-      emit_i64_const(buf = buf, value = 0)
-      emit_end(buf)
+      cc_map_has_body(buf = buf, ctx = ctx, nl = nl, scalar_key = false, check_class = false, eq_fn = eq_fn)
       emit_end(buf)
     } else {
-      cc_map_has_linear_scan(buf = buf, map_local = map_l, key_local = key_l, count_local = cnt_l, idx_local = i_l, eq_idx = eq_fi)
+      cc_map_has_body(buf = buf, ctx = ctx, nl = nl, scalar_key = scalar_key, check_class = true, eq_fn = eq_fn)
     }
     // Under RC a Bool is a TAGGED scalar (n << 1); the block yields a raw 0/1,
     // so tag it to match tagged Bool literals (see Array::any). Latent

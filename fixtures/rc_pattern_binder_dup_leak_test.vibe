@@ -1,0 +1,401 @@
+// RC leak guard: a pattern binder consumed on one branch releases the dup
+// the path did not spend.
+//
+// A match payload binder is a borrowed view of its scrutinee, and the bind
+// takes one reference per consume its arm may perform -- the MAXIMUM over
+// the arm's branches (`bind_match_pat`). Nothing released those references,
+// since each was meant to be spent by its consume, so a path that skipped a
+// consume leaked the dup on every run. `if o is Some(v)`, `guard`, and a
+// tuple `let` lower to the same match. Each counted consume is now a mark on
+// a flag local, and the arm's end releases the dups less the marks the path
+// ran (`mpr_compile_arm`).
+//
+// Measured at N=20000 on the compiler before this change (each shape alone):
+//
+//   | shape                                           |    before | after |
+//   |-------------------------------------------------|----------:|------:|
+//   | `match o { Some(v) => .. }`, `o` a local        | 880,044 B | 136 B |
+//   | the same, `o` a parameter                       | 880,044 B | 136 B |
+//   | `if o is Some(v) { .. }`                        | 880,044 B | 136 B |
+//   | `guard o is Some(v) else { .. }`                | 880,044 B | 136 B |
+//   | `let (v, n) = (mka(i), i)`                      | 880,052 B | 144 B |
+//   | `match (mka(i), i) { (v, n) => .. }`            | 880,052 B | 144 B |
+//
+// A struct destructure's binders and a projection `let` (`let v = h.inner`)
+// are not in it: they are `let`s of a projection, whose counted path drop the
+// `let` lowering still declines, and they still leak 880,044 B each.
+//
+// The controls keep the consumed values in an array past the call -- one
+// consume or two on an arm, a nested payload, a consume in a loop, an exit
+// after the consume, an alias, a lambda, a view handed back, a shadowing
+// binder, the scrutinee consumed beside its payload -- so a release on a
+// path still holding the value would free it under the array: VIBE_RC=shadow
+// traps on that. The gate compiles this under VIBE_RC=1 and bounds
+// __heap_ptr growth, and runs it under VIBE_RC=shadow
+// (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh, 40e10). `main`
+// returns 0: every leak shape adds 0, so the answer cannot drift with the
+// allocation behaviour being measured.
+struct H {
+  inner: Array[Int]
+}
+
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+// Takes its argument: stores it into a record that it then drops.
+fn sink(_ v: Array[Int]) -> Int {
+  let h = H::{ inner: v }
+  Array::get(h.inner, at = 0)
+}
+
+fn arm_local(_ i: Int) -> Int {
+  let o = Some(mka(i))
+  match o {
+    Some(v) => {
+      let a = if i % 2 == 0 {
+        sink(v) - i
+      } else {
+        0
+      }
+      (a + Array::get(v, at = 2) - (i + 2)) * 0
+    },
+    None => 0
+  }
+}
+
+fn arm_param(_ o: Option[Array[Int]], _ i: Int) -> Int {
+  match o {
+    Some(v) => {
+      let a = if i % 2 == 0 {
+        sink(v) - i
+      } else {
+        0
+      }
+      (a + Array::get(v, at = 2) - (i + 2)) * 0
+    },
+    None => 0
+  }
+}
+
+fn is_some(_ i: Int) -> Int {
+  let o = Some(mka(i))
+  if o is Some(v) {
+    let a = if i % 2 == 0 {
+      sink(v) - i
+    } else {
+      0
+    }
+    (a + Array::get(v, at = 2) - (i + 2)) * 0
+  } else {
+    0
+  }
+}
+
+fn guard_is(_ i: Int) -> Int {
+  let o = Some(mka(i))
+  guard o is Some(v) else {
+    return 0
+  }
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+fn tuple_let(_ i: Int) -> Int {
+  let (v, n) = (mka(i), i)
+  let a = if n % 2 == 0 {
+    sink(v) - n
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (n + 2)) * 0
+}
+
+fn match_tuple(_ i: Int) -> Int {
+  match (mka(i), i) {
+    (v, n) => {
+      let a = if n % 2 == 0 {
+        sink(v) - n
+      } else {
+        0
+      }
+      (a + Array::get(v, at = 2) - (n + 2)) * 0
+    }
+  }
+}
+
+// Arms consuming 2, 1 and 0: the bind takes two dups.
+fn arm_two(_ i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      let a = if i % 3 == 0 {
+        sink(v) + sink(v) - 2 * i
+      } else if i % 3 == 1 {
+        sink(v) - i
+      } else {
+        0
+      }
+      (a + Array::get(v, at = 1) - (i + 1)) * 0
+    },
+    None => 0
+  }
+}
+
+// Controls: the consumed value outlives the call.
+fn keep_into(ks: Array[Array[Int]], v: Array[Int]) -> Int {
+  Array::push(ks, value = v)
+  0
+}
+
+fn kept_arm(ks: Array[Array[Int]], o: Option[Array[Int]], i: Int) -> Int {
+  match o {
+    Some(v) => {
+      if i % 2 == 0 {
+        Array::push(ks, value = v)
+      } else {
+        ()
+      }
+      Array::get(v, at = 2) - (i + 2)
+    },
+    None => 0
+  }
+}
+
+fn kept_two(ks: Array[Array[Int]], i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      let a = if i % 3 == 0 {
+        keep_into(ks = ks, v = v) + keep_into(ks = ks, v = v)
+      } else if i % 3 == 1 {
+        keep_into(ks = ks, v = v)
+      } else {
+        0
+      }
+      a + Array::get(v, at = 1) - (i + 1)
+    },
+    None => 0
+  }
+}
+
+fn kept_nested(ks: Array[Array[Int]], i: Int) -> Int {
+  match Some((mka(i), i)) {
+    Some((v, n)) => {
+      if n % 2 == 0 {
+        Array::push(ks, value = v)
+      } else {
+        ()
+      }
+      Array::get(v, at = 2) - (n + 2)
+    },
+    None => 0
+  }
+}
+
+fn kept_tuple_let(ks: Array[Array[Int]], i: Int) -> Int {
+  let (v, n) = (mka(i), i)
+  if n % 2 == 0 {
+    Array::push(ks, value = v)
+  } else {
+    ()
+  }
+  Array::get(v, at = 2) - (n + 2)
+}
+
+fn kept_struct_let(ks: Array[Array[Int]], h: H, i: Int) -> Int {
+  let H::{ inner } = h
+  if i % 2 == 0 {
+    Array::push(ks, value = inner)
+  } else {
+    ()
+  }
+  Array::get(inner, at = 2) - (i + 2)
+}
+
+fn kept_proj_let(ks: Array[Array[Int]], h: H, i: Int) -> Int {
+  let v = h.inner
+  if i % 2 == 0 {
+    keep_into(ks = ks, v = v) + keep_into(ks = ks, v = v)
+  } else {
+    0
+  }
+  + Array::get(v, at = 2) - (i + 2)
+}
+
+// The consume runs once per iteration: the marks out-count the one dup.
+fn kept_loop(ks: Array[Array[Int]], i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      let mut k = 0
+      if i % 2 == 0 {
+        while k < 2 {
+          Array::push(ks, value = v)
+          k = k + 1
+        }
+      } else {
+        ()
+      }
+      Array::get(v, at = 2) - (i + 2) + k * 0
+    },
+    None => 0
+  }
+}
+
+// An exit after the consume skips the arm's release.
+fn kept_exit(ks: Array[Array[Int]], i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      if i % 2 == 0 {
+        Array::push(ks, value = v)
+        if i % 4 == 0 {
+          return Array::get(v, at = 0) - i
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      Array::get(v, at = 2) - (i + 2)
+    },
+    None => 0
+  }
+}
+
+// The consume moves the binder into an alias.
+fn kept_alias(ks: Array[Array[Int]], i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      if i % 2 == 0 {
+        let w = v
+        Array::push(ks, value = w)
+      } else {
+        ()
+      }
+      Array::get(v, at = 2) - (i + 2)
+    },
+    None => 0
+  }
+}
+
+// A lambda consumes the binder: no mark can run there, so it declines.
+fn kept_lambda(ks: Array[Array[Int]], i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      if i % 2 == 0 {
+        let f = () -> keep_into(ks = ks, v = v)
+        f()
+      } else {
+        0
+      }
+      + Array::get(v, at = 2) - (i + 2)
+    },
+    None => 0
+  }
+}
+
+// The arm hands back a view into the binder: it declines.
+fn kept_view(ks: Array[Array[Int]], o: Option[Array[Array[Int]]], i: Int) -> Array[Int] {
+  match o {
+    Some(vv) => if i % 2 == 0 {
+      Array::push(ks, value = Array::get(vv, at = 0))
+      keep_all(ks = ks, vv = vv)
+    } else {
+      Array::get(vv, at = 1)
+    },
+    None => []
+  }
+}
+
+fn keep_all(ks: Array[Array[Int]], vv: Array[Array[Int]]) -> Array[Int] {
+  Array::push(ks, value = Array::get(vv, at = 1))
+  [0]
+}
+
+// A binder of the same name inside the arm: it declines.
+fn kept_shadow(ks: Array[Array[Int]], i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      if i % 2 == 0 {
+        Array::push(ks, value = v)
+      } else {
+        ()
+      }
+      let r = Array::get(v, at = 2) - (i + 2)
+      let v = mka(0)
+      r + Array::get(v, at = 0)
+    },
+    None => 0
+  }
+}
+
+// The scrutinee is consumed beside its payload.
+fn kept_scrut(ks: Array[Array[Int]], os: Array[Option[Array[Int]]], i: Int) -> Int {
+  let o = Some(mka(i))
+  match o {
+    Some(v) => {
+      Array::push(os, value = o)
+      if i % 2 == 0 {
+        Array::push(ks, value = v)
+      } else {
+        ()
+      }
+      Array::get(v, at = 2) - (i + 2)
+    },
+    None => 0
+  }
+}
+
+fn first_sum(ks: Array[Array[Int]]) -> Int {
+  let mut s = 0
+  let mut m = 0
+  while m < Array::length(ks) {
+    s = s + Array::get(Array::get(ks, at = m), at = 0)
+    m = m + 1
+  }
+  s
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + arm_local(i) + arm_param(Some(mka(i)), i) + is_some(i) + guard_is(i) + tuple_let(i)
+    acc = acc + match_tuple(i) + arm_two(i)
+    i = i + 1
+  }
+  let ks: Array[Array[Int]] = []
+  let os: Array[Option[Array[Int]]] = []
+  let mut vsum = 0
+  let mut j = 0
+  while j < 6 {
+    acc = acc + kept_arm(ks = ks, o = Some(mka(j)), i = j) + kept_two(ks = ks, i = j + 10) + kept_nested(ks = ks, i = j + 20)
+    acc = acc + kept_tuple_let(ks = ks, i = j + 30) + kept_struct_let(ks = ks, h = H::{ inner: mka(j + 40) }, i = j + 40)
+    acc = acc + kept_proj_let(ks = ks, h = H::{ inner: mka(j + 50) }, i = j + 50) + kept_loop(ks = ks, i = j + 60) + kept_exit(ks = ks, i = j + 70)
+    acc = acc + kept_alias(ks = ks, i = j + 80) + kept_lambda(ks = ks, i = j + 90) + kept_shadow(ks = ks, i = j + 100) + kept_scrut(ks = ks, os = os, i = j + 110)
+    let w = kept_view(ks = ks, o = Some([mka(j + 120), mka(j + 130)]), i = j)
+    vsum = vsum + Array::get(w, at = 0)
+    j = j + 1
+  }
+  let mut ssum = 0
+  let mut q = 0
+  while q < Array::length(os) {
+    match Array::get(os, at = q) {
+      Some(x) => {
+        ssum = ssum + Array::get(x, at = 0)
+      },
+      None => ()
+    }
+    q = q + 1
+  }
+  // What the controls keep, as the bump lane answers it: the first elements
+  // of every kept array, a thousand per array, the views handed back and the
+  // consumed scrutinees' payloads.
+  acc + first_sum(ks = ks) + Array::length(ks) * 1000 + vsum + ssum - 55271
+}
+
+test "a pattern binder releases the dup a path did not spend" {
+  inspect(main(), content = "0")
+}

@@ -34,8 +34,12 @@ import @vibe/compiler/core {
   set_reloc_slot_width
 }
 
+import @vibe/compiler/codegen/gc {
+  set_gc_function_names
+}
+
 import @vibe/compiler/loader {
-  collect_source_groups_fs
+  collect_source_groups_fs, telemetry_build_refusal
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -774,7 +778,7 @@ export enum cli_adapter_FsLane {
   FsLaneRcHeapMarked;
   FsLaneRcBodyCached(String);
   FsLaneRc;
-  FsLaneBumpArtifactInputTrace(String, String, String, String);
+  FsLaneBumpArtifactInputTrace;
   FsLaneBumpTestmeta(String);
   FsLaneBumpHeapMarked;
   FsLaneBump
@@ -792,7 +796,7 @@ fn fs_lane_switch(_ lane: cli_adapter_FsLane) -> String {
     FsLaneRcHeapMarked => "VIBE_PROFILE_MEMORY_MARKS=1",
     FsLaneRcBodyCached(mode) => String::concat("VIBE_CODEGEN_BODY_CACHE=", mode),
     FsLaneRc => "the RC lane",
-    FsLaneBumpArtifactInputTrace(_, _, _, _) => "VIBE_ARTIFACT_INPUT_TRACE_OUT",
+    FsLaneBumpArtifactInputTrace => "VIBE_ARTIFACT_INPUT_TRACE_OUT",
     FsLaneBumpTestmeta(_) => "VIBE_TESTMETA_OUT",
     FsLaneBumpHeapMarked => "VIBE_PROFILE_MEMORY_MARKS=1",
     FsLaneBump => "the bump lane (VIBE_RC=0)"
@@ -834,7 +838,74 @@ export fn apply_reloc_slot_width_env() -> Unit with Env {
   set_reloc_slot_width(w)
 }
 
-export fn fs_lane_request(mark_memory: Bool, artifact_input_trace_out: String, artifact_input_trace_nonce: String, artifact_input_trace_checked_error_row_mode: String, artifact_input_trace_diagnostics_mode: String, artifact_input_trace_dep_order_seed: String) -> cli_adapter_FsLane with Env {
+// --- #2498: the artifact-input trace ----------------------------------------
+//
+// `VIBE_ARTIFACT_INPUT_TRACE_OUT` (+ nonce) asks the exact cached bump lane to
+// record which inputs its artifact depended on, for
+// scripts/artifact_input_trace_oracle.mjs. Only a compiler built with
+// `VIBE_CFG=telemetry` -- the generation's stage2, which that oracle and
+// check_telemetry_sidecar_guards.sh drive -- compiles that lane; a build
+// without it refuses the request by name (`input_trace_sidecar_refusal`). The
+// compile-only artifact never installed the lane (its table refuses it), and a
+// full CLI flattened without the flag now holds none of it either:
+// `compile_file_fs_mode_cached_artifact_input_trace` is reached only from the
+// `#cfg(telemetry)` half below. Its declaration stays --
+// tests/invocation_config_exports_cache_test.vibe calls it on the default cfg.
+
+#cfg(telemetry)
+/// Why this compiler cannot answer `VIBE_ARTIFACT_INPUT_TRACE_OUT`, or `""` when
+/// it can.
+export fn input_trace_sidecar_refusal() -> String {
+  ""
+}
+
+#cfg(not(telemetry))
+/// Why this compiler cannot answer `VIBE_ARTIFACT_INPUT_TRACE_OUT`, or `""` when
+/// it can. This build has no trace lane, so it always refuses.
+export fn input_trace_sidecar_refusal() -> String {
+  telemetry_build_refusal("VIBE_ARTIFACT_INPUT_TRACE_OUT")
+}
+
+#cfg(telemetry)
+/// Compile on the artifact-input trace lane. The trace records the run nonce,
+/// the error-row and diagnostics modes and the effective dep-order seed in
+/// their canonical spellings, read from the invocation environment the CLI
+/// already validated.
+fn input_trace_lane_compile(input_path: String, entry_name: String, exports_stripped: Bool, checked_error_row: Bool) -> (Bytes, String) with Exception + Fs + Env {
+  // Canonical spelling is the effective parsed decimal: absent and invalid
+  // spellings collapse to the production default `0`, and so does any
+  // spelling of zero, since it parses to 0.
+  let dep_order_seed = match Int::parse(Env::get("VIBE_DEP_ORDER_SEED")) {
+    Some(dep_seed) => __to_string(dep_seed),
+    None => "0"
+  }
+  compile_file_fs_mode_cached_artifact_input_trace(entry_path = input_path, entry_name = entry_name, mode = "no-dce", run_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE"), checked_error_row_mode = if checked_error_row {
+    "checked"
+  } else {
+    "unchecked"
+  }, diagnostics_mode = if Env::get("VIBE_DIAGNOSTICS_ALL") == "1" {
+    "all"
+  } else {
+    "fail-fast"
+  }, dep_order_seed = dep_order_seed, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
+}
+
+#cfg(not(telemetry))
+/// No trace lane in this build: refuse, as the request should already have
+/// been.
+fn input_trace_lane_compile(input_path: String, entry_name: String, exports_stripped: Bool, checked_error_row: Bool) -> (Bytes, String) with Exception + Fs + Env {
+  throw(input_trace_sidecar_refusal())
+}
+
+/// #4127: whether the gc lane writes the function-name subsection, read
+/// once at the top of `cli_main` like the slot width above. The linear lane
+/// always writes it and the release strip decides; the gc lane is written as
+/// emitted, so it asks here instead. Anything but `1` leaves it off.
+export fn apply_wasm_names_env() -> Unit with Env {
+  set_gc_function_names(Env::get("VIBE_WASM_NAMES") == "1")
+}
+
+export fn fs_lane_request(mark_memory: Bool) -> cli_adapter_FsLane with Env {
   // The special compile MODES (coverage / debugger break / trace) are checked
   // first; they are mutually exclusive instrumentation builds and are
   // unaffected by the RC cutover. Instrumentation selectors have higher
@@ -894,8 +965,12 @@ export fn fs_lane_request(mark_memory: Bool, artifact_input_trace_out: String, a
     // parse). Env is read here (this layer has it), keeping the file_compile
     // layer Env-free.
     let testmeta_out = Env::get("VIBE_TESTMETA_OUT")
-    if artifact_input_trace_out != "" {
-      FsLaneBumpArtifactInputTrace(artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed)
+    // #2498: the artifact-input trace request is read here rather than
+    // threaded through this signature; the lane reads the rest of what it
+    // records (nonce, error-row and diagnostics modes, dep-order seed) from the
+    // same invocation environment when it compiles.
+    if Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT") != "" {
+      FsLaneBumpArtifactInputTrace
     } else if testmeta_out != "" {
       FsLaneBumpTestmeta(testmeta_out)
     } else if mark_memory {
@@ -923,7 +998,7 @@ export fn fs_lane_compile_full(lane: cli_adapter_FsLane, input_path: String, ent
     FsLaneRcHeapMarked => (compile_file_fs_mode_rc_heap_marked(entry_path = input_path, entry_name = entry_name, exports_stripped = exports_stripped, checked_error_row = checked_error_row), ""),
     FsLaneRcBodyCached(mode) => (compile_file_fs_mode_rc_body_cached(entry_path = input_path, entry_name = entry_name, cache_mode = mode, exports_stripped = exports_stripped, checked_error_row = checked_error_row), ""),
     FsLaneRc => (compile_file_fs_mode_rc(entry_path = input_path, entry_name = entry_name, exports_stripped = exports_stripped, checked_error_row = checked_error_row), ""),
-    FsLaneBumpArtifactInputTrace(nonce, checked_error_row_mode, diagnostics_mode, dep_order_seed) => compile_file_fs_mode_cached_artifact_input_trace(entry_path = input_path, entry_name = entry_name, mode = "no-dce", run_nonce = nonce, checked_error_row_mode = checked_error_row_mode, diagnostics_mode = diagnostics_mode, dep_order_seed = dep_order_seed, exports_stripped = exports_stripped, checked_error_row = checked_error_row),
+    FsLaneBumpArtifactInputTrace => input_trace_lane_compile(input_path = input_path, entry_name = entry_name, exports_stripped = exports_stripped, checked_error_row = checked_error_row),
     FsLaneBumpTestmeta(testmeta_out) => (compile_file_fs_mode_testmeta(entry_path = input_path, entry_name = entry_name, mode = "no-dce", meta_out = testmeta_out, exports_stripped = exports_stripped, checked_error_row = checked_error_row, grants = [
     ]), ""),
     FsLaneBumpHeapMarked => (compile_file_fs_mode_bump_heap_marked(entry_path = input_path, entry_name = entry_name, exports_stripped = exports_stripped, checked_error_row = checked_error_row), ""),

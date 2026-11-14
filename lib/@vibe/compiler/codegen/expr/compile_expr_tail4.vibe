@@ -216,7 +216,7 @@ import ./compile_call.vibe {
 }
 
 import ./compile_call_cc_ladder_names.vibe {
-  cc_is_borrowed_projection, cc_is_owned_temp
+  cc_is_borrowed_projection, cc_is_owned_temp, cc_retain_view_tails_unlogged
 }
 
 import ./compile_expr_tail5.vibe {
@@ -472,7 +472,13 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         let mut ri = 0
         while ri < flen {
           let (_, fexpr) = Array::get(rec_fields, at = ri)
-          nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
+          // #4141: the per-site retain below reads the item's TOP node, so a view
+          // on a result path of a COMPOUND item -- `(if c { p.f } else { [] },
+          // 1)`, `{ let k = 1; Array::get(xs, at = 0) }` -- was stored unretained
+          // and the literal's drop released its source's value once too often.
+          // Retain those tails the way a compound call argument's are
+          // (`cc_retain_view_tails`); a bare item is left to the check below.
+          nl_r = compile_expr(buf, cet4_retain_item_tails(e = fexpr, local_names = local_names, ctx = ctx), local_names, nl_r, ctx, ld)
           let val_local = nl_r
           Array::push(local_names, value = "__rec_val")
           emit_local_set(buf = buf, idx = val_local)
@@ -597,7 +603,8 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         emit_i64_store(buf = buf, align = 3, offset = 8 + mi * 16)
         emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        nl_m = compile_expr(buf, val_expr, local_names, nl_m, ctx, ld)
+        // #4141: a compound value's view tails, as for the other literals.
+        nl_m = compile_expr(buf, cet4_retain_item_tails(e = val_expr, local_names = local_names, ctx = ctx), local_names, nl_m, ctx, ld)
         let val_local = nl_m
         Array::push(local_names, value = "__map_val")
         emit_local_set(buf = buf, idx = val_local)
@@ -626,5 +633,17 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
       nl_m
     },
     _ => compile_expr_tail5(buf = buf, expr = expr, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr = compile_expr)
+  }
+}
+
+/// #4141: a record or map literal item with the views on its result path
+/// retained (`cc_retain_view_tails_unlogged`); the item itself on a lane
+/// with no reference counts, and for a bare item, which the literal's
+/// per-site check retains.
+fn cet4_retain_item_tails(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr {
+  if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
+    cc_retain_view_tails_unlogged(e = e, local_names = local_names, ctx = ctx)
+  } else {
+    e
   }
 }

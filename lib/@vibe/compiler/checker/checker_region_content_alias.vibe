@@ -47,6 +47,10 @@ import ./checker_region_call_result.vibe {
   held_has_module_storage, region_callee_returns_own_storage, region_outer_content_marker, region_summary_prefix, retention_name_scope
 }
 
+import @vibe/core {
+  struct MutMap
+}
+
 import @vibe/compiler/checker/effects {
   collect_pat_binds_into
 }
@@ -147,6 +151,32 @@ fn region_outer_content_mark(env: TypeEnv, name: String, regions: Array[String])
 /// by its occurrence, not its spelling (`content_resolve`), so an inner
 /// `let xs = sink` does not taint an outer `xs`.
 export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String]) {
+  let facts = content_collect(names = [name], scope = scope, env = env, calls = content_calls_new())
+  let held = content_held_regions(facts = facts, env = env, s = s)
+  let same: Array[String] = []
+  let mut b = 0
+  while b < Array::length(facts.bind_names) {
+    if Array::get(facts.bind_names, at = b) == name {
+      let aliases = Array::get(facts.bind_alias, at = b)
+      content_union(out = same, items = content_fixed_regions(own = Array::get(facts.bind_own_storage, at = b), aliases = aliases, env = env, s = s, locals = facts.scope_ids))
+      content_local_regions_into(names = aliases, locals = facts.locals, held = held, out = same)
+    }
+    b = b + 1
+  }
+  (same, Array::get(held, at = 0))
+}
+
+struct ContentCalls {
+  active: Array[String];
+  memo: MutMap[String, Array[Int]];
+  recursive: Array[Int]
+}
+
+fn content_calls_new() -> ContentCalls {
+  ContentCalls::{ active: [], memo: MutMap::new_string(), recursive: [0] }
+}
+
+fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls) -> ContentFacts {
   let facts = ContentFacts::{
     bind_names: [],
     bind_own_storage: [],
@@ -154,24 +184,34 @@ export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, 
     store_target_alias: [],
     store_own_storage: [],
     store_value_alias: [],
-    locals: [name],
-    scope_names: [name],
-    scope_ids: [name],
-    next_id: [0]
+    locals: Array::slice(names, start = 0, end = Array::length(names)),
+    scope_names: Array::slice(names, start = 0, end = Array::length(names)),
+    scope_ids: Array::slice(names, start = 0, end = Array::length(names)),
+    next_id: [0],
+    calls
   }
   content_facts_into(expr = scope, facts = facts, env = env)
+  facts
+}
+
+fn content_held_regions(facts: ContentFacts, env: TypeEnv, s: Subst) -> Array[Array[String]] {
   let locals = facts.locals
+  if Array::length(facts.store_target_alias) == 0 && Array::length(facts.bind_names) == 0 {
+    return for _ in locals {
+      []
+    }
+  }
   // What each binding value and store may be, read once.
   let bind_fixed: Array[Array[String]] = []
   let mut fb = 0
   while fb < Array::length(facts.bind_own_storage) {
-    Array::push(bind_fixed, value = content_fixed_regions(own = Array::get(facts.bind_own_storage, at = fb), aliases = Array::get(facts.bind_alias, at = fb), env = env, name = name, s = s))
+    Array::push(bind_fixed, value = content_fixed_regions(own = Array::get(facts.bind_own_storage, at = fb), aliases = Array::get(facts.bind_alias, at = fb), env = env, s = s, locals = facts.scope_ids))
     fb = fb + 1
   }
   let value_fixed: Array[Array[String]] = []
   let mut fv = 0
   while fv < Array::length(facts.store_own_storage) {
-    Array::push(value_fixed, value = content_fixed_regions(own = Array::get(facts.store_own_storage, at = fv), aliases = Array::get(facts.store_value_alias, at = fv), env = env, name = name, s = s))
+    Array::push(value_fixed, value = content_fixed_regions(own = Array::get(facts.store_own_storage, at = fv), aliases = Array::get(facts.store_value_alias, at = fv), env = env, s = s, locals = facts.scope_ids))
     fv = fv + 1
   }
   // The binders bound from each local -- itself, an element read out of it,
@@ -241,16 +281,7 @@ export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, 
       k = k + 1
     }
   }
-  let same: Array[String] = []
-  let mut b = 0
-  while b < Array::length(facts.bind_names) {
-    if Array::get(facts.bind_names, at = b) == name {
-      content_union(out = same, items = Array::get(bind_fixed, at = b))
-      content_local_regions_into(names = Array::get(facts.bind_alias, at = b), locals = locals, held = held, out = same)
-    }
-    b = b + 1
-  }
-  (same, Array::get(held, at = 0))
+  held
 }
 
 /// What a scope binds and stores, read once (`content_facts_into`). Names
@@ -268,7 +299,8 @@ struct ContentFacts {
   locals: Array[String];
   scope_names: Array[String];
   scope_ids: Array[String];
-  next_id: Array[Int]
+  next_id: Array[Int];
+  calls: ContentCalls
 }
 
 fn content_union(out: Array[String], items: Array[String]) -> Unit {
@@ -300,13 +332,13 @@ fn content_local_regions_into(names: Array[String], locals: Array[String], held:
 /// that the environment binds outside the region. A binder of the scope has
 /// an occurrence name the environment does not hold. `name`, the binding
 /// being judged, is never its own outer homonym.
-fn content_fixed_regions(own: Bool, aliases: Array[String], env: TypeEnv, name: String, s: Subst) -> Array[String] {
+fn content_fixed_regions(own: Bool, aliases: Array[String], env: TypeEnv, s: Subst, locals: Array[String]) -> Array[String] {
   let out: Array[String] = []
   if own {
     content_union(out = out, items = retention_active_region_names(env))
   }
   for n in aliases {
-    if n != name {
+    if !content_listed(items = locals, wanted = n) {
       content_outer_into(value = EIdent(n, -1), env = env, out = out, s = s)
     }
   }
@@ -579,7 +611,6 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
       let bound = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
       content_bind(id = content_push(name = x, facts = facts), value = bound, facts = facts)
-      content_facts_into(expr = body, facts = facts, env = env)
       let result = content_value_fact(value = body, env = env, facts = facts)
       content_pop(mark = mark, facts = facts)
       return result
@@ -588,7 +619,6 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
       let bound = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
       content_bind(id = content_push(name = x, facts = facts), value = bound, facts = facts)
-      content_facts_into(expr = body, facts = facts, env = env)
       let result = content_value_fact(value = body, env = env, facts = facts)
       content_pop(mark = mark, facts = facts)
       return result
@@ -620,8 +650,6 @@ fn content_store(target: Array[String], value: (Bool, Array[String]), facts: Con
 /// parameter to its argument; any other callee may store any argument in
 /// any other. A closure argument's parameters are bound to the call's other
 /// arguments, whose elements it is handed.
-let content_call_stack: Array[String] = []
-
 fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env: TypeEnv) -> Unit {
   let args = retention_arg_values(args)
   let parts: Array[(Bool, Array[String])] = []
@@ -678,23 +706,12 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
     EFn(_, _, ps, _, _, body) => content_lambda_facts(ps = ps, body = body, bound = for a in args {
       [content_value_fact(value = a, env = env, facts = facts)]
     }, facts = facts, env = env),
-    EIdent(name, _) => if content_resolve(name = name, facts = facts) == name && !content_listed(items = content_call_stack, wanted = name) {
-      match retention_decl_value(name) {
-        Some(EFn(_, _, ps, _, _, body)) => {
-          Array::push(content_call_stack, value = name)
-          for i in content_outer_param_indices(params = ps, body = body, env = if Array::length(retention_module_env_cell) > 0 {
-            Array::get(retention_module_env_cell, at = 0)
-          } else {
-            env
-          }) {
-            if i < Array::length(args) {
-              content_store(target = content_alias_names(value = Array::get(args, at = i), env = env, facts = facts), value = (true, [
-              ]), facts = facts)
-            }
-          }
-          Array::truncate(content_call_stack, length = Array::length(content_call_stack) - 1)
-        },
-        _ => ()
+    EIdent(name, _) => if Array::length(args) > 0 && content_resolve(name = name, facts = facts) == name {
+      for i in content_called_outer_params(name = name, env = env, calls = facts.calls) {
+        if i < Array::length(args) {
+          content_store(target = content_alias_names(value = Array::get(args, at = i), env = env, facts = facts), value = (true, [
+          ]), facts = facts)
+        }
       }
     },
     _ => content_facts_into(expr = callee, facts = facts, env = env)
@@ -944,23 +961,73 @@ fn content_any_listed(names: Array[String], set: Array[String]) -> Bool {
   found
 }
 
+export fn content_literal_outer_params(lit: Expr, env: TypeEnv) -> Array[Int] {
+  match lit {
+    EFn(_, _, params, _, _, body) => content_outer_param_indices(params = params, body = body, env = env),
+    _ => []
+  }
+}
+
 /// Arguments a visible function can fill with storage from outside its call.
 /// Read in the module's lexical environment so caller-local names cannot
 /// shadow the globals its body reads. Fresh containers inside it stay local.
 export fn content_outer_param_indices(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv) -> Array[Int] {
-  let mut scope = env
-  scope = env_bind(env = scope, name = "#active_region", ty = CtNamed("#content_summary", [
-  ]))
-  let mut i = 0
-  while i < Array::length(params) {
-    scope = env_bind(env = scope, name = retention_param_base(Array::get(params, at = i).0), ty = CtVar(900000 + i))
-    i = i + 1
+  content_outer_params(params = params, body = body, env = env, calls = content_calls_new())
+}
+
+fn content_called_outer_params(name: String, env: TypeEnv, calls: ContentCalls) -> Array[Int] {
+  match MutMap::get(calls.memo, k = name) {
+    Some(indices) => indices,
+    None => if content_listed(items = calls.active, wanted = name) {
+      Array::set(calls.recursive, at = 0, value = Array::get(calls.recursive, at = 0) + 1)
+      []
+    } else {
+      let indices = match retention_decl_value(name) {
+        Some(EFn(_, _, ps, _, _, body)) => {
+          let recursion_before = Array::get(calls.recursive, at = 0)
+          let mark = Array::length(calls.active)
+          Array::push(calls.active, value = name)
+          let module_env = if Array::length(retention_module_env_cell) > 0 {
+            Array::get(retention_module_env_cell, at = 0)
+          } else {
+            env
+          }
+          let found = content_outer_params(params = ps, body = body, env = module_env, calls = calls)
+          Array::truncate(calls.active, length = mark)
+          if Array::get(calls.recursive, at = 0) == recursion_before {
+            MutMap::set(calls.memo, k = name, v = found)
+          }
+          found
+        },
+        _ => {
+          let empty: Array[Int] = []
+          MutMap::set(calls.memo, k = name, v = empty)
+          empty
+        }
+      }
+      indices
+    }
   }
+}
+
+fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Int] {
+  if Array::length(params) == 0 {
+    return []
+  }
+  let names = for param in params {
+    retention_param_base(param.0)
+  }
+  let scope = env_bind(env = env, name = "#active_region", ty = CtNamed("#content_summary", [
+  ]))
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls)
+  if Array::length(facts.store_target_alias) == 0 {
+    return []
+  }
+  let held = content_held_regions(facts = facts, env = scope, s = SubstEmpty)
   let out: Array[Int] = []
-  i = 0
-  while i < Array::length(params) {
-    let (_, held) = region_content_outer_regions(name = retention_param_base(Array::get(params, at = i).0), scope = body, env = scope, s = SubstEmpty)
-    if Array::length(held) > 0 {
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::length(Array::get(held, at = i)) > 0 {
       Array::push(out, value = i)
     }
     i = i + 1
