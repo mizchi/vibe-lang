@@ -73,6 +73,41 @@ fn scalar_result() -> Int {
   }
 }
 
+// A conditional argument: the branch that pushes into `xs` has not run in the
+// branch that reads `xs`, so both hand a plain closure.
+fn conditional_argument(flag: Bool) -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    apply(f = if flag {
+      Array::push(xs, value = g)
+      () -> 7
+    } else {
+      Array::get(xs, at = 0)
+    })
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+// A call earlier in an argument block runs before a later store in it: the
+// `apply` reads the element that is still a plain closure, and only then is
+// the handle-bound one pushed.
+fn earlier_call_in_argument() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    Array::length({
+      let r = apply(f = Array::get(xs, at = 0))
+      Array::push(xs, value = g)
+      Array::push(xs, value = () -> r)
+      xs
+    })
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
 test "a store in one match arm is not seen by another" {
   inspect(other_arm(flag = 1), content = "142")
 }
@@ -87,4 +122,12 @@ test "a handler arm's binder shadows an outer binding" {
 
 test "a builtin's scalar result carries no stored function" {
   inspect(scalar_result(), content = "107")
+}
+
+test "a conditional argument's branches are read apart" {
+  inspect(conditional_argument(flag = false), content = "142")
+}
+
+test "a call before a store in an argument block reads the earlier state" {
+  inspect(earlier_call_in_argument(), content = "3")
 }

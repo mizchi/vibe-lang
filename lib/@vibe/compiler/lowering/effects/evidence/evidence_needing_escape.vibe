@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — needing escape.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr, expr_children
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -43,7 +43,11 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         // (a binder of `for x in [g]`, `match Some(g)`, `let xs = [g]`, or the
         // read itself) is that function at its evidence arity, like the bare
         // name, but no eta-expansion can stand in for it: the element read is
-        // not known. So it escapes under the same rule.
+        // not known. So it escapes under the same rule. This read only
+        // answers what the argument evaluates to: the stores it applies are
+        // dropped again, so the walk below checks each nested call against
+        // the bindings as they stand at that call, not after a later store.
+        let pre_read = edp_escape_snapshot()
         let bare = match a {
           EIdent(an, _) => if edp_str_array_contains(arr = needing, v = an) {
             an
@@ -52,16 +56,24 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
           },
           _ => edp_data_root(e = a, needing = needing, stmts = stmts, fn_defs = fn_defs)
         }
+        edp_escape_restore(pre_read)
         if bare == "" {
+          // The walk applies the argument's own stores (`{ Array::push(xs,
+          // value = g); Array::get(xs, at = 1) }`), so the result is read
+          // again before the slot takes it. It is read from the bindings as
+          // they were before the walk: the reader applies the stores itself,
+          // branch by branch, so a store in one branch of a conditional
+          // argument does not reach the other branch's read.
+          let before_arg = edp_escape_snapshot()
           hit = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
-          // The walk applied the argument's own stores (`{ Array::push(xs,
-          // value = g); Array::get(xs, at = 1) }`), so its result is read
-          // again before the slot takes it.
           if hit == "" && !(callee_nm != "" && edp_arg_slot_accepts_needing(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm, pos = i, ename = ename, es_names = es_names, es_members_list = es_members_list)) {
+            let after_arg = edp_escape_snapshot()
+            edp_escape_restore(before_arg)
             hit = match a {
               EIdent(an, _) => edp_escape_tainted_root(an),
               _ => edp_data_root(e = a, needing = needing, stmts = stmts, fn_defs = fn_defs)
             }
+            edp_escape_restore(after_arg)
           }
         } else if callee_nm != "" && edp_arg_slot_accepts_needing(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm, pos = i, ename = ename, es_names = es_names, es_members_list = es_members_list) {
           // The slot takes the value; a call nested inside it is still
@@ -132,11 +144,20 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         let limit = Array::length(edp_escape_tainted) + 1
         while again && hit == "" && rounds <= limit {
           let before = edp_escape_tainted_count()
-          Array::set(edp_escape_tainted, at = mark, value = (n, edp_data_root(e = it, needing = needing, stmts = stmts, fn_defs = fn_defs), None))
+          // The iterable is read in the enclosing scope, below the binder:
+          // `for xs in xs` reads the outer `xs`, not the previous pass's
+          // element.
+          let outer = edp_escape_set_limit(mark)
+          let iter_root = edp_data_root(e = it, needing = needing, stmts = stmts, fn_defs = fn_defs)
+          let _ = edp_escape_set_limit(outer)
+          Array::set(edp_escape_tainted, at = mark, value = (n, iter_root, None))
           hit = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
           let now = Array::get(edp_escape_tainted, at = mark)
           let (_, nroot, _) = now
-          again = edp_escape_tainted_count() != before || edp_data_root(e = it, needing = needing, stmts = stmts, fn_defs = fn_defs) != nroot
+          let outer2 = edp_escape_set_limit(mark)
+          let end_root = edp_data_root(e = it, needing = needing, stmts = stmts, fn_defs = fn_defs)
+          let _ = edp_escape_set_limit(outer2)
+          again = edp_escape_tainted_count() != before || end_root != nroot
           rounds = rounds + 1
         }
         edp_escape_untaint(mark)
@@ -436,9 +457,17 @@ fn edp_data_root(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: A
         _ => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
       }
     },
-    EIf(_, t, el) => edp_needing_escape_or(a = edp_data_root_items(items = [t], needing = needing, stmts = stmts, fn_defs = fn_defs), b = edp_data_root_items(items = [
-      el
-    ], needing = needing, stmts = stmts, fn_defs = fn_defs)),
+    // Each branch is read from the bindings as they were before the `if`: a
+    // store applied while reading one branch has not run in the other.
+    EIf(_, t, el) => {
+      let before = edp_escape_snapshot()
+      let in_then = edp_data_root_items(items = [t], needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let after_then = edp_escape_snapshot()
+      edp_escape_restore(before)
+      let in_else = edp_data_root_items(items = [el], needing = needing, stmts = stmts, fn_defs = fn_defs)
+      edp_escape_join(after_then)
+      edp_needing_escape_or(a = in_then, b = in_else)
+    },
     // A block's value is its result: `{ let marker = 0; g }` holds `g`. A
     // local the block binds shadows a needing name of the same spelling.
     ELet(n, v, b, _) => edp_data_root_block(n = n, v = v, b = b, needing = needing, stmts = stmts, fn_defs = fn_defs),
@@ -970,18 +999,19 @@ fn edp_needing_escape_handle(body: Expr, arms: Array[(Pat, Expr)], needing: Arra
   hit
 }
 
-/// Apply the stores an expression makes (`Array::push(xs, value = g)`, also
-/// inside a sequence or a labeled argument), without checking anything.
+/// Apply every store an expression makes (`Array::push(xs, value = g)`),
+/// wherever it sits inside -- a sequence, a branch, a loop, a match arm --
+/// without checking anything. A branch's or a loop's store counts as made:
+/// the reader takes the conservative side.
 fn edp_apply_stores(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
   match e {
     ECall(EIdent(cn, _), args, _, _) => edp_escape_store_taint(callee_nm = cn, args = args, needing = needing, stmts = stmts, fn_defs = fn_defs),
-    ESeq(a, b) => {
-      edp_apply_stores(e = a, needing = needing, stmts = stmts, fn_defs = fn_defs)
-      edp_apply_stores(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs)
-    },
-    ELabeledArg(_, _, v) => edp_apply_stores(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs),
     _ => ()
   }
+  for child in expr_children(e) {
+    edp_apply_stores(e = child, needing = needing, stmts = stmts, fn_defs = fn_defs)
+  }
+  ()
 }
 
 export fn edp_needing_escape_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
