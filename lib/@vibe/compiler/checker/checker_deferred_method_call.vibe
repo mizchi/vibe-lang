@@ -172,7 +172,7 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
           // Some existing lanes erase types (for example, generic effect
           // payloads). An unsettled pattern there can inspect a sealed value
           // only when this module sees an opaque declaration.
-          CtVar(_) => if Array::any(pattern.defs, f = (def) -> def is TDOpaque(_, _, _, _)) {
+          CtVar(_) => if pattern_uses_opaque_defs(pattern) {
             Array::push(errors, value = unresolved_pattern_message(off = pattern.off))
           } else (),
           resolved => judge_deferred_pattern(row = pattern, recv = resolved, kept = kept, errors = errors)
@@ -185,6 +185,11 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
     deferred_checks_restore(kept)
   }
   (cur_s, cur_c)
+}
+
+// The representation check is only new in a scope that can name a seal.
+fn pattern_uses_opaque_defs(_ row: DeferredPatternCheck) -> Bool {
+  Array::any(row.defs, f = (def) -> def is TDOpaque(_, _, _, _))
 }
 
 fn unresolved_pattern_message(off: Int) -> String {
@@ -202,7 +207,7 @@ export fn refuse_generalized_patterns(vars: Array[Int], s: Subst, errors: Array[
   for row in rows {
     match row {
       DeferredPattern(pattern) => match subst_apply(s = s, ty = CtVar(pattern.recv)) {
-        CtVar(rep) => if Array::any(vars, f = (id) -> id == rep) {
+        CtVar(rep) => if Array::any(vars, f = (id) -> id == rep) && pattern_uses_opaque_defs(pattern) {
           Array::push(errors, value = unresolved_pattern_message(off = pattern.off))
         } else {
           Array::push(kept, value = row)
