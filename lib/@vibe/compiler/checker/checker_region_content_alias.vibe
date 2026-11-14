@@ -42,6 +42,7 @@
 import @vibe/compiler/core {
   Expr,
   Pat,
+  Stmt,
   Subst,
   Type,
   TypeEnv,
@@ -63,7 +64,9 @@ import ./checker_region_call_result.vibe {
   region_method_call_at,
   region_method_callee,
   region_outer_content_marker,
+  region_path_is_standard_library,
   region_summary_prefix,
+  region_type_is_scalar,
   region_typed_method_name,
   retention_name_scope
 }
@@ -1309,12 +1312,56 @@ fn content_any_listed(names: Array[String], set: Array[String]) -> Bool {
 
 /// Analyze each published result lazily and share helper summaries across
 /// exports of the same module.
-export fn content_result_summary_reader(env: TypeEnv) -> (Expr) -> Bool {
+export fn content_result_summary_reader(stmts: Array[Stmt], env: TypeEnv) -> (Expr) -> Bool {
+  if !content_module_has_storage(stmts = stmts, env = env) {
+    return (_) -> false
+  }
   let calls = content_calls_new()
   (lit) -> match lit {
     EFn(tparams, _, params, _, _, body) => content_result_has_outer(tparams = tparams, params = params, body = body, env = env, calls = calls),
     _ => false
   }
+}
+
+/// With no module storage or external source of it, walking every exported
+/// function's result would only build a graph with no outer roots.
+fn content_module_has_storage(stmts: Array[Stmt], env: TypeEnv) -> Bool {
+  for stmt in stmts {
+    let name = match stmt {
+      SLet(_, _, _, _, EFn(_, _, _, _, _, _)) => "",
+      SLet(_, _, n, _, _) => n,
+      SLetMut(n, _, _) => n,
+      SExternLet(n, _) => n,
+      SImport(path, _) => {
+        if !region_path_is_standard_library(path) {
+          return true
+        }
+        ""
+      },
+      SReExport(path, _) => {
+        if !region_path_is_standard_library(path) {
+          return true
+        }
+        ""
+      },
+      SModule(_, _, body) => {
+        if content_module_has_storage(stmts = body, env = env) {
+          return true
+        }
+        ""
+      },
+      _ => ""
+    }
+    if name != "" {
+      match env_lookup(env = env, name = name) {
+        Some(ty) => if !region_type_is_scalar(ty) {
+          return true
+        },
+        None => return true
+      }
+    }
+  }
+  false
 }
 
 export fn content_literal_outer_params(lit: Expr, env: TypeEnv) -> Array[Int] {
