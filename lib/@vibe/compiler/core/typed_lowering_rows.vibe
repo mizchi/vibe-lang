@@ -1,7 +1,33 @@
 // One encoding for checker facts, their persisted carrier, and file rebasing.
 
 import @vibe/ast {
-  TypeExpr, impl_target_key
+  Expr, TypeExpr, impl_target_key
+}
+
+import ./expr_children.vibe {
+  typed_render_row_offset
+}
+
+// Branches and blocks carry no offset of their own. Use a value-producing
+// leaf, which cannot also be an argument of the enclosing call.
+export fn row_free_callback_offset(_ expr: Expr) -> Int {
+  match expr {
+    EIf(_, yes, no) => {
+      let off = row_free_callback_offset(yes)
+      if off >= 0 {
+        off
+      } else {
+        row_free_callback_offset(no)
+      }
+    },
+    ELet(_, _, result, _) => row_free_callback_offset(result),
+    ELetMut(_, _, result, _) => row_free_callback_offset(result),
+    ELetRec(_, _, result) => row_free_callback_offset(result),
+    ESeq(_, result) => row_free_callback_offset(result),
+    EAssign(_, _, result, _) => row_free_callback_offset(result),
+    EAssignOp(_, _, _, result, _) => row_free_callback_offset(result),
+    _ => typed_render_row_offset(expr)
+  }
 }
 
 /// The argument's checked function type has no row and the receiving slot

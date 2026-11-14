@@ -11,7 +11,7 @@ import @vibe/compiler/core {
   generated_owner_enter,
   generated_owner_of,
   is_runtime_scheduled_effect,
-  typed_render_row_offset
+  row_free_callback_offset
 }
 
 import @vibe/core {
@@ -74,6 +74,7 @@ import ./evidence_slot_refusals.vibe {
   edp_join_and,
   edp_note_params,
   edp_note_slot_methods,
+  edp_parameter_type,
   edp_record_arg_needs_context,
   edp_refuse_assigned_calls,
   edp_refuse_rowless_factory_result,
@@ -332,7 +333,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
       _ => None
     }
     match body {
-      Some(e) => if match known_slot {
+      Some(e) => if edp_expr_has_callback_adapter(e = e, offsets = callback_offsets) || match known_slot {
         Some(sf) => edp_stamp_prechecks_hit(e = e, facts = sf, pure_names = pure_names, slot_callees = slot_callees, stmts = stmts),
         None => edp_expr_passes_literal_arg(e = e, pure_names = pure_names, stmts = stmts) || edp_expr_passes_value_to_slot(e = e, slot_callees = slot_callees) || edp_expr_builds_row_field(e)
       } {
@@ -1911,7 +1912,7 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
         edp_stamp_slot_arg(a = other, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names, callee = named, pos = ai + shift)
       } else if String::length(local_callee) > 0 && !labeled {
         edp_set_slot_callee(callee = local_callee, used = true)
-        edp_stamp_slot_arg_at(a = other, scope = scope, pure_names = pure_names, slot = edp_local_slot_fn_type(callee = local_callee, scope = scope, pos = ai))
+        edp_stamp_slot_arg_at(a = other, scope = scope, pure_names = pure_names, slot = edp_local_slot_fn_type(callee = local_callee, scope = scope, stmts = stmts, pos = ai))
       } else {
         other
       }
@@ -1981,8 +1982,39 @@ fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Arra
   }
 }
 
+// A callback accepted by the checker may appear in a call through a local
+// parameter absent from the global slot-callee index.
+fn edp_expr_has_callback_adapter(e: Expr, offsets: MutSet[Int]) -> Bool {
+  if MutSet::size(offsets) == 0 {
+    return false
+  }
+  let stack = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack) - 1
+    let cur = Array::get(stack, at = n)
+    Array::truncate(stack, length = n)
+    match cur {
+      ECall(_, args, _, _) => for arg0 in args {
+        let arg = match arg0 {
+          ELabeledArg(_, _, value) => value,
+          _ => arg0
+        }
+        let off = row_free_callback_offset(arg)
+        if off >= 0 && MutSet::has(offsets, x = off) {
+          return true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    expr_children_into(expr = cur, out = stack)
+  }
+  false
+}
+
 fn edp_needs_callback_adapter(_ value: Expr) -> Bool {
-  let off = typed_render_row_offset(value)
+  let off = row_free_callback_offset(value)
   off >= 0 && Array::length(edp_callback_offsets) != 0 && MutSet::has(Array::get(edp_callback_offsets, at = 0), x = off)
 }
 
@@ -2078,8 +2110,40 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
 /// way `edp_slot_fn_type` reads a top-level function's. Its handle passes a
 /// row-typed parameter the dict (`edp_rh_extend`), so a callback literal
 /// written there needs the parameter too.
-fn edp_local_slot_fn_type(callee: String, scope: Array[String], pos: Int) -> Option[(Int, String)] {
-  edp_literal_slot_fn_type(local = edp_local_lit_at(name = callee, slot = edp_scope_last_index(scope = scope, name = callee)), pos = pos)
+fn edp_local_slot_fn_type(callee: String, scope: Array[String], stmts: Array[Stmt], pos: Int) -> Option[(Int, String)] {
+  let binding = edp_scope_last_index(scope = scope, name = callee)
+  match edp_local_lit_at(name = callee, slot = binding) {
+    Some(lit) => edp_literal_slot_fn_type(local = Some(lit), pos = pos),
+    None => match edp_parameter_type(binding) {
+      Some(ty) => {
+        let callable = match ty {
+          TyFn(_, _, _) => Some(ty),
+          _ => edp_alias_fn_type(stmts = stmts, ty = ty)
+        }
+        match callable {
+          Some(TyFn(params, _, _)) => if pos >= 0 && pos < Array::length(params) {
+            let expected = Array::get(params, at = pos)
+            let callback = match expected {
+              TyFn(_, _, _) => Some(expected),
+              _ => edp_alias_fn_type(stmts = stmts, ty = expected)
+            }
+            match callback {
+              Some(TyFn(args, _, Some(row))) => if edp_slot_row_stampable(row) {
+                Some((Array::length(args), row))
+              } else {
+                None
+              },
+              _ => None
+            }
+          } else {
+            None
+          },
+          _ => None
+        }
+      },
+      None => None
+    }
+  }
 }
 
 /// #1261: is `nm`'s value legal to hand to parameter `pos` of `callee_nm`?
