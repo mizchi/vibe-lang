@@ -40,7 +40,7 @@
 //# a store the order of the statements hides.
 
 import @vibe/compiler/core {
-  Expr, Pat, Subst, Type, TypeEnv, TypeExpr, env_bind, env_lookup, expr_children, subst_apply
+  Expr, Pat, Subst, Type, TypeEnv, TypeExpr, env_bind, env_lookup, env_type_defs, expr_children, subst_apply
 }
 
 import ./checker_region_call_result.vibe {
@@ -53,6 +53,10 @@ import @vibe/core {
 
 import @vibe/compiler/checker/effects {
   collect_pat_binds_into
+}
+
+import @vibe/compiler/checker/resolution {
+  resolve_type_expr_shadowed
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -151,7 +155,7 @@ fn region_outer_content_mark(env: TypeEnv, name: String, regions: Array[String])
 /// by its occurrence, not its spelling (`content_resolve`), so an inner
 /// `let xs = sink` does not taint an outer `xs`.
 export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String]) {
-  let facts = content_collect(names = [name], scope = scope, env = env, calls = content_calls_new(), track_results = true)
+  let facts = content_collect(names = [name], scope = scope, env = env, calls = content_calls_new(), track_results = true, typed_formals = 0)
   let held = content_held_regions(facts = facts, env = env, s = s)
   let same: Array[String] = []
   let mut b = 0
@@ -186,7 +190,7 @@ fn content_calls_new() -> ContentCalls {
   }
 }
 
-fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: Bool) -> ContentFacts {
+fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: Bool, typed_formals: Int) -> ContentFacts {
   ContentFacts::{
     bind_names: [],
     bind_own_storage: [],
@@ -200,12 +204,13 @@ fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: B
     let_ids: MutMap::new_int(),
     next_id: [0],
     calls,
-    track_results
+    track_results,
+    typed_formals
   }
 }
 
-fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls, track_results: Bool) -> ContentFacts {
-  let facts = content_facts_new(names = names, calls = calls, track_results = track_results)
+fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls, track_results: Bool, typed_formals: Int) -> ContentFacts {
+  let facts = content_facts_new(names = names, calls = calls, track_results = track_results, typed_formals = typed_formals)
   content_facts_into(expr = scope, facts = facts, env = env)
   facts
 }
@@ -318,7 +323,8 @@ struct ContentFacts {
   let_ids: MutMap[Int, Array[(String, String)]];
   next_id: Array[Int];
   calls: ContentCalls;
-  track_results: Bool
+  track_results: Bool;
+  typed_formals: Int
 }
 
 fn content_union(out: Array[String], items: Array[String]) -> Unit {
@@ -393,8 +399,8 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
           true
         } else {
           match retention_decl_value(cname) {
-            Some(EFn(_, _, params, _, _, body)) => held_has_module_storage(held_result_param_indices(body = body, params = params)) ||
-            (facts.track_results && content_call_result_has_outer(name = cname, params = params, body = body, env = env, calls = facts.calls)),
+            Some(EFn(tparams, _, params, _, _, body)) => held_has_module_storage(held_result_param_indices(body = body, params = params)) ||
+            (facts.track_results && content_call_result_has_outer(name = cname, tparams = tparams, params = params, body = body, env = env, calls = facts.calls)),
             Some(_) => true,
             None => match lookup_builtin(cname) {
               Some(_) => false,
@@ -944,7 +950,17 @@ fn content_env_scalar(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
   content_value_names_into(e = value, out = names)
   let mut unshadowed = true
   for n in names {
-    unshadowed = unshadowed && content_resolve(name = n, facts = facts) == n
+    if facts.typed_formals == 0 {
+      unshadowed = unshadowed && content_resolve(name = n, facts = facts) == n
+    } else {
+      let mut i = Array::length(facts.scope_names) - 1
+      let mut found = false
+      while !found && i >= facts.typed_formals {
+        found = Array::get(facts.scope_names, at = i) == n
+        i = i - 1
+      }
+      unshadowed = unshadowed && !found
+    }
   }
   unshadowed && literal_item_is_scalar(item = value, env = env)
 }
@@ -1093,7 +1109,7 @@ fn content_called_outer_params(name: String, env: TypeEnv, calls: ContentCalls) 
 
 /// A locally declared helper can return a fresh holder after storing module
 /// storage inside it. Use the same store graph as a region-local binding.
-fn content_call_result_has_outer(name: String, params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Bool {
+fn content_call_result_has_outer(name: String, tparams: Array[String], params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Bool {
   match MutMap::get(calls.result_memo, k = name) {
     Some(found) => found,
     None => if content_listed(items = calls.result_active, wanted = name) {
@@ -1108,7 +1124,7 @@ fn content_call_result_has_outer(name: String, params: Array[(String, Option[Typ
       } else {
         env
       }
-      let found = content_result_has_outer(params = params, body = body, env = module_env, calls = calls)
+      let found = content_result_has_outer(tparams = tparams, params = params, body = body, env = module_env, calls = calls)
       Array::truncate(calls.result_active, length = mark)
       if Array::get(calls.result_recursive, at = 0) == recursion_before {
         MutMap::set(calls.result_memo, k = name, v = found)
@@ -1118,12 +1134,22 @@ fn content_call_result_has_outer(name: String, params: Array[(String, Option[Typ
   }
 }
 
-fn content_result_has_outer(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Bool {
+fn content_result_has_outer(tparams: Array[String], params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Bool {
   let names = for param in params {
     retention_param_base(param.0)
   }
-  let scope = content_summary_scope(names = names, env = env)
-  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = true)
+  let defs = env_type_defs(env)
+  let mut scope = content_summary_scope(names = [], env = env)
+  let mut i = 0
+  while i < Array::length(params) {
+    let ty = match Array::get(params, at = i).1 {
+      Some(te) => resolve_type_expr_shadowed(te = te, defs = defs, shadow = tparams),
+      None => CtVar(-1)
+    }
+    scope = env_bind(env = scope, name = Array::get(names, at = i), ty = ty)
+    i = i + 1
+  }
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = true, typed_formals = Array::length(names))
   if Array::length(facts.store_target_alias) == 0 {
     return false
   }
@@ -1154,7 +1180,7 @@ fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, e
     retention_param_base(param.0)
   }
   let scope = content_summary_scope(names = names, env = env)
-  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = false)
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = false, typed_formals = 0)
   if Array::length(facts.store_target_alias) == 0 {
     return []
   }
