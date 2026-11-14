@@ -33,25 +33,56 @@ export fn gc_function_names_enabled() -> Bool {
 /// functions, `_start`, the lambda bodies (`__lambda_slot__<i>`, the name the
 /// linear lane gives a slot outside its lambda plan) and, when there is one,
 /// the guarded module init. Each name is distinct, so a tool that matches
-/// functions by name never folds two together.
+/// functions by name never folds two together: a synthesized name that a
+/// program function already spells (a test-only module's own `_start`
+/// runner, or a program declaring `_start` or `__gc_gen_1`) takes a trailing
+/// `_` until it is free, the way `gc_test_runner_name` picks the runner's.
 export fn gc_function_names(num_generated: Int, fn_names: Array[String], num_lambdas: Int, has_global_init: Bool) -> Array[String] {
-  let names: Array[String] = array_empty()
+  let mut taken: Map[String, Bool] = Map::new()
+  for n in fn_names {
+    taken = Map::set(taken, key = n, value = true)
+  }
+  let synthesized: Array[String] = array_empty()
   let mut gi = 0
   while gi < num_generated {
-    Array::push(names, value = String::concat("__gc_gen_", Int::to_string(gi + 1)))
+    Array::push(synthesized, value = String::concat("__gc_gen_", Int::to_string(gi + 1)))
     gi = gi + 1
+  }
+  Array::push(synthesized, value = "_start")
+  let mut li = 0
+  while li < num_lambdas {
+    Array::push(synthesized, value = String::concat("__lambda_slot__", Int::to_string(li)))
+    li = li + 1
+  }
+  if has_global_init {
+    Array::push(synthesized, value = "__gc_global_init")
+  }
+  // Each synthesized name takes trailing `_`s until no program function and
+  // no earlier synthesized name spells it. `Map::set` is functional, so the
+  // set is rebound.
+  let free: Array[String] = array_empty()
+  for base in synthesized {
+    let mut name = base
+    while Map::has_key(taken, key = name) {
+      name = String::concat(name, "_")
+    }
+    taken = Map::set(taken, key = name, value = true)
+    Array::push(free, value = name)
+  }
+  // Index order: generated bodies, program functions, `_start`, lambda
+  // bodies, then the module init.
+  let names: Array[String] = array_empty()
+  let mut k = 0
+  while k < num_generated {
+    Array::push(names, value = Array::get(free, at = k))
+    k = k + 1
   }
   for n in fn_names {
     Array::push(names, value = n)
   }
-  Array::push(names, value = "_start")
-  let mut li = 0
-  while li < num_lambdas {
-    Array::push(names, value = String::concat("__lambda_slot__", Int::to_string(li)))
-    li = li + 1
-  }
-  if has_global_init {
-    Array::push(names, value = "__gc_global_init")
+  while k < Array::length(free) {
+    Array::push(names, value = Array::get(free, at = k))
+    k = k + 1
   }
   names
 }

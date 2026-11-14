@@ -8,7 +8,7 @@ import @vibe/compiler/entry/source_compile/gc_only {
 }
 
 import @vibe/compiler/codegen/gc {
-  set_gc_function_names
+  gc_function_names, set_gc_function_names
 }
 
 import @vibe/compiler/codegen/executable {
@@ -145,4 +145,43 @@ test "without the flag there is no name section and nothing else changes" {
   let named = compile_gc(names = true)
   inspect(function_names(plain) is None, content = "true")
   inspect(strip_executable_wasm(wasm = named, entry_name = "main", strip_names = true, filter_exports = false) == plain, content = "true")
+}
+
+fn distinct(_ names: Array[String]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(names) {
+    let mut j = i + 1
+    while j < Array::length(names) {
+      if Array::get(names, at = i) == Array::get(names, at = j) {
+        ok = false
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+test "a test-only module's own `_start` runner does not share its name with the start wrapper" {
+  set_gc_function_names(true)
+  let wasm = compile_source_gc_only(source = "test \"t\" {\n  assert(1 + 1 == 2)\n}\n", entry_name = "__no_entry__", exports_stripped = false, checked_error_row = false)
+  set_gc_function_names(false)
+  match function_names(wasm) {
+    Some(entries) => {
+      let names = names_only(entries)
+      inspect(has(names = names, wanted = "_start"), content = "true")
+      inspect(distinct(names), content = "true")
+    },
+    None => inspect("no name section", content = "a name section here")
+  }
+}
+
+test "a program function spelled like a synthesized name keeps it; the synthesized one moves" {
+  let names = gc_function_names(num_generated = 1, fn_names = [
+    "__gc_gen_1",
+    "_start",
+    "main"
+  ], num_lambdas = 1, has_global_init = true)
+  inspect(names, content = "[__gc_gen_1_, __gc_gen_1, _start, main, _start_, __lambda_slot__0, __gc_global_init]")
 }
