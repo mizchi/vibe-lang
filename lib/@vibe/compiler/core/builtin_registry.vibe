@@ -1275,6 +1275,33 @@ export fn registry_pure_builtin_names() -> Array[String] {
   names_with_class_bit(0)
 }
 
+/// #4146: a builtin whose only effect is the value it returns -- a
+/// checker-visible registry row flagged pure, whose type carries no effect
+/// row and returns something other than `Unit`. A call to one whose value is
+/// thrown away does nothing. The pure flag alone is not this question: it is
+/// the suspend-class allowlist, so it also admits `sleep`, the stdin stream
+/// operations and `Array::set`, which act and are kept apart here by their row
+/// or their `Unit` result.
+///
+/// A `__`-prefixed intrinsic (`__to_string`, `__generic_add`) is not a name a
+/// program spells for its value: generated code and the compiler's own gates
+/// call it as a statement on purpose, to exercise its lowering.
+export fn builtin_result_is_its_only_effect(_ name: String) -> Bool {
+  let row = registry_first_visible_row(name)
+  if row < 0 || String::starts_with(name, prefix = "__") {
+    false
+  } else {
+    let (_, ty, _, _, _, pure, _, _, _) = Array::get(registry_typed_rows, at = row)
+    pure && match ty {
+      CtFn(_, ret, None) => match ret {
+        CtUnit => false,
+        _ => true
+      },
+      _ => false
+    }
+  }
+}
+
 /// Registry names whose row is flagged safe-mut. Same copy rule as
 /// `registry_pure_builtin_names`.
 export fn registry_safe_mut_builtin_names() -> Array[String] {
