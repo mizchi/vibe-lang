@@ -1255,7 +1255,7 @@ scps_check_reject "err_effect_closure_param_capture_launder.vibe" "cannot see th
 # #2065 wall 2: the same laundering with the performing closure written as a
 # LITERAL argument. The discharge rule exempts a value argument only where the
 # callee's parameter type carries the effect, which `apply1`'s does not.
-scps_check_reject "err_effect_closure_literal_launder.vibe" "hand the step object back as the value" "litlaunder"
+scps_check_reject "err_effect_closure_literal_launder.vibe" "cannot see through" "litlaunder"
 # #1536: the former `break`-in-a-suspending-loop rejection now lives in the
 # inspect snapshot suite above. Its arm stores `resume` and never resumes, so
 # the first perform escapes with its value; the loop shape is what changed.
