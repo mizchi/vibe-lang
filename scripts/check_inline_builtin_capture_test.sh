@@ -109,7 +109,7 @@ build_tree r4
 printf '\nfn probe() {\n  if !prefer_bound_call && fname == "Env::get" {\n    ()\n  }\n}\n' >> "$WORK/r4/$CALL"
 run_gate r4 || { cat "$WORK/out" >&2; fail "RED 4 control: a linear func-table name was reported"; }
 pass "RED 4 control: a linear func-table name needs no registration"
-mutate "$WORK/r4/$REGISTRY" '("Env::get", CtFn(reg_p1(CtString), CtString, Some("Env")), true,' '("Env::get", CtFn(reg_p1(CtString), CtString, Some("Env")), false,'
+mutate "$WORK/r4/$REGISTRY" '#|Env::get F1;ss!Env; TFTFFFF' '#|Env::get F1;ss!Env; FFTFFFF'
 expect_red "RED 4: a name the linear func table no longer covers" r4 "  - Env::get"
 
 # --- RED 5: the spellings the gate reads change -------------------------------
