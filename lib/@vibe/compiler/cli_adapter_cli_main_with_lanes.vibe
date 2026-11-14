@@ -86,6 +86,10 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode, entry_cacheable_for_fs
 }
 
+import @vibe/compiler/perceus {
+  perceus_selfcheck_enable, perceus_selfcheck_list_plans, perceus_selfcheck_report, perceus_selfcheck_set_exempt
+}
+
 import @vibe/compiler/normalize {
   normalize_source
 }
@@ -2416,7 +2420,81 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
     vibe_process_exit_raw(code)
     code
   } else {
-    cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full, format_tool = adapter_format, lsp_tool = lsp_main)
+    // #3718: `VIBE_RC_SELFCHECK_OUT=<path>` validates every function plan this
+    // compile builds against the linear ownership discipline and writes the
+    // report there (scripts/check_rc_selfcheck.sh reads it). Unset, codegen
+    // does no extra work.
+    let selfcheck_out = Env::get("VIBE_RC_SELFCHECK_OUT")
+    if selfcheck_out != "" {
+      // The report must not overwrite what this compile reads or writes.
+      refuse_rc_selfcheck_destination_conflict(selfcheck_out)
+      let (shard, of) = rc_selfcheck_shard(Env::get("VIBE_RC_SELFCHECK_SHARD"))
+      perceus_selfcheck_enable(shard = shard, of = of)
+      // `VIBE_RC_SELFCHECK_LIST=1` names the shard's plans instead of
+      // checking them, to find the function a trapping shard was checking.
+      if Env::get("VIBE_RC_SELFCHECK_LIST") == "1" {
+        perceus_selfcheck_list_plans()
+      }
+      // `VIBE_RC_SELFCHECK_EXEMPT=a,b` leaves those functions' plans
+      // unchecked, each reported as `exempt NAME`.
+      let exempt = Env::get("VIBE_RC_SELFCHECK_EXEMPT")
+      if exempt != "" {
+        perceus_selfcheck_set_exempt(names = String::split(exempt, sep = ","))
+      }
+    }
+    let code = cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full, format_tool = adapter_format, lsp_tool = lsp_main)
+    if selfcheck_out != "" {
+      refuse_rc_selfcheck_destination_conflict(selfcheck_out)
+      Fs::write_file(selfcheck_out, contents = perceus_selfcheck_report())
+    }
+    code
+  }
+}
+
+#cfg(telemetry)
+/// #3718: refuse a `VIBE_RC_SELFCHECK_OUT` that is the compile's input or
+/// output by file identity (another spelling or a symlink of it included), a
+/// directory, or a derived sidecar, before the compile and again before the
+/// report is written -- the telemetry sidecar's guard, applied to this
+/// destination.
+fn refuse_rc_selfcheck_destination_conflict(_ destination: String) -> Unit with Fs + Env + Exception {
+  let found = telemetry_destination_conflict(destination = destination, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"))
+  // The incremental telemetry sidecar is written by the same invocation.
+  let conflict = if found == "" && fs_paths_name_same_file(left = destination, right = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")) {
+    "VIBE_INCREMENTAL_TELEMETRY_OUT"
+  } else {
+    found
+  }
+  if conflict != "" {
+    throw(String::concat("VIBE_RC_SELFCHECK_OUT must not name ", conflict))
+  } else {
+    ()
+  }
+}
+
+#cfg(not(telemetry))
+/// #3718: the destination guard is compiled only into `VIBE_CFG=telemetry`
+/// builds, so this one refuses the self-check rather than write the report
+/// unguarded. scripts/check_rc_selfcheck.sh drives the generation's stage2.
+fn refuse_rc_selfcheck_destination_conflict(_ destination: String) -> Unit with Fs + Env + Exception {
+  throw(telemetry_build_refusal("VIBE_RC_SELFCHECK_OUT"))
+}
+
+/// #3718: `VIBE_RC_SELFCHECK_SHARD=k/N` checks plans k, k+N, k+2N, ...;
+/// unset or unreadable checks every plan.
+fn rc_selfcheck_shard(_ raw: String) -> (Int, Int) {
+  let parts = String::split(raw, sep = "/")
+  if Array::length(parts) != 2 {
+    (0, 1)
+  } else {
+    match (Int::parse(Array::get(parts, at = 0)), Int::parse(Array::get(parts, at = 1))) {
+      (Some(k), Some(n)) => if n >= 1 && k >= 0 && k < n {
+        (k, n)
+      } else {
+        (0, 1)
+      },
+      _ => (0, 1)
+    }
   }
 }
 
@@ -2430,6 +2508,13 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
 /// reason `main` is: only the entry file's own exports keep their public
 /// names through the flatten.
 export fn cli_main_compile_only() -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
+  // #3718: the RC self-check is wired into `cli_main` only; refuse the
+  // request here rather than compile and leave no report.
+  if Env::get("VIBE_RC_SELFCHECK_OUT") != "" {
+    throw("VIBE_RC_SELFCHECK_OUT is not supported by the compile-only artifact -- run the self-check with a generation's stage2 (scripts/check_rc_selfcheck.sh)")
+  } else {
+    ()
+  }
   cli_main_with_lanes(fs_lanes = fs_lane_compile_production, ss_lanes = ss_lane_compile_production, component_tools = component_tools_none, format_tool = format_tool_unavailable, lsp_tool = lsp_tool_unavailable)
 }
 
