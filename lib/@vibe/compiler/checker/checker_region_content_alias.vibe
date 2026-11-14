@@ -151,7 +151,7 @@ fn region_outer_content_mark(env: TypeEnv, name: String, regions: Array[String])
 /// by its occurrence, not its spelling (`content_resolve`), so an inner
 /// `let xs = sink` does not taint an outer `xs`.
 export fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String]) {
-  let facts = content_collect(names = [name], scope = scope, env = env, calls = content_calls_new())
+  let facts = content_collect(names = [name], scope = scope, env = env, calls = content_calls_new(), track_results = true)
   let held = content_held_regions(facts = facts, env = env, s = s)
   let same: Array[String] = []
   let mut b = 0
@@ -186,7 +186,7 @@ fn content_calls_new() -> ContentCalls {
   }
 }
 
-fn content_facts_new(names: Array[String], calls: ContentCalls) -> ContentFacts {
+fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: Bool) -> ContentFacts {
   ContentFacts::{
     bind_names: [],
     bind_own_storage: [],
@@ -199,12 +199,13 @@ fn content_facts_new(names: Array[String], calls: ContentCalls) -> ContentFacts 
     scope_ids: Array::slice(names, start = 0, end = Array::length(names)),
     let_ids: MutMap::new_int(),
     next_id: [0],
-    calls
+    calls,
+    track_results
   }
 }
 
-fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls) -> ContentFacts {
-  let facts = content_facts_new(names = names, calls = calls)
+fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: ContentCalls, track_results: Bool) -> ContentFacts {
+  let facts = content_facts_new(names = names, calls = calls, track_results = track_results)
   content_facts_into(expr = scope, facts = facts, env = env)
   facts
 }
@@ -316,7 +317,8 @@ struct ContentFacts {
   scope_ids: Array[String];
   let_ids: MutMap[Int, Array[(String, String)]];
   next_id: Array[Int];
-  calls: ContentCalls
+  calls: ContentCalls;
+  track_results: Bool
 }
 
 fn content_union(out: Array[String], items: Array[String]) -> Unit {
@@ -372,7 +374,6 @@ fn content_fixed_regions(own: Bool, aliases: Array[String], env: TypeEnv, s: Sub
 fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
   match value {
     EIdent(_, _) => false,
-    EMatch(_, _) => content_value_fact(value = value, env = env, facts = facts).0,
     EFn(_, _, _, _, _, _) => false,
     EDot(obj, _, _, _) => !content_env_scalar(value = value, env = env, facts = facts) && content_own_storage(value = obj, env = env, facts = facts),
     ECall(callee, args, _, _) => {
@@ -393,7 +394,7 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
         } else {
           match retention_decl_value(cname) {
             Some(EFn(_, _, params, _, _, body)) => held_has_module_storage(held_result_param_indices(body = body, params = params)) ||
-            content_call_result_has_outer(name = cname, params = params, body = body, env = env, calls = facts.calls),
+            (facts.track_results && content_call_result_has_outer(name = cname, params = params, body = body, env = env, calls = facts.calls)),
             Some(_) => true,
             None => match lookup_builtin(cname) {
               Some(_) => false,
@@ -421,6 +422,9 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
       own
     },
     _ => {
+      if facts.track_results && (value is EMatch(_, _)) {
+        return content_value_fact(value = value, env = env, facts = facts).0
+      }
       let mut own = false
       for item in retention_result_items(value) {
         own = own || content_own_storage(value = item, env = env, facts = facts)
@@ -680,7 +684,7 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
     EAssign(_, _, body, _) => return content_value_fact(value = body, env = env, facts = facts),
     EAssignOp(_, _, _, body, _) => return content_value_fact(value = body, env = env, facts = facts),
     EReturn(result) => return content_value_fact(value = result, env = env, facts = facts),
-    EMatch(scrut, arms) => {
+    EMatch(scrut, arms) => if facts.track_results {
       let aliases: Array[String] = []
       let mut own = false
       for arm in arms {
@@ -694,6 +698,8 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
         content_pop(mark = mark, facts = facts)
       }
       return (own, aliases)
+    } else {
+      ()
     },
     _ => ()
   }
@@ -957,7 +963,7 @@ fn content_value_names_into(e: Expr, out: Array[String]) -> Unit {
 
 fn content_alias_names_at(value: Expr, env: TypeEnv, facts: ContentFacts, out: Array[String]) -> Unit {
   match value {
-    ELet(_, _, _, _)|ELetMut(_, _, _, _)|EMatch(_, _) => content_union(out = out, items = content_value_fact(value = value, env = env, facts = facts).1),
+    ELet(_, _, _, _)|ELetMut(_, _, _, _) => content_union(out = out, items = content_value_fact(value = value, env = env, facts = facts).1),
     EIdent(n, _) => if n != "_" {
       let id = content_resolve(name = n, facts = facts)
       if !content_listed(items = out, wanted = id) {
@@ -983,6 +989,10 @@ fn content_alias_names_at(value: Expr, env: TypeEnv, facts: ContentFacts, out: A
       ()
     },
     _ => {
+      if facts.track_results && (value is EMatch(_, _)) {
+        content_union(out = out, items = content_value_fact(value = value, env = env, facts = facts).1)
+        return ()
+      }
       for item in retention_result_items(value) {
         content_alias_names_into(value = item, env = env, facts = facts, out = out)
       }
@@ -1113,7 +1123,7 @@ fn content_result_has_outer(params: Array[(String, Option[TypeExpr])], body: Exp
     retention_param_base(param.0)
   }
   let scope = content_summary_scope(names = names, env = env)
-  let facts = content_collect(names = names, scope = body, env = scope, calls = calls)
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = true)
   if Array::length(facts.store_target_alias) == 0 {
     return false
   }
@@ -1144,7 +1154,7 @@ fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, e
     retention_param_base(param.0)
   }
   let scope = content_summary_scope(names = names, env = env)
-  let facts = content_collect(names = names, scope = body, env = scope, calls = calls)
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = false)
   if Array::length(facts.store_target_alias) == 0 {
     return []
   }
