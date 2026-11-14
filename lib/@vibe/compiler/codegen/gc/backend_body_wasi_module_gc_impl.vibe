@@ -74,6 +74,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_end,
   emit_func_type_raw,
   emit_func_type_ref_result,
+  emit_function_name_section,
   emit_function_section,
   emit_global_get,
   emit_global_section_i32_mut,
@@ -92,6 +93,10 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_table_section_funcref,
   emit_vibe_abi_custom_section,
   string_to_data
+}
+
+import ./function_names.vibe {
+  gc_function_names, gc_function_names_enabled
 }
 
 import @vibe/compiler/codegen/builtin_bodies {
@@ -2464,6 +2469,17 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     } else {
       ()
     }
+  }
+  // #4127: names for every defined function, after the 1 + hbo imports.
+  // `fn_names_list` goes on past the program's functions with the builtin
+  // and host names calls resolve through; only its first `num_user_funcs`
+  // have bodies.
+  if gc_function_names_enabled() {
+    let names = gc_function_names(num_generated = Array::length(gc_builtin_type_idxs), fn_names = Array::slice(fn_names_list, start = 0, end = num_user_funcs), num_lambdas = num_lambdas, has_global_init = has_global_init)
+    if Array::length(names) != Array::length(bodies) {
+      throw("gc codegen internal error: " + Int::to_string(Array::length(names)) + " function names for " + Int::to_string(Array::length(bodies)) + " function bodies")
+    }
+    emit_function_name_section(out = out, names = names, base_index = 1 + hbo)
   }
   bytebuf_to_bytes(out)
 }
