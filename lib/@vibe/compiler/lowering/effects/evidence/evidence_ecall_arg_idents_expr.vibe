@@ -490,14 +490,14 @@ fn edp_stamp_tuple_tail(e: Expr, tys: Array[TypeExpr], tail: Bool, rets: Option[
     EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_tuple_tail(e = x, tys = tys, tail = false, rets = rets, stmts = stmts, scope = scope, pure_names = pure_names, record_type = record_type)),
     // A `return` anywhere else in the body leaves the function too, as
     // `edp_stamp_returns` walks it (Codex on #3610: a `return` in a loop).
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, for_off) => {
       let it2 = edp_stamp_tuple_tail(e = it, tys = tys, tail = false, rets = rets, stmts = stmts, scope = scope, pure_names = pure_names, record_type = record_type)
       Array::push(scope, value = n)
       match idx {
         Some(ix) => Array::push(scope, value = ix),
         None => ()
       }
-      EForIn(n, idx, it2, edp_stamp_tuple_tail(e = b, tys = tys, tail = false, rets = rets, stmts = stmts, scope = scope, pure_names = pure_names, record_type = record_type))
+      EForIn(n, idx, it2, edp_stamp_tuple_tail(e = b, tys = tys, tail = false, rets = rets, stmts = stmts, scope = scope, pure_names = pure_names, record_type = record_type), for_off)
     },
     ELoop(pairs, b) => {
       let pairs2 = for pr in pairs {
@@ -597,7 +597,7 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
     EWhile(c, b) => EWhile(edp_stamp_returns(e = c, slot = slot, scope = scope, pure_names = pure_names), edp_stamp_returns(e = b, slot = slot, scope = scope, pure_names = pure_names)),
     EAssign(n, v, c, off) => EAssign(n, edp_stamp_returns(e = v, slot = slot, scope = scope, pure_names = pure_names), edp_stamp_returns(e = c, slot = slot, scope = scope, pure_names = pure_names), off),
     EAssignOp(n, op, v, c, off) => EAssignOp(n, op, edp_stamp_returns(e = v, slot = slot, scope = scope, pure_names = pure_names), edp_stamp_returns(e = c, slot = slot, scope = scope, pure_names = pure_names), off),
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, for_off) => {
       let it2 = edp_stamp_returns(e = it, slot = slot, scope = scope, pure_names = pure_names)
       let base = Array::length(scope)
       Array::push(scope, value = n)
@@ -607,7 +607,7 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
       }
       let b2 = edp_stamp_returns(e = b, slot = slot, scope = scope, pure_names = pure_names)
       Array::truncate(scope, length = base)
-      EForIn(n, idx, it2, b2)
+      EForIn(n, idx, it2, b2, for_off)
     },
     ELoop(pairs, b) => {
       let base = Array::length(scope)
@@ -860,13 +860,13 @@ fn edp_stamp_assigned_lits(e: Expr, marker: String, slot: (Int, String), scope: 
       (a.0, edp_stamp_assigned_scoped(e = a.1, names = edp_pat_names(a.0), marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state))
     }),
     EWhile(c, b) => EWhile(edp_stamp_assigned_lits(e = c, marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state), edp_stamp_assigned_lits(e = b, marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state)),
-    EForIn(x, idx, it, b) => {
+    EForIn(x, idx, it, b, for_off) => {
       let names = [x]
       match idx {
         Some(i) => Array::push(names, value = i),
         None => ()
       }
-      EForIn(x, idx, edp_stamp_assigned_lits(e = it, marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state), edp_stamp_assigned_scoped(e = b, names = names, marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state))
+      EForIn(x, idx, edp_stamp_assigned_lits(e = it, marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state), edp_stamp_assigned_scoped(e = b, names = names, marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state), for_off)
     },
     // An initializer is read before its own binder is in scope.
     ELoop(pairs, b) => ELoop(for pr in pairs {
@@ -1308,7 +1308,7 @@ fn edp_call_census(e: Expr, bound: Array[String], scope: Array[String], called: 
       }
       ok
     },
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, _) => {
       let names = [n]
       match idx {
         Some(i) => Array::push(names, value = i),
@@ -1570,14 +1570,14 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
       (pp, edp_stamp_scoped(e = ex, names = edp_pat_names(pp), stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names))
     }),
     EWhile(c, b) => EWhile(edp_stamp_expr(e = c, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names), edp_stamp_expr(e = b, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names)),
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, for_off) => {
       let it2 = edp_stamp_expr(e = it, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names)
       let names = [n]
       match idx {
         Some(iname) => Array::push(names, value = iname),
         None => ()
       }
-      EForIn(n, idx, it2, edp_stamp_scoped(e = b, names = names, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names))
+      EForIn(n, idx, it2, edp_stamp_scoped(e = b, names = names, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names), for_off)
     },
     ELoop(pairs, b) => {
       let names: Array[String] = []
@@ -2328,7 +2328,7 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
     EIf(c, t, el) => EIf(edp_etawrap_expr(e = c, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases), edp_etawrap_expr(e = t, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases), edp_etawrap_expr(e = el, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
     EMatch(s, arms) => EMatch(edp_etawrap_expr(e = s, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases), edp_etawrap_arms(arms = arms, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
     EWhile(c, b) => EWhile(edp_etawrap_expr(e = c, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases), edp_etawrap_expr(e = b, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)),
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, for_off) => {
       let iter = edp_etawrap_expr(e = it, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
       let mark = Array::length(aliases)
       Array::push(aliases, value = (n, ""))
@@ -2338,7 +2338,7 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
       }
       let body = edp_etawrap_expr(e = b, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
       Array::truncate(aliases, length = mark)
-      EForIn(n, idx, iter, body)
+      EForIn(n, idx, iter, body, for_off)
     },
     ELoop(pairs, b) => {
       let values = edp_etawrap_pairs(pairs = pairs, in_scope = in_scope, needing = needing, ename = ename, wc = wc, aliases = aliases)
@@ -2634,7 +2634,7 @@ export fn edp_binding_used_in(expr: Expr, name: String, ctors: Array[String]) ->
     },
     EMatch(scrutinee, arms) => edp_binding_used_in(expr = scrutinee, name = name, ctors = ctors) || edp_binding_used_in_arms(arms = arms, name = name, ctors = ctors),
     EHandle(body, arms) => edp_binding_used_in(expr = body, name = name, ctors = ctors) || edp_binding_used_in_arms(arms = arms, name = name, ctors = ctors),
-    EForIn(nm, idx, iter, body) => edp_binding_used_in(expr = iter, name = name, ctors = ctors) || (nm != name && idx != Some(name) && edp_binding_used_in(expr = body, name = name, ctors = edp_usage_ctor_for(ctors = ctors, name = nm, index_name = idx))),
+    EForIn(nm, idx, iter, body, _) => edp_binding_used_in(expr = iter, name = name, ctors = ctors) || (nm != name && idx != Some(name) && edp_binding_used_in(expr = body, name = name, ctors = edp_usage_ctor_for(ctors = ctors, name = nm, index_name = idx))),
     ELoop(pairs, body) => {
       let mut used = false
       let mut shadows = false
@@ -2767,7 +2767,7 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       edp_collect_ecall_arg_idents_expr(expr = c, gname = gname, argpos = argpos, out = out, ctors = ctors)
       edp_collect_ecall_arg_idents_expr(expr = b, gname = gname, argpos = argpos, out = out, ctors = ctors)
     },
-    EForIn(name, index_name, it, b) => {
+    EForIn(name, index_name, it, b, _) => {
       edp_collect_ecall_arg_idents_expr(expr = it, gname = gname, argpos = argpos, out = out, ctors = ctors)
       if name != gname && index_name != Some(gname) {
         edp_collect_ecall_arg_idents_expr(expr = b, gname = gname, argpos = argpos, out = out, ctors = edp_usage_ctor_for(ctors = ctors, name = name, index_name = index_name))

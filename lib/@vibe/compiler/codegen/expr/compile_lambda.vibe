@@ -481,7 +481,7 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
       EMap(fields) => EMap(cl_own_return_fields(fields = fields, needed = needed)),
       EWhile(c, body) => EWhile(cl_own_return_into(e = c, needed = needed, tail = false), cl_own_return_into(e = body, needed = needed, tail = false)),
       ELoop(inits, body) => ELoop(cl_own_return_fields(fields = inits, needed = needed), cl_own_return_into(e = body, needed = needed, tail = false)),
-      EForIn(n, label, iter, body) => EForIn(n, label, cl_own_return_into(e = iter, needed = needed, tail = false), cl_own_return_into(e = body, needed = needed, tail = false)),
+      EForIn(n, label, iter, body, for_off) => EForIn(n, label, cl_own_return_into(e = iter, needed = needed, tail = false), cl_own_return_into(e = body, needed = needed, tail = false), for_off),
       EBinOp(op, a, b, off) => EBinOp(op, cl_own_return_into(e = a, needed = needed, tail = false), cl_own_return_into(e = b, needed = needed, tail = false), off),
       EUnaryOp(op, value) => EUnaryOp(op, cl_own_return_into(e = value, needed = needed, tail = false)),
       ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_return_into(e = value, needed = needed, tail = tail)),
@@ -938,7 +938,7 @@ fn cl_store_leaf(x: Expr, needed: Array[String]) -> Expr {
 /// into a fresh array that owns (and eventually releases) its items.
 export fn forin_is_discarded_seq_head(_ e: Expr) -> Bool {
   match e {
-    EForIn(_, _, _, _) => true,
+    EForIn(_, _, _, _, _) => true,
     _ => false
   }
 }
@@ -950,7 +950,7 @@ export fn forin_is_discarded_seq_head(_ e: Expr) -> Bool {
 /// per iteration.
 fn cl_forin_cells(e: Expr, cells: Array[String], collects: Bool) -> Expr {
   match e {
-    EForIn(n, label, iter, body) => {
+    EForIn(n, label, iter, body, for_off) => {
       let inner = match label {
         Some(l) => cl_cells_without(cells = cl_cells_without(cells = cells, n = n), n = l),
         None => cl_cells_without(cells = cells, n = n)
@@ -961,7 +961,7 @@ fn cl_forin_cells(e: Expr, cells: Array[String], collects: Bool) -> Expr {
       } else {
         body2
       }
-      EForIn(n, label, cl_own_cells(e = iter, cells = cells), body3)
+      EForIn(n, label, cl_own_cells(e = iter, cells = cells), body3, for_off)
     },
     _ => cl_own_cells(e = e, cells = cells)
   }
@@ -1037,7 +1037,7 @@ fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
       }
       ELoop(cl_fields_cells(fields = inits, cells = cells), cl_own_cells(e = body, cells = cl_cells_without_all(cells = cells, names = names)))
     },
-    EForIn(_, _, _, _) => cl_forin_cells(e = e, cells = cells, collects = true),
+    EForIn(_, _, _, _, _) => cl_forin_cells(e = e, cells = cells, collects = true),
     EBinOp(op, a, b, off) => EBinOp(op, cl_own_cells(e = a, cells = cells), cl_own_cells(e = b, cells = cells), off),
     EUnaryOp(op, value) => EUnaryOp(op, cl_own_cells(e = value, cells = cells)),
     EDot(obj, field, off, field_off) => EDot(cl_own_cells(e = obj, cells = cells), field, off, field_off),

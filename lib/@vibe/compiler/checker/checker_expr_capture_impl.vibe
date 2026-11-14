@@ -372,11 +372,12 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // wrapper). Not in TypeEnv: an ambient sentinel leaks through
         // if/lambda/block children and would revive #1679.
         let (_, ns, nc) = match left {
-          EForIn(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          EForIn(_, _, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           ESeq(_, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           ELet(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           ELetRec(_, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           ELetMut(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           _ => ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
         }
         s1 = ns
@@ -549,7 +550,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // the wrapper here would add a fictional child before checking it.
         // A `for` tail is a statement exactly when the spine is one.
         let tail_discarded = discarded_tail && match cur {
-          EForIn(_, _, _, _) => true,
+          EForIn(_, _, _, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => true,
           _ => false
         }
         result = check_expr_capture_impl(expr = cur, env = cenv, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = tail_discarded)
@@ -666,7 +667,7 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       let (cs, cc) = check_resume_values(e = cnd, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
       check_resume_values(e = b, ret_ty = ret_ty, env = env, defs = defs, s = cs, c = cc, errors = errors, tytab = tytab, capture = capture)
     },
-    EForIn(fname, fidx, it, b) => {
+    EForIn(fname, fidx, it, b, _) => {
       let fenv = match fidx {
         Some(fi) => env_bind(env = env_bind(env = env, name = fname, ty = CtUnknown), name = fi, ty = CtUnknown),
         None => env_bind(env = env, name = fname, ty = CtUnknown)
@@ -1016,7 +1017,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
       checker_assign_call_header(env = env, name = name, value = val)
-      check_expr_capture(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      if discarded_root {
+        check_expr_capture_discarded_root(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      } else {
+        check_expr_capture(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      }
     },
     EAssignOp(name, aop, val, body, target_off) => {
       let (val_ty, s1, c1) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
@@ -1071,7 +1076,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           s1
         }
       }
-      check_expr_capture(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      if discarded_root {
+        check_expr_capture_discarded_root(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      } else {
+        check_expr_capture(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      }
     },
     EMatch(scrutinee, arms) => {
       let (scr_ty, s1, c1) = check_expr_capture(expr = scrutinee, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
@@ -1959,7 +1968,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let (_, s2, c2) = check_expr_capture(expr = body, env = env_bind(env = env1, name = "__in_loop__", ty = CtUnit), defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       (CtUnit, s2, c2)
     },
-    EForIn(name, index_name, iterable, body) => {
+    EForIn(name, index_name, iterable, body, for_off) => {
       // #4142: a discarded `for` body is judged by the walker that reached
       // this `for` in its discarded position (`check_seq_spine`, a `while`
       // body), not here -- one authority, one report.
@@ -2072,10 +2081,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         },
         _ => false
       }
-      if collection_class == 0 && !discarded_root {
-        Array::push(errors, value = String::concat("non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function", off_marker(railway_expr_off(iterable))))
-      } else if collection_class < 0 && !discarded_root {
-        Array::push(errors, value = String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
+      if collection_class <= 0 && !discarded_root {
+        let message = if collection_class == 0 {
+          "non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function"
+        } else {
+          "cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement"
+        }
+        let marker = if for_off >= 0 {
+          off_marker_len(off = for_off, len = 3)
+        } else {
+          off_marker(railway_expr_off(iterable))
+        }
+        Array::push(errors, value = String::concat(message, marker))
       } else if collection_class < 0 {
         // #1559: a rigid type parameter (`T`) as the iterand used to lower
         // to the residual Array loop and trap. A still-open inference var

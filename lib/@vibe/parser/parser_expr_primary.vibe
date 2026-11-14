@@ -117,7 +117,7 @@ fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderCon
       EHandle(s, arms) => EHandle(map_expr_offsets(expr = s, f = f, context = context), map_arm_exprs(arms = arms, f = f, context = context)),
       EWhile(c, b) => EWhile(map_expr_offsets(expr = c, f = f, context = context), map_expr_offsets(expr = b, f = f, context = context)),
       ELoop(params, b) => ELoop(map_named_exprs(fields = params, f = f, context = context), map_expr_offsets(expr = b, f = f, context = context)),
-      EForIn(n, idx, it, b) => EForIn(n, idx, map_expr_offsets(expr = it, f = f, context = context), map_expr_offsets(expr = b, f = f, context = context)),
+      EForIn(n, idx, it, b, for_off) => EForIn(n, idx, map_expr_offsets(expr = it, f = f, context = context), map_expr_offsets(expr = b, f = f, context = context), map_located_off(off = for_off, f = f)),
       ECall(callee, args, off, callee_resolution) => ECall(map_expr_offsets(expr = callee, f = f, context = context), map_exprs(items = args, f = f, context = context), map_located_off(off = off, f = f), callee_resolution),
       EBinOp(op, l, r, boff) => EBinOp(op, map_expr_offsets(expr = l, f = f, context = context), map_expr_offsets(expr = r, f = f, context = context), map_located_off(off = boff, f = f)),
       EUnaryOp(op, e) => EUnaryOp(op, map_expr_offsets(expr = e, f = f, context = context)),
@@ -303,7 +303,8 @@ fn collect_expr_offsets(expr: Expr, out: Array[Int]) -> Unit {
       }
       collect_expr_offsets(expr = b, out = out)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(_, _, it, b, for_off) => {
+      collect_located_off(off = for_off, out = out)
       collect_expr_offsets(expr = it, out = out)
       collect_expr_offsets(expr = b, out = out)
     },
@@ -481,7 +482,7 @@ fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Int, 
     EHandle(s, arms) => tl_scan_expr(expr = s, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_arms(arms = arms, rels = rels, pluses = pluses, anchor = anchor),
     EWhile(c, b) => tl_scan_expr(expr = c, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor),
     ELoop(params, b) => tl_scan_named_exprs(fields = params, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor),
-    EForIn(_, _, it, b) => tl_scan_expr(expr = it, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor),
+    EForIn(_, _, it, b, _) => tl_scan_expr(expr = it, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor),
     ECall(callee, args, _, _) => tl_scan_expr(expr = callee, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_exprs(items = args, rels = rels, pluses = pluses, anchor = anchor),
     EBinOp(op, l, r, boff) => tl_binop_is_hit(op = op, own_off = boff, l = l, r = r, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_expr(expr = l, rels = rels, pluses = pluses, anchor = anchor) || tl_scan_expr(expr = r, rels = rels, pluses = pluses, anchor = anchor),
     EUnaryOp(_, e) => tl_scan_expr(expr = e, rels = rels, pluses = pluses, anchor = anchor),
@@ -542,7 +543,7 @@ fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (In
     EHandle(s, arms) => EHandle(tl_rewrite_expr(expr = s, rels = rels, pluses = pluses, anchor = anchor), tl_rewrite_arms(arms = arms, rels = rels, pluses = pluses, anchor = anchor)),
     EWhile(c, b) => EWhile(tl_rewrite_expr(expr = c, rels = rels, pluses = pluses, anchor = anchor), tl_rewrite_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor)),
     ELoop(params, b) => ELoop(tl_rewrite_named_exprs(fields = params, rels = rels, pluses = pluses, anchor = anchor), tl_rewrite_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, tl_rewrite_expr(expr = it, rels = rels, pluses = pluses, anchor = anchor), tl_rewrite_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor)),
+    EForIn(n, idx, it, b, for_off) => EForIn(n, idx, tl_rewrite_expr(expr = it, rels = rels, pluses = pluses, anchor = anchor), tl_rewrite_expr(expr = b, rels = rels, pluses = pluses, anchor = anchor), for_off),
     ECall(callee, args, off, callee_resolution) => ECall(tl_rewrite_expr(expr = callee, rels = rels, pluses = pluses, anchor = anchor), tl_rewrite_exprs(items = args, rels = rels, pluses = pluses, anchor = anchor), off, callee_resolution),
     EBinOp(op, l, r, boff) => {
       // The anchor is computed on the ORIGINAL operands (the offsets the

@@ -271,19 +271,19 @@ fn resolve_for_type_alias(tn: String, struct_sets: Array[(String, Array[String])
 /// Array-backed `Stream`, ADR-0012), not the pull loop that used to
 /// call_indirect an array pointer. The pull loop fires only on a POSITIVE
 /// function-shaped classification.
-export fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+export fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, for_off: Int, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match for_iterand_type_name(iter = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(tn) => if tn == "HostStream" {
       build_host_stream_for(name = name, iter = riter, body = rbody)
     } else if fn_exists(fn_returns = fn_returns, fname = String::concat(tn, "::next")) && fn_return_is_future(fn_returns = fn_returns, fname = String::concat(tn, "::next")) {
       build_await_iter_for(name = name, ctype = tn, iter = riter, body = rbody)
     } else {
-      classify_indexed_for_loop(name = name, idx = idx, iter = iter, riter = riter, rbody = rbody, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+      classify_indexed_for_loop(name = name, idx = idx, iter = iter, riter = riter, rbody = rbody, for_off = for_off, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
     },
     None => if for_await_is_pull_source(inner = iter, fn_returns = fn_returns) {
       build_pull_for_in(value_name = name, index_name = idx, iterable = riter, body = rbody)
     } else {
-      EForIn(name, idx, riter, rbody)
+      EForIn(name, idx, riter, rbody, for_off)
     }
   }
 }
@@ -297,7 +297,7 @@ export fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: 
 /// protocol is plain named `C::iter_length`/`C::iter_get` functions, e.g.
 /// @vibe/core's List), so it also runs for trait-free programs where the
 /// next/iter classification stays gated off.
-fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, for_off: Int, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match for_iterand_type_name(iter = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(tn) => if struct_set_has(struct_sets = struct_sets, name = tn) {
       if fn_exists(fn_returns = fn_returns, fname = String::concat(tn, "::iter_length")) && fn_exists(fn_returns = fn_returns, fname = String::concat(tn, "::iter_get")) {
@@ -316,9 +316,9 @@ fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, rite
         throw(String::concat(for_no_protocol_msg(tn), for_iterand_off_marker(iter)))
       }
     } else {
-      EForIn(name, idx, riter, rbody)
+      EForIn(name, idx, riter, rbody, for_off)
     },
-    None => EForIn(name, idx, riter, rbody)
+    None => EForIn(name, idx, riter, rbody, for_off)
   }
 }
 
@@ -369,14 +369,14 @@ fn for_iterand_off_marker(_ iter: Expr) -> String {
 /// function value -- a call_indirect on a non-array pointer, i.e. a runtime
 /// trap. So this strictly turns a trap into a working loop (#827's own
 /// reasoning, now applied to the single surface).
-export fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+export fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, for_off: Int, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match for_iterand_type_name(iter = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(tn) => if is_residual_eager_for_type(tn) {
       // These eager builtins own the residual EForIn lowering. A public
       // conversion such as `Array::iter(xs) -> AsyncIter[T]` must only run
       // when it is called explicitly; its mere presence must not change every
       // `for x in xs` into the named `C::iter` protocol.
-      classify_indexed_for_loop(name = name, idx = idx, iter = iter, riter = riter, rbody = rbody, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+      classify_indexed_for_loop(name = name, idx = idx, iter = iter, riter = riter, rbody = rbody, for_off = for_off, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
     } else if tn == "HostStream" {
       build_host_stream_for(name = name, iter = riter, body = rbody)
     } else if fn_exists(fn_returns = fn_returns, fname = String::concat(tn, "::next")) {
@@ -390,13 +390,13 @@ export fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, 
         Some(itertype) => build_iter_for(name = name, ctype = resolve_for_type_alias(tn = itertype, struct_sets = struct_sets, fn_returns = fn_returns), iter = ECall(EIdent(String::concat(tn, "::iter"), -1), [
           riter
         ], -1, []), body = rbody),
-        None => classify_indexed_for_loop(name = name, idx = idx, iter = iter, riter = riter, rbody = rbody, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+        None => classify_indexed_for_loop(name = name, idx = idx, iter = iter, riter = riter, rbody = rbody, for_off = for_off, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       }
     },
     None => if for_await_is_pull_source(inner = iter, fn_returns = fn_returns) {
       build_pull_for_in(value_name = name, index_name = idx, iterable = riter, body = rbody)
     } else {
-      EForIn(name, idx, riter, rbody)
+      EForIn(name, idx, riter, rbody, for_off)
     }
   }
 }

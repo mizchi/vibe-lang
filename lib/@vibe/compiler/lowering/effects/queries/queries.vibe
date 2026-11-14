@@ -388,7 +388,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       ELet(name, _, _, _) => edp_rq_plain_binder(q = q, name = name),
       ELetMut(name, _, _, _) => edp_rq_plain_binder(q = q, name = name),
       ELetRec(name, _, _) => edp_rq_plain_binder(q = q, name = name),
-      EForIn(name, index, _, _) => edp_rq_merge(q = q, a = edp_rq_plain_binder(q = q, name = name), b = match index {
+      EForIn(name, index, _, _, _) => edp_rq_merge(q = q, a = edp_rq_plain_binder(q = q, name = name), b = match index {
         Some(i) => edp_rq_plain_binder(q = q, name = i),
         None => 0
       }),
@@ -486,7 +486,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       _ => 0
     },
     RQContainsForIn => match e {
-      EForIn(_, _, _, _) => 1,
+      EForIn(_, _, _, _, _) => 1,
       _ => 0
     },
     RQNeedingValueArg(names) => match e {
@@ -573,7 +573,7 @@ export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
         RQEdpBindsName(_) => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = true, body_first = false, always_scan = false),
         _ => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = false, body_first = false, always_scan = false)
       },
-      EForIn(_, _, iter, body) => edp_rq_two(q = q, a = iter, b = body),
+      EForIn(_, _, iter, body, _) => edp_rq_two(q = q, a = iter, b = body),
       ECall(callee, args, _, _) => match q {
         RQOpaqueCall(_, _) => edp_rq_exprs(q = q, es = args),
         RQDirectCalls(_) => match callee {
@@ -1326,7 +1326,7 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
     EIf(c, t, e) => edp_has_unsafe_construct_sc(expr = c, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = t, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = e, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
     EMatch(s, arms) => edp_has_unsafe_construct_sc(expr = s, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_arms_have_unsafe_construct(arms = arms, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
     EWhile(c, b) => edp_has_unsafe_construct_sc(expr = c, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
-    EForIn(n, idx, it, b) => {
+    EForIn(n, idx, it, b, _) => {
       if edp_has_unsafe_construct_sc(expr = it, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
         true
       } else {
@@ -1635,7 +1635,7 @@ fn edp_collect_binders(e: Expr, out: MutSet[String]) -> Unit {
       }
       ()
     },
-    EForIn(nm, idx, _, _) => {
+    EForIn(nm, idx, _, _, _) => {
       edp_note_binder(name = nm, out = out)
       match idx {
         Some(n) => edp_note_binder(name = n, out = out),
@@ -2223,7 +2223,7 @@ fn scps_arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
     },
     EFn(_, _, params, _, _, b) => scps_arm_refs_resume_value_at(e = b, sh = sh || scps_fn_params_bind_resume(params), in_fn = true),
     EWhile(c, b) => scps_arm_refs_resume_value_at(e = c, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = b, sh = sh, in_fn = in_fn),
-    EForIn(v1, v2, it, b) => {
+    EForIn(v1, v2, it, b, _) => {
       let for_sh = v1 == "resume" || (match v2 {
         Some(v2n) => v2n == "resume",
         None => false

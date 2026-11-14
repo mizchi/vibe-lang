@@ -55,7 +55,7 @@ fn dinsp_here_binds(_ expr: Expr) -> Bool {
     ELet(n, _, _, _) => n == "inspect",
     ELetRec(n, _, _) => n == "inspect",
     ELetMut(n, _, _, _) => n == "inspect",
-    EForIn(v, _, _, _) => v == "inspect",
+    EForIn(v, _, _, _, _) => v == "inspect",
     EFn(_, _, params, _, _, _) => dinsp_params_bind(params = params, name = "inspect"),
     EMatch(_, arms) => dinsp_arms_bind(arms = arms, name = "inspect"),
     EHandle(_, arms) => dinsp_arms_bind(arms = arms, name = "inspect"),
@@ -88,7 +88,7 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       ELetMut(n, _, _, _) => n == name,
       EAssign(n, _, _, _) => n == name,
       EAssignOp(n, _, _, _, _) => n == name,
-      EForIn(v, _, _, _) => v == name,
+      EForIn(v, _, _, _, _) => v == name,
       EFn(_, _, params, _, _, _) => dinsp_params_bind(params = params, name = name),
       EMatch(_, arms) => dinsp_arms_bind(arms = arms, name = name),
       EHandle(_, arms) => dinsp_arms_bind(arms = arms, name = name),
@@ -104,7 +104,7 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       ELet(n, _, _, _) => n == name,
       ELetRec(n, _, _) => n == name,
       ELetMut(n, _, _, _) => n == name,
-      EForIn(v, idx, _, _) => v == name || dinsp_opt_is(opt = idx, name = name),
+      EForIn(v, idx, _, _, _) => v == name || dinsp_opt_is(opt = idx, name = name),
       EFn(_, _, params, _, _, _) => dinsp_params_bind_spelled(params = params, name = name),
       EMatch(_, arms) => dinsp_arms_bind(arms = arms, name = name),
       EHandle(_, arms) => name == "resume" || dinsp_arms_bind(arms = arms, name = name),
@@ -151,7 +151,7 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EHandle(sc, arms) => dinsp_scan(expr = sc, mode = mode, name = name) || dinsp_scan_arms(arms = arms, mode = mode, name = name),
       EWhile(c, b) => dinsp_scan(expr = c, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
       ELoop(params, b) => dinsp_scan_fields(fields = params, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
-      EForIn(_, _, it, b) => dinsp_scan(expr = it, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      EForIn(_, _, it, b, _) => dinsp_scan(expr = it, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
       ECall(callee, args, _, _) => if mode == 4 {
         match callee {
           EIdent(n, _) => if n == name {
@@ -469,7 +469,7 @@ fn dinsp_children(_ expr: Expr) -> Expr {
     EHandle(s, arms) => EHandle(dinsp_expr(s), dinsp_arms(arms)),
     EWhile(c, b) => EWhile(dinsp_expr(c), dinsp_expr(b)),
     ELoop(params, b) => ELoop(dinsp_fields(params), dinsp_expr(b)),
-    EForIn(v, k, it, b) => EForIn(v, k, dinsp_expr(it), dinsp_expr(b)),
+    EForIn(v, k, it, b, for_off) => EForIn(v, k, dinsp_expr(it), dinsp_expr(b), for_off),
     ECall(callee, args, off, callee_resolution) => ECall(dinsp_expr(callee), dinsp_exprs(args), off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, dinsp_expr(l), dinsp_expr(r), boff),
     EUnaryOp(op, v) => EUnaryOp(op, dinsp_expr(v)),
@@ -636,7 +636,7 @@ export fn expr_has_free_name(expr: Expr, name: String) -> Bool with Exception {
     },
     EAssign(local, value, body, _) => local == name || expr_has_free_name(expr = value, name = name) || expr_has_free_name(expr = body, name = name),
     EAssignOp(local, _, value, body, _) => local == name || expr_has_free_name(expr = value, name = name) || expr_has_free_name(expr = body, name = name),
-    EForIn(value_name, key_name, iter, body) => expr_has_free_name(expr = iter, name = name) || if value_name == name || match key_name {
+    EForIn(value_name, key_name, iter, body, _) => expr_has_free_name(expr = iter, name = name) || if value_name == name || match key_name {
       Some(key) => key == name,
       None => false
     } {
