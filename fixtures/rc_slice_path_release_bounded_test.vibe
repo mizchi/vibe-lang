@@ -1,0 +1,83 @@
+// #2827: a `let` bound to a slice and consumed on some paths only is released
+// on the others.
+//
+// `Array::slice` (and the `xs[a:b]` sugar over an array) answers a fresh
+// copy, so the binding owns its only reference. When one branch consumes it,
+// the branch merge plans a guarded path drop for the paths that do not; the
+// RC lowering emits that drop only for a value it can prove owned
+// (`path_value_owned`), and a slice was not on its list. Measured on a stage2
+// with main's RC lowering (6a1d832963), the odd rounds below (which skip the
+// consume) left 768,100 B of heap in use after 2000 rounds on the RC lane. The
+// gate (tests/gates/mid, 40f0r) compiles this under VIBE_RC=1 and bounds the
+// growth, and checks the answer on the bump, rc, shadow and gc lanes; the
+// shadow lane traps on the drop of a freed block, which is what releasing a
+// slice on a path that already moved it out would hit.
+//
+// The shapes: `Array::slice` (`by_call`), the `xs[a:b]` sugar (`by_sugar`),
+// a String slice (`on_string`, a fat pointer the drop ignores), and
+// `moved_all`, consumed on every arm, the control that must release nothing
+// extra.
+//
+// Per round i, even i gives 2 + 2 + 2 + 2 = 8 and odd i gives
+// 1 + 1 + 1 + 3 = 6, so 1000 * 8 + 1000 * 6 = 14000.
+
+fn keep(_ xs: Array[Int]) -> Array[Int] {
+  xs
+}
+
+fn keep_s(_ s: String) -> String {
+  s
+}
+
+fn mk(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+fn by_call(_ i: Int, _ c: Bool) -> Int {
+  let v = Array::slice(mk(i), start = 0, end = 2)
+  if c {
+    Array::length(keep(v))
+  } else {
+    1
+  }
+}
+
+fn by_sugar(_ i: Int, _ c: Bool) -> Int {
+  let xs = mk(i)
+  let v = xs[0:2]
+  if c {
+    Array::length(keep(v))
+  } else {
+    1
+  }
+}
+
+fn on_string(_ i: Int, _ c: Bool) -> Int {
+  let s = "a\{i % 10}b"
+  let t = s[0:2]
+  if c {
+    String::length(keep_s(t))
+  } else {
+    1
+  }
+}
+
+fn moved_all(_ i: Int, _ c: Bool) -> Int {
+  let v = Array::slice(mk(i), start = 1, end = 3)
+  if c {
+    Array::length(keep(v))
+  } else {
+    Array::length(keep(v)) + 1
+  }
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    let even = i % 2 == 0
+    acc = acc + by_call(i, even) + by_sugar(i, even) + on_string(i, even) + moved_all(i, even)
+    i = i + 1
+  }
+  acc
+}

@@ -1911,6 +1911,37 @@ done
 rm -rf "$pjdir"
 echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pj_used B at N=20000)"
 
+# 40f0t. #2827: a `let` bound to a slice (`Array::slice`, `xs[a:b]`) and
+#        consumed on some paths only is released on the others. A slice is a
+#        fresh copy on every lane, but the `let` lowering admitted a path drop
+#        only for a callee whose declared result it could read, which no
+#        builtin has, so every path that skipped the consume kept the copy.
+#        Unfixed, the fixture left 768,100 B in use after 2000 rounds; the
+#        bound is 20,000. Its String slice (a fat pointer) and its control
+#        consumed on every arm keep their answers, and the shadow lane traps
+#        on the drop of a freed block, which is what releasing a slice on a
+#        path that already moved it out would hit.
+echo "[compiler-gate] 40f0t/40 a slice let consumed on some paths only is released on the others (#2827)"
+gate_workdir sldir "_build/_gate_rc_slice_path_release"
+for sl_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$sl_lane" "fixtures/rc_slice_path_release_bounded_test.vibe" "$sldir/sl.wasm" main
+  gate_require_artifact "$sldir/sl.wasm" "rc_slice_path_release_bounded fixture did not compile on the $sl_lane lane (#2827)"
+  gate_run sl_out last "$sldir/sl.wasm"
+  gate_require_eq "$sl_out" "14000" "rc_slice_path_release_bounded got '$sl_out' on the $sl_lane lane (want 14000). A trap means a slice's path drop released it on a path that had moved it out (#2827)."
+  if [ "$sl_lane" = rc ]; then
+    sl_json="$(node scripts/measure_heap.mjs "$sldir/sl.wasm" main 2>/dev/null)"
+    sl_used="$(printf '%s' "$sl_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sl_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_slice_path_release_bounded heap ($sl_json)" >&2; exit 1
+    fi
+    if [ "$sl_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_slice_path_release_bounded heap_used=$sl_used >= 20000 (#2827 regressed: a slice consumed on some paths only is left unreleased on the others again; unfixed, this fixture measured 768,100 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$sldir"
+echo "[compiler-gate] slice path release guard ok (14000 on bump/rc/shadow/gc, rc heap_used=$sl_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
