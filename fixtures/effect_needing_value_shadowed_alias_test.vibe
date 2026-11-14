@@ -1,0 +1,49 @@
+// #4065: an alias names the binding its source named where it was bound.
+// `ys` aliases the first `xs`; storing the handle-bound closure into the
+// second `xs` does not reach `ys`, so handing `ys`'s element to a row-free
+// parameter compiles and runs.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn shadowed_alias() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    let ys = xs
+    let xs = [() -> 7]
+    Array::push(xs, value = g)
+    apply(f = Array::get(ys, at = 0)) + Array::length(xs)
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+// A store in one branch has not run in the other, so the other branch's read
+// of the element that is still a plain closure compiles.
+fn other_branch(c: Bool) -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    if c {
+      Array::push(xs, value = g)
+      0
+    } else {
+      apply(f = Array::get(xs, at = 0))
+    }
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+test "a store into a shadowing binding does not reach an alias of the shadowed one" {
+  inspect(shadowed_alias(), content = "144")
+}
+
+test "a store in one branch is not seen by the other" {
+  inspect(other_branch(c = false), content = "142")
+}
