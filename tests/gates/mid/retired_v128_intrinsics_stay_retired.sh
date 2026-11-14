@@ -592,6 +592,39 @@ done
 rm -rf "$sbdir"
 echo "[compiler-gate] RC branch-dup short-by-two guard ok (0 on bump/rc/shadow/gc, rc heap_used=$sb_used B at N=20000)"
 
+# 40e10. #1980: a pattern binder consumed on one branch releases the dup the
+# path did not spend. A match payload binder takes one reference per consume
+# its arm may perform (the maximum over the arm's branches) and nothing
+# released them, so `Some(v) => { if c { sink(v) } else { 0 }; read(v) }`
+# leaked the dup on every path that skipped the consume; `if o is Some(v)`,
+# `guard` and a tuple `let` lower to the same match. Each counted consume is a
+# mark on a flag local now, and the arm's end releases the dups less the
+# marks the path ran. The fixture measured 6,461,724 B at N=20000 before the
+# change and 6,396 B after; the bound is 8,000. Its controls keep the consumed
+# values past the call, so the shadow run is what proves no arm-end release
+# freed a value still held, and the answer is checked on bump, rc, shadow and
+# gc.
+echo "[compiler-gate] 40e10/40 RC pattern-binder branch-dup guard"
+gate_workdir pqdir "_build/_gate_rc_pattern_binder_dup"
+for pq_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$pq_lane" "fixtures/rc_pattern_binder_dup_leak_test.vibe" "$pqdir/pq.wasm" main
+  gate_require_artifact "$pqdir/pq.wasm" "rc_pattern_binder_dup_leak fixture did not compile on the $pq_lane lane (#1980)"
+  gate_run pq_out last "$pqdir/pq.wasm"
+  gate_require_eq "$pq_out" "0" "rc_pattern_binder_dup_leak got '$pq_out' on the $pq_lane lane (want 0). A trap means an arm-end release freed a value a path still held (#1980)."
+  if [ "$pq_lane" = rc ]; then
+    pq_json="$(node scripts/measure_heap.mjs "$pqdir/pq.wasm" main 2>/dev/null)"
+    pq_used="$(printf '%s' "$pq_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$pq_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_pattern_binder_dup_leak heap ($pq_json)" >&2; exit 1
+    fi
+    if [ "$pq_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_pattern_binder_dup_leak heap_used=$pq_used >= 8000 (a pattern binder keeps the dup of a consume its path skipped; measured 6461724 at N=20000 when it did)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$pqdir"
+echo "[compiler-gate] RC pattern-binder branch-dup guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pq_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a
@@ -1816,6 +1849,37 @@ for ps_lane in bump rc shadow gc; do
 done
 rm -rf "$psdir"
 echo "[compiler-gate] scalar-result parameter path release guard ok (3009552 on bump/rc/shadow/gc, rc heap_used=$ps_used B)"
+
+# 40f0r. #4141: a record field, tuple item, array item or map value whose value
+#        is a branch or a block ending in a borrowed view -- a projection, a
+#        borrow-returning call, a loop-borrowed name -- takes a reference
+#        before the literal stores it. The literal lowerings checked only the
+#        item's top node, so the view behind an `if`, a `match` or a block was
+#        stored unretained and the literal's drop released its source's value
+#        once too often: the shadow lane trapped with `drop of freed value`
+#        (the compiler's own `lc_build_emission_layout` did this to
+#        `input.struct_names`). The answer is checked on bump, rc, shadow and
+#        gc; the rc heap bound catches a fix that retains a fresh value too.
+echo "[compiler-gate] 40f0r/40 a branch or block view stored into an aggregate literal is retained (#4141)"
+gate_workdir abdir "_build/_gate_rc_aggregate_branch_tail"
+for ab_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ab_lane" "fixtures/rc_aggregate_branch_tail_test.vibe" "$abdir/ab.wasm" main
+  gate_require_artifact "$abdir/ab.wasm" "rc_aggregate_branch_tail fixture did not compile on the $ab_lane lane (#4141)"
+  gate_run ab_out last "$abdir/ab.wasm"
+  gate_require_eq "$ab_out" "0" "rc_aggregate_branch_tail got '$ab_out' on the $ab_lane lane (want 0). A trap means a literal released a branch or block view it never retained (#4141)."
+  if [ "$ab_lane" = rc ]; then
+    ab_json="$(node scripts/measure_heap.mjs "$abdir/ab.wasm" main 2>/dev/null)"
+    ab_used="$(printf '%s' "$ab_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ab_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_aggregate_branch_tail heap ($ab_json)" >&2; exit 1
+    fi
+    if [ "$ab_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_aggregate_branch_tail heap_used=$ab_used >= 8000 (#4141: a literal retains a value that needs no reference of its own)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$abdir"
+echo "[compiler-gate] aggregate branch-tail retain guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ab_used B)"
 
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).

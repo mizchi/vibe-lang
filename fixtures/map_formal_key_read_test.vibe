@@ -1,0 +1,112 @@
+// #4121: a generic body whose type parameter keys a map, and that only READS
+// it (`get` / `has_key` / `delete` / an index), is lowered once with
+// operations that read the map's own key-class mark at run time. So it may be
+// instantiated at `String`, `Int`, `Char` and `Bool` alike, and each answers
+// as the concrete path does. A WRITE through such a parameter (`Map::set`,
+// `MapBuilder`) is still refused: an empty map carries no mark to read.
+// The same file runs on the linear and the wasm-gc lanes
+// (tests/gates/mid/6b_40, step 40h8s).
+
+fn look[K, V](m: Map[K, V], k: K) -> V {
+  Map::get(m, key = k)
+}
+
+fn holds[K, V](m: Map[K, V], k: K) -> Bool {
+  Map::has_key(m, key = k)
+}
+
+fn drop_key[K, V](m: Map[K, V], k: K) -> Map[K, V] {
+  Map::delete(m, key = k)
+}
+
+fn index_of[K, V](m: Map[K, V], k: K) -> V {
+  m[k]
+}
+
+fn int_map(_ n: Int) -> Map[Int, Int] {
+  let mut m: Map[Int, Int] = Map::new()
+  let mut i = 0
+  while i < n {
+    m = Map::set(m, key = i * 7, value = i)
+    i = i + 1
+  }
+  m
+}
+
+test "String keys through a generic read" {
+  let m = Map::set(Map::set(Map::new(), key = "a", value = 1), key = "b", value = 2)
+  inspect(look(m = m, k = "b"), content = "2")
+  inspect(index_of(m = m, k = "a"), content = "1")
+  inspect(holds(m = m, k = "a"), content = "true")
+  inspect(holds(m = m, k = "z"), content = "false")
+  let d = drop_key(m = m, k = "a")
+  inspect(Map::size(d), content = "1")
+  inspect(Map::has_key(d, key = "a"), content = "false")
+  inspect(Map::get(d, key = "b"), content = "2")
+}
+
+test "Int keys through a generic read" {
+  // `1 << 32` and `2 << 32` agree in their low 32 bits: a String-aware
+  // comparison of the raw words would call them equal.
+  let a = 1 << 32
+  let b = 2 << 32
+  let m = Map::set(Map::set(Map::new(), key = a, value = "one"), key = b, value = "two")
+  inspect(look(m = m, k = a), content = "one")
+  inspect(look(m = m, k = b), content = "two")
+  inspect(index_of(m = m, k = b), content = "two")
+  inspect(holds(m = m, k = b), content = "true")
+  inspect(holds(m = m, k = 3 << 32), content = "false")
+  let d = drop_key(m = m, k = a)
+  inspect(Map::size(d), content = "1")
+  inspect(Map::has_key(d, key = a), content = "false")
+  inspect(Map::get(d, key = b), content = "two")
+  // The result of a generic delete is still scalar-keyed: a concrete write
+  // and read after it take the scalar path.
+  let d2 = Map::set(d, key = a, value = "again")
+  inspect(Map::get(d2, key = a), content = "again")
+}
+
+test "Int keys past the index threshold through a generic read" {
+  let m = int_map(20)
+  inspect(look(m = m, k = 133), content = "19")
+  inspect(holds(m = m, k = 134), content = "false")
+  inspect(holds(m = m, k = 0), content = "true")
+  let d = drop_key(m = m, k = 70)
+  inspect(Map::size(d), content = "19")
+  inspect(holds(m = d, k = 70), content = "false")
+  inspect(look(m = d, k = 77), content = "11")
+}
+
+test "Char keys through a generic read" {
+  let m = Map::set(Map::set(Map::new(), key = 'x', value = 10), key = 'y', value = 20)
+  inspect(look(m = m, k = 'y'), content = "20")
+  inspect(holds(m = m, k = 'x'), content = "true")
+  inspect(holds(m = m, k = 'q'), content = "false")
+  let d = drop_key(m = m, k = 'x')
+  inspect(Map::size(d), content = "1")
+  inspect(Map::get(d, key = 'y'), content = "20")
+}
+
+test "Bool keys through a generic read" {
+  let m = Map::set(Map::set(Map::new(), key = true, value = "yes"), key = false, value = "no")
+  inspect(look(m = m, k = false), content = "no")
+  inspect(look(m = m, k = true), content = "yes")
+  let d = drop_key(m = m, k = true)
+  inspect(holds(m = d, k = true), content = "false")
+  inspect(holds(m = d, k = false), content = "true")
+}
+
+test "an empty map answers a generic read as the concrete path does" {
+  // `Map::new()` carries no key-class mark, so a generic read takes the
+  // String path; on an empty map that path finds nothing for any key.
+  let e: Map[Int, Int] = Map::new()
+  inspect(holds(m = e, k = 1), content = "false")
+  inspect(Map::has_key(e, key = 1), content = "false")
+  let d = drop_key(m = e, k = 1)
+  inspect(Map::size(d), content = "0")
+  // A concrete write after a generic delete of an empty map still marks the
+  // result, so the scalar path reads it back.
+  let d2 = Map::set(d, key = 5 << 32, value = 7)
+  inspect(Map::get(d2, key = 5 << 32), content = "7")
+  inspect(Map::has_key(d2, key = 6 << 32), content = "false")
+}
