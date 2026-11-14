@@ -100,6 +100,44 @@ test "source-owned Map iterator accessors derive ownership from their bodies" {
   inspect(contains(names = borrowed_names, name = "key_at"), "true")
 }
 
+//# #4153: a borrow-returning tail is judged by what it reads into, not by its
+//# callee alone. A read into a binding the function owns cannot be handed back
+//# as a view -- the binding is released when the function returns -- so the
+//# function is not borrow-returning. Classified as one, its branch tails were
+//# freed by the binding's scope-end drop (a wrong answer on the RC lane), and
+//# a direct projection tail leaked once per call. A read into a parameter is
+//# still a view the caller keeps alive.
+test "a branch tail that reads into a local let is not borrow-returning" {
+  let src = "fn pick(i: Int) -> Array[Int] {\n  let v = [[i], [i + 1]]\n  if i > 0 {\n    Array::get(v, 0)\n  } else {\n    Array::get(v, 1)\n  }\n}\n"
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "false")
+}
+
+test "a projection tail into a local let is not borrow-returning" {
+  let src = "fn pick(i: Int) -> Array[Int] {\n  let v = [[i], [i + 1]]\n  Array::get(v, 1)\n}\n"
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "false")
+}
+
+test "a view of a local, or a match binder of one, is not borrow-returning" {
+  let alias = "fn pick(i: Int) -> Array[Int] {\n  let v = [[i], [i + 1]]\n  if i > 0 {\n    let w = Array::get(v, 0)\n    w\n  } else {\n    Array::get(v, 1)\n  }\n}\n"
+  inspect(contains(names = borrow_set_of(alias), name = "pick"), "false")
+  let binder = "enum S {\n  Full(Array[Int]);\n  Empty\n}\n\nfn pick(i: Int) -> Array[Int] {\n  let s = Full([i])\n  match s {\n    Full(xs) => xs,\n    Empty => [0]\n  }\n}\n"
+  inspect(contains(names = borrow_set_of(binder), name = "pick"), "false")
+}
+
+test "a borrow-returning helper applied to a local is not borrow-returning" {
+  let src = "fn first(xs: Array[Array[Int]]) -> Array[Int] {\n  Array::get(xs, 0)\n}\n\nfn pick(i: Int) -> Array[Int] {\n  let v = [[i], [i + 1]]\n  if i > 0 {\n    first(v)\n  } else {\n    Array::get(v, 1)\n  }\n}\n"
+  let names = borrow_set_of(src)
+  inspect(contains(names = names, name = "first"), "true")
+  inspect(contains(names = names, name = "pick"), "false")
+}
+
+test "a read into a parameter, through a view or a binder, stays borrow-returning" {
+  let through_let = "fn pick(xs: Array[Array[Array[Int]]], i: Int) -> Array[Int] {\n  let w = Array::get(xs, 0)\n  if i > 0 {\n    Array::get(w, 0)\n  } else {\n    Array::get(w, 1)\n  }\n}\n"
+  inspect(contains(names = borrow_set_of(through_let), name = "pick"), "true")
+  let through_match = "enum S {\n  Full(Array[Array[Int]]);\n  Empty\n}\n\nfn pick(s: S, d: Array[Array[Int]]) -> Array[Int] {\n  match s {\n    Full(xss) => Array::get(xss, 0),\n    Empty => Array::get(d, 0)\n  }\n}\n"
+  inspect(contains(names = borrow_set_of(through_match), name = "pick"), "true")
+}
+
 //# #1979 review: the two exported APIs must not be two spellings of the set.
 //#
 //# `is_borrow_ret_builtin` identifies intrinsic members;

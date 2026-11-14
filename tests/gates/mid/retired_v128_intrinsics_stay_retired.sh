@@ -1881,6 +1881,36 @@ done
 rm -rf "$abdir"
 echo "[compiler-gate] aggregate branch-tail retain guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ab_used B)"
 
+# 40f0t. #4153 / #1980: a function whose result paths read into a binding of
+#        its own -- a `let` of a fresh value, a match binder of one, a view of
+#        either -- is not borrow-returning. The classifier judged such a tail
+#        by its callee alone, so behind an `if` or a `match` the binding's
+#        scope-end drop freed the value the branch returned (the answer was
+#        2000 here, not 0, on rc and shadow, which do not trap on it), and a
+#        direct projection tail leaked the reference its `let` retained, 88 B
+#        a call. The answer is checked on bump, rc, shadow and gc; the rc heap
+#        bound catches the leak (177,108 B before, 1,284 B after).
+echo "[compiler-gate] 40f0t/40 a result that reads into a binding of the function is owned, not borrowed (#4153)"
+gate_workdir otdir "_build/_gate_rc_owned_local_tail_view"
+for ot_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ot_lane" "fixtures/rc_owned_local_tail_view_test.vibe" "$otdir/ot.wasm" main
+  gate_require_artifact "$otdir/ot.wasm" "rc_owned_local_tail_view fixture did not compile on the $ot_lane lane (#4153)"
+  gate_run ot_out last "$otdir/ot.wasm"
+  gate_require_eq "$ot_out" "0" "rc_owned_local_tail_view got '$ot_out' on the $ot_lane lane (want 0). A non-zero answer means a function handed back a value its own scope-end drop freed (#4153)."
+  if [ "$ot_lane" = rc ]; then
+    ot_json="$(node scripts/measure_heap.mjs "$otdir/ot.wasm" main 2>/dev/null)"
+    ot_used="$(printf '%s' "$ot_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ot_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_owned_local_tail_view heap ($ot_json)" >&2; exit 1
+    fi
+    if [ "$ot_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_owned_local_tail_view heap_used=$ot_used >= 8000 (#4153: a caller does not release a result that reads into a binding of the callee)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$otdir"
+echo "[compiler-gate] owned-local tail view guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ot_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"

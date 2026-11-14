@@ -1,0 +1,145 @@
+// RC guard (#4153, #1980): a function whose result reads into a binding of
+// its own is not borrow-returning.
+//
+// A borrow-returning function hands back a view into something its CALLER
+// keeps alive, so the caller neither releases the result nor counts it as
+// its own. A function whose result paths read into a `let` (or a match
+// binder of a value) it owns cannot do that: the binding is released when
+// the function returns. The classifier accepted such a tail by its callee
+// alone (`Array::get`, a field read, a borrow-returning user function) and
+// never asked what it read into, so:
+//
+// - behind an `if` or a `match`, the binding's scope-end drop freed the
+//   value the branch returned. The caller read freed memory: no trap, a
+//   wrong answer (`branch_tail` below answered 260000 for 0 at 20000 calls).
+// - where the tail IS the projection, the `let` retained it before its drop,
+//   and every caller leaked that reference (88 B per call).
+//
+// Such a function now goes through the owning-return normalization, which
+// retains each result path, and its callers release the result. The controls
+// keep accessors over a PARAMETER borrow-returning: the caller owns what
+// they read into, so they still hand back a view and allocate nothing.
+//
+// Each probe allocates between taking a result and reading it, so a value
+// that was freed is reused before it is read. `main` returns 0 on every
+// lane; the gate bounds its heap on the rc lane, which catches the leak.
+struct Pair {
+  left: Array[Int];
+  right: Array[Int]
+}
+
+enum Slot {
+  Full(Array[Int]);
+  Empty
+}
+
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+// The two branch tails read into `v`, a `let` of this function.
+fn branch_tail(_ i: Int) -> Array[Int] {
+  let v = [mka(i), mka(i + 2)]
+  if i % 2 == 0 {
+    Array::get(v, at = 0)
+  } else {
+    Array::get(v, at = 1)
+  }
+}
+
+// The tail is the projection itself.
+fn direct_tail(_ i: Int) -> Array[Int] {
+  let v = [mka(i), mka(i + 2)]
+  Array::get(v, at = 1)
+}
+
+// A field read behind a branch.
+fn field_tail(_ i: Int) -> Array[Int] {
+  let p = Pair::{ left: mka(i), right: mka(i + 2) }
+  if i % 2 == 0 {
+    p.left
+  } else {
+    p.right
+  }
+}
+
+// A match binder of a value this function made.
+fn match_tail(_ i: Int) -> Array[Int] {
+  let s = if i >= 0 {
+    Full(mka(i))
+  } else {
+    Empty
+  }
+  match s {
+    Full(xs) => xs,
+    Empty => mka(0)
+  }
+}
+
+// A view bound to a name inside the branch.
+fn alias_tail(_ i: Int) -> Array[Int] {
+  let v = [mka(i), mka(i + 2)]
+  if i % 2 == 0 {
+    let w = Array::get(v, at = 0)
+    w
+  } else {
+    mka(i + 2)
+  }
+}
+
+// Controls: a borrow-returning accessor over a parameter, and a view of a
+// parameter bound to a name. Both stay borrow-returning.
+fn first(_ xs: Array[Array[Int]]) -> Array[Int] {
+  Array::get(xs, at = 0)
+}
+
+// A borrow-returning user function applied to a local reads into the local.
+fn user_tail(_ i: Int) -> Array[Int] {
+  let v = [mka(i), mka(i + 2)]
+  if i % 2 == 0 {
+    first(v)
+  } else {
+    mka(i + 2)
+  }
+}
+
+fn second_of_first(_ xs: Array[Array[Array[Int]]]) -> Array[Int] {
+  let w = Array::get(xs, at = 0)
+  Array::get(w, at = 1)
+}
+
+fn probe(_ i: Int) -> Int {
+  let a = branch_tail(i)
+  let b = direct_tail(i)
+  let c = field_tail(i)
+  let d = match_tail(i)
+  let e = alias_tail(i)
+  let f = user_tail(i)
+  let fresh = [mka(i + 7), mka(i + 9), mka(i + 11)]
+  let held = [[mka(i), mka(i + 4)]]
+  let g = second_of_first(held)
+  let h = first(fresh)
+  // i even: a = c = e = f = mka(i); i odd: they are mka(i + 2).
+  let k = if i % 2 == 0 {
+    0
+  } else {
+    2
+  }
+  (Array::get(a, at = 0) - i - k) + (Array::get(b, at = 2) - (i + 4)) + (Array::get(c, at = 1) - (i + 1 + k)) + (Array::get(d, at = 2) - (i + 2)) + (Array::get(e, at = 0) - i - k) + (Array::get(f, at = 0) - i - k) + (Array::get(g, at = 0) - (i + 4)) + (Array::get(h, at = 0) - (i + 7)) + Array::length(fresh) - 3
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 2000 {
+    acc = acc + probe(i)
+    i = i + 1
+  }
+  acc
+}
+
+test "a result that reads into a binding of the function is owned (#4153)" {
+  inspect(probe(4), content = "0")
+  inspect(probe(5), content = "0")
+  inspect(main(), content = "0")
+}
