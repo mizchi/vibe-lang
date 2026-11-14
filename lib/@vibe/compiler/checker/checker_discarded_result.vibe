@@ -34,38 +34,43 @@ import @vibe/compiler/checker/diagnostics {
 /// in is read here -- through bindings, assignments and statement `if` /
 /// `match` branches.
 ///
-/// A loop is judged where the checker types it, so each site is reported once:
-/// a `while` body always (the checker calls this on it), and a `for` body
-/// when the `for`'s value is thrown away -- the checker calls this on it when
-/// it types the `for` as a statement, and a `for` that ends a statement
-/// branch is read here, where the checker types it as an expression.
+/// One walker judges every discarded value, so each site is reported once.
+/// It starts exactly where a value is thrown away -- the left side of a block
+/// statement (`check_seq_spine`) and a `while` body -- and follows that value
+/// to its end: through bindings, assignments, statement `if` / `match`
+/// branches, and into a `for`, whose body's values are dropped with the
+/// `for`'s own. A `for` reached here sits in a discarded position by
+/// construction; a `for` used as an expression is never reached, since no
+/// walk starts at an expression (ADR-0116). The checker does not refuse a
+/// `for` body again where it types the `for`: two authorities disagreed about
+/// which `for` each owned, and a `for` after an assignment fell between them.
 export fn refuse_discarded_functional_result(stmt: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
-  discarded_result_walk(e = stmt, env = env, errors = errors, in_branch = false)
+  discarded_result_walk(e = stmt, env = env, errors = errors)
 }
 
-fn discarded_result_walk(e: Expr, env: TypeEnv, errors: Array[String], in_branch: Bool) -> Unit {
+fn discarded_result_walk(e: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
   match e {
     // A call the compiler wrote itself (no source offset, such as the pieces
     // of a string interpolation) is not the program's to edit.
     ECall(EIdent(name, noff), args, _, _) => if noff >= 0 && discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
       Array::push(errors, value = discarded_result_message(name = name, args = args, noff = noff))
     },
-    ESeq(_, rest) => discarded_result_walk(e = rest, env = env, errors = errors, in_branch = in_branch),
-    ELet(_, _, body, _) => discarded_result_walk(e = body, env = env, errors = errors, in_branch = in_branch),
-    ELetMut(_, _, body, _) => discarded_result_walk(e = body, env = env, errors = errors, in_branch = in_branch),
-    ELetRec(_, _, body) => discarded_result_walk(e = body, env = env, errors = errors, in_branch = in_branch),
+    ESeq(_, rest) => discarded_result_walk(e = rest, env = env, errors = errors),
+    ELet(_, _, body, _) => discarded_result_walk(e = body, env = env, errors = errors),
+    ELetMut(_, _, body, _) => discarded_result_walk(e = body, env = env, errors = errors),
+    ELetRec(_, _, body) => discarded_result_walk(e = body, env = env, errors = errors),
     // `x = v` then the rest of the block: the block's value is the rest's.
-    EAssign(_, _, rest, _) => discarded_result_walk(e = rest, env = env, errors = errors, in_branch = in_branch),
-    EAssignOp(_, _, _, rest, _) => discarded_result_walk(e = rest, env = env, errors = errors, in_branch = in_branch),
+    EAssign(_, _, rest, _) => discarded_result_walk(e = rest, env = env, errors = errors),
+    EAssignOp(_, _, _, rest, _) => discarded_result_walk(e = rest, env = env, errors = errors),
     EIf(_, then_e, else_e) => {
-      discarded_result_walk(e = then_e, env = env, errors = errors, in_branch = true)
-      discarded_result_walk(e = else_e, env = env, errors = errors, in_branch = true)
+      discarded_result_walk(e = then_e, env = env, errors = errors)
+      discarded_result_walk(e = else_e, env = env, errors = errors)
     },
     EMatch(_, arms) => for arm in arms {
-      discarded_result_walk(e = arm.1, env = env, errors = errors, in_branch = true)
+      discarded_result_walk(e = arm.1, env = env, errors = errors)
     },
-    EForIn(_, _, _, body) => if in_branch {
-      discarded_result_walk(e = body, env = env, errors = errors, in_branch = false)
+    EForIn(_, _, _, body) => {
+      discarded_result_walk(e = body, env = env, errors = errors)
     },
     _ => ()
   }
