@@ -1,0 +1,59 @@
+// #2509 / #2827: a read of a struct field declared `Int`, `Bool` or `Unit` is
+// an immediate, not a view into the object. A lambda (no declared result)
+// that consumes its struct parameter on one path and reads an `Int` field of
+// it on the other used to keep the up-front dup on the read path -- the field
+// read counted as a possible view, so the parameter's guarded path drop was
+// declined and the read path leaked one reference. The plan now takes the
+// guarded drop there. A `String` field stays a possible view, so its shape
+// keeps today's plan.
+import @vibe/compiler/query {
+  rc_plan_source
+}
+
+fn plan_rows(source: String, fname: String) -> String with Exception {
+  let plan = rc_plan_source(source = source, fn_filter = fname, checked_error_row = false)
+  let rows: Array[String] = []
+  for line in String::split(plan, sep = "\n") {
+    if String::starts_with(line, prefix = fname + " ") {
+      Array::push(rows, value = line)
+    }
+  }
+  String::join(rows, sep = " ; ")
+}
+
+let shapes: String = "struct Ctx {\n  n: Int;\n  items: Array[Int]\n}\n\nfn keep(c: Ctx) -> Ctx {\n  c\n}\n\nfn count_of(c: Ctx) -> Int {\n  c.n\n}\n\nlet lam_shape = (ctx: Ctx, o: Option[Int]) -> {\n  match o {\n    Some(_) => count_of(keep(ctx)),\n    None => ctx.n\n  }\n}\n\nstruct Named {\n  name: String;\n  n: Int\n}\n\nfn keep_named(c: Named) -> Named {\n  c\n}\n\nlet named_shape = (c: Named, o: Option[Int]) -> {\n  match o {\n    Some(_) => keep_named(c).name,\n    None => c.name\n  }\n}\n"
+
+test "an Int field read lets a lambda's parameter take its guarded drop" {
+  let rows = plan_rows(source = shapes, fname = "lam_shape")
+  inspect(String::contains(rows, needle = "lam_shape ctx path_drop"), content = "true")
+}
+
+test "a String field read keeps the parameter's ordinary drop" {
+  let rows = plan_rows(source = shapes, fname = "named_shape")
+  inspect(String::contains(rows, needle = "path_drop"), content = "false")
+}
+
+struct Ctx {
+  n: Int;
+  items: Array[Int]
+}
+
+fn keep(c: Ctx) -> Ctx {
+  c
+}
+
+fn count_of(c: Ctx) -> Int {
+  c.n + Array::length(c.items)
+}
+
+let lam_shape = (ctx: Ctx, o: Option[Int]) -> {
+  match o {
+    Some(_) => count_of(c = keep(c = ctx)),
+    None => ctx.n
+  }
+}
+
+test "the lambda still answers on both paths" {
+  inspect(lam_shape(ctx = Ctx::{ n: 5, items: [1, 2] }, o = Some(1)), content = "7")
+  inspect(lam_shape(ctx = Ctx::{ n: 5, items: [1, 2] }, o = None), content = "5")
+}

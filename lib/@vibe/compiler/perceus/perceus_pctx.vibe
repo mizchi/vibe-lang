@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   TypeExpr,
   bsearch_leftmost,
   expr_child_at,
+  expr_children,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
@@ -671,6 +672,150 @@ export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
   n == 1
 }
 
+/// #2509 / #2827: `Struct.field` for each field the program declares `Int`,
+/// `Bool` or `Unit`, sorted, and the pin token it was installed under
+/// (`perceus_set_immediate_fields`). Read only by a plan built under that same
+/// token, so a table left by an earlier compile never answers for another.
+let pe_imm_field_keys: Array[String] = []
+
+let pe_imm_field_token: Array[Int] = [0]
+
+/// The current plan's parameters whose declared type is a plain struct name
+/// and whose name the body never rebinds: `(name, struct)`.
+let pe_param_structs: Array[(String, String)] = []
+
+/// Install the immediate-field table for the plans built under pin `token`.
+/// `keys` are `Struct.field`, sorted.
+export fn perceus_set_immediate_fields(token: Int, keys: Array[String]) -> Unit {
+  Array::truncate(pe_imm_field_keys, length = 0)
+  for k in keys {
+    Array::push(pe_imm_field_keys, value = k)
+  }
+  Array::set(pe_imm_field_token, at = 0, value = token)
+}
+
+/// `Struct.field` for each field of the program's structs declared `Int`,
+/// `Bool` or `Unit` -- unsorted; the caller sorts. A generic field (`T`) or an
+/// alias is not listed: what it holds is not known here.
+export fn perceus_immediate_field_keys(_ stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, name, fields, _, _, _) => for f in fields {
+        let (fname, fty) = f
+        let imm = match fty {
+          TyName(t) => t == "Int" || t == "Bool" || t == "Unit",
+          TyUnit => true,
+          _ => false
+        }
+        if imm {
+          Array::push(out, value = name + "." + fname)
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Record the plan's struct-typed parameters (see `pe_param_structs`).
+export fn pe_set_param_structs(params: Array[(String, Option[TypeExpr])], body: Expr) -> Unit {
+  Array::truncate(pe_param_structs, length = 0)
+  for p in params {
+    let (pname, ptype) = p
+    match ptype {
+      Some(TyName(t)) => if !pe_body_binds_name(e = body, name = pname) {
+        Array::push(pe_param_structs, value = (pname, t))
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// Does `e` bind `name` anywhere -- a `let`, a pattern, a loop or `for`
+/// binder, a lambda parameter?
+fn pe_body_binds_name(e: Expr, name: String) -> Bool {
+  let direct = match e {
+    ELet(n, _, _, _) => n == name,
+    ELetMut(n, _, _, _) => n == name,
+    ELetRec(n, _, _) => n == name,
+    EForIn(n, index, _, _) => n == name || match index {
+      Some(i) => i == name,
+      None => false
+    },
+    ELoop(pairs, _) => {
+      let mut hit = false
+      for pair in pairs {
+        if pair.0 == name {
+          hit = true
+        }
+      }
+      hit
+    },
+    EFn(_, _, params, _, _, _) => {
+      let mut hit = false
+      for param in params {
+        if param.0 == name {
+          hit = true
+        }
+      }
+      hit
+    },
+    EMatch(_, arms) => pe_arms_bind_name(arms = arms, name = name),
+    EHandle(_, arms) => pe_arms_bind_name(arms = arms, name = name),
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let mut hit = false
+    for child in expr_children(e) {
+      if !hit && pe_body_binds_name(e = child, name = name) {
+        hit = true
+      }
+    }
+    hit
+  }
+}
+
+fn pe_arms_bind_name(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut hit = false
+  for arm in arms {
+    let names: Array[String] = []
+    let _ = pat_names(pat = arm.0, out = names)
+    for n in names {
+      if n == name {
+        hit = true
+      }
+    }
+  }
+  hit
+}
+
+/// Is `obj.field` a read of a field declared `Int`, `Bool` or `Unit`? Only
+/// for a recorded parameter (`pe_param_structs`) and only while the table
+/// belongs to this plan's pin.
+fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
+  if ctx.pinned == 0 || ctx.pinned != Array::get(pe_imm_field_token, at = 0) {
+    false
+  } else {
+    let mut sname = ""
+    for p in pe_param_structs {
+      if p.0 == obj {
+        sname = p.1
+      }
+    }
+    if sname == "" {
+      false
+    } else {
+      let key = sname + "." + field
+      let slot = bsearch_leftmost(sorted = pe_imm_field_keys, name = key)
+      slot >= 0 && slot < Array::length(pe_imm_field_keys) && Array::get(pe_imm_field_keys, at = slot) == key
+    }
+  }
+}
+
 /// May the value a `let` body hands back be a VIEW -- a reference into
 /// something it does not own, the binding itself above all? The guarded path
 /// drop releases the binding after the body, and unlike the ordinary
@@ -685,6 +830,11 @@ export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
 export fn pe_tail_may_view(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
   match e {
     EIdent(x, _) => array_contains_str_pctx(arr = views, s = x),
+    // #2509 / #2827: a read of a field declared `Int`, `Bool` or `Unit` is an
+    // immediate, never a pointer into the object, so it is no view. Known
+    // only for a parameter whose declared type names the struct and whose
+    // name nothing in the body rebinds; anything else may be a view.
+    EDot(EIdent(x, _), field, _, _) => !pe_field_read_is_immediate(ctx = ctx, obj = x, field = field),
     EDot(_, _, _, _) => true,
     // The lambda return normalization's marker hands back its argument.
     ECall(EIdent(f, off), args, _, _) => if f == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
