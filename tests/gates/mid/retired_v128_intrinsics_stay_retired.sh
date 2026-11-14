@@ -1949,6 +1949,131 @@ for ot_lane in bump rc shadow gc; do
 done
 rm -rf "$otdir"
 echo "[compiler-gate] owned-local tail view guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ot_used B)"
+# 40f0x. #2827: a `let` bound to a slice (`Array::slice`, `xs[a:b]`) and
+#        consumed on some paths only is released on the others. A slice is a
+#        fresh copy on every lane, but the `let` lowering admitted a path drop
+#        only for a callee whose declared result it could read, which no
+#        builtin has, so every path that skipped the consume kept the copy.
+#        An `Array::slice` call also leaves 88 B of heap of its own in use,
+#        unrelated to path release, so the row compares the fixture with its
+#        control (the same slices, each consumed on every path): unfixed the
+#        fixture used 208,000 B more than the control (768,100 vs 560,100);
+#        the bound on the difference is 20,000. Both answer 14000; the shadow
+#        lane traps on the drop of a freed block, which is what releasing a
+#        slice on a path that already moved it out would hit.
+echo "[compiler-gate] 40f0x/40 a slice let consumed on some paths only is released on the others (#2827)"
+gate_workdir sldir "_build/_gate_rc_slice_path_release"
+for sl_lane in bump rc shadow gc; do
+  for sl_fx in bounded control; do
+    gate_fs_compile_on "$sl_lane" "fixtures/rc_slice_path_release_${sl_fx}_test.vibe" "$sldir/sl_$sl_fx.wasm" main
+    gate_require_artifact "$sldir/sl_$sl_fx.wasm" "rc_slice_path_release_$sl_fx fixture did not compile on the $sl_lane lane (#2827)"
+    gate_run sl_out last "$sldir/sl_$sl_fx.wasm"
+    gate_require_eq "$sl_out" "14000" "rc_slice_path_release_$sl_fx got '$sl_out' on the $sl_lane lane (want 14000). A trap means a slice's path drop released it on a path that had moved it out (#2827)."
+  done
+  if [ "$sl_lane" = rc ]; then
+    sl_used="$(node scripts/measure_heap.mjs "$sldir/sl_bounded.wasm" main 2>/dev/null | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    sl_ctl="$(node scripts/measure_heap.mjs "$sldir/sl_control.wasm" main 2>/dev/null | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sl_used" ] || [ -z "$sl_ctl" ]; then
+      echo "[compiler-gate] FAIL: could not measure the rc_slice_path_release heaps (bounded='$sl_used' control='$sl_ctl')" >&2; exit 1
+    fi
+    if [ "$((sl_used - sl_ctl))" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_slice_path_release_bounded heap_used=$sl_used is $((sl_used - sl_ctl)) B above its control's $sl_ctl (bound 20000; #2827 regressed: a slice consumed on some paths only is left unreleased on the others again; unfixed, the difference measured 208,000 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$sldir"
+echo "[compiler-gate] slice path release guard ok (14000 on bump/rc/shadow/gc, rc heap_used=$sl_used B vs control $sl_ctl B)"
+
+# 40f0u. #4165: `Array::slice` / `xs[a:b]` borrows its source. The runtime
+#        body copies the range and retains the copied elements but never
+#        releases the source, and the planner counted the source as consumed
+#        by the call, so every slice leaked its source array (88 B per call
+#        for a 3-element literal). Unfixed, the fixture left 704,308 B in use
+#        after 2000 rounds; the bound is 20,000. The shadow lane traps on the
+#        drop of a freed block, which is what releasing a source the caller
+#        still reads after the slice would hit.
+echo "[compiler-gate] 40f0u/40 a slice releases nothing of its source, and the caller does (#4165)"
+gate_workdir ssdir "_build/_gate_rc_slice_source_release"
+for ss_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ss_lane" "fixtures/rc_slice_source_release_bounded_test.vibe" "$ssdir/ss.wasm" main
+  gate_require_artifact "$ssdir/ss.wasm" "rc_slice_source_release_bounded fixture did not compile on the $ss_lane lane (#4165)"
+  gate_run ss_out last "$ssdir/ss.wasm"
+  gate_require_eq "$ss_out" "20000" "rc_slice_source_release_bounded got '$ss_out' on the $ss_lane lane (want 20000). A trap means a slice's source was released while the caller still read it (#4165)."
+  if [ "$ss_lane" = rc ]; then
+    ss_json="$(node scripts/measure_heap.mjs "$ssdir/ss.wasm" main 2>/dev/null)"
+    ss_used="$(printf '%s' "$ss_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ss_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_slice_source_release_bounded heap ($ss_json)" >&2; exit 1
+    fi
+    if [ "$ss_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_slice_source_release_bounded heap_used=$ss_used >= 20000 (#4165 regressed: a slice leaks its source again; unfixed, this fixture measured 704,308 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$ssdir"
+echo "[compiler-gate] slice source release guard ok (20000 on bump/rc/shadow/gc, rc heap_used=$ss_used B)"
+
+# 40f0w. #4161: a match's catch-all binder (`leaf => ..`) aliases its
+#        scrutinee and holds no reference of its own. The arm took exactly one
+#        for it (#2126), so a body that consumed it twice -- `big(leaf) &&
+#        big(leaf)`, `big` owning its parameter -- released the scrutinee once
+#        more than it retained it, freeing an array element the array still
+#        held (shadow trapped; the compiler's own worklist code freed AST nodes
+#        this way). It now takes one reference per consume, as a payload binder
+#        does, and releases at the arm's end what a path did not spend. The
+#        answer is checked on bump, rc, shadow and gc; the rc heap bound
+#        catches a fix that retains too much.
+echo "[compiler-gate] 40f0w/40 a catch-all match binder consumed more than once is retained per consume (#4161)"
+gate_workdir cbdir "_build/_gate_rc_catchall_binder"
+for cb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$cb_lane" "fixtures/rc_catchall_binder_multi_consume_test.vibe" "$cbdir/cb.wasm" main
+  gate_require_artifact "$cbdir/cb.wasm" "rc_catchall_binder_multi_consume fixture did not compile on the $cb_lane lane (#4161)"
+  gate_run cb_out last "$cbdir/cb.wasm"
+  gate_require_eq "$cb_out" "0" "rc_catchall_binder_multi_consume got '$cb_out' on the $cb_lane lane (want 0). A trap means a catch-all binder was released more often than it was retained (#4161)."
+  if [ "$cb_lane" = rc ]; then
+    cb_json="$(node scripts/measure_heap.mjs "$cbdir/cb.wasm" main 2>/dev/null)"
+    cb_used="$(printf '%s' "$cb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$cb_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_catchall_binder_multi_consume heap ($cb_json)" >&2; exit 1
+    fi
+    if [ "$cb_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_catchall_binder_multi_consume heap_used=$cb_used >= 8000 (#4161: a catch-all binder keeps a reference no path spends)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$cbdir"
+echo "[compiler-gate] catch-all binder multi-consume guard ok (0 on bump/rc/shadow/gc, rc heap_used=$cb_used B)"
+
+# 40f0v. #4169: the RC shadow build validates the plan the RC build compiles.
+#        The RC build drops a function nothing reachable calls before it
+#        infers borrows; the shadow build kept every source definition, so an
+#        uncalled caller passing an `if` to `first` made `first`'s parameter
+#        owned in the shadow build only. Unfixed, rc left 260 B in use and
+#        shadow 176,172 B (both answering 4000). The row requires the two
+#        lanes' heaps to agree, and bounds them at 20,000.
+echo "[compiler-gate] 40f0v/40 the RC shadow build plans the program the RC build compiles (#4169)"
+gate_workdir sudir "_build/_gate_rc_shadow_uncalled_caller"
+su_rc=""
+su_shadow=""
+for su_lane in rc shadow; do
+  gate_fs_compile_on "$su_lane" "fixtures/rc_shadow_uncalled_caller_test.vibe" "$sudir/su.wasm" main
+  gate_require_artifact "$sudir/su.wasm" "rc_shadow_uncalled_caller fixture did not compile on the $su_lane lane (#4169)"
+  gate_run su_out last "$sudir/su.wasm"
+  gate_require_eq "$su_out" "4000" "rc_shadow_uncalled_caller got '$su_out' on the $su_lane lane (want 4000) (#4169)."
+  su_used="$(node scripts/measure_heap.mjs "$sudir/su.wasm" main 2>/dev/null | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+  if [ -z "$su_used" ]; then
+    echo "[compiler-gate] FAIL: could not measure rc_shadow_uncalled_caller heap on the $su_lane lane" >&2; exit 1
+  fi
+  if [ "$su_lane" = rc ]; then su_rc="$su_used"; else su_shadow="$su_used"; fi
+done
+if [ "$su_rc" != "$su_shadow" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_uncalled_caller heap_used differs between rc ($su_rc B) and shadow ($su_shadow B): the shadow build planned a different program than the RC build compiles (#4169)" >&2; exit 1
+fi
+if [ "$su_rc" -ge 20000 ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_uncalled_caller heap_used=$su_rc >= 20000 on rc and shadow (#4169)" >&2; exit 1
+fi
+rm -rf "$sudir"
+echo "[compiler-gate] RC shadow plans the RC build's program ok (4000 on rc/shadow, heap_used=$su_rc B on both)"
 
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).

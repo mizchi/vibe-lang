@@ -1,0 +1,44 @@
+// #4169: the RC shadow build validates the plan the RC build compiles. The
+// RC build drops a function nothing reachable calls before it infers
+// borrows; the shadow build kept every source definition, and borrow
+// inference reads every call site it is handed. Here the uncalled `pick_if`
+// passes an `if` to `first`, which made `first`'s parameter owned in the
+// shadow build only: measured on main at dd9eef9ca5, rc left 260 B of heap in
+// use after 2000 rounds and shadow 176,172 B, both answering 4000. Gate row
+// 40f0v requires the two lanes to agree and bounds the heap.
+
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1]
+}
+
+fn first(_ xs: Array[Array[Int]]) -> Array[Int] {
+  Array::get(xs, at = 0)
+}
+
+fn pick_if(_ i: Int) -> Int {
+  let v = [mka(i), mka(i + 2)]
+  Array::length(first(if i > 0 {
+    v
+  } else {
+    v
+  }))
+}
+
+fn pick_let(_ i: Int) -> Int {
+  let v = [mka(i), mka(i + 2)]
+  Array::length(first(v))
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + pick_let(i)
+    i = i + 1
+  }
+  acc
+}
+
+test "the answer" {
+  inspect(main(), content = "4000")
+}
