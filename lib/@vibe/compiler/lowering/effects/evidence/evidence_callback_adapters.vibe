@@ -3,7 +3,19 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  struct MutSet
+  struct MutMap, struct MutSet
+}
+
+import ./evidence_fn_statement_index.vibe {
+  edp_indexed_params_of_fn
+}
+
+import ./evidence_handle_effect_names_expr.vibe {
+  edp_expr_binds_name
+}
+
+import ./evidence_scan_view_expr.vibe {
+  edp_rename_free, edp_scope_last_index
 }
 
 import ./evidence_slot_refusals.vibe {
@@ -79,5 +91,34 @@ export fn edp_parameter_callback_slot(stmts: Array[Stmt], binding: Int, pos: Int
       None
     },
     _ => None
+  }
+}
+
+// A function parameter or a top-level function is immutable. Resolve through
+// an alias only when its source name cannot be captured by an inner binder.
+export fn edp_resolve_callback_alias(name: String, value: Expr, body: Expr, scope: Array[String], stmts: Array[Stmt], index: MutMap[String, Array[Int]]) -> Expr {
+  if Array::length(edp_callback_offsets) == 0 {
+    return body
+  } else {
+    ()
+  }
+  let offsets = Array::get(edp_callback_offsets, at = 0)
+  match value {
+    EIdent(source, _) => if name != source && edp_expr_has_callback_adapter(e = body, offsets = offsets) {
+      let binding = edp_scope_last_index(scope = scope, name = source)
+      let stable = if binding >= 0 {
+        edp_parameter_type(binding) is Some(TyFn(_, _, _))
+      } else {
+        edp_indexed_params_of_fn(stmts = stmts, index = index, nm = source) is Some(_)
+      }
+      if stable && !edp_expr_binds_name(expr = body, name = source) {
+        edp_rename_free(e = body, from = name, to = source)
+      } else {
+        body
+      }
+    } else {
+      body
+    },
+    _ => body
   }
 }
