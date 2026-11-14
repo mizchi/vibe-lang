@@ -114,41 +114,19 @@ fn quoted_ending_at(text: String, end: Int) -> String {
 
 fn registry_names(text: String) -> Array[String] with Stderr + Process::exit {
   let out: Array[String] = []
-  // Anchor on `CtFn(` and walk BACK over whitespace to the comma, then to
-  // the closing quote. The literal `", CtFn("` marker silently skipped a row
-  // formatted with a newline, a tab or two spaces after the comma, and the
-  // drift guard below only fires when EVERY row is lost -- so a skipped row's
-  // capability went unchecked while the gate stayed green (#3167 review).
-  let marker = "CtFn("
-  let mut i = 0
-  while i >= 0 {
-    let hit = String::index_of_from(text, sub = marker, start = i)
-    if hit < 0 {
-      i = -1
-    } else {
-      let mut c = hit - 1
-      while c >= 0 && is_ws(c = byte_at(s = text, i = c)) {
-        c = c - 1
-      }
-      let mut j = c - 1
-      while j >= 0 && is_ws(c = byte_at(s = text, i = j)) {
-        j = j - 1
-      }
-      if c >= 0 && byte_at(s = text, i = c) == 44 && j >= 0 && byte_at(s = text, i = j) == 34 {
-        let name = quoted_ending_at(text = text, end = j)
-        let mut k = j - String::length(name) - 2
-        while k >= 0 && is_ws(c = byte_at(s = text, i = k)) {
-          k = k - 1
+  // #2503: the rows are the `NAME TYPE FLAGS` lines of `registry_rows_text`
+  // (`#` lines inside the table are comments). Every row line counts, so a
+  // row cannot drop out of the check while the gate stays green (#3167).
+  for raw in String::split(text, sep = "\n") {
+    let at = String::index_of_from(raw, sub = "#|", start = 0)
+    if at >= 0 {
+      let line = String::substring(raw, start = at + 2, end = String::length(raw))
+      if String::length(line) > 0 && !String::starts_with(line, prefix = "#") {
+        let cols = String::split(line, sep = " ")
+        if String::length(Array::get(cols, at = 0)) > 0 {
+          Array::push(out, value = Array::get(cols, at = 0))
         }
-        if k >= 0 && byte_at(s = text, i = k) == 40 && String::length(name) > 0 {
-          Array::push(out, value = name)
-        } else {
-          ()
-        }
-      } else {
-        ()
       }
-      i = hit + String::length(marker)
     }
   }
   if Array::length(out) == 0 {

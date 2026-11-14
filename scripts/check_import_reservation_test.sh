@@ -136,24 +136,26 @@ if ! VIBE_IMPORT_RESERVATION_LINKED="$WORK/unmapped_linked.vibe" \
   fail "the gate failed on a tree with NO hazard; it is reacting to the edit, not the property"
 fi
 
-# --- A registry row broken across lines is still read. ----------------------
+# --- A re-indented registry row is still read. -----------------------------
 # The row parser once matched the literal `", CtFn("`, so a row with a newline
 # (or a tab, or two spaces) after the comma was silently skipped -- and with
-# other rows still parsed, the drift guard stayed quiet (#3167 review). Reflow
-# the one row the mutation above exposes and demand the same red.
+# other rows still parsed, the drift guard stayed quiet (#3167 review).
 python3 - "$REGISTRY" "$WORK/reflowed_registry.vibe" <<'PY'
-import sys
+import re, sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src, encoding="utf-8").read()
-old = '("Console::read_char", CtFn('
-if old not in text:
+# #2503: a row is a `NAME TYPE FLAGS` line of `registry_rows_text`. Re-indent
+# the one row the mutation above exposes (a tab instead of the spaces) and
+# demand the same red: a row is read wherever its line starts.
+m = re.search(r'\n[ ]+(#\|Console::read_char )', text)
+if m is None:
     sys.stderr.write("import-reservation-selftest: the reflow target is not present -- the registry changed shape\n")
     sys.exit(1)
-open(dst, "w", encoding="utf-8").write(text.replace(old, '("Console::read_char",\n\t  CtFn(', 1))
+open(dst, "w", encoding="utf-8").write(text[:m.start()] + "\n\t" + m.group(1) + text[m.end():])
 PY
 [ $? -eq 0 ] || fail "could not build the reflowed registry"
-grep -q '"Console::read_char",$' "$WORK/reflowed_registry.vibe" \
-  || fail "the reflow did not land; the row still reads on one line"
+grep -q "$(printf '^\t#|Console::read_char ')" "$WORK/reflowed_registry.vibe" \
+  || fail "the reflow did not land; the row still starts with spaces"
 if VIBE_IMPORT_RESERVATION_LINKED="$WORK/mutated_linked.vibe" \
    VIBE_IMPORT_RESERVATION_REGISTRY="$WORK/reflowed_registry.vibe" \
    run_gate >"$WORK/reflow.log" 2>&1; then

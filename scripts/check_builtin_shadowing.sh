@@ -175,15 +175,16 @@ if [ -s "$SYMS.diag" ]; then
   done < "$SYMS.diag"
 fi
 
-# Every name the registry owns. Rows look like
-#   ("String::length", CtFn(..), true, true, true, true, true, false, false),
-# and a row's first field is the name. checker_visible is NOT filtered on: a
-# definition colliding with a codegen-internal name is still a collision, and
-# fail-closed is the direction this gate wants.
+# Every name the registry owns: the first field of each `NAME TYPE FLAGS` line
+# of `registry_rows_text` (#2503), e.g.
+#   #|String::length F1;si- TTTTTFF
+# `#` lines inside the table are comments. checker_visible is NOT filtered on:
+# a definition colliding with a codegen-internal name is still a collision,
+# and fail-closed is the direction this gate wants.
 awk '
-  match($0, /^[ \t]*\("[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z0-9_]+)?"/) {
+  match($0, /#\|[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z0-9_]+)? /) {
     s = substr($0, RSTART, RLENGTH)
-    gsub(/^[ \t]*\("/, "", s); gsub(/"$/, "", s)
+    gsub(/^#\|/, "", s); gsub(/ $/, "", s)
     print s
   }
 ' "$REGISTRY" | sort -u > "$WORK/registry.txt"

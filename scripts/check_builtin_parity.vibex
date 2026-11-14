@@ -5,7 +5,7 @@
 //   bash scripts/vibe_run.sh scripts/check_builtin_parity.vibex -- \
 //     [--lin-callsite PATH] [--gc-callsite PATH] [--registry PATH]
 //
-// The registry (core/builtin_registry.vibe) already hard-verifies the two
+// The registry (core/builtin_registry.vibe, the `registry_rows_text` table) already hard-verifies the two
 // FUNC-TABLE lanes at compile time (verify_lane_builtins runs inside every
 // linear compile and every gc compile, incl. the gate's 40h gc smoke). What it
 // cannot see are the CALLSITE lowerings -- the `fname == "..."` dispatch arms
@@ -356,149 +356,43 @@ fn refusal_names(text: String, alts: Array[String], opening: String, closing: St
   }
   found
 }
-
-fn is_bool_at(s: String, at: Int) -> Int {
-  if has_at(s = s, at = at, lit = "true") {
-    at + 4
-  } else if has_at(s = s, at = at, lit = "false") {
-    at + 5
-  } else {
-    -1
-  }
-}
-
-/// `,\s*BOOL` seven times (the first `,` at `at`), then `\s*\)`: the end and
-/// the seven bools, or -1.
-fn bool_tail(s: String, at: Int) -> (Int, Array[String]) {
-  let bools: Array[String] = []
-  let mut p = at
-  let mut n = 0
-  while p >= 0 && n < 7 {
-    let c = if n == 0 {
-      p
-    } else {
-      skip_spaces(s = s, at = p)
-    }
-    if has_at(s = s, at = c, lit = ",") {
-      let b = skip_spaces(s = s, at = c + 1)
-      let e = is_bool_at(s = s, at = b)
-      if e >= 0 {
-        Array::push(bools, value = String::substring(s, start = b, end = e))
-      } else {
-        ()
-      }
-      p = e
-    } else {
-      p = -1
-    }
-    n = n + 1
-  }
-  if p >= 0 {
-    let q = skip_spaces(s = s, at = p)
-    if has_at(s = s, at = q, lit = ")") {
-      (q + 1, bools)
-    } else {
-      (-1, bools)
-    }
-  } else {
-    (-1, bools)
-  }
-}
-
-/// `\(\s*"NAME"\s*,\s*CtFn` at `at`: the name and the end, or "" / -1.
-fn ctfn_head(s: String, at: Int) -> (String, Int) {
-  if !has_at(s = s, at = at, lit = "(") {
-    ("", -1)
-  } else {
-    let q = skip_spaces(s = s, at = at + 1)
-    if !has_at(s = s, at = q, lit = "\"") {
-      ("", -1)
-    } else {
-      let close = String::index_of_from(s, sub = "\"", start = q + 1)
-      if close <= q + 1 {
-        ("", -1)
-      } else {
-        let c = skip_spaces(s = s, at = close + 1)
-        if has_at(s = s, at = c, lit = ",") {
-          let f = skip_spaces(s = s, at = c + 1)
-          if has_at(s = s, at = f, lit = "CtFn") {
-            (String::substring(s, start = q + 1, end = close), f + 4)
-          } else {
-            ("", -1)
-          }
-        } else {
-          ("", -1)
-        }
-      }
-    }
-  }
-}
-
-/// Every `("NAME", CtFn` spelling, as `re.findall` reads them.
-fn ctfn_names(s: String) -> Array[String] {
-  let out: Array[String] = []
-  let mut from = 0
-  let mut going = true
-  while going {
-    let at = String::index_of_from(s, sub = "(", start = from)
-    if at < 0 {
-      going = false
-    } else {
-      let (name, end) = ctfn_head(s = s, at = at)
-      if end >= 0 {
-        Array::push(out, value = name)
-        from = end
-      } else {
-        from = at + 1
-      }
-    }
-  }
-  out
-}
-
-/// #2584: each registry row is a 9-tuple (name, CtFn, in_linear, in_gc,
-/// visible, is_pure, is_non_allocating, is_borrow_ret, is_safe_mut). `CtFn` is
-/// followed by the fewest characters on its line before the seven bools, as
-/// `CtFn.*?` takes them. A 5-tuple (pre-#2584) must not match: the old pattern
-/// anchored on `bool, bool, bool)` and so consumed the LAST three bools of a
-/// 9-tuple as if they were the lane flags. Measured on #2845: that reported
-/// Array::push as a dead row claiming neither lane.
-fn registry_rows(s: String) -> Array[Row] {
+/// #2503: the registry rows live in `registry_rows_text`, a `#|` literal of
+/// `NAME TYPE FLAGS` lines (`#` lines are comments), FLAGS being the seven
+/// Bool columns as `T`/`F` (in_linear, in_gc, visible, is_pure,
+/// is_non_allocating, is_borrow_ret, is_safe_mut). Returns the rows that read
+/// as such -- bools spelled `true` / `false` -- and the number of row lines, so
+/// a malformed line is a count mismatch rather than a silent skip.
+fn registry_table(s: String) -> (Array[Row], Int) {
   let out: Array[Row] = []
-  let n = String::length(s)
-  let mut from = 0
-  let mut going = true
-  while going {
-    let at = String::index_of_from(s, sub = "(", start = from)
-    if at < 0 {
-      going = false
-    } else {
-      let (name, head_end) = ctfn_head(s = s, at = at)
-      if head_end < 0 {
-        from = at + 1
-      } else {
-        let mut k = head_end
-        let mut end = -1
-        let mut bools: Array[String] = []
-        while end < 0 && k < n && String::byte_at(s, at = k) != '\n' {
-          let (e, b) = bool_tail(s = s, at = k)
-          if e >= 0 {
-            end = e
-            bools = b
-          } else {
+  let mut lines = 0
+  for raw in String::split(s, sep = "\n") {
+    let at = String::index_of_from(raw, sub = "#|", start = 0)
+    if at >= 0 {
+      let line = String::substring(raw, start = at + 2, end = String::length(raw))
+      if String::length(line) > 0 && !String::starts_with(line, prefix = "#") {
+        lines = lines + 1
+        let cols = String::split(line, sep = " ")
+        if Array::length(cols) == 3 {
+          let flags = Array::get(cols, at = 2)
+          let bools: Array[String] = []
+          let mut k = 0
+          while k < String::length(flags) {
+            let c = String::byte_at(flags, at = k)
+            if c == 84 {
+              Array::push(bools, value = "true")
+            } else if c == 70 {
+              Array::push(bools, value = "false")
+            }
             k = k + 1
           }
-        }
-        if end >= 0 {
-          Array::push(out, value = Row::{ name: name, bools: bools })
-          from = end
-        } else {
-          from = at + 1
+          if String::length(flags) == 7 && Array::length(bools) == 7 && String::starts_with(Array::get(cols, at = 1), prefix = "F") {
+            Array::push(out, value = Row::{ name: Array::get(cols, at = 0), bools: bools })
+          }
         }
       }
     }
   }
-  out
+  (out, lines)
 }
 
 /// The names in `let host_defs = [` ... `\n    ]`, each a
@@ -657,15 +551,14 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
     ()
   }
   let registry_text = group(path = registry)
-  let named = ctfn_names(s = registry_text)
-  let rows = registry_rows(s = registry_text)
+  let (rows, row_lines) = registry_table(s = registry_text)
   if Array::length(rows) < 90 {
     die(message = "parsed only \{Array::length(rows)} registry rows (expected 90+) -- registry row shape changed? Update scripts/check_builtin_parity.vibex alongside it.")
   } else {
     ()
   }
-  if Array::length(rows) != Array::length(named) {
-    die(message = "parsed \{Array::length(rows)} 9-tuple registry rows but found \{Array::length(named)} `(\"name\", CtFn` spellings -- a row is not a 9-tuple (name, CtFn, 3 lane flags, 4 classification flags)? Update scripts/check_builtin_parity.vibex alongside it.")
+  if Array::length(rows) != row_lines {
+    die(message = "parsed \{Array::length(rows)} registry rows but found \{row_lines} row lines -- a line is not `NAME TYPE FLAGS` with a function TYPE and seven T/F flags (3 lane flags, 4 classification flags)? Update scripts/check_builtin_parity.vibex alongside it.")
   } else {
     ()
   }
