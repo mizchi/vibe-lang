@@ -129,12 +129,22 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
     },
     EMatch(s, arms) => edp_needing_escape_or(a = edp_needing_escape(e = s, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape_match_arms(scrutinee = s, arms = arms, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     EWhile(c, b) => edp_needing_escape_loop(parts = [c, b], needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    EForIn(n, _, it, b) => {
+    EForIn(n, index, it, b) => {
       let first = edp_needing_escape(e = it, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
       if first != "" {
         first
       } else {
         let mark = edp_escape_taint(name = n, root = edp_data_root(e = it, needing = needing, stmts = stmts, fn_defs = fn_defs), init = None)
+        // The index binder (`for i, x in ..`) is an `Int`: it shadows an outer
+        // binding of its name and holds no function. It sits above `mark`, so
+        // the per-pass refresh below rebinds only the element.
+        match index {
+          Some(i) => {
+            let _ = edp_escape_taint(name = i, root = "", init = None)
+            ()
+          },
+          None => ()
+        }
         // Each element is read from the iterable as the loop reaches it, so
         // a store an earlier iteration made reaches the binder: it is read
         // again before every pass.
@@ -466,7 +476,10 @@ fn edp_data_root(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: A
     },
     // Each branch is read from the bindings as they were before the `if`: a
     // store applied while reading one branch has not run in the other.
-    EIf(_, t, el) => {
+    EIf(c, t, el) => {
+      // The condition runs first, on both paths, so its stores reach either
+      // branch's read.
+      edp_apply_stores(e = c, needing = needing, stmts = stmts, fn_defs = fn_defs)
       let before = edp_escape_snapshot()
       let in_then = edp_data_root_items(items = [t], needing = needing, stmts = stmts, fn_defs = fn_defs)
       let after_then = edp_escape_snapshot()
