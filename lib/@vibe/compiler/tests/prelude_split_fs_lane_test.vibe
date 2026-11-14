@@ -2,6 +2,10 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc_body_cached, compile_file_fs_mode_rc_body_cached_split, ordinary_lane_closure_edges, ordinary_lane_split_shape
 }
 
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only_rc
+}
+
 // #2575 item 2 step 3b: the question every other check on this line has been
 // unable to ask.
 //
@@ -202,4 +206,10 @@ test "an extern effect a package declares is imported under the package's name" 
   inspect(bytes_contain(hay = whole, needle = "vibe:effect:@acme/xe_pkg/Probe"), content = "true")
   inspect(bytes_contain(hay = split, needle = "vibe:effect:@acme/xe_pkg/Probe"), content = "true")
   inspect(bytes_contain(hay = whole, needle = "vibe:effect:./Probe"), content = "false")
+  // A standalone source compiled next, in the same process, declares an
+  // effect of the same name outside any package: the package the merge
+  // recorded for the program above is not carried over to it.
+  let standalone = compile_source_wasi_only_rc(source = "extern effect Probe {\n  ping(String) -> String\n}\n\nfn main() -> Unit allows Console + Probe {\n  println(Probe::ping(\"vibe\"))\n}\n", entry_name = "main", checked_error_row = false)
+  inspect(bytes_contain(hay = standalone, needle = "vibe:effect:./Probe"), content = "true")
+  inspect(bytes_contain(hay = standalone, needle = "vibe:effect:@acme/xe_pkg/Probe"), content = "false")
 }
