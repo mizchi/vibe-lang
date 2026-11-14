@@ -1,0 +1,179 @@
+// RC use-after-free guard (#4141): an aggregate literal item whose value is a
+// branch or a block ending in a borrowed view is retained.
+//
+// A record field, tuple item, array item or map value OWNS what it holds, so
+// a borrowed view stored there -- a projection `p.f`, a borrow-returning call
+// `Array::get(xs, at = 0)`, a loop-borrowed name -- takes a reference first.
+// The literal lowerings checked only the item's TOP node, so the same view
+// behind an `if`, a `match` or a block went in unretained, and dropping the
+// literal released the source's value once too often. VIBE_RC=shadow trapped
+// with `drop of freed value`; the compiler's own `lc_build_emission_layout`
+// stored `input.struct_names` that way, its extra release masked by a leak in
+// `lc_layout_fingerprint_at`.
+//
+// Every function below builds the literal from a value its caller still
+// holds, drops the literal, and the caller then reads the value again, so a
+// release the literal did not own frees what the caller reads: shadow traps
+// on it. The controls hand a fresh value through the same branch, which must
+// not be retained (a leak would show in the heap bound of `main`).
+struct In {
+  names: Array[Int];
+  rows: Array[Array[Int]]
+}
+
+struct Out {
+  names: Array[Int]
+}
+
+fn mk(_ i: Int) -> In {
+  In::{ names: [i, i + 1], rows: [[i], [i + 2]] }
+}
+
+fn record_if(input: In, c: Bool) -> Int {
+  let o = Out::{
+    names: if c {
+      input.names
+    } else {
+      []
+    }
+  }
+  Array::length(o.names)
+}
+
+fn record_match(input: In, k: Int) -> Int {
+  let o = Out::{
+    names: match k {
+      0 => input.names,
+      _ => [k]
+    }
+  }
+  Array::length(o.names)
+}
+
+fn record_block(_ input: In) -> Int {
+  let o = Out::{
+    names: {
+      let n = 1
+      input.names
+    }
+  }
+  Array::length(o.names) + 0 * n_of(o)
+}
+
+fn n_of(_ o: Out) -> Int {
+  Array::length(o.names)
+}
+
+fn tuple_if(input: In, c: Bool) -> Int {
+  let t = (if c {
+    input.names
+  } else {
+    []
+  }, 1)
+  Array::length(t.0)
+}
+
+fn array_if(input: In, c: Bool) -> Int {
+  let t = [if c {
+    input.names
+  } else {
+    []
+  }]
+  Array::length(t)
+}
+
+fn record_get(input: In, c: Bool) -> Int {
+  let o = Out::{
+    names: if c {
+      Array::get(input.rows, at = 0)
+    } else {
+      []
+    }
+  }
+  Array::length(o.names)
+}
+
+fn map_if(input: In, c: Bool) -> Int {
+  let m = Map::from_pairs([("k", if c {
+    input.names
+  } else {
+    []
+  })])
+  Map::size(m)
+}
+
+// A loop-borrowed `for` element behind a branch in a tuple.
+fn tuple_loop(input: In, c: Bool) -> Int {
+  let mut n = 0
+  for r in input.rows {
+    let t = (if c {
+      r
+    } else {
+      [0]
+    }, 1)
+    n = n + Array::length(t.0)
+  }
+  n
+}
+
+// Controls: a fresh value through the same branch is not retained.
+fn record_fresh(input: In, c: Bool) -> Int {
+  let o = Out::{
+    names: if c {
+      [Array::length(input.names)]
+    } else {
+      input.names
+    }
+  }
+  Array::length(o.names)
+}
+
+fn tuple_fresh(_ i: Int, c: Bool) -> Int {
+  let t = ({
+    let k = i
+    [k, k]
+  }, if c {
+    [i]
+  } else {
+    []
+  })
+  Array::length(t.0) + Array::length(t.1)
+}
+
+// Each round builds `input`, hands it to every shape twice, and reads it
+// after each: a release the literal did not own frees what the next read
+// sees.
+fn round(_ i: Int) -> Int {
+  let input = mk(i)
+  let mut s = 0
+  let mut r = 0
+  while r < 2 {
+    s = s + record_if(input = input, c = true) + Array::length(input.names)
+    s = s + record_match(input = input, k = 0) + Array::length(input.names)
+    s = s + record_block(input) + Array::length(input.names)
+    s = s + tuple_if(input = input, c = true) + Array::length(input.names)
+    s = s + array_if(input = input, c = true) + Array::length(input.names)
+    s = s + record_get(input = input, c = true) + Array::length(Array::get(input.rows, at = 0))
+    s = s + map_if(input = input, c = true) + Array::length(input.names)
+    s = s + tuple_loop(input = input, c = true) + Array::length(Array::get(input.rows, at = 1))
+    s = s + record_fresh(input = input, c = true) + record_fresh(input = input, c = false)
+    s = s + tuple_fresh(i, c = true)
+    r = r + 1
+  }
+  s + Array::get(input.names, at = 1) - (i + 1)
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 2000 {
+    acc = acc + round(i) - 66
+    i = i + 1
+  }
+  acc
+}
+
+test "a branch or block view stored into a literal is retained (#4141)" {
+  inspect(round(5), content = "66")
+  inspect(main(), content = "0")
+}

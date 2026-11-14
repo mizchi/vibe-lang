@@ -38,6 +38,10 @@ import @vibe/compiler/perceus {
   reuse_arm_has_blocker, reuse_bind_mode
 }
 
+import ./compile_match_path_release.vibe {
+  mpr_compile_arm
+}
+
 import @vibe/compiler/codegen/common_base {
   CompileCtx,
   CtorTable,
@@ -1825,8 +1829,9 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           let __mr_wflag = Array::get(ctx.reuse_flag_locals, at = Array::length(ctx.reuse_flag_locals) - 1)
           mr_compile_reuse_arm_wide(buf = buf, body = __arm_body, pat = __cond_p, scrut_local = scrut_local, flag_local = __mr_wflag, arity = __mr_wci, local_names = local_names, ctx = ctx, ld = ld_arm, ce = ce)
         } else {
-          bind_match_pat(buf = buf, base_local = scrut_local, container_pat = __cond_p, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = __arm_body, md_bmasks = md_shadow_zeroed_bmasks(e = __arm_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
-          ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
+          let __arm_bm = md_shadow_zeroed_bmasks(e = __arm_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
+          bind_match_pat(buf = buf, base_local = scrut_local, container_pat = __cond_p, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = __arm_body, md_bmasks = __arm_bm)
+          mpr_compile_arm(buf = buf, pat = __cond_p, body = __arm_body, names_mark = names_len_at_match, local_names = local_names, ctx = ctx, ld = ld_arm, md_bmasks = __arm_bm, ce = ce)
         }
       }
     } else if is_ptuple(__cond_p) {
@@ -1838,8 +1843,9 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       emit_local_get(buf = buf, idx = scrut_local)
       emit_local_set(buf = buf, idx = tup_ptr)
       Array::push(local_names, value = "__cond_tup")
-      bind_match_pat(buf = buf, base_local = tup_ptr, container_pat = __cond_p, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = __arm_body, md_bmasks = md_shadow_zeroed_bmasks(e = __arm_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
-      ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
+      let __tup_bm = md_shadow_zeroed_bmasks(e = __arm_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
+      bind_match_pat(buf = buf, base_local = tup_ptr, container_pat = __cond_p, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = __arm_body, md_bmasks = __tup_bm)
+      mpr_compile_arm(buf = buf, pat = __cond_p, body = __arm_body, names_mark = names_len_at_match, local_names = local_names, ctx = ctx, ld = ld_arm, md_bmasks = __tup_bm, ce = ce)
     } else {
       ce(buf, __arm_body, local_names, nl1, ctx, ld_arm)
     }
@@ -1903,8 +1909,9 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       if is_pctor(__catch_p) {
         // #705 dup note as above; recursive bind_match_pat replaces the
         // depth-1 inline loop (same depth-3 gap as the cond arms).
-        bind_match_pat(buf = buf, base_local = scrut_local, container_pat = __catch_p, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
-        ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+        let __catch_bm = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
+        bind_match_pat(buf = buf, base_local = scrut_local, container_pat = __catch_p, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = __catch_bm)
+        mpr_compile_arm(buf = buf, pat = __catch_p, body = __catch_body, names_mark = names_len_at_match, local_names = local_names, ctx = ctx, ld = ld_catch, md_bmasks = __catch_bm, ce = ce)
       } else {
         if is_ptuple(__catch_p) {
           let ptr_local2 = Array::length(local_names)
@@ -1913,8 +1920,9 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           Array::push(local_names, value = "__tup_ptr2")
           // Recursive bind (was a depth-2 inline loop; nested ctor elements
           // inside the tuple were never bound).
-          bind_match_pat(buf = buf, base_local = ptr_local2, container_pat = __catch_p, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
-          ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+          let __ctup_bm = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
+          bind_match_pat(buf = buf, base_local = ptr_local2, container_pat = __catch_p, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = __ctup_bm)
+          mpr_compile_arm(buf = buf, pat = __catch_p, body = __catch_body, names_mark = names_len_at_match, local_names = local_names, ctx = ctx, ld = ld_catch, md_bmasks = __ctup_bm, ce = ce)
         } else {
           match __catch_p {
             PStruct(__sname, __sfields) => {
@@ -1924,8 +1932,9 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
               emit_local_get(buf = buf, idx = scrut_local)
               emit_local_set(buf = buf, idx = __sp_ptr)
               Array::push(local_names, value = "__struct_ptr")
-              bind_struct_pat(buf = buf, base_local = __sp_ptr, sname = __sname, fields = __sfields, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
-              ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+              let __cst_bm = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
+              bind_struct_pat(buf = buf, base_local = __sp_ptr, sname = __sname, fields = __sfields, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = __cst_bm)
+              mpr_compile_arm(buf = buf, pat = __catch_p, body = __catch_body, names_mark = names_len_at_match, local_names = local_names, ctx = ctx, ld = ld_catch, md_bmasks = __cst_bm, ce = ce)
             },
             _ => ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
           }

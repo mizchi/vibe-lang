@@ -1,0 +1,187 @@
+// #4127: the gc lane writes the function-name subsection only when asked
+// (`VIBE_WASM_NAMES=1`, which `cli_main` turns into
+// `set_gc_function_names(true)`), naming the program's functions; without
+// it the module carries no name section and is otherwise the same bytes.
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+import @vibe/compiler/codegen/gc {
+  gc_function_names, set_gc_function_names
+}
+
+import @vibe/compiler/codegen/executable {
+  strip_executable_wasm
+}
+
+/// An unsigned LEB128 at `at`: its value and the offset after it.
+fn uleb_at(wasm: Bytes, at: Int) -> (Int, Int) {
+  let mut value = 0
+  let mut shift = 0
+  let mut i = at
+  let mut more = true
+  while more {
+    let b = Bytes::get(wasm, at = i)
+    value = value + ((b&127)<<shift)
+    shift = shift + 7
+    i = i + 1
+    more = (b&128) != 0
+  }
+  (value, i)
+}
+
+/// The bytes `[start, end)` of `wasm` read as ASCII.
+fn ascii_at(wasm: Bytes, start: Int, end: Int) -> String {
+  let mut out = ""
+  let mut i = start
+  while i < end {
+    out = String::concat(out, String::from_char_code(Bytes::get(wasm, at = i)))
+    i = i + 1
+  }
+  out
+}
+
+/// `(index, name)` of every entry in the module's function-name subsection;
+/// None when the module has no "name" custom section.
+fn function_names(_ wasm: Bytes) -> Option[Array[(Int, String)]] {
+  let mut found: Option[Array[(Int, String)]] = None
+  let mut p = 8
+  while p < Bytes::length(wasm) {
+    let sid = Bytes::get(wasm, at = p)
+    let (size, body) = uleb_at(wasm = wasm, at = p + 1)
+    let end = body + size
+    if sid == 0 {
+      let (nlen, nstart) = uleb_at(wasm = wasm, at = body)
+      if ascii_at(wasm = wasm, start = nstart, end = nstart + nlen) == "name" {
+        let entries: Array[(Int, String)] = []
+        let mut q = nstart + nlen
+        while q < end {
+          let sub = Bytes::get(wasm, at = q)
+          let (sub_size, sub_body) = uleb_at(wasm = wasm, at = q + 1)
+          if sub == 1 {
+            let (count, first) = uleb_at(wasm = wasm, at = sub_body)
+            let mut r = first
+            let mut k = 0
+            while k < count {
+              let (idx, after_idx) = uleb_at(wasm = wasm, at = r)
+              let (len, name_start) = uleb_at(wasm = wasm, at = after_idx)
+              Array::push(entries, value = (idx, ascii_at(wasm = wasm, start = name_start, end = name_start + len)))
+              r = name_start + len
+              k = k + 1
+            }
+          }
+          q = sub_body + sub_size
+        }
+        found = Some(entries)
+      }
+    }
+    p = end
+  }
+  found
+}
+
+fn names_only(_ entries: Array[(Int, String)]) -> Array[String] {
+  for e in entries {
+    e.1
+  }
+}
+
+fn has(names: Array[String], wanted: String) -> Bool {
+  let mut hit = false
+  for n in names {
+    if n == wanted {
+      hit = true
+    }
+  }
+  hit
+}
+
+fn program() -> String {
+  "fn helper(x: Int) -> Int {\n  x * 2\n}\n\nfn main() -> Int {\n  helper(x = 21)\n}\n"
+}
+
+fn compile_gc(names: Bool) -> Bytes with Exception {
+  set_gc_function_names(names)
+  let wasm = compile_source_gc_only(source = program(), entry_name = "main", exports_stripped = false, checked_error_row = false)
+  set_gc_function_names(false)
+  wasm
+}
+
+test "with the flag the gc lane names the program's functions" {
+  match function_names(compile_gc(names = true)) {
+    Some(entries) => {
+      let names = names_only(entries)
+      inspect(has(names = names, wanted = "main"), content = "true")
+      inspect(has(names = names, wanted = "helper"), content = "true")
+      inspect(has(names = names, wanted = "_start"), content = "true")
+    },
+    None => inspect("no name section", content = "a name section")
+  }
+}
+
+test "the names follow the module's function indices" {
+  let wasm = compile_gc(names = true)
+  match function_names(wasm) {
+    Some(entries) => {
+      // Ascending, one entry per index: what the name subsection requires.
+      let mut ascending = true
+      let mut i = 1
+      while i < Array::length(entries) {
+        if Array::get(entries, at = i).0 <= Array::get(entries, at = i - 1).0 {
+          ascending = false
+        }
+        i = i + 1
+      }
+      inspect(ascending, content = "true")
+      inspect(Array::length(entries) > 0, content = "true")
+    },
+    None => inspect("no name section", content = "a name section")
+  }
+}
+
+test "without the flag there is no name section and nothing else changes" {
+  let plain = compile_gc(names = false)
+  let named = compile_gc(names = true)
+  inspect(function_names(plain) is None, content = "true")
+  inspect(strip_executable_wasm(wasm = named, entry_name = "main", strip_names = true, filter_exports = false) == plain, content = "true")
+}
+
+fn distinct(_ names: Array[String]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(names) {
+    let mut j = i + 1
+    while j < Array::length(names) {
+      if Array::get(names, at = i) == Array::get(names, at = j) {
+        ok = false
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+test "a test-only module's own `_start` runner does not share its name with the start wrapper" {
+  set_gc_function_names(true)
+  let wasm = compile_source_gc_only(source = "test \"t\" {\n  assert(1 + 1 == 2)\n}\n", entry_name = "__no_entry__", exports_stripped = false, checked_error_row = false)
+  set_gc_function_names(false)
+  match function_names(wasm) {
+    Some(entries) => {
+      let names = names_only(entries)
+      inspect(has(names = names, wanted = "_start"), content = "true")
+      inspect(distinct(names), content = "true")
+    },
+    None => inspect("no name section", content = "a name section here")
+  }
+}
+
+test "a program function spelled like a synthesized name keeps it; the synthesized one moves" {
+  let names = gc_function_names(num_generated = 1, fn_names = [
+    "__gc_gen_1",
+    "_start",
+    "main"
+  ], num_lambdas = 1, has_global_init = true)
+  inspect(names, content = "[__gc_gen_1_, __gc_gen_1, _start, main, _start_, __lambda_slot__0, __gc_global_init]")
+}

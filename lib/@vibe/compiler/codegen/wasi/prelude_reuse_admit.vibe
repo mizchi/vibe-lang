@@ -359,12 +359,41 @@ export fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
 
 /// Whether `stmt` is quiet against `avoid` (see the file comment).
 /// Whether a quiet statement may bind `name`: not a generated (`__`) name,
-/// except the payload temp the desugar gives each lowered `throw`
-/// (`__exn_payload<n>`, counted per top-level statement since #3829). No pass
-/// mints a name with that prefix, so binding one cannot move a name the
-/// passes pick.
+/// except the binders the desugar introduces with a fixed spelling (#4123,
+/// #4130). The passes consult the program-wide binder census only for
+/// particular spellings: top-level function names (alias inlining), callee
+/// names (whether a call may perform), and the fresh names they mint
+/// (`__scps_*`, `__edp*`, `__shadow_*`, ...). None of these spellings is
+/// one of those -- none is a top-level function, none is ever called, no
+/// pass mints it -- and each is counted per top-level statement (#3829), so
+/// binding one cannot move a name the passes look up or pick:
+/// - `__exn_payload<n>`: a lowered `throw`'s payload temp;
+/// - `__asc`: the identity closure a type ascription lowers to;
+/// - `__ae_i`, `__ae_ok`, `__be_i`, `__be_ok`, `__as_i`, `__as_acc`: the
+///   loop state of a generated array or slice comparison;
+/// - `__oeq_l`, `__oeq_r`: an option comparison's operands;
+/// - `__a<n>`, `__b<n>`: a derived comparison's field binders.
 fn prelude_reuse_binder_ok(_ name: String) -> Bool {
-  !String::starts_with(name, prefix = "__") || String::starts_with(name, prefix = "__exn_payload")
+  if !String::starts_with(name, prefix = "__") || String::starts_with(name, prefix = "__exn_payload") {
+    true
+  } else if name == "__asc" || name == "__ae_i" || name == "__ae_ok" || name == "__be_i" || name == "__be_ok" || name == "__as_i" || name == "__as_acc" || name == "__oeq_l" || name == "__oeq_r" {
+    true
+  } else {
+    (String::starts_with(name, prefix = "__a") || String::starts_with(name, prefix = "__b")) && prelude_reuse_all_digits(text = name, from = 3)
+  }
+}
+
+/// Whether `text` from byte `from` on is one or more ASCII digits.
+fn prelude_reuse_all_digits(text: String, from: Int) -> Bool {
+  let n = String::length(text)
+  let mut ok = n > from
+  let mut i = from
+  while ok && i < n {
+    let c = String::byte_at(text, at = i)
+    ok = c >= 48 && c <= 57
+    i = i + 1
+  }
+  ok
 }
 
 export fn prelude_reuse_quiet(stmt: Stmt, refs: (Array[String], Bool), scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {

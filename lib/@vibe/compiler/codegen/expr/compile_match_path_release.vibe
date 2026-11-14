@@ -1,0 +1,485 @@
+// lib/@vibe/compiler/codegen/expr/compile_match_path_release.vibe -- #1980:
+// release what a match arm's pattern binder still holds at the arm's end.
+
+import @vibe/compiler/core {
+  Expr, Pat, bsearch_leftmost, float_operand_unmarked, is_borrow_ret_builtin
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has, collect_pattern_bindings, md_borrow_mask_of, md_collect_shadow_names, md_view_consume_count_pre_store
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx, emit_rc_path_drop, is_ctor_call
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_i64_const, emit_local_set
+}
+
+//# Functions
+
+/// #1980: compile a match arm's body, releasing at the arm's end the
+/// references a pattern binder took at the bind and the path did not spend.
+///
+/// A payload binder is a borrowed view of its scrutinee. `bind_match_pat`
+/// gives it one reference per consume the arm body may perform: the
+/// consume count, which takes the MAXIMUM over alternatives. Nothing
+/// releases those references, because each is meant to be spent by its
+/// consume. So `Some(v) => { if c { sink(v) } else { 0 }; read(v) }` dups
+/// once at the bind, and the path that skips `sink` leaks the dup on every
+/// run.
+///
+/// Here every occurrence the count counts is a consume mark, as the Perceus
+/// plan's marked occurrences are for a `let` (`ce_mark_path_consume`). The
+/// binder gets a flag local that counts the marks a path ran, and after the
+/// body `emit_rc_path_drop` releases the dups less that count. A path that
+/// spends every dup releases nothing; one that spends fewer releases the
+/// rest. A mark only ever over-counts what the path spent -- a mark in a
+/// loop that runs twice, an occurrence codegen retained -- which leaks
+/// rather than over-releases.
+///
+/// A binder is left as it was (its dups taken, nothing released) when:
+///
+/// - every path consumes as many as the count (`mpr_walk`'s minimum), so
+///   there is nothing to release;
+/// - a counted occurrence has no source offset, or sits in a lambda body
+///   (compiled in a context of its own, where no mark can run);
+/// - the body binds the name again, or the name is a plan path-drop, a
+///   consume-mark, a live flag or a reuse scrutinee name: marks and drop
+///   rows are keyed by name, so another binding of it could take this
+///   binder's marks or rows;
+/// - the binder holds a `Double` (a boxed value the arm's float lowering
+///   reads), or the pattern binds the name twice;
+/// - the body's value may be a view (`mpr_tail_safe`): the release runs
+///   after the body, and a view into the binder would then rest on the
+///   scrutinee alone, where today it rests on a dup nobody releases.
+///
+/// An early exit out of the body skips the release, so it leaks what that
+/// path did not spend, as it did before.
+export fn mpr_compile_arm(buf: Bytes, pat: Pat, body: Expr, names_mark: Int, local_names: Array[String], ctx: CompileCtx, ld: Int, md_bmasks: Array[Int], ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  if !ctx.enable_rc || ctx.rc_drop_func_idx < 0 {
+    ce(buf, body, local_names, Array::length(local_names), ctx, ld)
+  } else {
+    let binders: Array[String] = []
+    let _ = collect_pattern_bindings(pat = pat, bindings = binders)
+    let names: Array[String] = []
+    let slots: Array[Int] = []
+    let counts: Array[Int] = []
+    let mark_offs: Array[Int] = []
+    let mark_ends: Array[Int] = []
+    let shadows: Array[String] = []
+    let mut shadows_done = false
+    let mut tail_state = 0
+    let mut bi = 0
+    while bi < Array::length(binders) {
+      let nm = Array::get(binders, at = bi)
+      let slot = mpr_binder_slot(local_names = local_names, from = names_mark, name = nm)
+      let n = if slot >= 0 && mpr_name_once(arr = binders, s = nm) && !mpr_name_taken(ctx = ctx, name = nm) && !array_contains_int_mpr(arr = ctx.float_local_slots, v = slot * 2 + 1) {
+        md_view_consume_count_pre_store(e = body, name = nm, bfns = ctx.borrow_param_user, bmasks_zeroed = md_bmasks, store_names = ctx.rc_store_dup_names, store_offs = ctx.rc_store_dup_offs)
+      } else {
+        0
+      }
+      if n > 0 {
+        let offs: Array[Int] = []
+        let mn = mpr_walk(e = body, name = nm, bmasks = md_bmasks, ctx = ctx, offs = offs, in_fn = false)
+        if mn < n && !array_contains_int_mpr(arr = offs, v = 0 - 1) {
+          if !shadows_done {
+            let _ = md_collect_shadow_names(e = body, out = shadows)
+            shadows_done = true
+          } else {
+            ()
+          }
+          if tail_state == 0 {
+            tail_state = if mpr_tail_safe(e = body, local_names = local_names, bound = [
+            ], ctx = ctx) {
+              1
+            } else {
+              2
+            }
+          } else {
+            ()
+          }
+          if tail_state == 1 && !array_contains_str(arr = shadows, s = nm) {
+            Array::push(names, value = nm)
+            Array::push(slots, value = slot)
+            Array::push(counts, value = n)
+            let mut oi = 0
+            while oi < Array::length(offs) {
+              Array::push(mark_offs, value = Array::get(offs, at = oi))
+              oi = oi + 1
+            }
+            Array::push(mark_ends, value = Array::length(mark_offs))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      bi = bi + 1
+    }
+    if Array::length(names) == 0 {
+      ce(buf, body, local_names, Array::length(local_names), ctx, ld)
+    } else {
+      let flag_mark = Array::length(ctx.rc_path_flag_names)
+      let drop_mark = Array::length(ctx.rc_path_drop_names)
+      let cmark = Array::length(ctx.rc_consume_mark_names)
+      let flags: Array[Int] = []
+      let mut k = 0
+      let mut from = 0
+      while k < Array::length(names) {
+        let nm = Array::get(names, at = k)
+        let flag = Array::length(local_names)
+        Array::push(local_names, value = "__pat_path_flag")
+        emit_i64_const(buf = buf, value = 0)
+        emit_local_set(buf = buf, idx = flag)
+        Array::push(flags, value = flag)
+        Array::push(ctx.rc_path_flag_names, value = nm)
+        Array::push(ctx.rc_path_flag_locals, value = flag)
+        let mut r = 0
+        while r < Array::get(counts, at = k) {
+          Array::push(ctx.rc_path_drop_names, value = nm)
+          r = r + 1
+        }
+        let to = Array::get(mark_ends, at = k)
+        while from < to {
+          Array::push(ctx.rc_consume_mark_names, value = nm)
+          Array::push(ctx.rc_consume_mark_offs, value = Array::get(mark_offs, at = from))
+          from = from + 1
+        }
+        k = k + 1
+      }
+      let nl = ce(buf, body, local_names, Array::length(local_names), ctx, ld)
+      let mut d = 0
+      while d < Array::length(names) {
+        emit_rc_path_drop(buf = buf, flag = Array::get(flags, at = d), local_idx = Array::get(slots, at = d), count = Array::get(counts, at = d), drop_fn_idx = ctx.rc_drop_func_idx)
+        d = d + 1
+      }
+      Array::truncate(ctx.rc_path_flag_names, length = flag_mark)
+      Array::truncate(ctx.rc_path_flag_locals, length = flag_mark)
+      Array::truncate(ctx.rc_path_drop_names, length = drop_mark)
+      Array::truncate(ctx.rc_consume_mark_names, length = cmark)
+      Array::truncate(ctx.rc_consume_mark_offs, length = cmark)
+      nl
+    }
+  }
+}
+
+/// The wasm local `bind_match_pat` bound `name` to: its last entry at or
+/// after `from`, or -1 when the pattern pass bound no such local.
+fn mpr_binder_slot(local_names: Array[String], from: Int, name: String) -> Int {
+  let mut i = Array::length(local_names) - 1
+  let mut at = 0 - 1
+  while i >= from {
+    if Array::get(local_names, at = i) == name {
+      at = i
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  at
+}
+
+fn mpr_name_once(arr: Array[String], s: String) -> Bool {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(arr) {
+    if Array::get(arr, at = i) == s {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n == 1
+}
+
+/// Is `name` already keyed by something its marks or rows would collide
+/// with: a plan path drop or consume mark, a live path flag, a reuse
+/// scrutinee?
+fn mpr_name_taken(ctx: CompileCtx, name: String) -> Bool {
+  array_contains_str(arr = ctx.rc_path_drop_names, s = name) || array_contains_str(arr = ctx.rc_consume_mark_names, s = name) || array_contains_str(arr = ctx.rc_path_flag_names, s = name) || array_contains_str(arr = ctx.reuse_scrutinee_names, s = name)
+}
+
+fn array_contains_int_mpr(arr: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arr) {
+    found = Array::get(arr, at = i) == v
+    i = i + 1
+  }
+  found
+}
+
+fn mpr_min(a: Int, b: Int) -> Int {
+  if a < b {
+    a
+  } else {
+    b
+  }
+}
+
+/// The occurrences of `name` that `md_view_consume_count_pre_store` counts,
+/// pushed to `offs` by source offset (-1 for one that cannot be marked: no
+/// offset, or inside a lambda body), and the fewest of them any path through
+/// `e` runs. The walk is that count's, case for case; only the combination
+/// differs -- alternatives take the MINIMUM, and a loop body or a handler
+/// arm, which may run no time at all, adds nothing to it. The minimum only
+/// decides whether the arm needs a release; under-estimating it costs a
+/// flag, never a reference.
+fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+  match e {
+    EIdent(n, off) => if n == name && !mpr_store_dup(ctx = ctx, name = n, off = off) {
+      if in_fn || off < 0 {
+        Array::push(offs, value = 0 - 1)
+      } else {
+        Array::push(offs, value = off)
+      }
+      1
+    } else {
+      0
+    },
+    ETuple(items) => mpr_walk_all(items = items, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EArray(items) => mpr_walk_all(items = items, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ERecord(_, fields, _) => mpr_walk_fields(fields = fields, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EMap(fields) => mpr_walk_fields(fields = fields, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EIf(c, t, el) => {
+      let a = mpr_walk(e = c, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let b = mpr_walk(e = t, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      a + mpr_min(a = b, b = mpr_walk(e = el, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn))
+    },
+    ELet(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ELetRec(_, v, b) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ELetMut(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EAssign(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EAssignOp(_, _, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ESeq(a, b) => mpr_walk2(a = a, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EMatch(s, arms) => {
+      let scr = mpr_walk_scrutinee(s = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let mut mn = 0 - 1
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, at = i)
+        let c = mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        if mn < 0 || c < mn {
+          mn = c
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if mn < 0 {
+        scr
+      } else {
+        scr + mn
+      }
+    },
+    EHandle(s, arms) => {
+      let scr = mpr_walk_scrutinee(s = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, at = i)
+        let _ = mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        i = i + 1
+      }
+      scr
+    },
+    EWhile(c, b) => {
+      let a = mpr_walk(e = c, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      a
+    },
+    ELoop(params, b) => {
+      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, at = i)
+        acc = acc + mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        i = i + 1
+      }
+      acc
+    },
+    EForIn(_, _, it, b) => {
+      let a = mpr_walk(e = it, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      a
+    },
+    ECall(callee, args, _, _) => {
+      let bmask = match callee {
+        EIdent(f, _) => md_borrow_mask_of(f = f, bfns = ctx.borrow_param_user, bmasks = bmasks),
+        _ => 0
+      }
+      let mut acc = match callee {
+        EIdent(_, _) => 0,
+        _ => mpr_walk(e = callee, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      }
+      let mut ri = 0
+      while ri < Array::length(args) {
+        let a = Array::get(args, at = ri)
+        acc = acc + (if bmask_has(mask = bmask, i = ri) {
+          match a {
+            EIdent(_, _) => 0,
+            _ => mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+          }
+        } else {
+          mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        })
+        ri = ri + 1
+      }
+      acc
+    },
+    EBinOp(_, l, r, _) => mpr_walk_operand(e_in = l, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn) + mpr_walk_operand(e_in = r, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EUnaryOp(_, x) => mpr_walk_operand(e_in = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EFn(_, _, _, _, _, body) => {
+      let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = true)
+      0
+    },
+    EDot(x, _, _, _) => match x {
+      EIdent(_, _) => 0,
+      _ => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+    },
+    ELabeledArg(_, _, v) => mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EReturn(x) => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EBreak(opt) => match opt {
+      Some(v) => mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+      None => 0
+    },
+    EContinue(args) => mpr_walk_all(items = args, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ESpread(x) => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    _ => 0
+  }
+}
+
+fn mpr_walk2(a: Expr, b: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+  let x = mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+  x + mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+}
+
+fn mpr_walk_all(items: Array[Expr], name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(items) {
+    acc = acc + mpr_walk(e = Array::get(items, at = i), name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+    i = i + 1
+  }
+  acc
+}
+
+fn mpr_walk_fields(fields: Array[(String, Expr)], name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, at = i)
+    acc = acc + mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+    i = i + 1
+  }
+  acc
+}
+
+/// A bare `match name` / `handle` body ident is read, not consumed.
+fn mpr_walk_scrutinee(s: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+  match s {
+    EIdent(_, _) => 0,
+    _ => mpr_walk(e = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+  }
+}
+
+/// An operator reads a bare name in place.
+fn mpr_walk_operand(e_in: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+  let e = float_operand_unmarked(e_in)
+  match e {
+    EIdent(_, _) => 0,
+    _ => mpr_walk(e = e, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+  }
+}
+
+/// An occurrence codegen retains at a store (`PaStoreDup`): the count skips
+/// it, so the walk does too.
+fn mpr_store_dup(ctx: CompileCtx, name: String, off: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && off >= 0 && i < Array::length(ctx.rc_store_dup_offs) {
+    found = Array::get(ctx.rc_store_dup_offs, at = i) == off && Array::get(ctx.rc_store_dup_names, at = i) == name
+    i = i + 1
+  }
+  found
+}
+
+/// May the arm's value NOT be a view into anything -- a pattern binder above
+/// all? Reads the result spine through blocks and branches, and admits a
+/// leaf only from an allow-list: a literal, an interpolated string, an
+/// operator (a scalar, or a fresh string), an exit (no value flows on), an
+/// allocation made at the site, or a call to a named function whose declared
+/// result is a scalar or a heap value it neither borrows nor may view
+/// (`path_value_owned`'s rule), unless a local binds that name. Anything else
+/// -- a name, a projection, an indirect call, a `handle` -- answers no.
+fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_, _) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EStringInterp(_) => true,
+    EBinOp(_, _, _, _) => true,
+    EUnaryOp(_, _) => true,
+    EReturn(_) => true,
+    EBreak(_) => true,
+    EContinue(_) => true,
+    ETuple(_) => true,
+    EArray(_) => true,
+    ERecord(_, _, _) => true,
+    ECall(callee, _, _, _) => match callee {
+      EIdent(cn, _) => if is_ctor_call(value = e, ct = ctx.ctor_table) {
+        true
+      } else if array_contains_str(arr = local_names, s = cn) || array_contains_str(arr = bound, s = cn) {
+        false
+      } else if bsearch_leftmost(sorted = ctx.scalar_ret_names, name = cn) >= 0 {
+        true
+      } else {
+        bsearch_leftmost(sorted = ctx.heap_ret_names, name = cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(sorted = ctx.borrow_ret_names, name = cn) < 0 && bsearch_leftmost(sorted = ctx.borrow_view_ret, name = cn) < 0
+      },
+      _ => false
+    },
+    EIf(_, t, el) => mpr_tail_safe(e = t, local_names = local_names, bound = bound, ctx = ctx) && mpr_tail_safe(e = el, local_names = local_names, bound = bound, ctx = ctx),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, at = i)
+        let mark = Array::length(bound)
+        let _ = collect_pattern_bindings(pat = ap, bindings = bound)
+        ok = mpr_tail_safe(e = ab, local_names = local_names, bound = bound, ctx = ctx)
+        Array::truncate(bound, length = mark)
+        i = i + 1
+      }
+      ok
+    },
+    ELet(n, _, b, _) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
+    ELetMut(n, _, b, _) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
+    ELetRec(n, _, b) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
+    ESeq(_, b) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
+    EAssign(_, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
+    EAssignOp(_, _, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
+    _ => false
+  }
+}
+
+fn mpr_tail_under(n: String, b: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool {
+  let mark = Array::length(bound)
+  Array::push(bound, value = n)
+  let r = mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx)
+  Array::truncate(bound, length = mark)
+  r
+}

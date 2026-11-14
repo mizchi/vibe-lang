@@ -67,6 +67,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_ge_s,
   emit_i64_lt_s,
   emit_i64_or,
+  emit_if_i64,
   emit_if_void,
   emit_local_get,
   emit_local_set,
@@ -262,6 +263,228 @@ fn gc_map_write_key_class(buf: Bytes, map_l: Int, scalar: Bool) -> Unit {
     0
   })
   emit_i32_store(buf = buf, align = 2, offset = 4)
+}
+
+/// #4121: push the i32 test "is the map at `map_l` scalar-keyed?". An
+/// unmarked map -- every String map, and an empty `Map::new()` -- answers 0.
+fn gc_map_emit_is_scalar(buf: Bytes, map_l: Int) -> Unit {
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  emit_i32_const(buf = buf, value = gc_map_scalar_marker)
+  emit_i32_eq(buf)
+}
+
+/// The body of `Map::delete` once its operands are in the six locals from
+/// `nl`: copy every entry whose key does not match into a fresh block and
+/// write the result's key class. Leaves the result at `nl + 3`.
+fn gc_map_delete_body(buf: Bytes, ctx: CompileCtxGc, nl: Int, scalar_key: Bool, eq_fi_md: Int) -> Unit {
+  let md_m = nl
+  let md_k = nl + 1
+  let md_cnt = nl + 2
+  let md_new = nl + 3
+  let md_i = nl + 4
+  let md_out = nl + 5
+  emit_local_get(buf = buf, idx = md_m)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf = buf, idx = md_cnt)
+  emit_global_get(buf = buf, idx = 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf = buf, idx = md_new)
+  emit_global_get(buf = buf, idx = 0)
+  emit_local_get(buf = buf, idx = md_cnt)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_const(buf = buf, value = 8)
+  emit_i32_add(buf)
+  emit_i32_add(buf)
+  emit_global_set(buf = buf, idx = 0)
+  emit_heap_memory_grow_check(buf)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = md_i)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = md_out)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf = buf, idx = md_i)
+  emit_local_get(buf = buf, idx = md_cnt)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf = buf, label = 1)
+  emit_local_get(buf = buf, idx = md_m)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = md_i)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 8)
+  emit_local_get(buf = buf, idx = md_k)
+  gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi_md)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_else(buf)
+  emit_local_get(buf = buf, idx = md_new)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = md_out)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf = buf, idx = md_m)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = md_i)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 8)
+  emit_i64_store(buf = buf, align = 3, offset = 8)
+  emit_local_get(buf = buf, idx = md_new)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = md_out)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf = buf, idx = md_m)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = md_i)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 16)
+  emit_i64_store(buf = buf, align = 3, offset = 16)
+  emit_local_get(buf = buf, idx = md_out)
+  emit_i64_const(buf = buf, value = 1)
+  emit_i64_add(buf)
+  emit_local_set(buf = buf, idx = md_out)
+  emit_end(buf)
+  emit_local_get(buf = buf, idx = md_i)
+  emit_i64_const(buf = buf, value = 1)
+  emit_i64_add(buf)
+  emit_local_set(buf = buf, idx = md_i)
+  emit_br(buf = buf, label = 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_local_get(buf = buf, idx = md_new)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = md_out)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf = buf, align = 2, offset = 0)
+  gc_map_write_key_class(buf = buf, map_l = md_new, scalar = scalar_key)
+}
+
+/// The body of `Map::get` once its operands are in the four locals from `nl`:
+/// a linear scan whose miss traps. Leaves the value as one i64.
+fn gc_map_get_body(buf: Bytes, ctx: CompileCtxGc, nl: Int, scalar_key: Bool, eq_fi: Int) -> Unit {
+  let map_l = nl
+  let key_l = nl + 1
+  let cnt_l = nl + 2
+  let idx_l = nl + 3
+  // Load count
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf = buf, idx = cnt_l)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = idx_l)
+  // block $result : i64
+  emit_block_i64(buf)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  // if i >= count: break
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_local_get(buf = buf, idx = cnt_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf = buf, label = 1)
+  // Load key at entry[i]
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 8)
+  emit_local_get(buf = buf, idx = key_l)
+  gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  // Found: load value and break
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 16)
+  emit_br(buf = buf, label = 3)
+  emit_end(buf)
+  // i++
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i64_const(buf = buf, value = 1)
+  emit_i64_add(buf)
+  emit_local_set(buf = buf, idx = idx_l)
+  emit_br(buf = buf, label = 0)
+  emit_end(buf)
+  emit_end(buf)
+  // #2990: not found traps, as on the linear lane (see
+  // `cc_map_get_linear_scan`). `Map::has_key` is the guard.
+  gc_map_get_miss_trap(buf = buf, ctx = ctx)
+  emit_end(buf)
+}
+
+/// The body of `Map::has_key`, laid out like `gc_map_get_body`. Leaves a
+/// raw 0/1 i64.
+fn gc_map_has_body(buf: Bytes, ctx: CompileCtxGc, nl: Int, scalar_key: Bool, eq_fi: Int) -> Unit {
+  let map_l = nl
+  let key_l = nl + 1
+  let cnt_l = nl + 2
+  let idx_l = nl + 3
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf = buf, idx = cnt_l)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = idx_l)
+  emit_block_i64(buf)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_local_get(buf = buf, idx = cnt_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf = buf, label = 1)
+  emit_local_get(buf = buf, idx = map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf = buf, value = 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf = buf, align = 3, offset = 8)
+  emit_local_get(buf = buf, idx = key_l)
+  gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_i64_const(buf = buf, value = 1)
+  emit_br(buf = buf, label = 3)
+  emit_end(buf)
+  emit_local_get(buf = buf, idx = idx_l)
+  emit_i64_const(buf = buf, value = 1)
+  emit_i64_add(buf)
+  emit_local_set(buf = buf, idx = idx_l)
+  emit_br(buf = buf, label = 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_i64_const(buf = buf, value = 0)
+  emit_end(buf)
 }
 
 /// #3068: gc mirror of the linear lane's `ts_offset_refuses_render`
@@ -1112,18 +1335,17 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf = buf, idx = ms_new)
     nl + 7
   }
-  else if fname == "Map::delete" || fname == "Map::__scalar_delete" {
-    // #2334: see `Map::__scalar_set` above.
+  else if fname == "Map::delete" || fname == "Map::__scalar_delete" || fname == "Map::__dynamic_delete" {
+    // #2334: see `Map::__scalar_set` above. #4121: `Map::__dynamic_delete`
+    // reads the map's own key-class mark at run time.
     let scalar_key = fname == "Map::__scalar_delete"
+    let dynamic_key = fname == "Map::__dynamic_delete"
     let (eq_fi_md, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
     let md_m = nl
     let md_k = nl + 1
-    let md_cnt = nl + 2
     let md_new = nl + 3
-    let md_i = nl + 4
-    let md_out = nl + 5
     Array::push(local_names, value = "[gc-temp]__md_map")
     Array::push(local_names, value = "[gc-temp]__md_key")
     Array::push(local_names, value = "[gc-temp]__md_cnt")
@@ -1132,242 +1354,88 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     Array::push(local_names, value = "[gc-temp]__md_out")
     emit_local_set(buf = buf, idx = md_k)
     emit_local_set(buf = buf, idx = md_m)
-    if scalar_key {
-      ()
+    if dynamic_key {
+      gc_map_emit_is_scalar(buf = buf, map_l = md_m)
+      emit_if_void(buf)
+      gc_map_delete_body(buf = buf, ctx = ctx, nl = nl, scalar_key = true, eq_fi_md = eq_fi_md)
+      emit_else(buf)
+      gc_map_delete_body(buf = buf, ctx = ctx, nl = nl, scalar_key = false, eq_fi_md = eq_fi_md)
+      emit_end(buf)
     } else {
-      gc_map_trap_if_scalar(buf = buf, map_l = md_m)
+      if scalar_key {
+        ()
+      } else {
+        gc_map_trap_if_scalar(buf = buf, map_l = md_m)
+      }
+      gc_map_delete_body(buf = buf, ctx = ctx, nl = nl, scalar_key = scalar_key, eq_fi_md = eq_fi_md)
     }
-    emit_local_get(buf = buf, idx = md_m)
-    emit_i32_wrap_i64(buf)
-    emit_i32_load(buf = buf, align = 2, offset = 0)
-    emit_i64_extend_i32_u(buf)
-    emit_local_set(buf = buf, idx = md_cnt)
-    emit_global_get(buf = buf, idx = 0)
-    emit_i64_extend_i32_u(buf)
-    emit_local_set(buf = buf, idx = md_new)
-    emit_global_get(buf = buf, idx = 0)
-    emit_local_get(buf = buf, idx = md_cnt)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_const(buf = buf, value = 8)
-    emit_i32_add(buf)
-    emit_i32_add(buf)
-    emit_global_set(buf = buf, idx = 0)
-    emit_heap_memory_grow_check(buf)
-    emit_i64_const(buf = buf, value = 0)
-    emit_local_set(buf = buf, idx = md_i)
-    emit_i64_const(buf = buf, value = 0)
-    emit_local_set(buf = buf, idx = md_out)
-    emit_block_void(buf)
-    emit_loop_void(buf)
-    emit_local_get(buf = buf, idx = md_i)
-    emit_local_get(buf = buf, idx = md_cnt)
-    emit_i64_ge_s(buf)
-    emit_br_if(buf = buf, label = 1)
-    emit_local_get(buf = buf, idx = md_m)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = md_i)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_i64_load(buf = buf, align = 3, offset = 8)
-    emit_local_get(buf = buf, idx = md_k)
-    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi_md)
-    emit_i32_wrap_i64(buf)
-    emit_if_void(buf)
-    emit_else(buf)
-    emit_local_get(buf = buf, idx = md_new)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = md_out)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_local_get(buf = buf, idx = md_m)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = md_i)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_i64_load(buf = buf, align = 3, offset = 8)
-    emit_i64_store(buf = buf, align = 3, offset = 8)
-    emit_local_get(buf = buf, idx = md_new)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = md_out)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_local_get(buf = buf, idx = md_m)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = md_i)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_i64_load(buf = buf, align = 3, offset = 16)
-    emit_i64_store(buf = buf, align = 3, offset = 16)
-    emit_local_get(buf = buf, idx = md_out)
-    emit_i64_const(buf = buf, value = 1)
-    emit_i64_add(buf)
-    emit_local_set(buf = buf, idx = md_out)
-    emit_end(buf)
-    emit_local_get(buf = buf, idx = md_i)
-    emit_i64_const(buf = buf, value = 1)
-    emit_i64_add(buf)
-    emit_local_set(buf = buf, idx = md_i)
-    emit_br(buf = buf, label = 0)
-    emit_end(buf)
-    emit_end(buf)
-    emit_local_get(buf = buf, idx = md_new)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = md_out)
-    emit_i32_wrap_i64(buf)
-    emit_i32_store(buf = buf, align = 2, offset = 0)
-    gc_map_write_key_class(buf = buf, map_l = md_new, scalar = scalar_key)
     emit_local_get(buf = buf, idx = md_new)
     nl + 6
   }
-  else if fname == "Map::get" || fname == "Map::__scalar_get" {
-    // #2334: see `Map::__scalar_set` above.
+  else if fname == "Map::get" || fname == "Map::__scalar_get" || fname == "Map::__dynamic_get" {
+    // #2334: see `Map::__scalar_set` above. #4121: see `Map::__dynamic_delete`.
     let scalar_key = fname == "Map::__scalar_get"
+    let dynamic_key = fname == "Map::__dynamic_get"
     let (eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
     let map_l = nl
     let key_l = nl + 1
-    let cnt_l = nl + 2
-    let idx_l = nl + 3
     Array::push(local_names, value = "[gc-temp]__mg_map")
     Array::push(local_names, value = "[gc-temp]__mg_key")
     Array::push(local_names, value = "[gc-temp]__mg_cnt")
     Array::push(local_names, value = "[gc-temp]__mg_i")
     emit_local_set(buf = buf, idx = key_l)
     emit_local_set(buf = buf, idx = map_l)
-    if scalar_key {
-      ()
+    if dynamic_key {
+      gc_map_emit_is_scalar(buf = buf, map_l = map_l)
+      emit_if_i64(buf)
+      gc_map_get_body(buf = buf, ctx = ctx, nl = nl, scalar_key = true, eq_fi = eq_fi)
+      emit_else(buf)
+      gc_map_get_body(buf = buf, ctx = ctx, nl = nl, scalar_key = false, eq_fi = eq_fi)
+      emit_end(buf)
     } else {
-      gc_map_trap_if_scalar(buf = buf, map_l = map_l)
+      if scalar_key {
+        ()
+      } else {
+        gc_map_trap_if_scalar(buf = buf, map_l = map_l)
+      }
+      gc_map_get_body(buf = buf, ctx = ctx, nl = nl, scalar_key = scalar_key, eq_fi = eq_fi)
     }
-    // Load count
-    emit_local_get(buf = buf, idx = map_l)
-    emit_i32_wrap_i64(buf)
-    emit_i32_load(buf = buf, align = 2, offset = 0)
-    emit_i64_extend_i32_u(buf)
-    emit_local_set(buf = buf, idx = cnt_l)
-    emit_i64_const(buf = buf, value = 0)
-    emit_local_set(buf = buf, idx = idx_l)
-    // block $result : i64
-    emit_block_i64(buf)
-    emit_block_void(buf)
-    emit_loop_void(buf)
-    // if i >= count: break
-    emit_local_get(buf = buf, idx = idx_l)
-    emit_local_get(buf = buf, idx = cnt_l)
-    emit_i64_ge_s(buf)
-    emit_br_if(buf = buf, label = 1)
-    // Load key at entry[i]
-    emit_local_get(buf = buf, idx = map_l)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = idx_l)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_i64_load(buf = buf, align = 3, offset = 8)
-    emit_local_get(buf = buf, idx = key_l)
-    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi)
-    emit_i32_wrap_i64(buf)
-    emit_if_void(buf)
-    // Found: load value and break
-    emit_local_get(buf = buf, idx = map_l)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = idx_l)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_i64_load(buf = buf, align = 3, offset = 16)
-    emit_br(buf = buf, label = 3)
-    emit_end(buf)
-    // i++
-    emit_local_get(buf = buf, idx = idx_l)
-    emit_i64_const(buf = buf, value = 1)
-    emit_i64_add(buf)
-    emit_local_set(buf = buf, idx = idx_l)
-    emit_br(buf = buf, label = 0)
-    emit_end(buf)
-    emit_end(buf)
-    // #2990: not found traps, as on the linear lane (see
-    // `cc_map_get_linear_scan`). `Map::has_key` is the guard.
-    gc_map_get_miss_trap(buf = buf, ctx = ctx)
-    emit_end(buf)
     nl + 4
   }
-  else if fname == "Map::has_key" || (fname == "map_has" && !gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname)) || fname == "Map::has" || fname == "Map::__scalar_has_key" {
+  else if fname == "Map::has_key" || (fname == "map_has" && !gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname)) || fname == "Map::has" || fname == "Map::__scalar_has_key" || fname == "Map::__dynamic_has_key" {
     // #3565: a program binding spelled `map_has` (local or top-level) is
     // the program's value, as the print arm below already honours.
-    // #2334: see `Map::__scalar_set` above.
+    // #2334: see `Map::__scalar_set` above. #4121: see `Map::__dynamic_delete`.
     let scalar_key = fname == "Map::__scalar_has_key"
+    let dynamic_key = fname == "Map::__dynamic_has_key"
     let (eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ld)
     let map_l = nl
     let key_l = nl + 1
-    let cnt_l = nl + 2
-    let idx_l = nl + 3
     Array::push(local_names, value = "[gc-temp]__hk_map")
     Array::push(local_names, value = "[gc-temp]__hk_key")
     Array::push(local_names, value = "[gc-temp]__hk_cnt")
     Array::push(local_names, value = "[gc-temp]__hk_i")
     emit_local_set(buf = buf, idx = key_l)
     emit_local_set(buf = buf, idx = map_l)
-    if scalar_key {
-      ()
+    if dynamic_key {
+      gc_map_emit_is_scalar(buf = buf, map_l = map_l)
+      emit_if_i64(buf)
+      gc_map_has_body(buf = buf, ctx = ctx, nl = nl, scalar_key = true, eq_fi = eq_fi)
+      emit_else(buf)
+      gc_map_has_body(buf = buf, ctx = ctx, nl = nl, scalar_key = false, eq_fi = eq_fi)
+      emit_end(buf)
     } else {
-      gc_map_trap_if_scalar(buf = buf, map_l = map_l)
+      if scalar_key {
+        ()
+      } else {
+        gc_map_trap_if_scalar(buf = buf, map_l = map_l)
+      }
+      gc_map_has_body(buf = buf, ctx = ctx, nl = nl, scalar_key = scalar_key, eq_fi = eq_fi)
     }
-    emit_local_get(buf = buf, idx = map_l)
-    emit_i32_wrap_i64(buf)
-    emit_i32_load(buf = buf, align = 2, offset = 0)
-    emit_i64_extend_i32_u(buf)
-    emit_local_set(buf = buf, idx = cnt_l)
-    emit_i64_const(buf = buf, value = 0)
-    emit_local_set(buf = buf, idx = idx_l)
-    emit_block_i64(buf)
-    emit_block_void(buf)
-    emit_loop_void(buf)
-    emit_local_get(buf = buf, idx = idx_l)
-    emit_local_get(buf = buf, idx = cnt_l)
-    emit_i64_ge_s(buf)
-    emit_br_if(buf = buf, label = 1)
-    emit_local_get(buf = buf, idx = map_l)
-    emit_i32_wrap_i64(buf)
-    emit_local_get(buf = buf, idx = idx_l)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf = buf, value = 16)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_i64_load(buf = buf, align = 3, offset = 8)
-    emit_local_get(buf = buf, idx = key_l)
-    gc_map_emit_key_eq(buf = buf, ctx = ctx, scalar = scalar_key, eq_fi = eq_fi)
-    emit_i32_wrap_i64(buf)
-    emit_if_void(buf)
-    emit_i64_const(buf = buf, value = 1)
-    emit_br(buf = buf, label = 3)
-    emit_end(buf)
-    emit_local_get(buf = buf, idx = idx_l)
-    emit_i64_const(buf = buf, value = 1)
-    emit_i64_add(buf)
-    emit_local_set(buf = buf, idx = idx_l)
-    emit_br(buf = buf, label = 0)
-    emit_end(buf)
-    emit_end(buf)
-    emit_i64_const(buf = buf, value = 0)
-    emit_end(buf)
     nl + 4
   }
   else if !source_is_bound && fname == "Map::__iter_get_unchecked" {
