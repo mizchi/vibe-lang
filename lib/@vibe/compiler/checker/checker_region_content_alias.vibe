@@ -750,7 +750,7 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
       let mark = Array::length(facts.scope_ids)
       let id = content_push(name = x, facts = facts)
       match let_rhs_closure_literal(v) {
-        Some(EFn(_, _, ps, _, _, lambda)) => content_bind_closure(id = id, ps = ps, body = lambda, facts = facts, env = env),
+        Some(EFn(tparams, _, ps, _, _, lambda)) => content_bind_closure(id = id, tparams = tparams, ps = ps, body = lambda, facts = facts, env = env),
         _ => {
           content_facts_into(expr = v, facts = facts, env = env)
           content_bind(id = id, value = content_value_fact(value = v, env = env, facts = facts), facts = facts)
@@ -864,9 +864,21 @@ fn content_lambda_body(body: Expr, mark: Int, facts: ContentFacts, env: TypeEnv)
   content_pop(mark = mark, facts = facts)
 }
 
-fn content_bind_closure(id: String, ps: Array[(String, Option[TypeExpr])], body: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
+fn content_bind_closure(id: String, tparams: Array[String], ps: Array[(String, Option[TypeExpr])], body: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
   let mark = Array::length(facts.scope_ids)
   let params = content_push_params(ps = ps, facts = facts)
+  let defs = env_type_defs(env)
+  let mut i = 0
+  while i < Array::length(ps) {
+    match Array::get(ps, at = i).1 {
+      Some(annotation) => {
+        let ty = resolve_type_expr_shadowed(te = annotation, defs = defs, shadow = tparams)
+        MutMap::set(facts.alias_types, k = Array::get(params, at = i), v = ty)
+      },
+      None => ()
+    }
+    i = i + 1
+  }
   MutMap::set(facts.closure_params, k = id, v = params)
   content_lambda_body(body = body, mark = mark, facts = facts, env = env)
 }
@@ -977,13 +989,13 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
 // arguments to the stores read in the closure's lexical scope.
 fn content_read_let(name: String, off: Int, expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
   match let_rhs_closure_literal(expr) {
-    Some(EFn(_, _, ps, _, _, body)) => {
+    Some(EFn(tparams, _, ps, _, _, body)) => {
       let closure_type = content_alias_type(value = expr, env = env, facts = facts)
       let id = content_push_let(name = name, off = off, facts = facts)
       // An ordinary let does not bind its name in the initializer.
       let mark = Array::length(facts.scope_ids) - 1
       content_pop(mark = mark, facts = facts)
-      content_bind_closure(id = id, ps = ps, body = body, facts = facts, env = env)
+      content_bind_closure(id = id, tparams = tparams, ps = ps, body = body, facts = facts, env = env)
       let _ = content_push_id(name = name, id = id, facts = facts)
       content_bind_typed(id = id, value = (false, []), alias_type = closure_type, facts = facts)
     },
