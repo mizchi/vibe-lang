@@ -113,6 +113,10 @@ text units), not raw bytes. Runner `host_fs_scope` remains a separate aggregate
 raw-byte boundary observation. The sidecar is rejected outside
 `VIBE_CHECK_ONLY=1`, stale requested output is removed before CLI early returns,
 and publication after a successful check is required before the final `ok`.
+The sidecar exists only in a compiler built with the `telemetry` cfg flag, which
+the generation's stage2 is by default (#2498); a build without it -- the
+compile-only artifact -- clears the stale output and then refuses the request by
+name.
 
 ## Concurrent publication
 
