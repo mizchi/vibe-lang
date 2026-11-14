@@ -38,10 +38,35 @@ fn projected_binding() -> Int {
   }
 }
 
+effect Box {
+  Put(f: () -> Int) -> Int
+}
+
+// A handler arm's binder shadows an outer binding of its name: `xs` in the
+// `Box::Put(xs)` arm is the plain payload, not the outer array that holds the
+// handle-bound closure.
+fn handler_binder() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [g]
+    handle {
+      perform Box::Put(f = () -> 42)
+    } with {
+      Box::Put(xs) => resume(apply(f = xs))
+    } + Array::length(xs)
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
 test "a store in one match arm is not seen by another" {
   inspect(other_arm(flag = 1), content = "142")
 }
 
 test "a binding of a projection reads the part it was bound to" {
   inspect(projected_binding(), content = "142")
+}
+
+test "a handler arm's binder shadows an outer binding" {
+  inspect(handler_binder(), content = "143")
 }
