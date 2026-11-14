@@ -41,7 +41,7 @@ import @vibe/compiler/codegen/common_base {
   compute_agg_returning,
   ctor_sorted_index,
   emit_i32_eqz,
-  evidence_dict_pass,
+  evidence_dict_pass_with_callback_rows,
   fn_type_param_types,
   gc_slot_map_get,
   lower_optional_performs,
@@ -218,7 +218,7 @@ import ./backend_body_gc_direct_abi_expr_kind.vibe {
   gc_type_expr_is_unit
 }
 
-export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int], gc_int_render_offsets: Array[Int], gc_bool_render_offsets: Array[Int]) -> Bytes with Exception {
+export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int], gc_int_render_offsets: Array[Int], gc_bool_render_offsets: Array[Int], typed_rows: (Array[Int], Array[String])) -> Bytes with Exception {
   // #3132: a program's own `Array::length` / `Map::keys` / ... moves aside
   // before this lane's passes and lookups use the builtin names (see
   // rename_builtin_shadow_defs). Idempotent after the desugar ran it.
@@ -284,7 +284,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // reachability prune, so an original the suspend lowering replaced by its
   // clone everywhere would reach codegen with its raw `perform`.
   scps_drop_orphaned_originals(stmts)
-  let edp_errs = evidence_dict_pass(stmts = stmts, entry_name = entry_name)
+  let (row_offsets, row_keys) = typed_rows
+  let edp_errs = evidence_dict_pass_with_callback_rows(stmts = stmts, roots = [
+    entry_name
+  ], offsets = row_offsets, keys = row_keys)
   if Array::length(edp_errs) > 0 {
     throw(Array::get(edp_errs, at = 0))
   } else {
