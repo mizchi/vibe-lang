@@ -925,6 +925,10 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
 fn content_bind_let(name: String, off: Int, expr: Expr, value: (Bool, Array[String]), env: TypeEnv, facts: ContentFacts) -> Unit {
   let alias_type = content_alias_type(value = expr, env = env, facts = facts)
   let id = content_push_let(name = name, off = off, facts = facts)
+  content_bind_typed(id = id, value = value, alias_type = alias_type, facts = facts)
+}
+
+fn content_bind_typed(id: String, value: (Bool, Array[String]), alias_type: Option[Type], facts: ContentFacts) -> Unit {
   match alias_type {
     Some(t) => MutMap::set(facts.alias_types, k = id, v = t),
     None => ()
@@ -1079,20 +1083,26 @@ fn content_builtin_store_mask(_ name: String) -> Int {
 /// `let (_, a) = (outer, inner)` binds `a` to `inner` only. Every value is
 /// read before any binder of the pattern is in scope.
 fn content_pattern_binds(pat: Pat, value: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
-  let pairs: Array[(String, Expr)] = []
+  let pairs: Array[(String, Expr, Bool)] = []
   content_pattern_pairs_into(pat = pat, value = value, out = pairs)
   let values = for pair in pairs {
-    content_value_fact(value = pair.1, env = env, facts = facts)
+    let ty = if pair.2 {
+      content_alias_type(value = pair.1, env = env, facts = facts)
+    } else {
+      None
+    }
+    (content_value_fact(value = pair.1, env = env, facts = facts), ty)
   }
   let mut i = 0
   while i < Array::length(pairs) {
-    let (n, _) = Array::get(pairs, at = i)
-    content_bind(id = content_push(name = n, facts = facts), value = Array::get(values, at = i), facts = facts)
+    let (n, _, _) = Array::get(pairs, at = i)
+    let (value_fact, alias_type) = Array::get(values, at = i)
+    content_bind_typed(id = content_push(name = n, facts = facts), value = value_fact, alias_type = alias_type, facts = facts)
     i = i + 1
   }
 }
 
-fn content_pattern_pairs_into(pat: Pat, value: Expr, out: Array[(String, Expr)]) -> Unit {
+fn content_pattern_pairs_into(pat: Pat, value: Expr, out: Array[(String, Expr, Bool)]) -> Unit {
   let paired: Option[(Array[Pat], Array[Expr])] = match pat {
     PTuple(ps) => match value {
       ETuple(es) => if Array::length(ps) == Array::length(es) {
@@ -1124,7 +1134,7 @@ fn content_pattern_pairs_into(pat: Pat, value: Expr, out: Array[(String, Expr)])
       let names: Array[String] = []
       collect_pat_binds_into(pat = pat, acc = names)
       for n in names {
-        Array::push(out, value = (n, value))
+        Array::push(out, value = (n, value, pat is PBind(_)))
       }
       ()
     }
