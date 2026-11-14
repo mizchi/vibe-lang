@@ -1667,7 +1667,10 @@ let mv = m["key"]
 // change nothing, so `vibe check` refuses it and names the edit (#4142):
 // assign it back (`m = Map::set(m, ..)` with `let mut m`) or bind it. A
 // statement `for` / `while` body or `if` / `match` branch that ends in one is
-// refused the same way; `let _ = Map::set(..)` discards it on purpose.
+// refused the same way; `let _ = Map::set(..)` discards it on purpose. The
+// same holds for every builtin that only computes its result -- `String::concat`,
+// `Array::get`, `String::trim`, ... (#4146): written as a statement, it is
+// refused as a statement that does nothing.
 let m2 = Map::set(m, key = "b", value = 2)
 let sized: (StringMap[Int]) -> Int = (mm) -> { Map::size(mm) }
 

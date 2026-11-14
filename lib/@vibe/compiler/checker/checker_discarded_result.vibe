@@ -8,14 +8,16 @@
 // fixture whose maps it had meant to fill.
 //
 // So a call to one of them whose value is thrown away is refused, with the
-// edit. A statement of a block (`taken = ..` missing), the value of a
+// edit -- and so is a call to any builtin whose registry row says it only
+// computes its result (#4146, `registry_result_only_builtin`: pure, no effect
+// row, a non-`Unit` result), such as `String::concat` or `Array::get`. A statement of a block (`taken = ..` missing), the value of a
 // statement-position `if` / `match` branch or `for` body, and a `while` body
 // wherever the loop stands, are thrown away; `let _ = Map::set(..)` still
 // discards on purpose. Only the builtin is judged: a program's own function
 // of that spelling is its own business.
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, call_arg_value
+  Expr, TypeEnv, call_arg_value, registry_result_only_builtin
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -43,7 +45,9 @@ export fn refuse_discarded_functional_result(stmt: Expr, env: TypeEnv, errors: A
 
 fn discarded_result_walk(e: Expr, env: TypeEnv, errors: Array[String], in_branch: Bool) -> Unit {
   match e {
-    ECall(EIdent(name, noff), args, _, _) => if discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
+    // A call the compiler wrote itself (no source offset, such as the pieces
+    // of a string interpolation) is not the program's to edit.
+    ECall(EIdent(name, noff), args, _, _) => if noff >= 0 && discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
       Array::push(errors, value = discarded_result_message(name = name, args = args, noff = noff))
     },
     ESeq(_, rest) => discarded_result_walk(e = rest, env = env, errors = errors, in_branch = in_branch),
@@ -67,14 +71,23 @@ fn discarded_result_walk(e: Expr, env: TypeEnv, errors: Array[String], in_branch
   }
 }
 
-/// A builtin whose only effect is the value it returns, and whose receiver a
-/// reader may expect it to change.
+/// A builtin whose only effect is the value it returns: the functional map
+/// updates, which read like the in-place `Array::set`, and every registry
+/// builtin that only computes its result.
 fn discarded_result_is_functional(_ name: String) -> Bool {
+  discarded_result_is_map_update(name) || registry_result_only_builtin(name)
+}
+
+fn discarded_result_is_map_update(_ name: String) -> Bool {
   name == "Map::set" || name == "Map::delete"
 }
 
-/// The refusal, the edit first: assign the new map back (or bind it).
+/// The refusal, the edit first: assign the new map back (or bind it), or
+/// bind or drop the call of a builtin that only computes a value.
 fn discarded_result_message(name: String, args: Array[Expr], noff: Int) -> String {
+  if !discarded_result_is_map_update(name) {
+    return "bind the result of `" + name + "` (`let value = " + name + "(..)`) or delete the call: `" + name + "` only computes a value and changes nothing, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
+  }
   let receiver = if Array::length(args) > 0 {
     match call_arg_value(Array::get(args, at = 0)) {
       EIdent(r, _) => r,
