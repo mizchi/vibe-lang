@@ -154,7 +154,7 @@ if m is None:
 open(dst, "w", encoding="utf-8").write(text[:m.start()] + "\n\t" + m.group(1) + text[m.end():])
 PY
 [ $? -eq 0 ] || fail "could not build the reflowed registry"
-grep -q "$(printf '^\t#|Console::read_char ')" "$WORK/reflowed_registry.vibe" \
+grep -q $'^\t#|Console::read_char ' "$WORK/reflowed_registry.vibe" \
   || fail "the reflow did not land; the row still starts with spaces"
 if VIBE_IMPORT_RESERVATION_LINKED="$WORK/mutated_linked.vibe" \
    VIBE_IMPORT_RESERVATION_REGISTRY="$WORK/reflowed_registry.vibe" \
