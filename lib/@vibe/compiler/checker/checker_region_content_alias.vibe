@@ -40,7 +40,19 @@
 //# a store the order of the statements hides.
 
 import @vibe/compiler/core {
-  Expr, Pat, Subst, Type, TypeEnv, TypeExpr, ascription_call_value, env_bind, env_lookup, env_type_defs, expr_children, subst_apply
+  Expr,
+  Pat,
+  Subst,
+  Type,
+  TypeEnv,
+  TypeExpr,
+  ascription_call_annotation,
+  ascription_call_value,
+  env_bind,
+  env_lookup,
+  env_type_defs,
+  expr_children,
+  subst_apply
 }
 
 import ./checker_region_call_result.vibe {
@@ -1065,7 +1077,11 @@ fn content_value_is_scalar(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bo
 }
 
 fn content_env_scalar(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
-  match content_type_env(value = value, env = env, facts = facts) {
+  let type_source = match value {
+    ECall(callee, _, _, _) => callee,
+    _ => value
+  }
+  match content_type_env(value = type_source, env = env, facts = facts) {
     Some(scope) => literal_item_is_scalar(item = value, env = scope),
     None => false
   }
@@ -1075,14 +1091,23 @@ fn content_alias_type(value: Expr, env: TypeEnv, facts: ContentFacts) -> Option[
   if !facts.type_aliases {
     return None
   }
-  // A mutable alias can change its source after initialization.
+  // Immutable bindings can reuse the declared type of their initializer.
+  // Resolve only names needed to read the type; call arguments do not
+  // determine a declared (nongeneric) result.
   match value {
-    EIdent(_, _) => match content_type_env(value = value, env = env, facts = facts) {
+    EFn(tparams, _, _, Some(ret), _, _) => Some(CtFn([], resolve_type_expr_shadowed(te = ret, defs = env_type_defs(env), shadow = tparams), None)),
+    ECall(callee, args, _, _) => match ascription_call_annotation(callee = callee, args = args) {
+      Some(te) => Some(resolve_type_expr_shadowed(te = te, defs = env_type_defs(env), shadow = [
+      ])),
+      None => match content_type_env(value = callee, env = env, facts = facts) {
+        Some(scope) => literal_item_type(item = value, env = scope),
+        None => None
+      }
+    },
+    _ => match content_type_env(value = value, env = env, facts = facts) {
       Some(scope) => literal_item_type(item = value, env = scope),
       None => None
-    },
-    EFn(tparams, _, _, Some(ret), _, _) => Some(CtFn([], resolve_type_expr_shadowed(te = ret, defs = env_type_defs(env), shadow = tparams), None)),
-    _ => None
+    }
   }
 }
 
