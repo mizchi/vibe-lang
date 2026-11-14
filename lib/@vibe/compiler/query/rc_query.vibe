@@ -28,7 +28,7 @@ import @vibe/compiler/normalize {
 }
 
 import @vibe/compiler/codegen/wasi {
-  effect_lowering_prelude
+  effect_lowering_prelude, lc_defines_top_level, lc_late_dce_keeps_source, lc_late_dce_roots, lc_prune_unreachable
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -113,9 +113,26 @@ fn rcq_run_prelude(_ stmts: Array[Stmt]) -> Unit with Exception {
   let linked: Array[(String, String, Int, Int)] = []
   let iw_names: Array[String] = []
   let iw_wats: Array[String] = []
+  // #4169: the RC build's reachability prune, rooted where the build roots
+  // it (taken before the prelude, as the build takes it). Uncalled functions
+  // are not compiled, and borrow inference reads every call site it is
+  // handed: kept here, an uncalled caller could turn a parameter owned in
+  // this report and not in the build. A file without `main` (a library, the
+  // compiler's own flat source) is not pruned, as the build does not prune
+  // a program whose entry it cannot find. The build's Bool-parameter fold is
+  // left out: these reports answer for the function as written, and a fold
+  // keyed on what `main` happens to pass would delete the very branch a
+  // `--fn` query asks about.
+  let entry_defined = lc_defines_top_level(stmts = stmts, name = "main")
+  let roots = lc_late_dce_roots(stmts = stmts, entry_name = "main", keep_source_defs = lc_late_dce_keeps_source(library_mode = false, coverage = false, debug_trace = false, debug_break = false), exports_stripped = true)
   let errs = effect_lowering_prelude(stmts = stmts, entry_name = "main", linked_imports = linked, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = array_empty(), checker_eq_type_keys = array_empty())
   if Array::length(errs) > 0 {
     throw(Array::get(errs, at = 0))
+  } else {
+    ()
+  }
+  if entry_defined {
+    lc_prune_unreachable(stmts = stmts, entry_name = "main", roots = roots, iw_names = iw_names, iw_wats = iw_wats, fold = false, exports_stripped = true, sig_names = array_empty(), sig_values = array_empty())
   } else {
     ()
   }
