@@ -308,7 +308,7 @@ fn typed_lowering_enc(offset: Int, tag: Int) -> Int
 fn typed_lowering_enc_offset(_ enc: Int) -> Int
 fn typed_lowering_enc_tag(_ enc: Int) -> Int
 fn typed_lowering_binop_anchor(own_off: Int, left: Expr, right: Expr) -> Int
-fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String]
+fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String, contract_reexport: Bool) -> Array[String]
 fn import_item_namespace_alias_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String]
 fn check_program_with_env_type_defs_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> CheckedProgramTypeDefsObservation with Exception
 fn check_program_with_env_typed_occurrence_statement_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> Option[CheckedTypedOccurrenceStatementObservation] with Exception
@@ -484,10 +484,13 @@ fn callee_is_ctor_name(_ name: String) -> Bool
 fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool
 fn arg_is_region_token(arg: Expr, env: TypeEnv) -> Bool
 fn literal_item_is_scalar(item: Expr, env: TypeEnv) -> Bool
+fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type]
 fn literal_item_is_inert(item: Expr, env: TypeEnv) -> Bool
 fn retention_arms_bind(_ arms: Array[(Pat, Expr)]) -> Bool
 let retention_decls: Array[(String, Expr)]
 let hce_decl_facts: Array[(String, Bool)]
+let retention_module_env_cell: Array[TypeEnv]
+let region_method_calls: Array[(Int, String)]
 fn retention_decl_value(_ name: String) -> Option[Expr]
 fn retention_local_closure(env: TypeEnv, name: String) -> Option[Expr]
 fn retention_is_function_type(_ ty: Type) -> Bool
@@ -498,10 +501,27 @@ fn retention_name_scope(env: TypeEnv, name: String) -> Int
 fn retention_closure_scope(env: TypeEnv, bound_name: String, text: String) -> Option[TypeEnv]
 fn retention_pat_names_into(p: Pat, out: Array[String]) -> Unit
 fn retention_assigned_values_into(e: Expr, name: String, out: Array[Expr]) -> Unit
+fn retention_arg_content(arg: Expr, env: TypeEnv) -> Array[String]
 fn retention_result_items(_ e: Expr) -> Array[Expr]
 fn retention_arg_values(_ args: Array[Expr]) -> Array[Expr]
 fn collect_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit
 fn held_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int]
+fn held_module_storage_index() -> Int
+fn held_has_module_storage(_ held: Array[Int]) -> Bool
+fn held_free_name_kind(name: String, shadowed: Bool) -> Int
+fn held_callee_untraced(callee: String, local: Bool) -> Bool
+fn region_outer_content_marker(_ name: String) -> String
+fn region_summary_prefix() -> String
+fn region_type_is_scalar(_ t: Type) -> Bool
+fn region_path_is_standard_library(_ path: String) -> Bool
+fn region_note_method_call(call_off: Int, qualified: String) -> Unit
+fn region_method_call_at(_ call_off: Int) -> String
+fn held_param_annotation(name: String, params: Array[(String, Option[TypeExpr])]) -> Option[Option[TypeExpr]]
+fn held_value_names_into(e: Expr, out: Array[String]) -> Unit
+fn region_module_storage_row() -> String
+fn region_callee_returns_own_storage(callee: String, env: TypeEnv) -> Bool
+fn region_method_callee(recv: Expr, method: String, env: TypeEnv) -> String
+fn region_typed_method_name(ty: Type, method: String) -> String
 fn direct_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int]
 fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int]
 fn direct_result_field_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int]
@@ -754,20 +774,20 @@ fn take_lambda_return_seed() -> Option[Type]
 fn retention_begin_module(_ stmts: Array[Stmt]) -> (Array[(String, Expr)], Array[(Expr, String, Bool)], Array[TypeEnv])
 fn retention_end_module(_ saved: (Array[(String, Expr)], Array[(Expr, String, Bool)], Array[TypeEnv])) -> Unit
 fn retention_note_module_env(_ env: TypeEnv) -> Unit
-fn take_retention_param_override() -> Option[Array[(Type, Array[String], String, Array[String])]]
+fn take_retention_param_override() -> Option[Array[(Type, Array[String], String, Array[String], Array[String])]]
 fn retention_bind_param_callee(env: TypeEnv, name: String, callee: String) -> TypeEnv
 fn retention_local_closure_literal(env: TypeEnv, name: String) -> Option[(Expr, TypeEnv, String)]
 fn retention_counter_gap() -> Int
 fn retention_active_regions(_ env: TypeEnv) -> Array[(String, Bool)]
-fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, found: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String])
-fn retention_bind_module_summaries(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> TypeEnv
+fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String], Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, found: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String])
+fn retention_bind_module_summaries(outer_params: (Expr) -> Array[Int], result_contents: (Expr) -> Bool, stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> TypeEnv
 fn retention_summary_region() -> String
 fn retention_fn_param_types(_ ty: Type) -> Option[Array[Type]]
-fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: (Int) -> Type, recheck: (Array[(Type, Array[String], String, Array[String])], String) -> (Int, Bool)) -> String
-fn retention_summary_refuses(summary: String, carried: Array[Array[String]], predates: Array[Array[String]]) -> Int
+fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: (Int) -> Type, recheck: (Array[(Type, Array[String], String, Array[String], Array[String])], String) -> (Int, Bool)) -> String
+fn retention_summary_refuses(summary: String, carried: Array[Array[String]], predates: Array[Array[String]], contents: Array[Array[String]]) -> Int
 fn retention_summary_index(_ text: String) -> Int
 fn retention_summary_result_from(summary: String, i: Int) -> Bool
-fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String])], String) -> (Int, Bool)) -> TypeEnv
+fn retention_summaries_bind(outer_params: (Expr) -> Array[Int], result_contents: (Expr) -> Bool, stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String], Array[String])], String) -> (Int, Bool)) -> TypeEnv
 fn retention_regions_mentioned(ty: Type, regions: Array[(String, Bool)]) -> Array[(String, Bool)]
 fn retention_any_nursery(_ regions: Array[(String, Bool)]) -> Bool
 fn retention_call_message(callee: String, nursery: Bool, kind: Int) -> String
@@ -780,6 +800,10 @@ fn region_outer_alias_regions(value: Expr, scope: TypeEnv, active: Bool) -> Arra
 fn region_outer_alias_mark(env: TypeEnv, name: String, regions: Array[String]) -> TypeEnv
 fn region_outer_alias_bind(env: TypeEnv, pat: Pat, value: Expr, scope: TypeEnv) -> TypeEnv
 fn region_for_binder_bind(env: TypeEnv, name: String, iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> TypeEnv
+fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: Type, known: Array[String], init: Expr, init_env: TypeEnv, s: Subst) -> TypeEnv
+fn region_content_pattern_mark(env: TypeEnv, pat: Pat, scope: Expr, s: Subst) -> TypeEnv
+fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String])
+fn retention_param_base(_ raw_name: String) -> String
 fn retention_type_may_hide_region(_ t: Type) -> Bool
 fn retention_type_hides_region(t: Type, defs: Array[TypeDef]) -> Bool
 fn retention_value_regions(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Array[String]
@@ -879,7 +903,7 @@ fn collect_deferred_type_name_sentinels(_ stmts: Array[Stmt]) -> Array[(Array[St
 fn deferred_names_for_decl(rows: Array[(Array[String], Array[String])], decl_name: String) -> Array[String]
 fn decl_report_shadow(tparams: Array[String], dict_erased: Array[String], deferred: Array[String]) -> Array[String]
 fn trait_dict_erasure_for(erasures: Array[(String, String, Array[String])], struct_name: String, field_name: String) -> Array[String]
-fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[String]) -> Unit
+fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[String], imports_already_projected: Bool) -> Unit
 fn env_free_tvar_ceiling(_ env: TypeEnv) -> Int
 fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int)
 fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Int, Int)
@@ -1061,8 +1085,10 @@ fn checker_capture_resolved_call_placement(callee: Expr, args: Array[Expr], offs
 // checker_deferred_method_call.vibe).
 type DeferredMethodCall
 type DeferredExprCheck
+type DeferredPatternCheck
 type DeferredCheck
 fn defer_method_call(_ row: DeferredMethodCall) -> Unit
+fn defer_pattern_check(_ row: DeferredPatternCheck) -> Unit
 fn defer_expr_check(operands: Array[Int], subject: String, off: Int, c: Int, check: (Subst, Array[String]) -> (Type, Subst)) -> (Type, Int)
 fn has_deferred_checks() -> Bool
 fn deferred_result_pending(id: Int, s: Subst) -> Bool
@@ -1071,6 +1097,7 @@ fn deferred_checks_restore(_ rows: Array[DeferredCheck]) -> Unit
 fn reset_deferred_checks() -> Unit
 fn dot_call_no_method_message(env: TypeEnv, type_prefix: String, method: String, qualified: String) -> String
 fn dot_call_builtin_receiver_message(env: TypeEnv, type_prefix: String, method: String, qualified: String) -> String
+fn refuse_generalized_patterns(vars: Array[Int], s: Subst, errors: Array[String]) -> Unit
 fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[TypeDef], errors: Array[String], last: Bool) -> (Subst, Int)
 
 fn check_program_with_projected_import_env_lowering_placements(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception
@@ -1081,3 +1108,11 @@ fn scalar_local_sites_mark() -> Int
 fn scalar_local_sites_rewind(_ mark: Int) -> Unit
 fn append_scalar_local_rows(offs: Array[Int], keys: Array[String]) -> Unit
 fn note_scalar_local(name: String, value: Expr, body: Expr, off: Int, ty: Type, defs: Array[TypeDef], env: TypeEnv, mutable: Bool, lane: String) -> Unit
+
+fn content_literal_outer_params(lit: Expr, env: TypeEnv) -> Array[Int]
+fn content_outer_param_indices(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv) -> Array[Int]
+
+fn content_result_summary_reader(stmts: Array[Stmt], env: TypeEnv) -> (Expr) -> Bool
+fn region_result_part_reaches_outer(target: Expr, env: TypeEnv) -> Bool
+fn region_result_content_row() -> String
+fn region_import_result_has_outer_contents(callee: String, env: TypeEnv) -> Bool

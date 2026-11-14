@@ -21,7 +21,7 @@ import ./checker_call_placement.vibe {
 }
 
 import ./checker_deferred_method_rows.vibe {
-  defer_expr_check, deferred_result_pending, has_deferred_checks
+  defer_expr_check, defer_pattern_check, deferred_result_pending, has_deferred_checks, struct DeferredPatternCheck
 }
 
 import ./checker_call_arguments.vibe {
@@ -100,6 +100,7 @@ import @vibe/compiler/core {
   handler_or_arm_tests_payload,
   instantiate,
   is_exception_effect_name,
+  opaque_qualified_name_refusal,
   resolve_type_constructor_args,
   subst_add_bound,
   subst_apply,
@@ -138,8 +139,16 @@ import ./checker_handle_closure_escape.vibe {
   refuse_handle_bound_escape
 }
 
+import @vibe/compiler/checker/effects {
+  first_expr_offset
+}
+
 import @vibe/compiler/checker/patterns {
-  check_pattern, ctor_pattern_scrutinee_mismatch, match_nonexhaustive_witness, pat_has_unsupported_or_binding, pat_repeated_binder
+  check_pattern_with_open_scrutinee,
+  ctor_pattern_scrutinee_mismatch,
+  match_nonexhaustive_witness,
+  pat_has_unsupported_or_binding,
+  pat_repeated_binder
 }
 
 import ./checker_resolve.vibe {
@@ -302,7 +311,11 @@ import ./checker_merge_capture_provenance.vibe {
 }
 
 import ./checker_region_binder_alias.vibe {
-  region_for_binder_bind, region_outer_alias_bind, region_outer_alias_mark, region_outer_alias_regions
+  region_for_binder_bind, region_outer_alias_bind, region_outer_alias_regions
+}
+
+import ./checker_region_content_alias.vibe {
+  region_content_let_mark, region_content_pattern_mark
 }
 
 import ./checker_region_retention.vibe {
@@ -437,7 +450,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           },
           _ => ()
         }
-        cenv = region_outer_alias_mark(env = cenv, name = name, regions = outer_regions)
+        // #4091: and with what its scope links it with, in any order.
+        cenv = region_content_let_mark(env = cenv, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = outer_regions, init = val, init_env = def_env, s = ns)
         // #3343: what a call of `name` reaches -- the closure literal, or the
         // callee an alias stands for -- so a call inside a region can check
         // the body for what it keeps.
@@ -479,6 +493,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           c1 = nc
         }
         note_scalar_local(name = name, value = val, body = body, off = let_off, ty = vt, defs = defs, env = cenv, mutable = true, lane = lane)
+        // #4091: a `let mut` is an alias of what its value, or anything its
+        // scope assigns or links to it, reads from before a region.
+        cenv = region_content_let_mark(env = cenv, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = region_outer_alias_regions(value = val, scope = mut_def_env, active = spine_region_active), init = val, init_env = mut_def_env, s = ns)
         // #3343 (Codex on #3359): what the binding may carry -- what it
         // starts with and what is written into it anywhere in its scope --
         // for a later walk of this body or write of the binding.
@@ -853,7 +870,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               } else {
                 match marker_default_dispatch_error(name = name, env = env, s = s) {
                   Some(msg) => Array::push(errors, value = String::concat(msg, off_marker_len(off = ident_off, len = String::length(name)))),
-                  None => Array::push(errors, value = String::concat(String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), impl_method_spelling_hint(name = name, env = env)), off_marker_len(off = ident_off, len = String::length(name))))
+                  None => match opaque_qualified_name_refusal(defs = defs, name = name) {
+                    Some(msg) => Array::push(errors, value = String::concat(msg, off_marker_len(off = ident_off, len = String::length(name)))),
+                    None => Array::push(errors, value = String::concat(String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), impl_method_spelling_hint(name = name, env = env)), off_marker_len(off = ident_off, len = String::length(name))))
+                  }
                 }
               }
               (CtUnknown, s, c)
@@ -1140,14 +1160,33 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Array::push(errors, value = String::concat("rename one of the two `\{repeated}` in this pattern: a pattern binds each name once (to compare two parts, bind them apart and test `a == b` in a guard)", off_marker(railway_expr_off(scrutinee))))
           }
           let pat_err_before = Array::length(errors)
-          let arm_env = check_pattern(pat = pat, scrutinee_ty = scr_ty, env = rail_env, defs = defs, errors = errors)
+          let pattern_off = if railway_expr_off(body) >= 0 {
+            railway_expr_off(body)
+          } else {
+            railway_expr_off(scrutinee)
+          }
+          let arm_env = check_pattern_with_open_scrutinee(pat = pat, scrutinee_ty = subst_apply(s = si, ty = scr_ty), env = rail_env, defs = defs, errors = errors, on_open = (id, pending) -> {
+            if !checker_call_header_is_probe() {
+              defer_pattern_check(DeferredPatternCheck::{
+                recv: id,
+                pat: pending,
+                env: rail_env,
+                defs: defs,
+                off: if pattern_off >= 0 {
+                  pattern_off
+                } else {
+                  first_expr_offset(scrutinee)
+                }
+              })
+            }
+          })
           // #3640: `Some(t)` out of a spawn-shaped function's optional closure
           // parameter is trusted like the parameter (`spawn_safe_marker`).
           let arm_env = match spawn_safe_option_binder(env = env, scrutinee = scrutinee, pat = pat) {
             Some(t) => env_bind(env = arm_env, name = spawn_safe_marker(t), ty = CtUnit),
             None => arm_env
           }
-          let arm_env = region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env)
+          let arm_env = region_content_pattern_mark(env = region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env), pat = pat, scope = body, s = si)
           // #3548: a pattern carries no offset, so what `check_pattern`
           // reports (a constructor bound with the wrong arity, ...) is
           // anchored at its arm -- the body, or the scrutinee when the body
@@ -1921,6 +1960,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
+      // #4142: a discarded `for` body is judged by the walker that reached
+      // this `for` in its discarded position (`check_seq_spine`, a `while`
+      // body), not here -- one authority, one report.
       // #1350: `for await x in s` was retired, so there is no longer a
       // `__await_iter(s)` marker to unwrap here -- the iterable is checked
       // directly, and whether the loop awaits each step is decided from the

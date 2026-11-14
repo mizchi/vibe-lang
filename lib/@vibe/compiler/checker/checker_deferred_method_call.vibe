@@ -1,3 +1,7 @@
+import @vibe/compiler/checker/patterns {
+  check_pattern_with_open_scrutinee, ctor_pattern_scrutinee_mismatch
+}
+
 // #4037: judge a dot call whose receiver was an unsolved variable when it was
 // checked, once that variable has resolved.
 //
@@ -14,7 +18,13 @@
 // `T::method`, or against the field's function type, or the `no method` edit.
 
 import ./checker_deferred_method_rows.vibe {
-  DeferredCheck, deferred_checks_restore, deferred_checks_snapshot, struct DeferredExprCheck, struct DeferredMethodCall
+  DeferredCheck,
+  deferred_checks_restore,
+  deferred_checks_snapshot,
+  has_deferred_checks,
+  struct DeferredExprCheck,
+  struct DeferredMethodCall,
+  struct DeferredPatternCheck
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -52,7 +62,7 @@ import @vibe/compiler/checker/type_relations {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker_len
+  off_marker, off_marker_len
 }
 
 import @vibe/compiler/core {
@@ -132,6 +142,10 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
         Array::push(kept, value = row)
       } else {
         cur_s = judge_deferred_expr(row = operator, s = cur_s, errors = errors)
+      },
+      DeferredPattern(pattern) => match subst_apply(s = cur_s, ty = CtVar(pattern.recv)) {
+        CtVar(_) => Array::push(kept, value = row),
+        resolved => judge_deferred_pattern(row = pattern, recv = resolved, kept = kept, errors = errors)
       }
     }
   }
@@ -147,13 +161,87 @@ export fn resolve_deferred_checks(s: Subst, c: Int, env: TypeEnv, defs: Array[Ty
         },
         DeferredExpr(operator) => {
           cur_s = judge_deferred_expr(row = operator, s = cur_s, errors = errors)
-        }
+        },
+        DeferredPattern(_) => ()
       }
+    }
+    let mut i = 0
+    while i < Array::length(kept) {
+      match Array::get(kept, at = i) {
+        DeferredPattern(pattern) => match subst_apply(s = cur_s, ty = CtVar(pattern.recv)) {
+          // Some existing lanes erase types (for example, generic effect
+          // payloads). An unsettled pattern there can inspect a sealed value
+          // only when this module sees an opaque declaration.
+          CtVar(_) => if pattern_uses_opaque_defs(pattern) {
+            Array::push(errors, value = unresolved_pattern_message(off = pattern.off))
+          } else (),
+          resolved => judge_deferred_pattern(row = pattern, recv = resolved, kept = kept, errors = errors)
+        },
+        _ => ()
+      }
+      i = i + 1
     }
   } else {
     deferred_checks_restore(kept)
   }
   (cur_s, cur_c)
+}
+
+// The representation check is only new in a scope that can name a seal.
+fn pattern_uses_opaque_defs(_ row: DeferredPatternCheck) -> Bool {
+  Array::any(row.defs, f = (def) -> def is TDOpaque(_, _, _, _))
+}
+
+fn unresolved_pattern_message(off: Int) -> String {
+  "annotate the value being matched with its concrete type before using this pattern" + off_marker(off)
+}
+
+/// Refuse a representation-dependent pattern before its receiver is quantified.
+/// Each call would otherwise instantiate a fresh type that the pattern cannot see.
+export fn refuse_generalized_patterns(vars: Array[Int], s: Subst, errors: Array[String]) -> Unit {
+  if !has_deferred_checks() {
+    return ()
+  }
+  let rows = deferred_checks_snapshot()
+  let kept: Array[DeferredCheck] = []
+  for row in rows {
+    match row {
+      DeferredPattern(pattern) => match subst_apply(s = s, ty = CtVar(pattern.recv)) {
+        CtVar(rep) => if Array::any(vars, f = (id) -> id == rep) && pattern_uses_opaque_defs(pattern) {
+          Array::push(errors, value = unresolved_pattern_message(off = pattern.off))
+        } else {
+          Array::push(kept, value = row)
+        },
+        _ => Array::push(kept, value = row)
+      },
+      _ => Array::push(kept, value = row)
+    }
+  }
+  deferred_checks_restore(kept)
+}
+
+fn judge_deferred_pattern(row: DeferredPatternCheck, recv: Type, kept: Array[DeferredCheck], errors: Array[String]) -> Unit {
+  let pattern_errors: Array[String] = []
+  let _ = check_pattern_with_open_scrutinee(pat = row.pat, scrutinee_ty = recv, env = row.env, defs = row.defs, errors = pattern_errors, on_open = (id, pat) -> {
+    Array::push(kept, value = DeferredPattern(DeferredPatternCheck::{
+      recv: id,
+      pat: pat,
+      env: row.env,
+      defs: row.defs,
+      off: row.off
+    }))
+    ()
+  })
+  if Array::length(pattern_errors) == 0 {
+    match ctor_pattern_scrutinee_mismatch(pat = row.pat, scrutinee_ty = recv, env = row.env, defs = row.defs) {
+      Some(message) => Array::push(pattern_errors, value = message),
+      None => ()
+    }
+  }
+  for message in pattern_errors {
+    Array::push(errors, value = message + off_marker(row.off))
+  }
+  ()
 }
 
 fn resolve_method_or_place_opaque(row: DeferredMethodCall, recv: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (Subst, Int) {

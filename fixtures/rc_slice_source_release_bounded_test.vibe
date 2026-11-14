@@ -1,0 +1,52 @@
+// #4165: an `Array::slice` / `xs[a:b]` call borrows its source. The runtime
+// body copies the range into a fresh block and retains the copied elements,
+// but never releases the source; the planner counted the source as consumed
+// by the call, so nothing released it at all. Measured on a stage2 with
+// main's RC lowering (dd9eef9ca5), this fixture left 704,308 B of heap in use after
+// 2000 rounds on the RC lane (every slice leaked its source array). The gate
+// (tests/gates/mid, 40f0u) compiles it under VIBE_RC=1 and bounds the heap,
+// and checks the answer on the bump, rc, shadow and gc lanes; the shadow lane
+// traps on the drop of a freed block, which is what releasing a source the
+// caller still uses after the slice would hit (`after`, `sugar`).
+//
+// The shapes: a temporary source (`temp`), the `xs[a:b]` sugar with the
+// source read afterwards (`sugar`), a literal source (`literal`), and a
+// slice whose source and result are both read afterwards (`after`). A String
+// slice is left out: a String is a bump-allocated fat pointer the RC lane
+// never frees, so it would grow the heap whatever the slice does.
+//
+// Per round: 2 + 5 + 1 + 2 = 10, so 2000 * 10 = 20000.
+
+fn mk(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+fn temp(_ i: Int) -> Int {
+  Array::length(Array::slice(mk(i), start = 0, end = 2))
+}
+
+fn sugar(_ i: Int) -> Int {
+  let xs = mk(i)
+  let v = xs[1:3]
+  Array::length(v) + Array::length(xs)
+}
+
+fn literal(_ i: Int) -> Int {
+  Array::length(Array::slice([i, i], start = 0, end = 1))
+}
+
+fn after(_ i: Int) -> Int {
+  let xs = mk(i)
+  let v = Array::slice(xs, start = 0, end = 3)
+  Array::get(v, at = 2) - i + Array::get(xs, at = 0) - i
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + temp(i) + sugar(i) + literal(i) + after(i)
+    i = i + 1
+  }
+  acc
+}

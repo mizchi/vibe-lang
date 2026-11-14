@@ -335,6 +335,9 @@ export function witnessText(input, target, targetText) {
   return `TDRE10W${segment(input)}${segment(target)}${segment(targetText)}`;
 }
 
+const checkedTypingSeed = "checked:opaque-types-v1";
+const uncheckedTypingSeed = "unchecked:opaque-types-v1";
+
 function parseLogicalInput(input) {
   if (!input.startsWith(logicalInputTag)) fail("TDRE10 logical input tag changed");
   let cursor = logicalInputTag.length;
@@ -344,7 +347,7 @@ function parseLogicalInput(input) {
     fields.push(field);
     cursor = next;
   }
-  if (fields[2] !== "checked" && fields[2] !== "unchecked") fail("invalid TDRE10 typing semantics seed");
+  if (fields[2] !== checkedTypingSeed && fields[2] !== uncheckedTypingSeed) fail("invalid TDRE10 typing semantics seed");
   const count = Number(fields[4]);
   if (!Number.isInteger(count) || count < 0) fail("invalid TDRE10 dep_env count");
   const rows = [];
@@ -547,7 +550,7 @@ function run(stage2) {
     const uncheckedAfterChecked = check(stage2, checkedFirstProject, checkedFirstCache, true, "row-unchecked-after-checked", false, { VIBE_CHECK_ERROR_ROW: "0" });
     expectCounts("unchecked after checked mode isolation", uncheckedAfterChecked.telemetry, 2, 0);
     const modeSeeds = bindings(uncheckedFirstCache).map((binding) => parseLogicalInput(binding.input).typingSemantics);
-    if (!modeSeeds.includes("checked") || !modeSeeds.includes("unchecked")) fail("TDRE10 aliases did not retain disjoint typing semantics seeds");
+    if (!modeSeeds.includes(checkedTypingSeed) || !modeSeeds.includes(uncheckedTypingSeed)) fail("TDRE10 aliases did not retain disjoint typing semantics seeds");
     commentEdit(onProject);
     const commentOn = check(stage2, onProject, onCache, true, "comment-on");
     expectCounts("comment-only consumer reuse", commentOn.telemetry, 1, 1, 2, 1);

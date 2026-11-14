@@ -628,7 +628,8 @@ export fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_i
         false
       }
       let is_scalar_ret = if is_eident(callee) {
-        bsearch_leftmost(sorted = ctx.scalar_ret_names, name = get_eident_name(callee)) >= 0 || is_builtin_scalar_ret
+        let cn = get_eident_name(callee)
+        find_local_slot(names = local_names, name = cn) < 0 && (bsearch_leftmost(sorted = ctx.scalar_ret_names, name = cn) >= 0 || is_builtin_scalar_ret)
       } else {
         false
       }
@@ -1747,6 +1748,19 @@ fn pvo_pat_binds(p: Pat, out: Array[String]) -> Bool with Exception {
   }
 }
 
+/// #2827: the builtins whose result is a fresh copy on every lane, so a
+/// binding of one owns its only reference. `Array::slice` copies the range
+/// into a new array; `__slice` (`xs[a:b]`) lowers to `Array::slice` for an
+/// array, and to `String::substring` / `Bytes::slice` for a fat pointer,
+/// which `__rt_rc_drop` ignores. The checker relies on the same fact
+/// (`hce_fresh_array_builtin`). They are not in `heap_ret_names`, which
+/// lists program functions, so the path drop declined them: measured, a
+/// `let v = Array::slice(..)` that one branch consumed leaked 279,996 B over
+/// 2000 rounds on the RC lane.
+fn pvo_fresh_builtin(_ name: String) -> Bool {
+  name == "Array::slice" || name == "__slice"
+}
+
 /// #2389 per-path release: does this value hand the binding a reference the
 /// scope OWNS -- the one the ordinary rule would have planned a scope-end drop
 /// for, had the branch merge not zeroed the count?
@@ -1819,6 +1833,12 @@ export fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[Str
         true
       } else if is_ctor_call(value = e, ct = ctx.ctor_table) {
         true
+      } else if pvo_fresh_builtin(cn) {
+        // #2827: a builtin that answers a copy (`pvo_fresh_builtin`), when
+        // the name reaches it: a local or a binder of the walk is a value of
+        // its own, and a program's own definition of the spelling has been
+        // renamed aside before codegen (`rename_builtin_shadow_defs`).
+        find_local_slot(names = local_names, name = cn) < 0 && !array_contains_str(arr = bound, s = cn)
       } else {
         find_local_slot(names = local_names, name = cn) < 0 && !array_contains_str(arr = bound, s = cn) && bsearch_leftmost(sorted = ctx.heap_ret_names, name = cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(sorted = ctx.borrow_ret_names, name = cn) < 0 && bsearch_leftmost(sorted = ctx.borrow_view_ret, name = cn) < 0
       },

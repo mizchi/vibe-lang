@@ -1,0 +1,81 @@
+//# Imports
+
+// #4169: `vibe rc-classify` / `rc-plan` report the plan the RC build
+// compiles, so they infer borrows over the program the build keeps. The build
+// drops a function nothing reachable calls before its RC analyses
+// (`lc_prune_unreachable`); the queries did not, and borrow inference reads
+// every call site it is handed. An uncalled caller passing a non-name to
+// `first` made `first`'s parameter owned in the report while the build kept
+// it borrowed, and the report then lost `pick_let`'s release of `v`.
+
+import @vibe/compiler/query {
+  rc_classify_source, rc_plan_source
+}
+
+//# Helpers
+
+fn program(_ called: Bool) -> String {
+  let call = if called {
+    "pick_let(i) + pick_if(i)"
+  } else {
+    "pick_let(i)"
+  }
+  let lines = [
+    "fn mka(_ i: Int) -> Array[Int] {",
+    "  [i, i + 1]",
+    "}",
+    "",
+    "fn first(_ xs: Array[Array[Int]]) -> Array[Int] {",
+    "  Array::get(xs, at = 0)",
+    "}",
+    "",
+    "fn pick_if(_ i: Int) -> Int {",
+    "  let v = [mka(i), mka(i + 2)]",
+    "  Array::length(first(if i > 0 {",
+    "    v",
+    "  } else {",
+    "    v",
+    "  }))",
+    "}",
+    "",
+    "fn pick_let(_ i: Int) -> Int {",
+    "  let v = [mka(i), mka(i + 2)]",
+    "  Array::length(first(v))",
+    "}",
+    "",
+    "export fn main() -> Int {",
+    "  let mut i = 0",
+    "  let mut acc = 0",
+    "  while i < 4 {",
+    "    acc = acc + \{call}",
+    "    i = i + 1",
+    "  }",
+    "  acc",
+    "}"
+  ]
+  String::join(lines, sep = "\n")
+}
+
+fn first_line(_ report: String) -> String {
+  let mut out = ""
+  for line in String::split(report, sep = "\n") {
+    if String::starts_with(line, prefix = "first ") {
+      out = line
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+//# Tests
+
+test "an uncalled caller does not change the borrow masks the build uses" {
+  inspect(first_line(rc_classify_source(program(false), checked_error_row = true)), content = "first borrow_ret,borrow_param,view_ret")
+  inspect(rc_plan_source(source = program(false), fn_filter = "pick_let", checked_error_row = true), content = "pick_let v drop 1")
+}
+
+test "a reachable caller still does" {
+  inspect(first_line(rc_classify_source(program(true), checked_error_row = true)), content = "first borrow_ret,view_ret")
+  inspect(rc_plan_source(source = program(true), fn_filter = "pick_let", checked_error_row = true), content = "")
+}

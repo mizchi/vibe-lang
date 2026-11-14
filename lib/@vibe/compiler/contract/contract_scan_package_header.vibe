@@ -1075,17 +1075,37 @@ fn sorted_strings(_ items: Array[String]) -> Array[String] {
   out
 }
 
-fn contract_hash_payload(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
-  let canon = String::join(sorted_strings(contract_surface_lines(fn_decls = fn_decls, opaque_names = opaque_names, type_defs = type_defs)), sep = "\n")
+/// Parse the contract surface together with its explicit sealing declarations.
+export fn parse_contract_surface(_ tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Array[String])], Array[Stmt], Array[String]) with Exception {
+  let (decls, names, stmts, _, _, starts) = parse_contract_program_spans_opaque_at(tokens)
+  (decls, names, stmts, contract_explicit_sealed_names(tokens = tokens, names = names, starts = starts))
+}
+
+export fn contract_explicit_sealed_names(tokens: Array[Token], names: Array[(String, Array[String])], starts: Array[Int]) -> Array[String] {
+  let sealed: Array[String] = []
+  let mut i = 0
+  while i < Array::length(names) && i < Array::length(starts) {
+    match Array::get(tokens, at = Array::get(starts, at = i)) {
+      TIdent("opaque") => Array::push(sealed, value = Array::get(names, at = i).0),
+      _ => ()
+    }
+    i = i + 1
+  }
+  sealed
+}
+
+fn contract_hash_payload(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt], sealed_names: Array[String]) -> String {
+  let canon = String::join(sorted_strings(contract_surface_lines_with_seals(fn_decls = fn_decls, opaque_names = opaque_names, type_defs = type_defs, sealed_names = sealed_names)), sep = "\n")
   String::concat("vibei:v1\n", canon)
 }
 
 export fn contract_hash(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
-  emit_content_id(kind = "ct", payload = contract_hash_payload(fn_decls = fn_decls, opaque_names = opaque_names, type_defs = type_defs))
+  emit_content_id(kind = "ct", payload = contract_hash_payload(fn_decls = fn_decls, opaque_names = opaque_names, type_defs = type_defs, sealed_names = [
+  ]))
 }
 
-export fn contract_hash_with(algo: String, fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
-  emit_content_id_with(kind = "ct", algo = algo, payload = contract_hash_payload(fn_decls = fn_decls, opaque_names = opaque_names, type_defs = type_defs))
+export fn contract_hash_with(algo: String, fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt], sealed_names: Array[String]) -> String {
+  emit_content_id_with(kind = "ct", algo = algo, payload = contract_hash_payload(fn_decls = fn_decls, opaque_names = opaque_names, type_defs = type_defs, sealed_names = sealed_names))
 }
 
 fn package_merkle_payload(_ sources: Array[(String, String)]) -> String {
@@ -1948,6 +1968,11 @@ fn str_in(arr: Array[String], target: String) -> Bool {
 /// Canonical per-declaration lines for a contract surface (shared by
 /// contract_hash and the change classifier, so they can never disagree).
 export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> Array[String] {
+  contract_surface_lines_with_seals(fn_decls = fn_decls, opaque_names = opaque_names, type_defs = type_defs, sealed_names = [
+  ])
+}
+
+export fn contract_surface_lines_with_seals(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt], sealed_names: Array[String]) -> Array[String] {
   let lines = array_empty()
   let mut i = 0
   while i < Array::length(fn_decls) {
@@ -1960,10 +1985,15 @@ export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names
     let (oname, oparams) = Array::get(opaque_names, at = oi)
     // The full kind signature is part of the surface. Zero-parameter types
     // keep the historical line so unrelated contract hashes do not move.
-    let oline = if Array::length(oparams) == 0 {
-      "opaque \{oname}"
+    let kind = if Array::any(sealed_names, f = (name) -> name == oname) {
+      "sealed opaque"
     } else {
-      "opaque \{oname}\{render_type_param_kinds(oparams)}"
+      "opaque"
+    }
+    let oline = if Array::length(oparams) == 0 {
+      kind + " " + oname
+    } else {
+      kind + " " + oname + render_type_param_kinds(oparams)
     }
     Array::push(lines, value = oline)
     oi = oi + 1
