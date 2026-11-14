@@ -310,6 +310,19 @@ fn edp_escape_resolve_at(e: Expr, depth: Int) -> (Expr, Int) {
               ETuple(_) => (v, idx),
               ERecord(_, _, _) => (v, idx),
               ECall(_, _, _, _) => (v, idx),
+              // `let inner = pair.1`: the part it was bound to, read in the
+              // scope of that binding.
+              EDot(_, _, _, _) => {
+                let old = edp_escape_set_limit(idx)
+                let r = edp_escape_resolve_at(e = v, depth = depth + 1)
+                let _ = edp_escape_set_limit(old)
+                match r.0 {
+                  ETuple(_) => r,
+                  ERecord(_, _, _) => r,
+                  ECall(_, _, _, _) => r,
+                  _ => (e, top)
+                }
+              },
               _ => (e, top)
             }
             -1
@@ -504,15 +517,32 @@ fn edp_callee_stores_data(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, S
 fn edp_needing_escape_match_arms(scrutinee: Expr, arms: Array[(Pat, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
   let mut hit = ""
   let mut i = 0
+  // Arms are exclusive: each is walked from the bindings as they were before
+  // the `match`, and a binding any arm tainted stays tainted after it.
+  let before = edp_escape_snapshot()
+  let outs: Array[Array[(String, String, Option[Expr])]] = []
   while i < Array::length(arms) && hit == "" {
     let (p, ex) = Array::get(arms, at = i)
+    edp_escape_restore(before)
     let mark = Array::length(edp_escape_tainted)
     edp_pat_taint_flush(p = p, e = scrutinee, needing = needing, stmts = stmts, fn_defs = fn_defs)
     hit = edp_needing_escape(e = ex, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
     edp_escape_untaint(mark)
+    Array::push(outs, value = edp_escape_snapshot())
     i = i + 1
   }
+  edp_escape_join_all(before = before, outs = outs)
   hit
+}
+
+/// Put the bindings back as `before` holds them, then keep every binding any
+/// of `outs` (the same bindings after each exclusive path) left tainted.
+fn edp_escape_join_all(before: Array[(String, String, Option[Expr])], outs: Array[Array[(String, String, Option[Expr])]]) -> Unit {
+  edp_escape_restore(before)
+  for out in outs {
+    edp_escape_join(out)
+  }
+  ()
 }
 
 /// Taint the binders of `p` matched against `e`, position by position where
@@ -825,11 +855,17 @@ fn edp_needing_escape_pairs(pairs: Array[(String, Expr)], needing: Array[String]
 fn edp_needing_escape_arms(arms: Array[(Pat, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
   let mut hit = ""
   let mut i = 0
+  // Handler arms are exclusive, like `match` arms.
+  let before = edp_escape_snapshot()
+  let outs: Array[Array[(String, String, Option[Expr])]] = []
   while i < Array::length(arms) && hit == "" {
     let (_, ex) = Array::get(arms, at = i)
+    edp_escape_restore(before)
     hit = edp_needing_escape(e = ex, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    Array::push(outs, value = edp_escape_snapshot())
     i = i + 1
   }
+  edp_escape_join_all(before = before, outs = outs)
   hit
 }
 
