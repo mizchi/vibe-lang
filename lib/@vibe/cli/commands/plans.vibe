@@ -25,6 +25,10 @@ import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_stream_handler, comp_emit_component_wasm_string_handler
 }
 
+import @vibe/compiler/codegen/gc {
+  gc_function_names_enabled, set_gc_function_names
+}
+
 import @vibe/compiler/fmt {
   format_source
 }
@@ -403,6 +407,24 @@ export fn write_user_executable(output_path: String, bytes: Bytes, entry_name: S
     Fs::write_bytes(output_path, bytes = bytes)
   } else {
     Fs::write_bytes(output_path, bytes = strip_executable_wasm_env(wasm = bytes, entry_name = entry_name))
+  }
+}
+
+/// `vibe run`'s artifact. The linear lane always emits the name section and
+/// `write_user_run_executable` keeps it; the gc lane writes its function-name
+/// subsection only when asked (#4127), so `vibe run` asks for this one
+/// compile, and a gc trap backtrace names its frames the way a linear one
+/// does. `vibe build` is untouched: it compiles without the request, so its
+/// gc output stays byte-identical unless `VIBE_WASM_NAMES=1` is set.
+fn compile_user_run_artifact(input_path: String, kind: String, grants: Array[(String, String)], checked_error_row: Bool) -> Bytes with Exception + Fs + Env {
+  if kind == "gc" {
+    let before = gc_function_names_enabled()
+    set_gc_function_names(true)
+    let bytes = compile_user_artifact(input_path = input_path, entry_name = "main", kind = kind, grants = grants, checked_error_row = checked_error_row)
+    set_gc_function_names(before)
+    bytes
+  } else {
+    compile_user_artifact(input_path = input_path, entry_name = "main", kind = kind, grants = grants, checked_error_row = checked_error_row)
   }
 }
 
@@ -1477,7 +1499,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String, c
     } else {
       ()
     }
-    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_with_providers(grants = optional_grants_from_flags(allows = allows, denies = denies), provides = provides), checked_error_row = checked_error_row)
+    let bytes = compile_user_run_artifact(input_path = src, kind = kind, grants = optional_grants_with_providers(grants = optional_grants_from_flags(allows = allows, denies = denies), provides = provides), checked_error_row = checked_error_row)
     write_user_run_executable(output_path = out, bytes = bytes, kind = kind)
     write_user_funcmap(input_path = src, output_path = out)
     let acc = StringBuilder::new()
