@@ -50,7 +50,7 @@
 //   2. common_analysis's source group: every `name == "X"` from a line
 //      starting `fn is_inlined_{async,scalar,simd}_builtin` (or `export fn`)
 //      through the next line starting `}`.
-//   3. core/builtin_registry.vibe: the name of every `("X", CtFn...)` row whose
+//   3. core/builtin_registry.vibe: the name of every `registry_rows_text` row whose
 //      first of seven trailing bools (in_linear) is `true`. A func-table name
 //      is reached by the collector's own fn_names guard, so it can never be
 //      captured by mistake and needs no registration.
@@ -282,74 +282,24 @@ fn comma_bool(s: String, at: Int) -> Int {
   }
 }
 
-/// `, *true` then six `, *(true|false)` then `)` at `at`: the end, or -1.
-fn linear_tail(s: String, at: Int) -> Int {
-  let mut k = comma_word(s = s, at = at, word = "true")
-  let mut n = 0
-  while k >= 0 && n < 6 {
-    k = comma_bool(s = s, at = k)
-    n = n + 1
-  }
-  if k >= 0 && k < String::length(s) && String::byte_at(s, at = k) == ')' {
-    k + 1
-  } else {
-    -1
-  }
-}
 
-/// Step 3: the names of the LINEAR func-table rows: `("X", *CtFn`, anything,
-/// then the seven trailing bools with in_linear `true` (the longest such match,
-/// as `grep -oE` takes it).
+/// Step 3: the names of the LINEAR func-table rows: the `NAME TYPE FLAGS`
+/// lines of `registry_rows_text` (#2503) whose first flag (in_linear) is `T`.
 fn functable_names(text: String) -> Array[String] {
   let out: Array[String] = []
-  let lines = String::split(text, sep = "\n")
-  let mut i = 0
-  while i < Array::length(lines) {
-    let line = Array::get(lines, at = i)
-    let n = String::length(line)
-    let mut from = 0
-    let mut going = true
-    while going {
-      let at = String::index_of_from(line, sub = "(\"", start = from)
-      if at < 0 {
-        going = false
-      } else {
-        let close = String::index_of_from(line, sub = "\"", start = at + 2)
-        let mut k = close + 1
-        if close > at + 2 && k < n && String::byte_at(line, at = k) == ',' {
-          k = k + 1
-          while k < n && String::byte_at(line, at = k) == ' ' {
-            k = k + 1
-          }
-        } else {
-          k = -1
-        }
-        if k >= 0 && String::starts_with(rest_of(s = line, at = k), prefix = "CtFn") {
-          let mut end = -1
-          let mut p = k + 4
-          while p < n {
-            let e = linear_tail(s = line, at = p)
-            if e > end {
-              end = e
-            } else {
-              ()
-            }
-            p = p + 1
-          }
-          if end > 0 {
-            Array::push(out, value = String::substring(line, start = at + 2, end = close))
-            from = end
-          } else {
-            from = at + 1
-          }
-        } else {
-          from = at + 1
+  for raw in String::split(text, sep = "\n") {
+    let at = String::index_of_from(raw, sub = "#|", start = 0)
+    if at >= 0 {
+      let line = String::substring(raw, start = at + 2, end = String::length(raw))
+      if String::length(line) > 0 && !String::starts_with(line, prefix = "#") {
+        let cols = String::split(line, sep = " ")
+        if Array::length(cols) == 3 && String::starts_with(Array::get(cols, at = 2), prefix = "T") {
+          Array::push(out, value = Array::get(cols, at = 0))
         }
       }
     }
-    i = i + 1
   }
-  uniq(xs = out)
+  out
 }
 
 /// Step 4: the first word of each allowlist line that is not blank or `#`.
