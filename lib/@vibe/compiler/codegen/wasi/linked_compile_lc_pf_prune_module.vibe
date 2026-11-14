@@ -14,8 +14,10 @@ import @vibe/compiler/core {
   bytebuf_to_bytes,
   collect_top_level_fn_alias_renames,
   dce_keep_flags,
+  dce_stmts,
   executable_export_kept,
   executable_export_kept_bytes,
+  fold_const_bool_params_signed,
   leb128_encode_u32,
   leb128_encode_u32_slot,
   reloc_slot_width,
@@ -1840,6 +1842,42 @@ fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, 
     i = i + 1
   }
   roots
+}
+
+/// #4169: whether a compile's reachability prune keeps every source
+/// definition. A library exports every function, and the observing lanes
+/// (coverage, trace, break) are about the program as written. The RC shadow
+/// lane is NOT one of them: it validates the plan the RC build compiles, and
+/// borrow inference reads every call site of what it is handed, so a kept
+/// uncalled caller can turn a parameter owned there and not in the RC build.
+export fn lc_late_dce_keeps_source(library_mode: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool) -> Bool {
+  library_mode || coverage || debug_trace || debug_break
+}
+
+/// #4169: the reachability prune that runs after the effect-lowering prelude
+/// and before every RC analysis: fold the Bool parameters every call fixes
+/// (`fold` says whether this compile may), then drop what `roots` -- taken
+/// before the prelude, `lc_late_dce_roots` -- no longer reaches. The linked
+/// compile and the RC queries (`vibe rc-classify` / `rc-plan` /
+/// `rc-validate`) both run it, so the borrow masks and plans those report
+/// are computed over the same program the RC build compiles. `stmts` is
+/// replaced in place: callers thread it onward by reference.
+export fn lc_prune_unreachable(stmts: Array[Stmt], entry_name: String, roots: Array[String], iw_names: Array[String], iw_wats: Array[String], fold: Bool, exports_stripped: Bool, sig_names: Array[String], sig_values: Array[String]) -> Unit {
+  let _ = if fold {
+    fold_const_bool_params_signed(stmts = stmts, entry_name = entry_name, wat_texts = iw_wats, sig_names = sig_names, sig_values = sig_values, exports_stripped = exports_stripped)
+  } else {
+    0
+  }
+  lc_late_dce_wat_roots(roots = roots, stmts = stmts, iw_names = iw_names, iw_wats = iw_wats)
+  let dce_pruned = dce_stmts(stmts = stmts, entry_names = roots)
+  // `dce_stmts` builds a fresh array, so this never reads what it is
+  // overwriting.
+  Array::truncate(stmts, length = 0)
+  let mut dce_i = 0
+  while dce_i < Array::length(dce_pruned) {
+    Array::push(stmts, value = Array::get(dce_pruned, at = dce_i))
+    dce_i = dce_i + 1
+  }
 }
 
 export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, exports_stripped: Bool) -> Array[String] {

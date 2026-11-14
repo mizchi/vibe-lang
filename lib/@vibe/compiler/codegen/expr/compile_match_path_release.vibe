@@ -21,6 +21,10 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_const, emit_local_set
 }
 
+import ./compile_lambda.vibe {
+  cl_return_operand
+}
+
 //# Functions
 
 /// #1980: compile a match arm's body, releasing at the arm's end the
@@ -170,6 +174,28 @@ export fn mpr_compile_arm(buf: Bytes, pat: Pat, body: Expr, names_mark: Int, loc
       nl
     }
   }
+}
+
+/// A catch-all binder borrows the scrutinee. Retain it at each identifiable
+/// consuming use so a skipped branch or an early exit reserves nothing.
+export fn mpr_catch_consumes(body: Expr, name: String, count: Int, bmasks: Array[Int], local_names: Array[String], ctx: CompileCtx) -> Array[Int] {
+  let offs: Array[Int] = []
+  // A view can depend on the bind-time retain even when the arm also
+  // consumes the binder at other sites.
+  if count <= 0 || mpr_name_taken(ctx = ctx, name = name) || !mpr_tail_safe(e = body, local_names = local_names, bound = [
+  ], ctx = ctx) {
+    return offs
+  }
+  let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = false)
+  if Array::length(offs) < count || array_contains_int_mpr(arr = offs, v = -1) {
+    return []
+  }
+  let shadows: Array[String] = []
+  let _ = md_collect_shadow_names(e = body, out = shadows)
+  if array_contains_str(arr = shadows, s = name) {
+    return []
+  }
+  offs
 }
 
 /// The wasm local `bind_match_pat` bound `name` to: its last entry at or
@@ -337,7 +363,16 @@ fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Ar
       }
       acc
     },
-    EBinOp(_, l, r, _) => mpr_walk_operand(e_in = l, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn) + mpr_walk_operand(e_in = r, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EBinOp(op, l, r, _) => {
+      let left = mpr_walk_operand(e_in = l, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let right = mpr_walk_operand(e_in = r, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      // The right side still needs consume marks, but may never run.
+      if op == "&&" || op == "||" {
+        left
+      } else {
+        left + right
+      }
+    },
     EUnaryOp(_, x) => mpr_walk_operand(e_in = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
     EFn(_, _, _, _, _, body) => {
       let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = true)
@@ -432,7 +467,7 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
     EStringInterp(_) => true,
     EBinOp(_, _, _, _) => true,
     EUnaryOp(_, _) => true,
-    EReturn(_) => true,
+    EReturn(v) => mpr_tail_safe(e = v, local_names = local_names, bound = bound, ctx = ctx),
     EBreak(_) => true,
     EContinue(_) => true,
     ETuple(_) => true,
@@ -466,7 +501,10 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
       }
       ok
     },
-    ELet(n, _, b, _) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
+    ELet(n, v, b, _) => match cl_return_operand(b) {
+      EIdent(ret, _) => ret == n && mpr_tail_safe(e = v, local_names = local_names, bound = bound, ctx = ctx),
+      _ => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx)
+    },
     ELetMut(n, _, b, _) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
     ELetRec(n, _, b) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
     ESeq(_, b) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
