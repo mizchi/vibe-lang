@@ -187,6 +187,7 @@ fn content_collect(names: Array[String], scope: Expr, env: TypeEnv, calls: Conte
     locals: Array::slice(names, start = 0, end = Array::length(names)),
     scope_names: Array::slice(names, start = 0, end = Array::length(names)),
     scope_ids: Array::slice(names, start = 0, end = Array::length(names)),
+    let_ids: MutMap::new_int(),
     next_id: [0],
     calls
   }
@@ -299,6 +300,7 @@ struct ContentFacts {
   locals: Array[String];
   scope_names: Array[String];
   scope_ids: Array[String];
+  let_ids: MutMap[Int, Array[(String, String)]];
   next_id: Array[Int];
   calls: ContentCalls
 }
@@ -451,19 +453,19 @@ fn content_outer_into(value: Expr, env: TypeEnv, out: Array[String], s: Subst) -
 /// binder occurrence in scope where it is written.
 fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
   match expr {
-    ELet(x, v, body, _) => {
+    ELet(x, v, body, off) => {
       content_facts_into(expr = v, facts = facts, env = env)
       let value = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push(name = x, facts = facts), value = value, facts = facts)
+      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = value, facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
-    ELetMut(x, v, body, _) => {
+    ELetMut(x, v, body, off) => {
       content_facts_into(expr = v, facts = facts, env = env)
       let value = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push(name = x, facts = facts), value = value, facts = facts)
+      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = value, facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
@@ -575,11 +577,39 @@ fn content_push(name: String, facts: ContentFacts) -> String {
   let n = Array::get(facts.next_id, at = 0)
   Array::set(facts.next_id, at = 0, value = n + 1)
   let id = String::concat(name, String::concat("#", Int::to_string(n)))
-  Array::push(facts.scope_names, value = name)
-  Array::push(facts.scope_ids, value = id)
   if name != "_" {
     Array::push(facts.locals, value = id)
   }
+  content_push_id(name = name, id = id, facts = facts)
+}
+
+fn content_push_id(name: String, id: String, facts: ContentFacts) -> String {
+  Array::push(facts.scope_names, value = name)
+  Array::push(facts.scope_ids, value = id)
+  id
+}
+
+/// The store and result walks meet at the same source binding. Several
+/// desugared names can share a source offset, so match the name as well.
+fn content_push_let(name: String, off: Int, facts: ContentFacts) -> String {
+  if off < 0 {
+    return content_push(name = name, facts = facts)
+  }
+  let entries = match MutMap::get(facts.let_ids, k = off) {
+    Some(found) => found,
+    None => {
+      let fresh: Array[(String, String)] = []
+      MutMap::set(facts.let_ids, k = off, v = fresh)
+      fresh
+    }
+  }
+  for entry in entries {
+    if entry.0 == name {
+      return content_push_id(name = name, id = entry.1, facts = facts)
+    }
+  }
+  let id = content_push(name = name, facts = facts)
+  Array::push(entries, value = (name, id))
   id
 }
 
@@ -607,18 +637,24 @@ fn content_resolve(name: String, facts: ContentFacts) -> String {
 /// Read storage provenance before the scope walk leaves the value's binders.
 fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, Array[String]) {
   match value {
-    ELet(x, v, body, _) => {
+    ELet(x, v, body, off) => {
       let bound = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push(name = x, facts = facts), value = bound, facts = facts)
+      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = bound, facts = facts)
+      if off < 0 {
+        content_facts_into(expr = body, facts = facts, env = env)
+      }
       let result = content_value_fact(value = body, env = env, facts = facts)
       content_pop(mark = mark, facts = facts)
       return result
     },
-    ELetMut(x, v, body, _) => {
+    ELetMut(x, v, body, off) => {
       let bound = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push(name = x, facts = facts), value = bound, facts = facts)
+      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = bound, facts = facts)
+      if off < 0 {
+        content_facts_into(expr = body, facts = facts, env = env)
+      }
       let result = content_value_fact(value = body, env = env, facts = facts)
       content_pop(mark = mark, facts = facts)
       return result
@@ -1017,8 +1053,13 @@ fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, e
   let names = for param in params {
     retention_param_base(param.0)
   }
-  let scope = env_bind(env = env, name = "#active_region", ty = CtNamed("#content_summary", [
+  let mut scope = env_bind(env = env, name = "#active_region", ty = CtNamed("#content_summary", [
   ]))
+  // A syntactic summary has no inferred parameter types. Treat a formal as
+  // potentially holding storage even if a module binding of its name is scalar.
+  for name in names {
+    scope = env_bind(env = scope, name = name, ty = CtVar(-1))
+  }
   let facts = content_collect(names = names, scope = body, env = scope, calls = calls)
   if Array::length(facts.store_target_alias) == 0 {
     return []

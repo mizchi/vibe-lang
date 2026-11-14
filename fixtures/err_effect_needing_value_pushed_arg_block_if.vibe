@@ -1,0 +1,30 @@
+// #4065: the closure stored into an array inside a conditional in the argument
+// that reads it back. The block's local `xs` is gone by the time the block's
+// result is read, so the store inside the `if` must still reach that result:
+// the read hands the closure at its evidence arity to a row-free parameter,
+// which is refused at build time.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+let _start = () -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    apply(f = {
+      let ys: Array[() -> Int] = [() -> 7]
+      if true {
+        Array::push(ys, value = g)
+      } else {
+        ()
+      }
+      Array::get(ys, at = 1)
+    })
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+_start()

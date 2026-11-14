@@ -1,0 +1,41 @@
+// #4065: a projection that selects a plain closure out of a tuple that also
+// holds a handle-bound one is not a read of the handle-bound closure. Through
+// an alias of the tuple, and through a nested projection, the selected element
+// is read by position, so handing it to a row-free parameter compiles and runs.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn through_alias() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let pair = (g, () -> 42)
+    let alias = pair
+    apply(f = alias.1) + g()
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+fn through_nested() -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let pure = () -> 7
+    let box = ((g, pure), 0)
+    apply(f = box.0.1) + g()
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+test "a projection through an alias reads the selected element" {
+  inspect(through_alias(), content = "148")
+}
+
+test "a nested projection reads the selected element" {
+  inspect(through_nested(), content = "113")
+}

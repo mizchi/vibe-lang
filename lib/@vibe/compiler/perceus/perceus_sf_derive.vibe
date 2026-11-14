@@ -72,6 +72,7 @@ import ./perceus_pctx.vibe {
   pe_flag_or,
   pe_int_array_has,
   pe_push_for,
+  pe_set_param_structs,
   pe_split_release_ok,
   pf_exit_owner,
   pf_let,
@@ -1046,7 +1047,9 @@ export fn perceus_cached_tables(out_borrow_ret: Array[String], out_borrow_fns: A
 /// so no view of a parameter (`pe_split_release_ok`).
 export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int], result_immediate: Bool) -> Array[PerceusAction] {
   let ctx = pctx_cache_select(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns)
-  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start, result_immediate = result_immediate)
+  // #2509: an unpinned caller installed no immediate-field table, whatever
+  // pin the cached context still carries.
+  build_perceus_plan_in_ctx(ctx = ctx, plan_pin = 0, params = params, body = body, out_param_drop_start = out_param_drop_start, result_immediate = result_immediate)
 }
 
 /// `build_perceus_plan_with_params_split` for a caller holding a
@@ -1060,7 +1063,13 @@ export fn build_perceus_plan_pinned_split(token: Int, params: Array[(String, Opt
   } else {
     pctx_cache_select(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns)
   }
-  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start, result_immediate = result_immediate)
+  // #2509: the caller's own pin, and only while the cache still holds it.
+  let plan_pin = if token > 0 && ctx.pinned == token {
+    token
+  } else {
+    0
+  }
+  build_perceus_plan_in_ctx(ctx = ctx, plan_pin = plan_pin, params = params, body = body, out_param_drop_start = out_param_drop_start, result_immediate = result_immediate)
 }
 
 export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
@@ -1202,7 +1211,10 @@ fn pe_int_array_index(xs: Array[Int], v: Int) -> Int {
   at
 }
 
-fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int], result_immediate: Bool) -> Array[PerceusAction] {
+fn build_perceus_plan_in_ctx(ctx: PCtx, plan_pin: Int, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int], result_immediate: Bool) -> Array[PerceusAction] {
+  // #2509 / #2827: which parameters are of a known struct, and the pin the
+  // caller planned under, for `pe_tail_may_view`'s immediate-field reads.
+  pe_set_param_structs(ctx = ctx, plan_pin = plan_pin, params = params, body = body)
   let mut scope: PScope = PsNil
   let mut pi = 0
   while pi < Array::length(params) {
