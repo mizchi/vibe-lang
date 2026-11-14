@@ -1558,11 +1558,18 @@ fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: S
 }
 
 /// ADR-0124 (#2656): the core import module the operations of `extern effect
-/// <effect>` are called through. A runner binds it to the provider component
-/// `vibe run --provide <effect>=<path>` names, and refuses before `main` when
-/// none is bound.
-export fn extern_effect_module_name(_ effect: String) -> String {
-  String::concat("vibe:effect:./", effect)
+/// <effect>` are called through: `vibe:effect:<package>/<effect>` for an
+/// effect a package declares (#4082, the package's `name =`, so two packages'
+/// effects cannot meet in one import namespace), `vibe:effect:./<effect>` for
+/// one declared outside any package. A runner binds it, by the effect's bare
+/// name, to the provider component `vibe run --provide <effect>=<path>` names,
+/// and refuses before `main` when none is bound.
+export fn extern_effect_module_name(effect: String, package: String) -> String {
+  if package == "" {
+    String::concat("vibe:effect:./", effect)
+  } else {
+    "vibe:effect:\{package}/\{effect}"
+  }
 }
 
 /// ADR-0124 (#2656): the binding source for one `extern effect`. Each
@@ -1570,10 +1577,10 @@ export fn extern_effect_module_name(_ effect: String) -> String {
 /// (`s64`) for an `Int` and `0x73` for a `String`, at most one result --
 /// becomes the raw inline-wasm stub and the wrapper an imported component's
 /// export gets, calling field `<name>#<WIT signature>` of
-/// `extern_effect_module_name(effect)`. The wrapper of `name` is
+/// `extern_effect_module_name(effect, package)`. The wrapper of `name` is
 /// `<prefix>op_<name>`; the caller renames it to `<effect>::<name>`.
-export fn extern_effect_binding_source(prefix: String, effect: String, ops: Array[(String, Array[Int], Array[Int])]) -> String {
-  let module_name = extern_effect_module_name(effect)
+export fn extern_effect_binding_source(prefix: String, effect: String, package: String, ops: Array[(String, Array[Int], Array[Int])]) -> String {
+  let module_name = extern_effect_module_name(effect = effect, package = package)
   let raw = String::concat(prefix, "raw_")
   let out = wib_fresh_strings()
   // Positional arguments only: this text is bound after the check, and a

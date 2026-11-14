@@ -8,13 +8,16 @@
 // fixture whose maps it had meant to fill.
 //
 // So a call to one of them whose value is thrown away is refused, with the
-// edit. A statement of a block (`taken = ..` missing), and the value of a
-// statement-position `if` / `match` branch, `for` or `while` body, are thrown
-// away; `let _ = Map::set(..)` still discards on purpose. Only the builtin is
+// edit. #4146 widens the class to every builtin whose only effect is its
+// value (`String::concat`, `Array::get`, ...), read off the builtin registry
+// (`builtin_result_is_its_only_effect`): such a statement does nothing
+// either. A statement of a block (`taken = ..` missing), and the value of a
+// statement-position `if` / `match` branch or `for` body, and every `while`
+// body, are thrown away; `let _ = Map::set(..)` still discards on purpose. Only the builtin is
 // judged: a program's own function of that spelling is its own business.
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, call_arg_value
+  Expr, TypeEnv, builtin_result_is_its_only_effect, call_arg_value
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -25,30 +28,75 @@ import @vibe/compiler/checker/diagnostics {
   off_marker_len
 }
 
+import @vibe/compiler/checker/effects {
+  collect_pat_binds_into
+}
+
 /// Refuse every call of a functional builtin whose value `stmt`, a statement
 /// of a block, throws away. A statement's own inner statements are judged
 /// when the checker reaches their block, so only the value it ends in is
 /// read here.
 export fn refuse_discarded_functional_result(stmt: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+  refuse_discarded_in(stmt = stmt, env = env, shadowed = [], errors = errors)
+}
+
+/// `shadowed` holds the names the statement itself binds on the way to the
+/// value it ends in (`{ let not = (b: Bool) -> b; not(true) }`): a call
+/// through one of them is to that local, not the builtin, whatever `env` --
+/// the statement's own environment -- says.
+fn refuse_discarded_in(stmt: Expr, env: TypeEnv, shadowed: Array[String], errors: Array[String]) -> Unit {
   match stmt {
-    ECall(EIdent(name, noff), args, _, _) => if discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
+    ECall(EIdent(name, noff), args, _, _) => if discarded_name_shadowed(shadowed = shadowed, name = name) {
+      ()
+    } else if discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
       Array::push(errors, value = discarded_result_message(name = name, args = args, noff = noff))
+    } else if builtin_result_is_its_only_effect(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
+      Array::push(errors, value = discarded_value_message(name = name, noff = noff))
     },
-    ESeq(_, rest) => refuse_discarded_functional_result(stmt = rest, env = env, errors = errors),
-    ELet(_, _, body, _) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
-    ELetMut(_, _, body, _) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
-    ELetRec(_, _, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    ESeq(_, rest) => refuse_discarded_in(stmt = rest, env = env, shadowed = shadowed, errors = errors),
+    ELet(n, _, body, _) => refuse_discarded_in(stmt = body, env = env, shadowed = discarded_with(shadowed, name = n), errors = errors),
+    ELetMut(n, _, body, _) => refuse_discarded_in(stmt = body, env = env, shadowed = discarded_with(shadowed, name = n), errors = errors),
+    ELetRec(n, _, body) => refuse_discarded_in(stmt = body, env = env, shadowed = discarded_with(shadowed, name = n), errors = errors),
     EIf(_, then_e, else_e) => {
-      refuse_discarded_functional_result(stmt = then_e, env = env, errors = errors)
-      refuse_discarded_functional_result(stmt = else_e, env = env, errors = errors)
+      refuse_discarded_in(stmt = then_e, env = env, shadowed = shadowed, errors = errors)
+      refuse_discarded_in(stmt = else_e, env = env, shadowed = shadowed, errors = errors)
     },
     EMatch(_, arms) => for arm in arms {
-      refuse_discarded_functional_result(stmt = arm.1, env = env, errors = errors)
+      let bound = Array::slice(shadowed, start = 0, end = Array::length(shadowed))
+      collect_pat_binds_into(pat = arm.0, acc = bound)
+      refuse_discarded_in(stmt = arm.1, env = env, shadowed = bound, errors = errors)
     },
-    EForIn(_, _, _, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
-    EWhile(_, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    EForIn(n, index, _, body) => {
+      let bound = discarded_with(shadowed, name = n)
+      let inner = match index {
+        Some(i) => discarded_with(bound, name = i),
+        None => bound
+      }
+      refuse_discarded_in(stmt = body, env = env, shadowed = inner, errors = errors)
+    },
+    // An assignment's continuation is the rest of its block; it binds nothing.
+    EAssign(_, _, rest, _) => refuse_discarded_in(stmt = rest, env = env, shadowed = shadowed, errors = errors),
+    EAssignOp(_, _, _, rest, _) => refuse_discarded_in(stmt = rest, env = env, shadowed = shadowed, errors = errors),
+    // A `while` body is judged where the loop itself is checked
+    // (`check_expr_capture`), in or out of statement position.
     _ => ()
   }
+}
+
+fn discarded_with(_ base: Array[String], name: String) -> Array[String] {
+  let out = Array::slice(base, start = 0, end = Array::length(base))
+  Array::push(out, value = name)
+  out
+}
+
+fn discarded_name_shadowed(shadowed: Array[String], name: String) -> Bool {
+  let mut found = false
+  for s in shadowed {
+    if s == name {
+      found = true
+    }
+  }
+  found
 }
 
 /// A builtin whose only effect is the value it returns, and whose receiver a
@@ -78,4 +126,10 @@ fn discarded_result_message(name: String, args: Array[Expr], noff: Int) -> Strin
     "`" + receiver + "`"
   }
   edit + ": `" + name + "` returns a new map and leaves " + unchanged + " unchanged, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
+}
+
+/// #4146: the refusal for a builtin that only returns a value, the edit first:
+/// use the value, or drop the statement.
+fn discarded_value_message(name: String, noff: Int) -> String {
+  "bind the result of `" + name + "` (`let r = " + name + "(..)`) or delete the statement: `" + name + "` only returns a value and changes nothing, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
 }

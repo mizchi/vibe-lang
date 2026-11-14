@@ -1,0 +1,32 @@
+// #4065: a block inside a stored literal reads its names in the scope the
+// literal was bound in. `pair.1` is a block whose result is the first `xs`
+// (plain closures); the later `xs` holds the handle-bound closure, so handing
+// `pair.1`'s element to a row-free parameter compiles and runs.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn stored_block(c: Bool) -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs = [() -> 42]
+    let pair = (g, if c {
+      let marker = 0
+      xs
+    } else {
+      xs
+    })
+    let xs = [g]
+    apply(f = Array::get(pair.1, at = 0)) + Array::length(xs)
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+
+test "a block in a stored literal reads the scope the literal was bound in" {
+  inspect(stored_block(c = true), content = "143")
+}
