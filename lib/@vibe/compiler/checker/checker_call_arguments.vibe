@@ -14,7 +14,9 @@ import @vibe/compiler/core {
   expr_any_node,
   fresh_var,
   indexed_callback_row_key,
+  is_effect_var_name,
   is_row_provenance_label,
+  is_runtime_scheduled_effect,
   refine_trait_bounds_from_receiver,
   row_free_callback_key,
   row_free_callback_offset,
@@ -61,6 +63,20 @@ fn callback_row_has_effect(_ row: Option[String]) -> Bool {
   }
 }
 
+// An open or runtime-scheduled row has no fixed evidence dictionary.
+fn callback_row_needs_dictionary(_ row: String) -> Bool {
+  let mut has_effect = false
+  for label in row_items(row) {
+    if !is_row_provenance_label(label) {
+      if is_effect_var_name(label) || is_runtime_scheduled_effect(label) {
+        return false
+      }
+      has_effect = true
+    }
+  }
+  has_effect
+}
+
 export fn abi_effect_row(_ row: Option[String]) -> String {
   match row {
     Some(text) => {
@@ -84,7 +100,7 @@ export fn abi_effect_row(_ row: Option[String]) -> String {
 
 export fn record_row_free_callback(arg: Expr, expected: Type, actual: Type, s: Subst, capture: Option[TypedOccurrenceRoleLaneCapture], indexed_callee_row: Option[String]) -> Unit {
   match (capture, expected) {
-    (Some(rows), CtFn(params, _, Some(row))) => if callback_row_has_effect(Some(row)) {
+    (Some(rows), CtFn(params, _, Some(row))) => if callback_row_needs_dictionary(row) {
       match subst_apply(s = s, ty = actual) {
         CtFn(_, _, actual_row) => if !callback_row_has_effect(actual_row) {
           let off = row_free_callback_offset(checker_call_argument_value(arg))

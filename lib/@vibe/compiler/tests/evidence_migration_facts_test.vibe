@@ -5,7 +5,14 @@ import @vibe/core {
   struct MutSet
 }
 import @vibe/compiler/lowering/effects/queries {
-  edp_collect_program_binders, edp_handle_statement_index, edp_mf_dirty_indices, edp_mf_dirty_reset, edp_mf_set_stmt
+  edp_calls_checked_index_effect,
+  edp_collect_program_binders,
+  edp_handle_statement_index,
+  edp_mf_dirty_indices,
+  edp_mf_dirty_reset,
+  edp_mf_set_stmt,
+  edp_note_checked_index_call,
+  edp_reset_checked_index_calls
 }
 import @vibe/compiler/lowering/effects/evidence {
   edp_append_ctor_inert_names,
@@ -407,4 +414,18 @@ test "the handler-set index asked only of statements the facts allow is the walk
   let walked = ints(edp_handler_set_statements(stmts))
   inspect(walked, content = "0,3")
   inspect(ints(edp_handler_set_statements_among(stmts = stmts, multi_arm = Some(edp_mf_multi_arm_handles(facts)))), content = walked)
+}
+
+test "the perform-free query expands an indexed callee's effectset" {
+  let index = ECall(EIdent("__index", 0), [EIdent("runners", 0), EInt(0)], 1, [])
+  let invoke = ECall(index, [], 2, [])
+  edp_reset_checked_index_calls()
+  edp_note_checked_index_call(off = 2, row = "AllAsks")
+  inspect(edp_calls_checked_index_effect(expr = invoke, ename = "Ask", es_names = [
+    "AllAsks"
+  ], es_members_list = [["Ask"]]), content = "true")
+  inspect(edp_calls_checked_index_effect(expr = invoke, ename = "Select", es_names = [
+    "AllAsks"
+  ], es_members_list = [["Ask"]]), content = "false")
+  edp_reset_checked_index_calls()
 }
