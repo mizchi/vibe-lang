@@ -379,13 +379,8 @@ which row the walk sees and not what the walk does. `test` / `bench` /
 
 ## Not implemented yet (#4082)
 
-Each fails closed today:
-
-- extern effects on the wasm-gc backend: the program is refused at build time;
-- package-qualified ids: the import module is `vibe:effect:./<Effect>` for
-  every extern effect. Two packages declaring one under the same name in one
-  program are refused at link time (§1), so they cannot share a provider
-  binding.
+Extern effects on the wasm-gc backend fail closed: the program is refused at
+build time.
 
 ## Acceptance
 

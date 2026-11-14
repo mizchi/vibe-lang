@@ -76,6 +76,7 @@ import @vibe/compiler/contract {
   contract_type_provenance,
   contract_types_module_line,
   contract_types_module_text,
+  extract_package_name,
   extract_package_version,
   extract_require_pins,
   parse_contract_program,
@@ -2219,7 +2220,9 @@ struct ContractPlan {
   type_defs: Array[Stmt];
   member_raws: Array[String];
   member_paths: Array[String];
-  pkg_version: String
+  pkg_version: String;
+  /// #4082: the `name =` the package's header declares ("" when none).
+  pkg_name: String
 }
 
 /// #1872: a desugared contract before anything is published: the facade, the
@@ -2262,6 +2265,7 @@ fn contract_plan(path: String, source: String) -> ContractPlan with Env + Except
   // be read back from the ORIGINAL on-disk text via `path`.
   let original = perform Source::Read(path)
   let pkg_version = extract_package_version(original)
+  let pkg_name = extract_package_name(original)
   // #<version-synthesis>: `version` is already carried by the package's own
   // leading `version x.y.z` directive (ADR-0065/#754) -- a contract no
   // longer needs to also declare `let version: String`, nor does any impl
@@ -2341,7 +2345,8 @@ fn contract_plan(path: String, source: String) -> ContractPlan with Env + Except
     type_defs: type_defs,
     member_raws: member_raws,
     member_paths: member_paths,
-    pkg_version: pkg_version
+    pkg_version: pkg_version,
+    pkg_name: pkg_name
   }
 }
 
@@ -2456,10 +2461,19 @@ fn contract_build(path: String, source: String, plan: ContractPlan) -> ContractD
     relative_spelling_from_dir(dir = dir_of_path(path), canonical = facade_types_path)
   }
   let facade = contract_facade_source(decls = decls, opaque_names = opaque_names, type_defs = type_defs, impl_units = impl_units, types_path = facade_types_rel)
-  let facade_final = if pkg_version == "" {
+  let facade_versioned = if pkg_version == "" {
     facade
   } else {
     String::concat(facade, "\nexport let version: String = \"\{pkg_version}\"\n")
+  }
+  // #4082: the header that names the package is blanked before the merge
+  // sees this contract, so the facade carries the name as a comment line
+  // the merge reads back (`vibe:effect:<name>/<Effect>` for an `extern
+  // effect` this package declares). A comment binds nothing.
+  let facade_final = if plan.pkg_name == "" {
+    facade_versioned
+  } else {
+    String::concat(facade_versioned, "\n// vibe: package \{plan.pkg_name}\n")
   }
   // #1100: publish the finished facade under the closure fingerprint
   // computed above — the next desugar of this unchanged package (same run

@@ -52,6 +52,7 @@ import @vibe/compiler/core {
   resolve_known_import_path,
   resolved_callee_row_rebase,
   rewrite_imported_value_stmt_to_local,
+  set_program_extern_effect_packages,
   stmts_have_import_deep,
   swap_colliding_type_alias_renames,
   trait_import_local_operation_renames,
@@ -592,6 +593,10 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
 fn refuse_shared_extern_effect_names(merged: Array[Stmt], units: Array[LinkedUnit], sources: Array[(String, String)]) -> Unit with Exception {
   // (effect name, declaring package, its file), first declaration per package
   let seen: Array[(String, String, String)] = []
+  // #4082: (effect name, the declaring package's `name =`), for the binding
+  // pass (`vibe:effect:<package>/<Effect>`). Recorded on every merge, empty
+  // or not, so a merge never leaves an earlier program's rows behind.
+  let packages: Array[(String, String)] = []
   for unit in units {
     let mut i = unit.start
     while i < unit.end && i < Array::length(merged) {
@@ -610,13 +615,46 @@ fn refuse_shared_extern_effect_names(merged: Array[Stmt], units: Array[LinkedUni
             }
           }
           Array::push(seen, value = (name, package, unit.path))
+          let package_name = extern_effect_package_name(package = package, sources = sources)
+          if package_name != "" {
+            Array::push(packages, value = (name, package_name))
+          }
         },
         _ => ()
       }
       i = i + 1
     }
   }
+  set_program_extern_effect_packages(packages)
   ()
+}
+
+/// #4082: the `name =` of the package whose contract is in directory
+/// `package` ("." for the root), read from the `// vibe: package <name>` line
+/// the loader writes into the contract's facade (its header is blanked before
+/// the merge sees it), or "" when there is none.
+fn extern_effect_package_name(package: String, sources: Array[(String, String)]) -> String {
+  if package == "" {
+    return ""
+  }
+  let contract = if package == "." {
+    "index.vpkg"
+  } else {
+    String::concat(package, "/index.vpkg")
+  }
+  let marker = "// vibe: package "
+  let mut found = ""
+  for entry in sources {
+    let (p, text) = entry
+    if found == "" && p == contract {
+      for line in String::split(text, sep = "\n") {
+        if found == "" && String::starts_with(line, prefix = marker) {
+          found = String::trim(String::substring(line, start = String::length(marker), end = String::length(line)))
+        }
+      }
+    }
+  }
+  found
 }
 
 /// The package that declares what `path` holds: the directory of the nearest
