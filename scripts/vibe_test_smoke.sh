@@ -468,3 +468,65 @@ assert_unrecognised_option_is_not_a_missing_file() {
 assert_unrecognised_option_is_not_a_missing_file
 
 echo "[vibe-test-smoke] ok (an unrecognised option is not reported as a missing file, #2886)"
+
+# #4126: a module the engine refuses is not a failing test. A fake compiler
+# (PATH `bash`, answering only the compile invocation) writes a module no
+# engine accepts -- the wasm header followed by an unknown section id -- and
+# every other `bash` call runs the real one, so the linear lane's runner and
+# the gc lane's wasmtime see that module for real. The report must say that
+# no test failed and replay the engine's own message under FAIL; it used to be
+# a bare `FAIL <file>`, with the reason captured and then dropped. "cache"
+# keeps the file in vibe_test.sh's sequential tail, where PATH reaches the
+# worker (as in the coverage case above).
+engine_src="$WORK/cache_engine_refused_test.vibe"
+printf 'test "t" { assert(true) }\n' > "$engine_src"
+engine_bin="$WORK/engine-refused-bin"
+mkdir -p "$engine_bin"
+real_bash="$(command -v bash)"
+cat > "$engine_bin/bash" <<EOF
+#!$real_bash
+# Arguments of the compile call: runner --invoke cli_main CLI SRC OUT ENTRY.
+if [ "\${2:-}" = "--invoke" ] && [ "\${3:-}" = "cli_main" ] && [ "\${7:-}" = "__no_entry__" ]; then
+  printf '\\000asm\\001\\000\\000\\000\\177\\001\\000' > "\$6"
+  exit 0
+fi
+exec "$real_bash" "\$@"
+EOF
+chmod +x "$engine_bin/bash"
+assert_engine_refusal_reported() { # <lane label> <engine message fragment> <env assignments...>
+  local lane="$1" fragment="$2" out="$WORK/engine-refused.$1.out" rc; shift 2
+  set +e
+  env "$@" PATH="$engine_bin:$PATH" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    "$real_bash" "$ROOT_DIR/scripts/vibe_test.sh" "$engine_src" >"$out" 2>&1
+  rc=$?
+  set -e
+  # The mutation must have hit: the run failed on that file, not elsewhere.
+  if [ "$rc" -eq 0 ] || ! grep -qF "FAIL ${engine_src#"$ROOT_DIR/"}" "$out"; then
+    echo "[vibe-test-smoke] FAIL ($lane): the refused module did not fail its file" >&2
+    sed 's/^/  /' "$out" >&2
+    exit 1
+  fi
+  if ! grep -qF "not a test failure: the runner stopped before any test ran" "$out"; then
+    echo "[vibe-test-smoke] FAIL ($lane): a module the engine refused reads like a failing test (no 'not a test failure' line, #4126)" >&2
+    sed 's/^/  /' "$out" >&2
+    exit 1
+  fi
+  if ! grep -E '^       \| ' "$out" | grep -qF "$fragment"; then
+    echo "[vibe-test-smoke] FAIL ($lane): the engine's own message ('$fragment') is not replayed under FAIL (#4126)" >&2
+    sed 's/^/  /' "$out" >&2
+    exit 1
+  fi
+  if grep -qF "failing test:" "$out"; then
+    echo "[vibe-test-smoke] FAIL ($lane): a refused module was reported with a failing test name" >&2
+    sed 's/^/  /' "$out" >&2
+    exit 1
+  fi
+}
+# Node's message names the bad section; wasmtime's names the section id.
+assert_engine_refusal_reported linear "CompileError" VIBE_TEST_BACKEND=linear
+if command -v wasmtime >/dev/null 2>&1; then
+  assert_engine_refusal_reported gc "section" VIBE_TEST_BACKEND=gc
+  echo "[vibe-test-smoke] ok (a module the engine refuses is reported with the engine's reason on both lanes, #4126)"
+else
+  echo "[vibe-test-smoke] ok (a module the engine refuses is reported with the engine's reason on the linear lane; wasmtime absent, gc lane skipped, #4126)"
+fi
