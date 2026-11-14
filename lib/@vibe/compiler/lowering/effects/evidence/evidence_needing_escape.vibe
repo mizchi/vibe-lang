@@ -501,7 +501,10 @@ fn edp_pat_taint(p: Pat, e: Expr, needing: Array[String], stmts: Array[Stmt], fn
     } else {
       edp_pat_taint_all(p = p, e = e, needing = needing, stmts = stmts, fn_defs = fn_defs)
     },
-    (PCtor(_, ps), ECall(_, es, _, _)) => if Array::length(ps) == Array::length(es) {
+    // Only a call OF that constructor shows the payload by position; an
+    // ordinary call's arguments are not its result's fields (`match make(f =
+    // g) { Some(x) => .. }` binds what `make` returns).
+    (PCtor(pn, ps), ECall(EIdent(cn, _), es, _, _)) => if Array::length(ps) == Array::length(es) && edp_ctor_last(pn) == edp_ctor_last(cn) {
       let mut k = 0
       while k < Array::length(ps) {
         let item = match Array::get(es, at = k) {
@@ -526,6 +529,12 @@ fn edp_pat_taint(p: Pat, e: Expr, needing: Array[String], stmts: Array[Stmt], fn
     },
     _ => edp_pat_taint_all(p = p, e = e, needing = needing, stmts = stmts, fn_defs = fn_defs)
   }
+}
+
+/// The last `::` segment of a constructor spelling (`Option::Some` -> `Some`).
+fn edp_ctor_last(_ n: String) -> String {
+  let parts = String::split(n, sep = "::")
+  Array::get(parts, at = Array::length(parts) - 1)
 }
 
 fn edp_pat_taint_all(p: Pat, e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
