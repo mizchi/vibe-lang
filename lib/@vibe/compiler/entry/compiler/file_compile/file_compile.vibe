@@ -282,6 +282,29 @@ export fn check_file_fs_mode_from_source_groups(entry_path: String, source_group
   // compiles, and passed an `Int` rebound to a `Raw` with no Show that the
   // build refuses. The merge records the space, so a marker the prelude
   // throws is mapped back to its file (cli_support `marker_in_file_space`).
+  //
+  // #2507: that prelude is a whole-program pass, so module reuse does not
+  // shorten it: measured on the CLI closure, it and its merge were 92 % of an
+  // unchanged re-check (~10 s of ~11 s), the module walk 3.8 %. Its verdict is
+  // a function of the same input identity a linked build's output is
+  // (`linked_output_memo_identity`: the compiler's namespace, every
+  // environment variable the compiler reads, and every source by group, path
+  // and content), so a clean verdict is kept under that identity and an
+  // unchanged re-check replays it. Only a clean verdict is stored: a refusal
+  // throws out of `check_effect_prelude_verdict` before the memo stores
+  // anything, so every failing check runs the prelude and maps its marker.
+  // `VIBE_LINKED_OUTPUT_MEMO` governs it like the build memo (`off` always
+  // runs, `verify` runs and compares).
+  let memo_mode = linked_output_memo_mode("on")
+  let identity = linked_output_memo_identity(lane = "check-prelude", entry_path = entry_path, entry_name = "main", grants = array_empty(), source_groups = source_groups, exports_stripped = false)
+  let _ = linked_output_memo_run(mode = memo_mode, lane = "check-prelude", entry_path = entry_path, entry_name = "main", identity = identity, compile = () -> check_effect_prelude_verdict(source_groups = source_groups, checked_error_row = checked_error_row), checked_error_row = checked_error_row)
+  0
+}
+
+/// The merge and effect-lowering prelude `check_file_fs_mode_from_source_groups`
+/// runs, as a memo-able step: throws the first lowering refusal, and answers
+/// an empty verdict when there is none.
+fn check_effect_prelude_verdict(source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Bytes with Env + Exception + Fs {
   let flat_paths: Array[String] = array_empty()
   let flat_bases: Array[Int] = array_empty()
   let merged_stmts = build_grouped_merged_stmts_with_offsets(source_groups = source_groups, flat_paths = flat_paths, flat_bases = flat_bases, checked_error_row = checked_error_row)
@@ -292,9 +315,8 @@ export fn check_file_fs_mode_from_source_groups(entry_path: String, source_group
   if Array::length(lowering_errs) > 0 {
     throw(Array::get(lowering_errs, at = 0))
   } else {
-    ()
+    Bytes::new()
   }
-  0
 }
 
 export fn check_file_fs_mode(_ entry_path: String, checked_error_row: Bool) -> Int with Env + Exception + Fs {
