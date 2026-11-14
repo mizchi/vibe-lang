@@ -421,9 +421,14 @@ export fn check_pattern_with_open_scrutinee(pat: Pat, scrutinee_ty: Type, env: T
       env
     },
     PCtor(raw_name, sub_pats) => {
-      match scrutinee_ty {
-        CtVar(id) => on_open(id, pat),
-        _ => ()
+      let check_child_open = match scrutinee_ty {
+        CtVar(id) => {
+          on_open(id, pat)
+          // Until the enclosing enum is known, raw payload types may contain
+          // declaration variables. The replay will visit instantiated types.
+          (_, _) -> ()
+        },
+        _ => on_open
       }
       // #3422: a qualified `Maybe::Some` resolves by its bare variant name.
       let name = pattern_ctor_base_name(raw_name)
@@ -554,7 +559,7 @@ export fn check_pattern_with_open_scrutinee(pat: Pat, scrutinee_ty: Type, env: T
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern_with_open_scrutinee(pat = Array::get(sub_pats, at = i), scrutinee_ty = sub_ty, env = acc_env, defs = defs, errors = errors, on_open = on_open)
+              let next_env = check_pattern_with_open_scrutinee(pat = Array::get(sub_pats, at = i), scrutinee_ty = sub_ty, env = acc_env, defs = defs, errors = errors, on_open = check_child_open)
               bind_subs(i + 1, next_env)
             }
           }
