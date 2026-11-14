@@ -68,6 +68,9 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         }
         i = i + 1
       }
+      if hit == "" {
+        edp_escape_store_taint(callee_nm = callee_nm, args = args, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      }
       hit
     },
     EFn(_, _, params, _, _, b) => {
@@ -81,7 +84,26 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       hit
     },
     EHandle(b, arms) => edp_needing_escape_or(a = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape_arms(arms = arms, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
-    EIf(c, t, el) => edp_needing_escape_or(a = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape_or(a = edp_needing_escape(e = t, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = el, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list))),
+    EIf(c, t, el) => {
+      let first = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      if first != "" {
+        first
+      } else {
+        // A store inside one branch (`Array::push(xs, value = g)`) may not
+        // have run in the other, nor after the `if`: each branch's bindings
+        // end with it.
+        let mark = Array::length(edp_escape_tainted)
+        let in_then = edp_needing_escape(e = t, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        edp_escape_untaint(mark)
+        if in_then != "" {
+          in_then
+        } else {
+          let in_else = edp_needing_escape(e = el, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+          edp_escape_untaint(mark)
+          in_else
+        }
+      }
+    },
     EMatch(s, arms) => edp_needing_escape_or(a = edp_needing_escape(e = s, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape_match_arms(scrutinee = s, arms = arms, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     EWhile(c, b) => edp_needing_escape_or(a = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
     EForIn(n, _, it, b) => {
@@ -528,6 +550,41 @@ fn edp_pat_taint(p: Pat, e: Expr, needing: Array[String], stmts: Array[Stmt], fn
       ()
     },
     _ => edp_pat_taint_all(p = p, e = e, needing = needing, stmts = stmts, fn_defs = fn_defs)
+  }
+}
+
+/// #4065: a qualified builtin that stores its later arguments into its first
+/// (`Array::push(xs, value = g)`, `Map::set(m, key = k, value = g)`) leaves the
+/// receiver holding what it stored, so a later read of the receiver is a read
+/// of that function. The receiver is re-bound with that root for the rest of
+/// the enclosing scope; it carries no initializer, since its contents are no
+/// longer the literal it was bound to. A constructor stores into a new value,
+/// not into its first argument, so it is not one of these.
+fn edp_escape_store_taint(callee_nm: String, args: Array[Expr], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+  let parts = String::split(callee_nm, sep = "::")
+  if Array::length(parts) < 2 || Array::length(args) < 2 {
+    return ()
+  }
+  let last = Array::get(parts, at = Array::length(parts) - 1)
+  let ctor = String::length(last) > 0 && String::byte_at(last, at = 0) >= 65 && String::byte_at(last, at = 0) <= 90
+  if ctor || !edp_callee_stores_data(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm) {
+    return ()
+  }
+  match Array::get(args, at = 0) {
+    EIdent(recv, _) => {
+      let rest: Array[Expr] = []
+      let mut k = 1
+      while k < Array::length(args) {
+        Array::push(rest, value = Array::get(args, at = k))
+        k = k + 1
+      }
+      let root = edp_data_root_items(items = rest, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      if root != "" {
+        let _ = edp_escape_taint(name = recv, root = root, init = None)
+      }
+      ()
+    },
+    _ => ()
   }
 }
 
