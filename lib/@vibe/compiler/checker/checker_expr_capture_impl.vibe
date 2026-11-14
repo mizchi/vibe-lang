@@ -377,6 +377,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           ELet(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           ELetRec(_, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           ELetMut(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           _ => ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
         }
         s1 = ns
@@ -549,7 +550,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // the wrapper here would add a fictional child before checking it.
         // A `for` tail is a statement exactly when the spine is one.
         let tail_discarded = discarded_tail && match cur {
-          EForIn(_, _, _, _) => true,
+          EForIn(_, _, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => true,
           _ => false
         }
         result = check_expr_capture_impl(expr = cur, env = cenv, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = tail_discarded)
@@ -1016,7 +1017,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
       checker_assign_call_header(env = env, name = name, value = val)
-      check_expr_capture(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      if discarded_root {
+        check_expr_capture_discarded_root(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      } else {
+        check_expr_capture(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      }
     },
     EAssignOp(name, aop, val, body, target_off) => {
       let (val_ty, s1, c1) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
@@ -1071,7 +1076,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           s1
         }
       }
-      check_expr_capture(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      if discarded_root {
+        check_expr_capture_discarded_root(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      } else {
+        check_expr_capture(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      }
     },
     EMatch(scrutinee, arms) => {
       let (scr_ty, s1, c1) = check_expr_capture(expr = scrutinee, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
