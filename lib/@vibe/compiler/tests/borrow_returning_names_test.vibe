@@ -152,6 +152,20 @@ test "a long chain of views through a two-argument helper resolves once per name
   inspect(contains(names = names, name = "pick"), "true")
 }
 
+test "a view through a helper declared later declines in either declaration order" {
+  // `later` enters the borrow-returning set only after `pick` is first seen.
+  // Reading `later(v)` as "names nothing" accepted `pick` before `later` was
+  // known, and an accepted function is never revisited.
+  let pick = "fn pick(i: Int) -> Array[Int] {\n  let v = [[[i]]]\n  let w = Array::get(later(v), 0)\n  Array::get(w, 0)\n}\n"
+  let later = "fn later(xs: Array[Array[Array[Int]]]) -> Array[Array[Int]] {\n  Array::get(xs, 0)\n}\n"
+  let first = borrow_set_of(pick + "\n" + later)
+  inspect(contains(names = first, name = "later"), "true")
+  inspect(contains(names = first, name = "pick"), "false")
+  let second = borrow_set_of(later + "\n" + pick)
+  inspect(contains(names = second, name = "later"), "true")
+  inspect(contains(names = second, name = "pick"), "false")
+}
+
 test "a read into a parameter, through a view or a binder, stays borrow-returning" {
   let through_let = "fn pick(xs: Array[Array[Array[Int]]], i: Int) -> Array[Int] {\n  let w = Array::get(xs, 0)\n  if i > 0 {\n    Array::get(w, 0)\n  } else {\n    Array::get(w, 1)\n  }\n}\n"
   inspect(contains(names = borrow_set_of(through_let), name = "pick"), "true")

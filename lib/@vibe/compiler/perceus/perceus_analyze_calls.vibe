@@ -384,27 +384,41 @@ fn bret_is_view_expr(known: MutSet[String], e: Expr) -> Bool {
 /// of a borrow-returning builtin (its first argument, as
 /// `scope_tail_proj_root` reads it), and every named argument of a
 /// borrow-returning user function, which may hand back a view of any of
-/// them. A fresh temporary or a literal argument names nothing. The two Map
-/// iterator accessors are read by the user-function rule: a program may
-/// define either name itself (`source_owned_shadowable_borrow_mask`), and its
-/// body may return a view of any parameter.
-fn bret_view_roots(known: MutSet[String], e: Expr, out: Array[String]) -> Unit {
+/// them. The two Map iterator accessors are read by the user-function rule:
+/// a program may define either name itself
+/// (`source_owned_shadowable_borrow_mask`), and its body may return a view of
+/// any parameter.
+///
+/// A root that is not a name is recorded as `""`, which resolves as
+/// `bk_unknown`: a container that is a temporary or a literal, and any call
+/// not yet known to borrow. The second matters for the fixpoint: a call to a
+/// function that enters `known` in a later round would then read further, so
+/// treating it as "names nothing" accepted a function that a later round
+/// must decline, and an accepted function is never revisited
+/// (`let w = Array::get(later(v), 0)` was accepted or declined by
+/// declaration order). An unresolved root declines, and the verdict only
+/// grows as `known` does.
+fn bret_view_roots(known: MutSet[String], e: Expr, out: Array[String], container: Bool) -> Unit {
   match bret_peel_ascription(e) {
     EIdent(n, _) => Array::push(out, value = n),
-    EDot(obj, _, _, _) => bret_view_roots(known = known, e = obj, out = out),
-    ELabeledArg(_, _, v) => bret_view_roots(known = known, e = v, out = out),
+    EDot(obj, _, _, _) => bret_view_roots(known = known, e = obj, out = out, container = true),
+    ELabeledArg(_, _, v) => bret_view_roots(known = known, e = v, out = out, container = container),
     ECall(EIdent(callee, _), args, _, _) => if MutSet::has(known, x = callee) && Array::length(args) > 0 {
       if is_borrow_ret_builtin(callee) && callee != "Map::iter_get" && callee != "Map::__iter_get_unchecked" {
-        bret_view_roots(known = known, e = Array::get(args, at = 0), out = out)
+        bret_view_roots(known = known, e = Array::get(args, at = 0), out = out, container = true)
       } else {
         for a in args {
-          bret_view_roots(known = known, e = a, out = out)
+          bret_view_roots(known = known, e = a, out = out, container = false)
         }
       }
     } else {
-      ()
+      Array::push(out, value = "")
     },
-    _ => ()
+    _ => if container {
+      Array::push(out, value = "")
+    } else {
+      ()
+    }
   }
 }
 
@@ -421,6 +435,9 @@ fn bret_view_roots(known: MutSet[String], e: Expr, out: Array[String]) -> Unit {
 /// `bk_unknown` before its own roots are followed, which also cuts the cycle
 /// a flat, scope-blind search can see.
 fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, memo: MutMap[String, Int]) -> Int {
+  if name == "" {
+    return bk_unknown
+  }
   match MutMap::get(memo, k = name) {
     Some(k) => return k,
     None => ()
@@ -436,7 +453,7 @@ fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, memo: MutM
     st.kind
   } else {
     let roots: Array[String] = []
-    bret_view_roots(known = known, e = st.view, out = roots)
+    bret_view_roots(known = known, e = st.view, out = roots, container = false)
     let mut acc = bk_view
     for r in roots {
       if acc != bk_owned {
@@ -500,7 +517,7 @@ fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[Str
     // flow-dependent root: the marker retains it whatever it reads into.
     _ => if bret_is_view_expr(known = known, e = top) {
       let roots: Array[String] = []
-      bret_view_roots(known = known, e = top, out = roots)
+      bret_view_roots(known = known, e = top, out = roots, container = false)
       let mut found = false
       let mut i = 0
       while !found && i < Array::length(roots) {
