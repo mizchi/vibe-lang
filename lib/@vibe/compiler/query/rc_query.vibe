@@ -45,7 +45,7 @@ import @vibe/compiler/codegen/expr {
 
 import @vibe/compiler/perceus {
   PerceusAction,
-  build_perceus_plan_with_params_split,
+  build_perceus_plan_pinned_split,
   compute_borrow_returning_names,
   compute_scalar_returning_names,
   fn_result_is_immediate,
@@ -301,8 +301,12 @@ export fn rc_classify_source(_ source: String, checked_error_row: Bool) -> Strin
   StringBuilder::freeze(acc)
 }
 
+/// #2509: the pin `rcq_planned_fns` installed its tables under, presented by
+/// each plan so the immediate-field table applies to exactly this query.
+let rcq_pin_cell: Array[Int] = [0]
+
 fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret: Array[String], borrow_param: Array[String], masks: Array[Int], view_ret: Array[String], result_immediate: Bool) -> Unit {
-  let plan = build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret, out_param_drop_start = [
+  let plan = build_perceus_plan_pinned_split(token = Array::get(rcq_pin_cell, at = 0), params = params, body = body, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret, out_param_drop_start = [
   ], result_immediate = result_immediate)
   let mut i = 0
   while i < Array::length(plan) {
@@ -442,6 +446,7 @@ export fn rcq_planned_fns(source: String, fn_filter: String, verb: String, out_n
   // ones the build acts on.
   let rcq_pin = perceus_pin_tables(borrow_ret_names = Array::get(tables, at = 0), borrow_param_fns = Array::get(tables, at = 1), borrow_param_masks = masks, view_ret_fns = Array::get(tables, at = 2))
   perceus_set_immediate_fields(token = rcq_pin, keys = sorted_names_of(perceus_immediate_field_keys(stmts)))
+  Array::set(rcq_pin_cell, at = 0, value = rcq_pin)
   // #2411 review: the RC codegen plans the NORMALIZED body -- shadow
   // uniquify, then scrutinee lift (`match f() {..}` becomes
   // `let __m_scrut_N = f(); match __m_scrut_N {..}`), with one counter cell

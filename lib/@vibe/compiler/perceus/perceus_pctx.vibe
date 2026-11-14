@@ -684,6 +684,11 @@ let pe_imm_field_token: Array[Int] = [0]
 /// and whose name the body never rebinds: `(name, struct)`.
 let pe_param_structs: Array[(String, String)] = []
 
+/// The pin the current plan's caller supplied -- 0 for an unpinned plan,
+/// which installed no table. Not the cached context's pin: an unpinned plan
+/// over unchanged tables keeps that one.
+let pe_plan_pin: Array[Int] = [0]
+
 /// Install the immediate-field table for the plans built under pin `token`.
 /// `keys` are `Struct.field`, sorted.
 export fn perceus_set_immediate_fields(token: Int, keys: Array[String]) -> Unit {
@@ -719,7 +724,8 @@ export fn perceus_immediate_field_keys(_ stmts: Array[Stmt]) -> Array[String] {
 }
 
 /// Record the plan's struct-typed parameters (see `pe_param_structs`).
-export fn pe_set_param_structs(params: Array[(String, Option[TypeExpr])], body: Expr) -> Unit {
+export fn pe_set_param_structs(plan_pin: Int, params: Array[(String, Option[TypeExpr])], body: Expr) -> Unit {
+  Array::set(pe_plan_pin, at = 0, value = plan_pin)
   Array::truncate(pe_param_structs, length = 0)
   for p in params {
     let (pname, ptype) = p
@@ -795,9 +801,10 @@ fn pe_arms_bind_name(arms: Array[(Pat, Expr)], name: String) -> Bool {
 
 /// Is `obj.field` a read of a field declared `Int`, `Bool` or `Unit`? Only
 /// for a recorded parameter (`pe_param_structs`) and only while the table
-/// belongs to this plan's pin.
+/// belongs to the pin this plan's caller supplied (`pe_plan_pin`).
 fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
-  if ctx.pinned == 0 || ctx.pinned != Array::get(pe_imm_field_token, at = 0) {
+  let pin = Array::get(pe_plan_pin, at = 0)
+  if pin == 0 || pin != Array::get(pe_imm_field_token, at = 0) {
     false
   } else {
     let mut sname = ""

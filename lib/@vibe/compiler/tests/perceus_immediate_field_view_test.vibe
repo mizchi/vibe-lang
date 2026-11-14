@@ -10,6 +10,23 @@ import @vibe/compiler/query {
   rc_plan_source
 }
 
+import @vibe/compiler/perceus {
+  PerceusAction,
+  build_perceus_plan_pinned_split,
+  build_perceus_plan_with_params_split,
+  pa_is_path_drop,
+  perceus_pin_tables,
+  perceus_set_immediate_fields
+}
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
 fn plan_rows(source: String, fname: String) -> String with Exception {
   let plan = rc_plan_source(source = source, fn_filter = fname, checked_error_row = false)
   let rows: Array[String] = []
@@ -56,4 +73,52 @@ let lam_shape = (ctx: Ctx, o: Option[Int]) -> {
 test "the lambda still answers on both paths" {
   inspect(lam_shape(ctx = Ctx::{ n: 5, items: [1, 2] }, o = Some(1)), content = "7")
   inspect(lam_shape(ctx = Ctx::{ n: 5, items: [1, 2] }, o = None), content = "5")
+}
+
+// Codex review on #4170: an unpinned plan right after a pinned one keeps the
+// cached context's pin when the ownership tables are unchanged, so the field
+// table must be keyed on the pin THIS plan's caller supplied. Program A pins
+// and records `Ctx.n` as an `Int`; program B, planned unpinned, has a
+// `Ctx.n` that is a `String` -- a view -- and must keep its ordinary drop.
+fn lambda_parts(_ source: String) -> (Array[(String, Option[TypeExpr])], Expr) with Exception {
+  let mut out: (Array[(String, Option[TypeExpr])], Expr) = ([], EUnit)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  for stmt in parse_program_located(tokens = tokens, starts = starts, source = source) {
+    match stmt {
+      SLet(_, _, _, _, EFn(_, _, params, _, _, body)) => {
+        out = (params, body)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn path_drop_count(_ plan: Array[PerceusAction]) -> Int {
+  let mut n = 0
+  for a in plan {
+    if pa_is_path_drop(a) {
+      n = n + 1
+    }
+  }
+  n
+}
+
+test "an unpinned plan ignores the field table a pinned plan installed" {
+  let (params, body) = lambda_parts("let b_shape = (ctx: Ctx, o: Option[Int]) -> {\n  match o {\n    Some(_) => count_of(keep(ctx)),\n    None => ctx.n\n  }\n}\n")
+  // Pin empty tables and record `Ctx.n` as immediate under that pin.
+  let tok = perceus_pin_tables(borrow_ret_names = [], borrow_param_fns = [], borrow_param_masks = [
+  ], view_ret_fns = [])
+  perceus_set_immediate_fields(token = tok, keys = ["Ctx.n"])
+  // The pinned caller reads the table (the control: it is consulted).
+  let pinned = build_perceus_plan_pinned_split(token = tok, params = params, body = body, borrow_ret_names = [
+  ], borrow_param_fns = [], borrow_param_masks = [], view_ret_fns = [], out_param_drop_start = [
+  ], result_immediate = false)
+  inspect(path_drop_count(pinned), content = "1")
+  // The same unchanged tables, unpinned: the cached context still carries
+  // `tok`, but this caller installed nothing, so the table does not apply.
+  let unpinned = build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = [
+  ], borrow_param_fns = [], borrow_param_masks = [], view_ret_fns = [], out_param_drop_start = [
+  ], result_immediate = false)
+  inspect(path_drop_count(unpinned), content = "0")
 }
