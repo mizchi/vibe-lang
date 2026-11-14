@@ -196,17 +196,39 @@ fn edp_escape_untaint(_ mark: Int) -> Unit {
   Array::truncate(edp_escape_tainted, length = mark)
 }
 
+/// While a stored initializer's parts are read, the bindings in scope where it
+/// was bound: names are looked up below this index of `edp_escape_tainted`
+/// (-1: the whole stack). `let xs = [() -> 42]; let pair = (g, xs); let xs =
+/// [g]` reads `pair.1` as the first `xs`, not the second.
+let edp_escape_limit: Array[Int] = [-1]
+
+/// The top of the bindings a lookup may see.
+fn edp_escape_top() -> Int {
+  let l = Array::get(edp_escape_limit, at = 0)
+  let n = Array::length(edp_escape_tainted)
+  if l < 0 || l > n {
+    n
+  } else {
+    l
+  }
+}
+
+/// Look names up below `l` from now on; returns the limit to restore.
+fn edp_escape_set_limit(_ l: Int) -> Int {
+  let old = Array::get(edp_escape_limit, at = 0)
+  Array::set(edp_escape_limit, at = 0, value = l)
+  old
+}
+
 /// The needing function a tainted local was read from, or "".
 fn edp_escape_tainted_root(_ name: String) -> String {
-  let mut i = Array::length(edp_escape_tainted)
-  while i > 0 {
-    i = i - 1
-    let (bound, root, _) = Array::get(edp_escape_tainted, at = i)
-    if bound == name {
-      return root
-    }
+  let idx = edp_escape_find(name = name, below = edp_escape_top())
+  if idx < 0 {
+    ""
+  } else {
+    let (_, root, _) = Array::get(edp_escape_tainted, at = idx)
+    root
   }
-  ""
 }
 
 /// The needing function a local is a plain alias of (`let a = g`, or through
@@ -215,7 +237,7 @@ fn edp_escape_tainted_root(_ name: String) -> String {
 /// alias itself still reaches a call slot as the name it aliases (the eta-wrap
 /// follows it), so only storing it as data reads through it.
 fn edp_escape_alias_of(name: String, needing: Array[String]) -> String {
-  let mut idx = edp_escape_find(name = name, below = Array::length(edp_escape_tainted))
+  let mut idx = edp_escape_find(name = name, below = edp_escape_top())
   let mut out = ""
   while idx >= 0 {
     let (_, _, init) = Array::get(edp_escape_tainted, at = idx)
@@ -258,32 +280,35 @@ fn edp_escape_find(name: String, below: Int) -> Int {
 }
 
 /// `e` with a bound local replaced by the literal it was bound to, so a
-/// projection or a pattern can be read by position. A local bound to another
-/// local follows the chain (`let alias = pair`), each hop below the binding
-/// that names it, and a projection of a literal tuple or record reads the
-/// selected element (`box.0.1`). Anything else as is.
-fn edp_escape_resolve(_ e: Expr) -> Expr {
+/// projection or a pattern can be read by position, paired with the scope
+/// that literal's names are read in (the index of its binding: see
+/// `edp_escape_limit`). A local bound to another local follows the chain
+/// (`let alias = pair`), each hop below the binding that names it, and a
+/// projection of a literal tuple or record reads the selected element
+/// (`box.0.1`). Anything else as is, in the current scope.
+fn edp_escape_resolve(_ e: Expr) -> (Expr, Int) {
   edp_escape_resolve_at(e = e, depth = 0)
 }
 
-fn edp_escape_resolve_at(e: Expr, depth: Int) -> Expr {
+fn edp_escape_resolve_at(e: Expr, depth: Int) -> (Expr, Int) {
+  let top = edp_escape_top()
   if depth > 32 {
-    return e
+    return (e, top)
   }
   match e {
     EIdent(n, _) => {
-      let mut idx = edp_escape_find(name = n, below = Array::length(edp_escape_tainted))
-      let mut out = e
+      let mut idx = edp_escape_find(name = n, below = top)
+      let mut out = (e, top)
       while idx >= 0 {
         let (_, _, init) = Array::get(edp_escape_tainted, at = idx)
         idx = match init {
           Some(EIdent(src, _)) => edp_escape_find(name = src, below = idx),
           Some(v) => {
             out = match v {
-              ETuple(_) => v,
-              ERecord(_, _, _) => v,
-              ECall(_, _, _, _) => v,
-              _ => e
+              ETuple(_) => (v, idx),
+              ERecord(_, _, _) => (v, idx),
+              ECall(_, _, _, _) => (v, idx),
+              _ => (e, top)
             }
             -1
           },
@@ -292,22 +317,31 @@ fn edp_escape_resolve_at(e: Expr, depth: Int) -> Expr {
       }
       out
     },
-    EDot(o, field, _, _) => match edp_escape_resolve_at(e = o, depth = depth + 1) {
-      ETuple(items) => match Int::parse(field) {
-        Some(k) => if k >= 0 && k < Array::length(items) {
-          edp_escape_resolve_at(e = Array::get(items, at = k), depth = depth + 1)
-        } else {
-          e
+    EDot(o, field, _, _) => {
+      let (r, lim) = edp_escape_resolve_at(e = o, depth = depth + 1)
+      let part = match r {
+        ETuple(items) => match Int::parse(field) {
+          Some(k) => if k >= 0 && k < Array::length(items) {
+            Some(Array::get(items, at = k))
+          } else {
+            None
+          },
+          None => None
         },
-        None => e
-      },
-      ERecord(_, fields, _) => match edp_field_value(fields = fields, name = field) {
-        Some(v) => edp_escape_resolve_at(e = v, depth = depth + 1),
-        None => e
-      },
-      _ => e
+        ERecord(_, fields, _) => edp_field_value(fields = fields, name = field),
+        _ => None
+      }
+      match part {
+        Some(x) => {
+          let old = edp_escape_set_limit(lim)
+          let res = edp_escape_resolve_at(e = x, depth = depth + 1)
+          let _ = edp_escape_set_limit(old)
+          res
+        },
+        None => (e, top)
+      }
     },
-    _ => e
+    _ => (e, top)
   }
 }
 
@@ -342,20 +376,24 @@ fn edp_data_root(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: A
       }
     },
     ELabeledArg(_, _, v) => edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs),
-    EDot(o, field, _, _) => match edp_escape_resolve(o) {
-      ETuple(items) => match Int::parse(field) {
-        Some(k) => if k >= 0 && k < Array::length(items) {
-          edp_data_root_items(items = [Array::get(items, at = k)], needing = needing, stmts = stmts, fn_defs = fn_defs)
-        } else {
-          edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
+    EDot(o, field, _, _) => {
+      // The selected part is read in the scope its literal was bound in.
+      let (r, lim) = edp_escape_resolve(o)
+      match r {
+        ETuple(items) => match Int::parse(field) {
+          Some(k) => if k >= 0 && k < Array::length(items) {
+            edp_data_root_items_at(items = [Array::get(items, at = k)], lim = lim, needing = needing, stmts = stmts, fn_defs = fn_defs)
+          } else {
+            edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
+          },
+          None => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
         },
-        None => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
-      },
-      ERecord(_, fields, _) => match edp_field_value(fields = fields, name = field) {
-        Some(v) => edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs),
-        None => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
-      },
-      _ => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
+        ERecord(_, fields, _) => match edp_field_value(fields = fields, name = field) {
+          Some(v) => edp_data_root_items_at(items = [v], lim = lim, needing = needing, stmts = stmts, fn_defs = fn_defs),
+          None => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
+        },
+        _ => edp_data_root(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      }
     },
     EIf(_, t, el) => edp_needing_escape_or(a = edp_data_root_items(items = [t], needing = needing, stmts = stmts, fn_defs = fn_defs), b = edp_data_root_items(items = [
       el
@@ -376,7 +414,11 @@ fn edp_data_root_block(n: String, v: Expr, b: Expr, needing: Array[String], stmt
     needing
   }
   let mark = edp_escape_taint(name = n, root = edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs), init = Some(v))
+  // Inside a part read in an earlier scope (`edp_escape_limit`), the block's
+  // own binding sits above that limit; the body sees the whole stack.
+  let old = edp_escape_set_limit(-1)
   let hit = edp_data_root_items(items = [b], needing = inner, stmts = stmts, fn_defs = fn_defs)
+  let _ = edp_escape_set_limit(old)
   edp_escape_untaint(mark)
   hit
 }
@@ -412,6 +454,14 @@ fn edp_data_root_items(items: Array[Expr], needing: Array[String], stmts: Array[
       }
     }
   }
+  hit
+}
+
+/// `edp_data_root_items` with names looked up below `lim`.
+fn edp_data_root_items_at(items: Array[Expr], lim: Int, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> String {
+  let old = edp_escape_set_limit(lim)
+  let hit = edp_data_root_items(items = items, needing = needing, stmts = stmts, fn_defs = fn_defs)
+  let _ = edp_escape_set_limit(old)
   hit
 }
 
@@ -481,7 +531,22 @@ fn edp_pat_taint_flush(p: Pat, e: Expr, needing: Array[String], stmts: Array[Stm
 }
 
 fn edp_pat_taint(p: Pat, e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
-  let v = edp_escape_resolve(e)
+  let (v, lim) = edp_escape_resolve(e)
+  match (p, v) {
+    (PBind(_), _) => edp_pat_taint_here(p = p, e = e, v = v, needing = needing, stmts = stmts, fn_defs = fn_defs),
+    (PWild, _) => (),
+    (POr(_, _), _) => edp_pat_taint_here(p = p, e = e, v = v, needing = needing, stmts = stmts, fn_defs = fn_defs),
+    _ => {
+      // The literal's parts are read in the scope it was bound in.
+      let old = edp_escape_set_limit(lim)
+      edp_pat_taint_here(p = p, e = e, v = v, needing = needing, stmts = stmts, fn_defs = fn_defs)
+      let _ = edp_escape_set_limit(old)
+      ()
+    }
+  }
+}
+
+fn edp_pat_taint_here(p: Pat, e: Expr, v: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
   match (p, v) {
     (PBind(n), _) => {
       Array::push(edp_pat_pending, value = (n, edp_data_root_items(items = [e], needing = needing, stmts = stmts, fn_defs = fn_defs), Some(e)))
@@ -565,9 +630,9 @@ fn edp_escape_store_taint(callee_nm: String, args: Array[Expr], needing: Array[S
   if Array::length(parts) < 2 || Array::length(args) < 2 {
     return ()
   }
-  let last = Array::get(parts, at = Array::length(parts) - 1)
-  let ctor = String::length(last) > 0 && String::byte_at(last, at = 0) >= 65 && String::byte_at(last, at = 0) <= 90
-  if ctor || !edp_callee_stores_data(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm) {
+  // Only a builtin that writes into its receiver: `Map::set` is persistent
+  // (it returns a new map and leaves its receiver as it was).
+  if !(callee_nm == "Array::push" || callee_nm == "Array::push_all" || callee_nm == "Array::set") || edp_params_of_fn(stmts = stmts, fn_defs = fn_defs, nm = callee_nm) != None {
     return ()
   }
   match Array::get(args, at = 0) {
@@ -677,6 +742,7 @@ export fn edp_needing_escape_stmts_in(stmts: Array[Stmt], indices: Option[Array[
     }
     Array::truncate(edp_escape_tainted, length = 0)
     Array::truncate(edp_pat_pending, length = 0)
+    Array::set(edp_escape_limit, at = 0, value = -1)
     match Array::get(stmts, at = i) {
       SLet(_, _, _, _, expr) => {
         hit = edp_needing_escape(e = expr, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
