@@ -450,7 +450,8 @@ fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, depth: Int
 /// `let` retains it first (`scope_tail_proj_root`) and every call leaked
 /// that reference (#1980). Declined here, the function joins
 /// `cl_own_return_stmts`' mixed set, whose owning-return marker retains each
-/// result path, and callers release it. Declining only ever costs a retain.
+/// such read, and callers release it. Only a read the marker always retains
+/// -- a field read or a borrow-returning call -- declines the verdict.
 fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> Bool {
   match top {
     ELet(_, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
@@ -470,13 +471,14 @@ fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> 
       }
       found
     },
-    // A bare name declines only when it provably reaches an owned binding:
-    // the owning-return marker retains a name only when codegen knows it as
-    // borrowed, so a flow-dependent one (`let mut out = Array::get(a, 0)`)
-    // keeps the borrow-returning verdict. A field read or a borrow-returning
-    // call declines on an unknown root too, because the marker retains it
-    // whatever it reads into.
-    EIdent(n, _) => bret_resolve_root(known = known, body = body, name = n, depth = 0) == bk_owned,
+    // A bare name never declines here. The owning-return marker retains a
+    // name only when codegen knows it as borrowed, so a name handed back
+    // through it is not reliably retained (a match binder of a fresh value,
+    // a parameter the borrow inference left borrowed). A provably owned
+    // spine binding is already declined by `tail_is_borrow_ret_safe`.
+    EIdent(_, _) => false,
+    // A field read or a borrow-returning call declines on an owned or a
+    // flow-dependent root: the marker retains it whatever it reads into.
     _ => if bret_is_view_expr(known = known, e = top) {
       let roots: Array[String] = []
       bret_view_roots(known = known, e = top, out = roots)

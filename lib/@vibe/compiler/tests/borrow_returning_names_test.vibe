@@ -120,7 +120,7 @@ test "a projection tail into a local let is not borrow-returning" {
 test "a view of a local, or a match binder of one, is not borrow-returning" {
   let alias = "fn pick(i: Int) -> Array[Int] {\n  let v = [[i], [i + 1]]\n  if i > 0 {\n    let w = Array::get(v, 0)\n    w\n  } else {\n    Array::get(v, 1)\n  }\n}\n"
   inspect(contains(names = borrow_set_of(alias), name = "pick"), "false")
-  let binder = "enum S {\n  Full(Array[Int]);\n  Empty\n}\n\nfn pick(i: Int) -> Array[Int] {\n  let s = Full([i])\n  match s {\n    Full(xs) => xs,\n    Empty => [0]\n  }\n}\n"
+  let binder = "enum S {\n  Full(Array[Array[Int]]);\n  Empty\n}\n\nfn pick(i: Int, d: Array[Array[Int]]) -> Array[Int] {\n  let s = Full([[i]])\n  match s {\n    Full(xss) => Array::get(xss, 0),\n    Empty => Array::get(d, 0)\n  }\n}\n"
   inspect(contains(names = borrow_set_of(binder), name = "pick"), "false")
 }
 
@@ -129,6 +129,11 @@ test "a borrow-returning helper applied to a local is not borrow-returning" {
   let names = borrow_set_of(src)
   inspect(contains(names = names, name = "first"), "true")
   inspect(contains(names = names, name = "pick"), "false")
+}
+
+test "a bare name keeps the verdict: the owning-return marker may not retain it" {
+  let src = "enum S {\n  Full(Array[Int]);\n  Empty\n}\n\nfn pick(i: Int, d: Array[Int]) -> Array[Int] {\n  match Some(Full([i])) {\n    Some(Full(xs)) => xs,\n    _ => d\n  }\n}\n"
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "true")
 }
 
 test "a read into a parameter, through a view or a binder, stays borrow-returning" {
