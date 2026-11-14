@@ -107,7 +107,7 @@ classify() {
   fi
   local fatal leaks cycles skips
   fatal="$(grep -cE "$fatal_pattern" "$CLASSIFY_BODY" || true)"
-  leaks="$(grep -c ': owned value not consumed$' "$CLASSIFY_BODY" || true)"
+  leaks="$(grep -cE ': owned value not consumed( \([0-9]+ references\))?$' "$CLASSIFY_BODY" || true)"
   cycles="$(grep -c 'warning: reference cycle' "$CLASSIFY_BODY" || true)"
   skips="$(grep -c 'not checked: ' "$CLASSIFY_BODY" || true)"
   echo "[rc-selfcheck] plans=$total exempt=$exempt fatal=$fatal leaks=$leaks cycles=$cycles not-checked=$skips"

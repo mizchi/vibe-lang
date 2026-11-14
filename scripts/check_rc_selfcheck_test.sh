@@ -78,6 +78,22 @@ printf '%s x 0: owned value released 1 more than held\n' "$fname" >>"$WORK/over.
 cmp -s "$report" "$WORK/over.txt" && fail "the over-release line did not land"
 expect_refused "over-release" "$WORK/over.txt" "releases more than it holds"
 
+# 3a'. The other three fatal shapes, each on its own: a classifier that lost one
+#      alternative must not stay green.
+for msg in "borrowed parameter consumed without a dup" "consume mark at offset 7 is not a consuming occurrence" "heap value planned as scalar"; do
+  cp "$report" "$WORK/fatal.txt"
+  printf '%s x 0: %s\n' "$fname" "$msg" >>"$WORK/fatal.txt"
+  cmp -s "$report" "$WORK/fatal.txt" && fail "the '$msg' line did not land"
+  expect_refused "$msg" "$WORK/fatal.txt" "releases more than it holds"
+done
+
+# 3a''. A leak with a reference count is counted, not refused.
+cp "$report" "$WORK/leak.txt"
+printf '%s x 0: owned value not consumed (2 references)\n' "$fname" >>"$WORK/leak.txt"
+before="$(bash scripts/check_rc_selfcheck.sh --report "$report" "$other" 2>/dev/null | sed -n 's/.* leaks=\([0-9]*\) .*/\1/p')"
+after="$(bash scripts/check_rc_selfcheck.sh --report "$WORK/leak.txt" "$other" 2>/dev/null | sed -n 's/.* leaks=\([0-9]*\) .*/\1/p')"
+[ -n "$before" ] && [ -n "$after" ] && [ "$after" -eq $((before + 1)) ] || fail "a leak line with '(2 references)' was not counted (leaks $before -> $after)"
+
 # 3b. A header saying no plan was checked.
 sed '1s/^plans [0-9]* of /plans 0 of /' "$report" >"$WORK/zero.txt"
 head -n 1 "$WORK/zero.txt" | grep -q '^plans 0 of ' || fail "the zero-plan header did not land"

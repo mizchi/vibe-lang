@@ -2426,6 +2426,8 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
     // does no extra work.
     let selfcheck_out = Env::get("VIBE_RC_SELFCHECK_OUT")
     if selfcheck_out != "" {
+      // The report must not overwrite what this compile reads or writes.
+      refuse_rc_selfcheck_destination_conflict(selfcheck_out)
       let (shard, of) = rc_selfcheck_shard(Env::get("VIBE_RC_SELFCHECK_SHARD"))
       perceus_selfcheck_enable(shard = shard, of = of)
       // `VIBE_RC_SELFCHECK_LIST=1` names the shard's plans instead of
@@ -2442,9 +2444,34 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
     }
     let code = cli_main_with_lanes(fs_lanes = fs_lane_compile_full, ss_lanes = ss_lane_compile_full, component_tools = component_tools_full, format_tool = adapter_format, lsp_tool = lsp_main)
     if selfcheck_out != "" {
+      refuse_rc_selfcheck_destination_conflict(selfcheck_out)
       Fs::write_file(selfcheck_out, contents = perceus_selfcheck_report())
     }
     code
+  }
+}
+
+/// #3718: refuse a `VIBE_RC_SELFCHECK_OUT` that names the compile's input or
+/// output, or a directory, before the compile and again before the report is
+/// written. The telemetry sidecar's resolved comparison is compiled only into
+/// `VIBE_CFG=telemetry` builds, so this compares the spellings: the variable
+/// is set by scripts/check_rc_selfcheck.sh, which names a fresh temp file.
+fn refuse_rc_selfcheck_destination_conflict(_ destination: String) -> Unit with Fs + Env + Exception {
+  let input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT"))
+  let output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT"))
+  let conflict = if destination == input {
+    "the compile's input"
+  } else if destination == output {
+    "the compile's output"
+  } else if Fs::is_dir(destination) {
+    "a directory"
+  } else {
+    ""
+  }
+  if conflict != "" {
+    throw(String::concat("VIBE_RC_SELFCHECK_OUT must not name ", conflict))
+  } else {
+    ()
   }
 }
 
