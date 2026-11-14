@@ -2044,6 +2044,37 @@ done
 rm -rf "$cbdir"
 echo "[compiler-gate] catch-all binder multi-consume guard ok (0 on bump/rc/shadow/gc, rc heap_used=$cb_used B)"
 
+# 40f0v. #4169: the RC shadow build validates the plan the RC build compiles.
+#        The RC build drops a function nothing reachable calls before it
+#        infers borrows; the shadow build kept every source definition, so an
+#        uncalled caller passing an `if` to `first` made `first`'s parameter
+#        owned in the shadow build only. Unfixed, rc left 260 B in use and
+#        shadow 176,172 B (both answering 4000). The row requires the two
+#        lanes' heaps to agree, and bounds them at 20,000.
+echo "[compiler-gate] 40f0v/40 the RC shadow build plans the program the RC build compiles (#4169)"
+gate_workdir sudir "_build/_gate_rc_shadow_uncalled_caller"
+su_rc=""
+su_shadow=""
+for su_lane in rc shadow; do
+  gate_fs_compile_on "$su_lane" "fixtures/rc_shadow_uncalled_caller_test.vibe" "$sudir/su.wasm" main
+  gate_require_artifact "$sudir/su.wasm" "rc_shadow_uncalled_caller fixture did not compile on the $su_lane lane (#4169)"
+  gate_run su_out last "$sudir/su.wasm"
+  gate_require_eq "$su_out" "4000" "rc_shadow_uncalled_caller got '$su_out' on the $su_lane lane (want 4000) (#4169)."
+  su_used="$(node scripts/measure_heap.mjs "$sudir/su.wasm" main 2>/dev/null | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+  if [ -z "$su_used" ]; then
+    echo "[compiler-gate] FAIL: could not measure rc_shadow_uncalled_caller heap on the $su_lane lane" >&2; exit 1
+  fi
+  if [ "$su_lane" = rc ]; then su_rc="$su_used"; else su_shadow="$su_used"; fi
+done
+if [ "$su_rc" != "$su_shadow" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_uncalled_caller heap_used differs between rc ($su_rc B) and shadow ($su_shadow B): the shadow build planned a different program than the RC build compiles (#4169)" >&2; exit 1
+fi
+if [ "$su_rc" -ge 20000 ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_uncalled_caller heap_used=$su_rc >= 20000 on rc and shadow (#4169)" >&2; exit 1
+fi
+rm -rf "$sudir"
+echo "[compiler-gate] RC shadow plans the RC build's program ok (4000 on rc/shadow, heap_used=$su_rc B on both)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
