@@ -13,8 +13,10 @@ import @vibe/compiler/core {
   env_value_binding,
   expr_any_node,
   fresh_var,
+  indexed_callback_row_key,
   is_row_provenance_label,
   refine_trait_bounds_from_receiver,
+  row_free_callback_key,
   row_free_callback_offset,
   row_items,
   subst_apply
@@ -59,14 +61,39 @@ fn callback_row_has_effect(_ row: Option[String]) -> Bool {
   }
 }
 
-export fn record_row_free_callback(arg: Expr, expected: Type, actual: Type, s: Subst, capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
+export fn abi_effect_row(_ row: Option[String]) -> String {
+  match row {
+    Some(text) => {
+      let mut out = ""
+      for label in row_items(text) {
+        if !is_row_provenance_label(label) {
+          out = if out == "" {
+            label
+          } else {
+            out + ", " + label
+          }
+        } else {
+          ()
+        }
+      }
+      out
+    },
+    None => ""
+  }
+}
+
+export fn record_row_free_callback(arg: Expr, expected: Type, actual: Type, s: Subst, capture: Option[TypedOccurrenceRoleLaneCapture], indexed_callee_row: Option[String]) -> Unit {
   match (capture, expected) {
-    (Some(rows), CtFn(_, _, Some(row))) => if callback_row_has_effect(Some(row)) {
+    (Some(rows), CtFn(params, _, Some(row))) => if callback_row_has_effect(Some(row)) {
       match subst_apply(s = s, ty = actual) {
         CtFn(_, _, actual_row) => if !callback_row_has_effect(actual_row) {
           let off = row_free_callback_offset(checker_call_argument_value(arg))
           if off >= 0 {
-            Array::push(rows.row_free_callback_offsets, value = off)
+            let key = match indexed_callee_row {
+              Some(callee_row) => indexed_callback_row_key(arity = Array::length(params), callback_row = abi_effect_row(Some(row)), callee_row = callee_row),
+              None => row_free_callback_key
+            }
+            Array::push(rows.row_free_callbacks, value = (off, key))
           } else {
             ()
           }
@@ -450,7 +477,7 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
     // parameter's type, range-checked. An annotated `let` is such a call
     // (`ascribe_wrap`), so `let x: Int32 = 5` checks the same way.
     let at = int32_literal_adapt(e = arg, expected = expected, actual = at_raw, s = ns, errors = errors, off = -1)
-    record_row_free_callback(arg = arg, expected = expected, actual = at, s = ns, capture = capture)
+    record_row_free_callback(arg = arg, expected = expected, actual = at, s = ns, capture = capture, indexed_callee_row = None)
     if saved_child >= 0 {
       let _ = call_argument_capture_cursor(capture = capture, next = saved_child); ()
     } else {

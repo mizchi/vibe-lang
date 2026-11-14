@@ -1,6 +1,7 @@
 import ./evidence_callback_adapters.vibe {
   edp_callback_offsets_set,
   edp_expr_has_callback_adapter,
+  edp_indexed_callback_slot,
   edp_needs_callback_adapter,
   edp_parameter_callback_slot,
   edp_resolve_callback_alias
@@ -38,7 +39,9 @@ import @vibe/compiler/lowering/effects/queries {
   edp_is_identity_ascription,
   edp_mf_dirty_count,
   edp_mf_set_stmt,
+  edp_note_checked_index_call,
   edp_pat_binds,
+  edp_reset_checked_index_calls,
   edp_rq_fold,
   edp_str_array_contains,
   row_free_callback_capture_prefix
@@ -270,6 +273,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   // at a row-typed parameter, one is compiled without the dict the callee
   // passes, so the slot gets a wrapper literal that takes it.
   edp_callback_offsets_set(callback_offsets)
+  edp_reset_checked_index_calls()
   let pure_names = MutSet::new_string()
   for def in fn_defs {
     let (_, _, _, fname, _, frow) = def
@@ -1905,20 +1909,33 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
     // A labeled argument names its parameter; a positional one beside a
     // labeled one has no position to trust, so only the labeled one is
     // stamped there.
-    let a3 = match a2 {
-      ELabeledArg(l, m, v) => if String::length(named) > 0 {
-        let lpos = edp_param_index_by_label(stmts = stmts, fn_index = fn_index, callee = named, label = l)
-        ELabeledArg(l, m, edp_stamp_slot_arg(a = v, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names, callee = named, pos = lpos))
+    let checked_slot = if named == "" && local_callee == "" && off >= 0 {
+      edp_indexed_callback_slot(a2)
+    } else {
+      None
+    }
+    let a3 = match checked_slot {
+      Some((arity, row, callee_row)) => if edp_slot_row_stampable(row) && (callee_row == "" || edp_slot_row_stampable(callee_row)) {
+        edp_note_checked_index_call(off = off, row = callee_row)
+        edp_stamp_slot_arg_at(a = a2, scope = scope, pure_names = pure_names, slot = Some((arity, row)))
       } else {
         a2
       },
-      other => if String::length(named) > 0 && !labeled {
-        edp_stamp_slot_arg(a = other, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names, callee = named, pos = ai + shift)
-      } else if String::length(local_callee) > 0 && !labeled {
-        edp_set_slot_callee(callee = local_callee, used = true)
-        edp_stamp_slot_arg_at(a = other, scope = scope, pure_names = pure_names, slot = edp_local_slot_fn_type(callee = local_callee, scope = scope, stmts = stmts, pos = ai))
-      } else {
-        other
+      None => match a2 {
+        ELabeledArg(l, m, v) => if String::length(named) > 0 {
+          let lpos = edp_param_index_by_label(stmts = stmts, fn_index = fn_index, callee = named, label = l)
+          ELabeledArg(l, m, edp_stamp_slot_arg(a = v, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names, callee = named, pos = lpos))
+        } else {
+          a2
+        },
+        other => if String::length(named) > 0 && !labeled {
+          edp_stamp_slot_arg(a = other, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names, callee = named, pos = ai + shift)
+        } else if String::length(local_callee) > 0 && !labeled {
+          edp_set_slot_callee(callee = local_callee, used = true)
+          edp_stamp_slot_arg_at(a = other, scope = scope, pure_names = pure_names, slot = edp_local_slot_fn_type(callee = local_callee, scope = scope, stmts = stmts, pos = ai))
+        } else {
+          other
+        }
       }
     }
     Array::push(out, value = a3)

@@ -3,6 +3,7 @@ import ./checker_expr_capture_helpers.vibe {
 }
 
 import ./checker_call_arguments.vibe {
+  abi_effect_row,
   check_written_call_arguments,
   checker_call_argument_env,
   checker_call_argument_positions,
@@ -2763,7 +2764,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     let (at, ns, nc) = check_child(arg, arg_env, defs, s2, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, value = at)
                     s2 = if ai < Array::length(callee_param_tys) {
-                      record_row_free_callback(arg = arg, expected = Array::get(callee_param_tys, at = ai), actual = at, s = ns, capture = capture)
+                      record_row_free_callback(arg = arg, expected = Array::get(callee_param_tys, at = ai), actual = at, s = ns, capture = capture, indexed_callee_row = None)
                       effect_inst_arg_check(env = env, arg = arg, arg_ty = at, param_ty = Array::get(callee_param_tys, at = ai), s = ns, callee = callee_inst, callee_name = callee_name0, defs = defs, errors = errors)
                     } else {
                       ns
@@ -2839,6 +2840,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // #3539: a callee that is an expression (`mk()()`, `(s.f)()`,
               // `(xs[0])()`) is charged the row of the function it evaluates to.
               record_call_callee_type(call_off = call_off, callee = callee, ty = opened_callee_ty)
+              let indexed_callee_row = match (callee, opened_callee_ty) {
+                (ECall(EIdent("__index", _), _, _, _), CtFn(_, _, row)) => Some(abi_effect_row(row)),
+                _ => None
+              }
               let (callee_param_tys, callee_inst) = match (ct, opened_callee_ty) {
                 (CtForAll(_, _, _), CtFn(oparams, _, _)) => (oparams, Some((ct, opened_callee_ty))),
                 _ => callee_callback_params(ct = ct, s = s1)
@@ -2859,7 +2864,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
                 Array::push(arg_tys, value = at)
                 s2 = if ai < Array::length(callee_param_tys) {
-                  record_row_free_callback(arg = arg, expected = Array::get(callee_param_tys, at = ai), actual = at, s = ns, capture = capture)
+                  record_row_free_callback(arg = arg, expected = Array::get(callee_param_tys, at = ai), actual = at, s = ns, capture = capture, indexed_callee_row = indexed_callee_row)
                   effect_inst_arg_check(env = env, arg = arg, arg_ty = at, param_ty = Array::get(callee_param_tys, at = ai), s = ns, callee = callee_inst, callee_name = "", defs = defs, errors = errors)
                 } else {
                   ns

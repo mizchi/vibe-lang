@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, expr_children_into, row_free_callback_offset
+  Expr, Stmt, TypeExpr, expr_children_into, indexed_callback_row_from_key, is_indexed_callback_row_key, row_free_callback_offset
 }
 
 import @vibe/core {
@@ -20,6 +20,39 @@ import ./evidence_scan_view_expr.vibe {
 
 import ./evidence_slot_refusals.vibe {
   edp_alias_fn_type, edp_parameter_type, edp_slot_row_stampable
+}
+
+let indexed_callback_slots: Array[MutMap[Int, (Int, String, String)]] = []
+
+export fn edp_indexed_callback_slots_set(offsets: Array[Int], keys: Array[String], callbacks: MutSet[Int]) -> Unit {
+  let slots: MutMap[Int, (Int, String, String)] = MutMap::new_int()
+  let mut i = 0
+  while i < Array::length(keys) {
+    let key = Array::get(keys, at = i)
+    if is_indexed_callback_row_key(key) {
+      match indexed_callback_row_from_key(key) {
+        Some(slot) => {
+          let off = Array::get(offsets, at = i)
+          MutMap::set(slots, k = off, v = slot)
+          MutSet::insert(callbacks, x = off)
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(indexed_callback_slots, length = 0)
+  Array::push(indexed_callback_slots, value = slots)
+}
+
+export fn edp_indexed_callback_slot(_ arg: Expr) -> Option[(Int, String, String)] {
+  if Array::length(indexed_callback_slots) > 0 && edp_needs_callback_adapter(arg) {
+    MutMap::get(Array::get(indexed_callback_slots, at = 0), k = row_free_callback_offset(arg))
+  } else {
+    None
+  }
 }
 
 let edp_callback_offsets: Array[MutSet[Int]] = []

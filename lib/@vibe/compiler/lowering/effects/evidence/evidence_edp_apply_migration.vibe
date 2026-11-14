@@ -14,12 +14,14 @@ import @vibe/compiler/lowering/effects/direct {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_checked_index_call,
   edp_efn_eligible_for_migration,
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
   edp_mf_set_stmt,
   edp_pat_binds,
   edp_pat_qname,
+  edp_row_is_exactly,
   edp_rq_fold,
   edp_split_qualified,
   edp_str_array_contains
@@ -1325,7 +1327,11 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
       } else {
         ECall(callee, edp_rewrite_needing_body_exprs(exprs = args, ename = ename, dict_pname = dict_pname, needing = needing), off, callee_resolution)
       },
-      _ => ECall(callee, edp_rewrite_needing_body_exprs(exprs = args, ename = ename, dict_pname = dict_pname, needing = needing), off, callee_resolution)
+      _ => if edp_index_call_needs_dict(callee = callee, off = off, ename = ename) {
+        ECall(edp_rewrite_needing_body(expr = callee, ename = ename, dict_pname = dict_pname, needing = needing), edp_prepend_expr(v = EIdent(dict_pname, -1), args = edp_rewrite_needing_body_exprs(exprs = args, ename = ename, dict_pname = dict_pname, needing = needing)), off, callee_resolution)
+      } else {
+        ECall(callee, edp_rewrite_needing_body_exprs(exprs = args, ename = ename, dict_pname = dict_pname, needing = needing), off, callee_resolution)
+      }
     },
     EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_needing_body(expr = l, ename = ename, dict_pname = dict_pname, needing = needing), edp_rewrite_needing_body(expr = r, ename = ename, dict_pname = dict_pname, needing = needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_needing_body(expr = e2, ename = ename, dict_pname = dict_pname, needing = needing)),
@@ -1353,6 +1359,13 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
 fn edp_rewrite_needing_body_exprs(exprs: Array[Expr], ename: String, dict_pname: String, needing: Array[String]) -> Array[Expr] {
   for e in exprs {
     edp_rewrite_needing_body(expr = e, ename = ename, dict_pname = dict_pname, needing = needing)
+  }
+}
+
+fn edp_index_call_needs_dict(callee: Expr, off: Int, ename: String) -> Bool {
+  match edp_checked_index_call(off = off, callee = callee) {
+    Some(row) => Array::length(edp_rh_es_names_cell) > 0 && edp_row_is_exactly(row = row, ename = ename, es_names = Array::get(edp_rh_es_names_cell, at = 0), es_members_list = Array::get(edp_rh_es_members_cell, at = 0)),
+    None => false
   }
 }
 
@@ -1657,7 +1670,11 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
       } else {
         ECall(callee, edp_rewrite_handle_body_exprs(exprs = args, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), off, callee_resolution)
       },
-      _ => ECall(callee, edp_rewrite_handle_body_exprs(exprs = args, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), off, callee_resolution)
+      _ => if edp_index_call_needs_dict(callee = callee, off = off, ename = ename) {
+        ECall(edp_rewrite_handle_body(expr = callee, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), edp_prepend_expr(v = dict_literal, args = edp_rewrite_handle_body_exprs(exprs = args, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing)), off, callee_resolution)
+      } else {
+        ECall(callee, edp_rewrite_handle_body_exprs(exprs = args, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), off, callee_resolution)
+      }
     },
     EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_handle_body(expr = l, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), edp_rewrite_handle_body(expr = r, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_handle_body(expr = e2, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing)),
