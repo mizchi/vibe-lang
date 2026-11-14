@@ -90,24 +90,18 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         first
       } else {
         // A store inside one branch (`Array::push(xs, value = g)`) has not run
-        // in the other, so each branch is walked without the other's stores;
-        // after the `if` either may have run, so both are kept.
-        let mark = Array::length(edp_escape_tainted)
+        // in the other, so each branch is walked from the bindings as they
+        // were before the `if`; after it either may have run, so a binding
+        // either branch tainted stays tainted.
+        let before = edp_escape_snapshot()
         let in_then = edp_needing_escape(e = t, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
-        let then_stores: Array[(String, String, Option[Expr])] = []
-        let mut k = mark
-        while k < Array::length(edp_escape_tainted) {
-          Array::push(then_stores, value = Array::get(edp_escape_tainted, at = k))
-          k = k + 1
-        }
-        edp_escape_untaint(mark)
+        let after_then = edp_escape_snapshot()
+        edp_escape_restore(before)
         if in_then != "" {
           in_then
         } else {
           let in_else = edp_needing_escape(e = el, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
-          for entry in then_stores {
-            Array::push(edp_escape_tainted, value = entry)
-          }
+          edp_escape_join(after_then)
           in_else
         }
       }
@@ -421,13 +415,22 @@ fn edp_data_root_block(n: String, v: Expr, b: Expr, needing: Array[String], stmt
   } else {
     needing
   }
-  let mark = edp_escape_taint(name = n, root = edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs), init = Some(v))
-  // Inside a part read in an earlier scope (`edp_escape_limit`), the block's
-  // own binding sits above that limit; the body sees the whole stack.
+  let root = edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs)
+  // Inside a part read in an earlier scope (`edp_escape_limit`), the body sees
+  // the bindings below that limit and the block's own binding, not the ones
+  // bound after the stored literal: the stack is cut back to the limit for the
+  // walk and put back after it. Reading data stores nothing, so nothing the
+  // walk does to the cut stack needs to survive it.
+  let lim = Array::get(edp_escape_limit, at = 0)
+  let saved = edp_escape_snapshot()
+  if lim >= 0 && lim < Array::length(edp_escape_tainted) {
+    Array::truncate(edp_escape_tainted, length = lim)
+  }
+  let _ = edp_escape_taint(name = n, root = root, init = Some(v))
   let old = edp_escape_set_limit(-1)
   let hit = edp_data_root_items(items = [b], needing = inner, stmts = stmts, fn_defs = fn_defs)
   let _ = edp_escape_set_limit(old)
-  edp_escape_untaint(mark)
+  edp_escape_restore(saved)
   hit
 }
 
@@ -629,9 +632,10 @@ fn edp_pat_taint_here(p: Pat, e: Expr, v: Expr, needing: Array[String], stmts: A
 /// #4065: a qualified builtin that stores its later arguments into its first
 /// (`Array::push(xs, value = g)`, `Map::set(m, key = k, value = g)`) leaves the
 /// receiver holding what it stored, so a later read of the receiver is a read
-/// of that function. The receiver is re-bound with that root for the rest of
-/// the enclosing scope; it carries no initializer, since its contents are no
-/// longer the literal it was bound to. A constructor stores into a new value,
+/// of that function. The receiver's binding, and every binding aliasing the
+/// same array, is tainted with that root in place (the array holds it however
+/// the scope that stored it ends); it keeps no literal initializer, since its
+/// contents are no longer that literal. A constructor stores into a new value,
 /// not into its first argument, so it is not one of these.
 fn edp_escape_store_taint(callee_nm: String, args: Array[Expr], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
   let parts = String::split(callee_nm, sep = "::")
@@ -655,8 +659,15 @@ fn edp_escape_store_taint(callee_nm: String, args: Array[Expr], needing: Array[S
       if root != "" {
         // The array is shared by every plain alias of it (`let ys = xs`), so
         // all of them hold what was stored.
-        for name in edp_escape_alias_group(recv) {
-          let _ = edp_escape_taint(name = name, root = root, init = None)
+        for idx in edp_escape_alias_group(recv) {
+          let (name, _, init) = Array::get(edp_escape_tainted, at = idx)
+          // Its literal no longer describes it, but an alias link still
+          // names the same array.
+          let kept = match init {
+            Some(EIdent(_, _)) => init,
+            _ => None
+          }
+          Array::set(edp_escape_tainted, at = idx, value = (name, root, kept))
         }
         ()
       }
@@ -666,37 +677,94 @@ fn edp_escape_store_taint(callee_nm: String, args: Array[Expr], needing: Array[S
   }
 }
 
-/// `name` and every local the walk's bindings connect to it through a plain
-/// alias (`let ys = xs`, either direction, transitively).
-fn edp_escape_alias_group(_ name: String) -> Array[String] {
-  let group = [name]
+/// The walk bindings (indices into `edp_escape_tainted`) that hold the same
+/// array as the binding `name` names now: that binding and every binding a
+/// plain alias (`let ys = xs`) connects to it, either direction,
+/// transitively. An alias is resolved to the binding its source named where it
+/// was bound, so `let ys = xs; let xs = [..]` does not connect `ys` to the
+/// second `xs`. Empty when `name` is not a walk binding.
+fn edp_escape_alias_group(_ name: String) -> Array[Int] {
+  let start = edp_escape_find(name = name, below = edp_escape_top())
+  let group: Array[Int] = []
+  if start < 0 {
+    return group
+  }
+  Array::push(group, value = start)
   let mut grew = true
   let mut rounds = 0
-  // Each round that grows adds a name, so the stack's length bounds the walk
-  // and it always reaches the fixed point.
+  // Each round that grows adds a binding, so the stack's length bounds the
+  // walk and it always reaches the fixed point.
   let limit = Array::length(edp_escape_tainted) + 1
   while grew && rounds < limit {
     grew = false
     rounds = rounds + 1
-    for entry in edp_escape_tainted {
-      let (bound, _, init) = entry
+    let mut i = 0
+    while i < Array::length(edp_escape_tainted) {
+      let (_, _, init) = Array::get(edp_escape_tainted, at = i)
       match init {
         Some(EIdent(src, _)) => {
-          let has_bound = edp_str_array_contains(arr = group, v = bound)
-          let has_src = edp_str_array_contains(arr = group, v = src)
-          if has_src && !has_bound {
-            Array::push(group, value = bound)
-            grew = true
-          } else if has_bound && !has_src {
-            Array::push(group, value = src)
-            grew = true
+          let j = edp_escape_find(name = src, below = i)
+          if j >= 0 {
+            let has_i = edp_int_array_contains(arr = group, v = i)
+            let has_j = edp_int_array_contains(arr = group, v = j)
+            if has_j && !has_i {
+              Array::push(group, value = i)
+              grew = true
+            } else if has_i && !has_j {
+              Array::push(group, value = j)
+              grew = true
+            }
           }
         },
         _ => ()
       }
+      i = i + 1
     }
   }
   group
+}
+
+fn edp_int_array_contains(arr: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  for x in arr {
+    if x == v {
+      found = true
+    }
+  }
+  found
+}
+
+/// A copy of the walk's bindings, for `edp_escape_restore` / `edp_escape_join`.
+fn edp_escape_snapshot() -> Array[(String, String, Option[Expr])] {
+  let out: Array[(String, String, Option[Expr])] = []
+  for entry in edp_escape_tainted {
+    Array::push(out, value = entry)
+  }
+  out
+}
+
+/// Put the walk's bindings back as `snap` holds them.
+fn edp_escape_restore(_ snap: Array[(String, String, Option[Expr])]) -> Unit {
+  Array::truncate(edp_escape_tainted, length = 0)
+  for entry in snap {
+    Array::push(edp_escape_tainted, value = entry)
+  }
+  ()
+}
+
+/// Keep every binding `other` (the same bindings after another path) left
+/// tainted that the current bindings do not.
+fn edp_escape_join(_ other: Array[(String, String, Option[Expr])]) -> Unit {
+  let mut i = 0
+  while i < Array::length(other) && i < Array::length(edp_escape_tainted) {
+    let (_, root, _) = Array::get(other, at = i)
+    let (_, cur, _) = Array::get(edp_escape_tainted, at = i)
+    if root != "" && cur == "" {
+      Array::set(edp_escape_tainted, at = i, value = Array::get(other, at = i))
+    }
+    i = i + 1
+  }
+  ()
 }
 
 /// The last `::` segment of a constructor spelling (`Option::Some` -> `Some`).
