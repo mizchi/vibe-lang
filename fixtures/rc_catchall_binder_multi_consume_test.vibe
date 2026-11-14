@@ -55,6 +55,34 @@ fn twice_and(_ work: Array[T]) -> Int {
   }
 }
 
+// The first consume decides that the second one does not run.
+fn short_or(_ work: Array[T]) -> Int {
+  match Array::get(work, at = 0) {
+    Pair(_, _) => 0,
+    leaf => if !big(leaf) || big(leaf) {
+      0
+    } else {
+      1
+    }
+  }
+}
+
+// The arm returns an immutable scalar binding. Its shorter branch leaves
+// one of the retained references for the arm to release.
+fn scalar_result_binding(_ work: Array[T], _ both: Bool) -> Int {
+  match Array::get(work, at = 0) {
+    Pair(_, _) => 0,
+    leaf => {
+      let result = if both {
+        width(leaf) + width(leaf)
+      } else {
+        width(leaf)
+      }
+      result
+    }
+  }
+}
+
 // Two consumes in sequence.
 fn twice_seq(_ work: Array[T]) -> Int {
   match Array::get(work, at = 0) {
@@ -108,7 +136,15 @@ fn round(_ i: Int) -> Int {
   let work = [Leaf([i, i + 1])]
   let s = twice_and(work) - 1 + twice_seq(work) + twice_param(Array::get(work, at = 0)) + cond_and_branch(work) + one_per_path(work, i % 2 == 0)
   let fresh = [Leaf([i + 5, i + 6]), Leaf([i + 7, i + 8])]
-  s + total(Array::get(work, at = 0)) - (2 * i + 1) + Array::length(fresh) - 2
+  let singleton = [Leaf([i])]
+  let branch_count = scalar_result_binding(singleton, i % 2 == 0)
+  let expected = if i % 2 == 0 {
+    2
+  } else {
+    1
+  }
+  let skipped = twice_and(singleton) + short_or(singleton) + branch_count - expected
+  s + skipped + total(Array::get(work, at = 0)) - (2 * i + 1) + Array::length(fresh) - 2
 }
 
 fn main() -> Int {

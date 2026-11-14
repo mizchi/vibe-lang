@@ -337,7 +337,16 @@ fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Ar
       }
       acc
     },
-    EBinOp(_, l, r, _) => mpr_walk_operand(e_in = l, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn) + mpr_walk_operand(e_in = r, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EBinOp(op, l, r, _) => {
+      let left = mpr_walk_operand(e_in = l, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let right = mpr_walk_operand(e_in = r, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      // The right side still needs consume marks, but may never run.
+      if op == "&&" || op == "||" {
+        left
+      } else {
+        left + right
+      }
+    },
     EUnaryOp(_, x) => mpr_walk_operand(e_in = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
     EFn(_, _, _, _, _, body) => {
       let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = true)
@@ -466,12 +475,30 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
       }
       ok
     },
-    ELet(n, _, b, _) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
+    ELet(n, v, b, _) => match b {
+      EIdent(ret, _) => ret == n && mpr_scalar_result(e = v, local_names = local_names, bound = bound, ctx = ctx),
+      _ => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx)
+    },
     ELetMut(n, _, b, _) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
     ELetRec(n, _, b) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
     ESeq(_, b) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
     EAssign(_, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
     EAssignOp(_, _, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
+    _ => false
+  }
+}
+
+/// An immutable result binding is safe to return when every initializer
+/// path produces a scalar. A call through a local has no such guarantee.
+fn mpr_scalar_result(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EInt(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EBinOp(_, _, _, _) => true,
+    EUnaryOp(_, _) => true,
+    EIf(_, t, el) => mpr_scalar_result(e = t, local_names = local_names, bound = bound, ctx = ctx) && mpr_scalar_result(e = el, local_names = local_names, bound = bound, ctx = ctx),
+    ECall(EIdent(name, _), _, _, _) => !array_contains_str(arr = local_names, s = name) && !array_contains_str(arr = bound, s = name) && bsearch_leftmost(sorted = ctx.scalar_ret_names, name = name) >= 0,
     _ => false
   }
 }
