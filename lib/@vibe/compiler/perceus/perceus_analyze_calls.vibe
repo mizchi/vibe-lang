@@ -414,6 +414,29 @@ fn bret_view_roots(known: MutSet[String], e: Expr, out: Array[String], container
     } else {
       Array::push(out, value = "")
     },
+    // A branch or a block passed or read as a value ends in one of its
+    // result expressions; each one is a root (`first(if c { v } else { v })`
+    // reads into `v`). The condition, the scrutinee and the earlier
+    // statements are not.
+    EIf(_, t, el) => {
+      bret_view_roots(known = known, e = t, out = out, container = container)
+      bret_view_roots(known = known, e = el, out = out, container = container)
+    },
+    EMatch(_, arms) => for arm in arms {
+      bret_view_roots(known = known, e = arm.1, out = out, container = container)
+    },
+    EHandle(b, arms) => {
+      bret_view_roots(known = known, e = b, out = out, container = container)
+      for arm in arms {
+        bret_view_roots(known = known, e = arm.1, out = out, container = container)
+      }
+    },
+    ESeq(_, b) => bret_view_roots(known = known, e = b, out = out, container = container),
+    ELet(_, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
+    ELetMut(_, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
+    ELetRec(_, _, b) => bret_view_roots(known = known, e = b, out = out, container = container),
+    EAssign(_, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
+    EAssignOp(_, _, _, b, _) => bret_view_roots(known = known, e = b, out = out, container = container),
     _ => if container {
       Array::push(out, value = "")
     } else {
