@@ -34,7 +34,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/cache {
-  ast_binary_write_varint
+  AST_BINARY_VERSION, ast_binary_write_varint
 }
 
 import @vibe/compiler/codegen/wasi {
@@ -231,7 +231,7 @@ fn test_wire(_ payload: Array[Int]) -> Bytes {
 
 test "checked program transport validates structure even with a valid checksum" {
   // Empty AST, empty environment, no declarations, empty substitution, no rows.
-  let empty = test_wire([118, 65, 83, 84, 5, 0, 1, 0, 1, 0])
+  let empty = test_wire([118, 65, 83, 84, AST_BINARY_VERSION, 0, 1, 0, 1, 0])
   inspect(decode_checked_program(empty) is Some(_), content = "true")
   let minimal = CheckedProgram::{
     checked_stmts: [],
@@ -242,14 +242,36 @@ test "checked program transport validates structure even with a valid checksum" 
   }
   inspect(encode_checked_program(minimal) == empty, content = "true")
   // Unknown environment tag; unknown substitution tag; trailing payload.
-  inspect(decode_checked_program(test_wire([118, 65, 83, 84, 5, 0, 255, 0, 1, 0])) is None, content = "true")
-  inspect(decode_checked_program(test_wire([118, 65, 83, 84, 5, 0, 1, 0, 255, 0])) is None, content = "true")
   inspect(decode_checked_program(test_wire([
     118,
     65,
     83,
     84,
-    5,
+    AST_BINARY_VERSION,
+    0,
+    255,
+    0,
+    1,
+    0
+  ])) is None, content = "true")
+  inspect(decode_checked_program(test_wire([
+    118,
+    65,
+    83,
+    84,
+    AST_BINARY_VERSION,
+    0,
+    1,
+    0,
+    255,
+    0
+  ])) is None, content = "true")
+  inspect(decode_checked_program(test_wire([
+    118,
+    65,
+    83,
+    84,
+    AST_BINARY_VERSION,
     0,
     1,
     0,
@@ -263,7 +285,7 @@ test "checked program transport validates structure even with a valid checksum" 
     65,
     83,
     84,
-    5,
+    AST_BINARY_VERSION,
     0,
     9,
     1,
@@ -281,7 +303,7 @@ test "checked program transport validates structure even with a valid checksum" 
     65,
     83,
     84,
-    5,
+    AST_BINARY_VERSION,
     128,
     0,
     1,
@@ -315,29 +337,28 @@ test "cached row IDs preserve checked-program v2 bytes and rebuild lookup on dec
   // vCHK v2 adds canonical Show-wrapper facts. This fixture has none, so
   // the payload and its checksums remain identical to v1; only the version
   // byte changes. The inner vAST frame has its independently versioned codec:
-  // its v4 bump (#3248) and v5 bump (#2656) each moved that frame's version
-  // byte, and so both checksums.
+  // its v6 bump (#4156) moved that frame's version byte and both checksums.
   let bytes: Array[Int] = [
     118,
     67,
     72,
     75,
     2,
-    173,
-    160,
-    210,
-    167,
-    4,
-    230,
-    157,
-    172,
+    142,
+    163,
+    155,
+    207,
+    5,
+    236,
+    139,
+    215,
     218,
-    7,
+    1,
     118,
     65,
     83,
     84,
-    5,
+    6,
     0,
     9,
     3,
