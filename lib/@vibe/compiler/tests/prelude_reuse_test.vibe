@@ -309,6 +309,42 @@ test "an edit a user perform or a changed Exception row can see does not replay"
   inspect(row_replays_onto(row_src(e_head = row_e, e_body = "let __show_v0 = n\n  __show_v0 + 1", a_body = "perform Ask::Get() + n")), content = "refused")
 }
 
+// #4130: the binders the desugar introduces with a fixed spelling do not keep
+// an edit from replaying; any other generated (`__`) binder still does.
+fn binder_src(_ e_body: String) -> String {
+  row_src(e_head = "fn e(n: Int) -> Int", e_body = e_body, a_body = "perform Ask::Get() + n")
+}
+
+fn binder_replays_onto(_ e_body: String) -> String with Exception {
+  let base = parsed(binder_src("n + 1"))
+  match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = edit_passes(base)) {
+    Some(record) => {
+      let edited = parsed(binder_src(e_body))
+      match prelude_reuse_replay(record = record, inputs = edited, keys = prelude_statement_keys(stmts = edited, row_offsets = no_ints(), row_keys = no_keys())) {
+        Some(outs) => replay_verdict(outs == edit_passes(edited)),
+        None => "refused"
+      }
+    },
+    None => "unrecordable"
+  }
+}
+
+test "an edit binding a fixed desugar binder replays" {
+  // A type ascription's identity closure.
+  inspect(binder_replays_onto("((__asc: Int) -> __asc)(n) + 1"), content = "replayed")
+  // A generated comparison's loop state and operands.
+  inspect(binder_replays_onto("let __ae_i = n\n  let __oeq_l = __ae_i\n  __oeq_l + 1"), content = "replayed")
+  // A derived comparison's field binders.
+  inspect(binder_replays_onto("let __a0 = n\n  let __b12 = __a0\n  __b12 + 1"), content = "replayed")
+}
+
+test "an edit binding another generated name does not replay" {
+  inspect(binder_replays_onto("let __teq_l0_ = n\n  __teq_l0_ + 1"), content = "refused")
+  // `__a` followed by anything but digits is not a derived field binder.
+  inspect(binder_replays_onto("let __ax = n\n  __ax + 1"), content = "refused")
+  inspect(binder_replays_onto("let __a = n\n  __a + 1"), content = "refused")
+}
+
 test "an unedited statement between two edits is produced as the record has it" {
   // `f`, which the passes rewrite, sits between `a` and `h`, both edited.
   let base = parsed("fn a(n: Int) -> Int {\n  n\n}\n\nfn f(x: Int) -> Int {\n  x + 1\n}\n\nfn h(n: Int) -> Int {\n  n * 2\n}\n")
