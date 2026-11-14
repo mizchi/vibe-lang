@@ -1897,6 +1897,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         CtVar(_) => (),
         _ => Array::push(errors, value = "while condition must be Bool")
       }
+      // #4142: a `while` throws its body's value away wherever it stands.
+      refuse_discarded_functional_result(stmt = body, env = env, errors = errors)
       let (_, s2, c2) = check_expr_capture(expr = body, env = env_bind(env = env, name = "__in_loop__", ty = CtUnit), defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       (CtUnit, s2, c2)
     },
@@ -1917,6 +1919,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
+      // #4142: a statement `for` throws its body's value away; a `for` used
+      // as an expression collects it (ADR-0116).
+      if discarded_root {
+        refuse_discarded_functional_result(stmt = body, env = env, errors = errors)
+      }
       // #1350: `for await x in s` was retired, so there is no longer a
       // `__await_iter(s)` marker to unwrap here -- the iterable is checked
       // directly, and whether the loop awaits each step is decided from the

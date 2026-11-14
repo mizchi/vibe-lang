@@ -8,10 +8,11 @@
 // fixture whose maps it had meant to fill.
 //
 // So a call to one of them whose value is thrown away is refused, with the
-// edit. A statement of a block (`taken = ..` missing), and the value of a
-// statement-position `if` / `match` branch, `for` or `while` body, are thrown
-// away; `let _ = Map::set(..)` still discards on purpose. Only the builtin is
-// judged: a program's own function of that spelling is its own business.
+// edit. A statement of a block (`taken = ..` missing), the value of a
+// statement-position `if` / `match` branch or `for` body, and a `while` body
+// wherever the loop stands, are thrown away; `let _ = Map::set(..)` still
+// discards on purpose. Only the builtin is judged: a program's own function
+// of that spelling is its own business.
 
 import @vibe/compiler/core {
   Expr, TypeEnv, call_arg_value
@@ -26,27 +27,42 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 /// Refuse every call of a functional builtin whose value `stmt`, a statement
-/// of a block, throws away. A statement's own inner statements are judged
-/// when the checker reaches their block, so only the value it ends in is
-/// read here.
+/// of a block or a loop body, throws away. A statement's own inner statements
+/// are judged when the checker reaches their block, so only the value it ends
+/// in is read here -- through bindings, assignments and statement `if` /
+/// `match` branches.
+///
+/// A loop is judged where the checker types it, so each site is reported once:
+/// a `while` body always (the checker calls this on it), and a `for` body
+/// when the `for`'s value is thrown away -- the checker calls this on it when
+/// it types the `for` as a statement, and a `for` that ends a statement
+/// branch is read here, where the checker types it as an expression.
 export fn refuse_discarded_functional_result(stmt: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
-  match stmt {
+  discarded_result_walk(e = stmt, env = env, errors = errors, in_branch = false)
+}
+
+fn discarded_result_walk(e: Expr, env: TypeEnv, errors: Array[String], in_branch: Bool) -> Unit {
+  match e {
     ECall(EIdent(name, noff), args, _, _) => if discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
       Array::push(errors, value = discarded_result_message(name = name, args = args, noff = noff))
     },
-    ESeq(_, rest) => refuse_discarded_functional_result(stmt = rest, env = env, errors = errors),
-    ELet(_, _, body, _) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
-    ELetMut(_, _, body, _) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
-    ELetRec(_, _, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    ESeq(_, rest) => discarded_result_walk(e = rest, env = env, errors = errors, in_branch = in_branch),
+    ELet(_, _, body, _) => discarded_result_walk(e = body, env = env, errors = errors, in_branch = in_branch),
+    ELetMut(_, _, body, _) => discarded_result_walk(e = body, env = env, errors = errors, in_branch = in_branch),
+    ELetRec(_, _, body) => discarded_result_walk(e = body, env = env, errors = errors, in_branch = in_branch),
+    // `x = v` then the rest of the block: the block's value is the rest's.
+    EAssign(_, _, rest, _) => discarded_result_walk(e = rest, env = env, errors = errors, in_branch = in_branch),
+    EAssignOp(_, _, _, rest, _) => discarded_result_walk(e = rest, env = env, errors = errors, in_branch = in_branch),
     EIf(_, then_e, else_e) => {
-      refuse_discarded_functional_result(stmt = then_e, env = env, errors = errors)
-      refuse_discarded_functional_result(stmt = else_e, env = env, errors = errors)
+      discarded_result_walk(e = then_e, env = env, errors = errors, in_branch = true)
+      discarded_result_walk(e = else_e, env = env, errors = errors, in_branch = true)
     },
     EMatch(_, arms) => for arm in arms {
-      refuse_discarded_functional_result(stmt = arm.1, env = env, errors = errors)
+      discarded_result_walk(e = arm.1, env = env, errors = errors, in_branch = true)
     },
-    EForIn(_, _, _, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
-    EWhile(_, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    EForIn(_, _, _, body) => if in_branch {
+      discarded_result_walk(e = body, env = env, errors = errors, in_branch = false)
+    },
     _ => ()
   }
 }
