@@ -178,9 +178,12 @@ export fn mpr_compile_arm(buf: Bytes, pat: Pat, body: Expr, names_mark: Int, loc
 
 /// A catch-all binder borrows the scrutinee. Retain it at each identifiable
 /// consuming use so a skipped branch or an early exit reserves nothing.
-export fn mpr_catch_consumes(body: Expr, name: String, count: Int, bmasks: Array[Int], ctx: CompileCtx) -> Array[Int] {
+export fn mpr_catch_consumes(body: Expr, name: String, count: Int, bmasks: Array[Int], local_names: Array[String], ctx: CompileCtx) -> Array[Int] {
   let offs: Array[Int] = []
-  if count <= 0 || mpr_name_taken(ctx = ctx, name = name) {
+  // A view can depend on the bind-time retain even when the arm also
+  // consumes the binder at other sites.
+  if count <= 0 || mpr_name_taken(ctx = ctx, name = name) || !mpr_tail_safe(e = body, local_names = local_names, bound = [
+  ], ctx = ctx) {
     return offs
   }
   let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = false)
@@ -464,7 +467,7 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
     EStringInterp(_) => true,
     EBinOp(_, _, _, _) => true,
     EUnaryOp(_, _) => true,
-    EReturn(_) => true,
+    EReturn(v) => mpr_tail_safe(e = v, local_names = local_names, bound = bound, ctx = ctx),
     EBreak(_) => true,
     EContinue(_) => true,
     ETuple(_) => true,
@@ -499,7 +502,7 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
       ok
     },
     ELet(n, v, b, _) => match cl_return_operand(b) {
-      EIdent(ret, _) => ret == n && mpr_scalar_result(e = v, local_names = local_names, bound = bound, ctx = ctx),
+      EIdent(ret, _) => ret == n && mpr_tail_safe(e = v, local_names = local_names, bound = bound, ctx = ctx),
       _ => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx)
     },
     ELetMut(n, _, b, _) => mpr_tail_under(n = n, b = b, local_names = local_names, bound = bound, ctx = ctx),
@@ -507,21 +510,6 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
     ESeq(_, b) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
     EAssign(_, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
     EAssignOp(_, _, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
-    _ => false
-  }
-}
-
-/// An immutable result binding is safe to return when every initializer
-/// path produces a scalar. A call through a local has no such guarantee.
-fn mpr_scalar_result(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool {
-  match cl_return_operand(e) {
-    EInt(_) => true,
-    EBool(_) => true,
-    EUnit => true,
-    EBinOp(_, _, _, _) => true,
-    EUnaryOp(_, _) => true,
-    EIf(_, t, el) => mpr_scalar_result(e = t, local_names = local_names, bound = bound, ctx = ctx) && mpr_scalar_result(e = el, local_names = local_names, bound = bound, ctx = ctx),
-    ECall(EIdent(name, _), _, _, _) => !array_contains_str(arr = local_names, s = name) && !array_contains_str(arr = bound, s = name) && bsearch_leftmost(sorted = ctx.scalar_ret_names, name = name) >= 0,
     _ => false
   }
 }
