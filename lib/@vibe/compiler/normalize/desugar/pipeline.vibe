@@ -41,6 +41,7 @@ import @vibe/compiler/core {
   typed_index_row_head,
   typed_index_seq_verdict,
   typed_int32_row_head,
+  typed_map_dynamic_key_verdict,
   typed_map_key_row_head,
   typed_map_scalar_key_verdict,
   typed_method_row_head,
@@ -611,6 +612,11 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
     TyName(typed_map_scalar_key_verdict())
   ]))
   let map_scalar_offs: Array[Int] = []
+  // #4121: and the reads keyed by a generic body's type parameter.
+  let map_dynamic_key = impl_target_key(TyApp(typed_map_key_row_head(), [
+    TyName(typed_map_dynamic_key_verdict())
+  ]))
+  let map_dynamic_offs: Array[Int] = []
   // #3730: the 32-bit integer wrap rows, consumed by `rewrite_int32_stmts`.
   let i32_key = (verdict: String) -> impl_target_key(TyApp(typed_int32_row_head(), [
     TyName(verdict)
@@ -672,6 +678,8 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
       Array::push(scalar_local_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == map_scalar_key {
       Array::push(map_scalar_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == map_dynamic_key {
+      Array::push(map_dynamic_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == forin_map_key {
       dtd_typed_row_insert(dtd_typed_index_offs = forin_offs, dtd_typed_index_verdicts = forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_map_verdict())
     } else if tkey == forin_open_key {
@@ -727,6 +735,7 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
     u32_not: u32_not_offs,
     scalar_local: scalar_local_offs,
     map_scalar: map_scalar_offs,
+    map_dynamic: map_dynamic_offs,
     method_offs: method_offs,
     method_heads: method_heads
   }
@@ -808,6 +817,7 @@ fn dtd_run(stmts: Array[Stmt], rows: DtdTypedRows, ctx_int32_free: Bool, report:
   let u32_not_offs = dtd_ints_copy(rows.u32_not)
   let scalar_local_offs = dtd_ints_copy(rows.scalar_local)
   let map_scalar_offs = dtd_ints_copy(rows.map_scalar)
+  let map_dynamic_offs = dtd_ints_copy(rows.map_dynamic)
   // #2286: the record describes THIS program. The unit-test batch compiles
   // many files in one long-lived daemon, so a table left standing would
   // relabel a later program's struct after an earlier program's trait.
@@ -839,7 +849,7 @@ fn dtd_run(stmts: Array[Stmt], rows: DtdTypedRows, ctx_int32_free: Bool, report:
   rewrite_int32_stmts_vouched(stmts = stmts, binop32 = i32_binop_offs, binopu32 = u32_binop_offs, assign32 = i32_assign_offs, assignu32 = u32_assign_offs, neg32 = i32_neg_offs, notu32 = u32_not_offs, free_from = i32_free_from, free_to = i32_free_to)
   // #2334: and every scalar-keyed map call to its scalar operation, before a
   // pass below copies or inlines the call.
-  rewrite_map_scalar_key_stmts(stmts = stmts, offs = map_scalar_offs)
+  rewrite_map_scalar_key_stmts(stmts = stmts, offs = map_scalar_offs, dynamic = map_dynamic_offs)
   // #790: lower array-literal spreads first, so no downstream pass or codegen
   // ever sees a raw ESpread.
   desugar_array_spread(stmts)

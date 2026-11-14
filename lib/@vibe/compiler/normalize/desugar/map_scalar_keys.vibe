@@ -7,11 +7,19 @@
 // exact i64 values and never hashes one as a `String`. A call with no row keeps
 // the String operation; one that reaches a scalar map at run time traps there
 // (the map's index slot carries a marker) rather than probe with a String hash.
+//
+// #4121: a READ whose key is a generic body's type parameter has a dynamic
+// row instead. Its call becomes `Map::__dynamic_get` / `_has_key` /
+// `_delete`, which reads that marker at run time and takes the scalar or the
+// String path, so one lowered body answers every key a map can hold.
 
 import @vibe/compiler/core {
   Expr,
   Stmt,
   TypeExpr,
+  builtin_map_dynamic_delete,
+  builtin_map_dynamic_get,
+  builtin_map_dynamic_has_key,
   builtin_map_scalar_delete,
   builtin_map_scalar_get,
   builtin_map_scalar_has_key,
@@ -54,6 +62,20 @@ fn map_scalar_operation_for(_ name: String) -> Int {
   }
 }
 
+/// #4121: the dynamic operation a keyed map READ becomes, or 0 for any other
+/// callee (a write has no dynamic form: the checker refuses its scalar uses).
+fn map_dynamic_operation_for(_ name: String) -> Int {
+  if name == "Map::get" {
+    builtin_map_dynamic_get
+  } else if name == "Map::has_key" || name == "Map::has" || name == "map_has" {
+    builtin_map_dynamic_has_key
+  } else if name == "Map::delete" {
+    builtin_map_dynamic_delete
+  } else {
+    0
+  }
+}
+
 fn msk_mark(resolution: Array[Int], operation: Int) -> Unit {
   if Array::length(resolution) == 0 {
     Array::push(resolution, value = operation)
@@ -65,8 +87,13 @@ fn msk_mark(resolution: Array[Int], operation: Int) -> Unit {
 fn msk_expr(expr: Expr, offs: MutMap[Int, Int]) -> Unit {
   match expr {
     ECall(EIdent(name, _), _, off, resolution) => match MutMap::get(offs, k = off) {
-      Some(_) => {
-        let operation = map_scalar_operation_for(name)
+      // 1 = a scalar row, 2 = a dynamic row (#4121).
+      Some(kind) => {
+        let operation = if kind == 2 {
+          map_dynamic_operation_for(name)
+        } else {
+          map_scalar_operation_for(name)
+        }
         if operation > 0 {
           msk_mark(resolution = resolution, operation = operation)
         } else {
@@ -120,6 +147,8 @@ fn msk_stmts(stmts: Array[Stmt], offs: MutMap[Int, Int]) -> Unit {
 // Replaced by every `rewrite_map_scalar_key_stmts`, so a later program never
 // reads an earlier one's rows.
 let msk_current_offsets: Array[Int] = []
+// #4121: likewise for the dynamic rows.
+let msk_current_dynamic_offsets: Array[Int] = []
 
 /// #2334: whether the checker filed a scalar map-key row at `off` for the
 /// program the desugar is running on -- the index lowering asks this of an
@@ -137,13 +166,29 @@ export fn map_scalar_key_at(_ off: Int) -> Bool {
 }
 
 /// #2334: the cell a synthesized `Map::get` takes for an index at `off`: the
-/// scalar operation when the checker typed that index's key as a scalar.
+/// scalar operation when the checker typed that index's key as a scalar, the
+/// dynamic one (#4121) when its key is a generic body's type parameter.
 export fn map_index_get_cell(_ off: Int) -> Array[Int] {
   if off >= 0 && map_scalar_key_at(off) {
     [builtin_map_scalar_get]
+  } else if off >= 0 && map_dynamic_key_at(off) {
+    [builtin_map_dynamic_get]
   } else {
     []
   }
+}
+
+/// #4121: whether the checker filed a dynamic map-key row at `off`.
+fn map_dynamic_key_at(_ off: Int) -> Bool {
+  let mut found = false
+  for known in msk_current_dynamic_offsets {
+    if known == off {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 /// #2334: the cell of a generated keyed map call over a map whose key type is
@@ -160,14 +205,21 @@ export fn map_key_type_cell(k: TypeExpr, operation: Int) -> Array[Int] {
 }
 
 /// #2334: mark the scalar-keyed map calls at `offs` (the map-key rows' call
-/// offsets). A no-op without rows.
-export fn rewrite_map_scalar_key_stmts(stmts: Array[Stmt], offs: Array[Int]) -> Unit {
+/// offsets), and (#4121) the dynamic reads at `dynamic`. A no-op without rows.
+export fn rewrite_map_scalar_key_stmts(stmts: Array[Stmt], offs: Array[Int], dynamic: Array[Int]) -> Unit {
   Array::truncate(msk_current_offsets, length = 0)
   for off in offs {
     Array::push(msk_current_offsets, value = off)
   }
-  if Array::length(offs) > 0 {
+  Array::truncate(msk_current_dynamic_offsets, length = 0)
+  for off in dynamic {
+    Array::push(msk_current_dynamic_offsets, value = off)
+  }
+  if Array::length(offs) > 0 || Array::length(dynamic) > 0 {
     let table: MutMap[Int, Int] = MutMap::new_int()
+    for off in dynamic {
+      MutMap::set(table, k = off, v = 2)
+    }
     for off in offs {
       MutMap::set(table, k = off, v = 1)
     }
