@@ -56,7 +56,14 @@ import @vibe/compiler/core {
 }
 
 import ./checker_region_call_result.vibe {
-  held_has_module_storage, region_callee_returns_own_storage, region_outer_content_marker, region_summary_prefix, retention_name_scope
+  held_has_module_storage,
+  region_callee_returns_own_storage,
+  region_method_call_at,
+  region_method_callee,
+  region_outer_content_marker,
+  region_summary_prefix,
+  region_typed_method_name,
+  retention_name_scope
 }
 
 import @vibe/core {
@@ -128,21 +135,42 @@ export fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: T
 
 fn content_initializer_regions_into(init: Expr, env: TypeEnv, out: Array[String]) -> Unit {
   match init {
-    ECall(callee, args, _, _) => match ascription_call_value(callee = callee, args = args) {
+    ECall(callee, args, off, _) => match ascription_call_value(callee = callee, args = args) {
       Some(inner) => content_initializer_regions_into(init = inner, env = env, out = out),
-      None => match callee {
-        EIdent(name, _) => if retention_name_scope(env = env, name = name) != 1 && content_result_may_hold(name = name, env = env) {
-          match retention_decl_value(name) {
-            Some(EFn(tparams, _, params, _, _, body)) => if content_call_result_has_outer(name = name, tparams = tparams, params = params, body = body, env = env, calls = content_calls_new()) {
-              content_union(out = out, items = retention_active_region_names(env))
-            },
-            _ => ()
-          }
-        },
-        _ => ()
-      },
+      None => {
+        let name = match callee {
+          EIdent(n, _) => n,
+          EDot(recv, method, _, _) => content_method_name(recv = recv, method = method, off = off, env = env),
+          _ => ""
+        }
+        if name != "" && retention_name_scope(env = env, name = name) != 1 && content_result_may_hold(name = name, env = env) && content_named_result_has_outer(name = name, env = env, calls = content_calls_new()) {
+          content_union(out = out, items = retention_active_region_names(env))
+        }
+      }
     },
     _ => ()
+  }
+}
+
+fn content_method_name(recv: Expr, method: String, off: Int, env: TypeEnv) -> String {
+  let recorded = region_method_call_at(off)
+  if recorded != "" {
+    return recorded
+  }
+  let declared = region_method_callee(recv = recv, method = method, env = env)
+  if declared != "" {
+    return declared
+  }
+  match literal_item_type(item = recv, env = env) {
+    Some(ty) => region_typed_method_name(ty = ty, method = method),
+    None => ""
+  }
+}
+
+fn content_named_result_has_outer(name: String, env: TypeEnv, calls: ContentCalls) -> Bool {
+  match retention_decl_value(name) {
+    Some(EFn(tparams, _, params, _, _, body)) => content_call_result_has_outer(name = name, tparams = tparams, params = params, body = body, env = env, calls = calls),
+    _ => false
   }
 }
 
@@ -420,7 +448,7 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
     EIdent(_, _) => false,
     EFn(_, _, _, _, _, _) => false,
     EDot(obj, _, _, _) => !content_env_scalar(value = value, env = env, facts = facts) && content_own_storage(value = obj, env = env, facts = facts),
-    ECall(callee, args, _, _) => {
+    ECall(callee, args, off, _) => {
       // A scalar result copies a value out of whatever the call reads.
       let scalar_call = match callee {
         EDot(_, _, _, _) => content_env_scalar(value = value, env = env, facts = facts),
@@ -461,6 +489,13 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
             }
           }
         },
+        EDot(recv, method, _, _) => {
+          let name = match content_type_env(value = recv, env = env, facts = facts) {
+            Some(scope) => content_method_name(recv = recv, method = method, off = off, env = scope),
+            None => region_method_call_at(off)
+          }
+          expression_aliases_outer_binding(expr = value, env = env) || (facts.track_results && name != "" && content_named_result_has_outer(name = name, env = env, calls = facts.calls))
+        },
         EFn(_, _, params, _, _, body) => held_has_module_storage(held_result_param_indices(body = body, params = params)),
         _ => expression_aliases_outer_binding(expr = value, env = env)
       }
@@ -476,8 +511,11 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
       own
     },
     _ => {
-      if facts.track_results && (value is EMatch(_, _)) {
-        return content_value_fact(value = value, env = env, facts = facts).0
+      if facts.track_results {
+        match value {
+          EMatch(_, _)|ELet(_, _, _, _)|ELetMut(_, _, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => return content_value_fact(value = value, env = env, facts = facts).0,
+          _ => ()
+        }
       }
       let mut own = false
       for item in retention_result_items(value) {
