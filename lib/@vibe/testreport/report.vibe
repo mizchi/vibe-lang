@@ -13,11 +13,13 @@
 //#          at <fn> (<file>:<line>)     up to six frames, via the funcmap
 //#
 //# A run that stopped with no test function in its trace and no trap reason
-//# is not a test failure: the engine refused the module before any test ran
-//# (a compile or instantiate error). The script report then names that
-//# (`not a test failure: ...`) and replays the runner's first stderr lines
-//# under it, each as `       | <line>`, rather than leave a bare `FAIL <file>`
-//# (#4126).
+//# gets the runner's first stderr lines replayed under it, each as
+//# `       | <line>`, rather than a bare `FAIL <file>` (#4126). When that
+//# stderr shows the engine refusing the module (a compile, parse, link or
+//# instantiate error), the report says it is not a test failure. Otherwise
+//# it says only what stderr shows: no test name and no trap reason. A run
+//# can stop that way after a test started (a host stack overflow, a guest
+//# exit), so the absence of a test frame alone is no evidence that none ran.
 //#
 //# Strings are byte strings (ADR-0098), so a percent-encoded multibyte test
 //# name decodes back to its UTF-8 bytes and a source offset is a byte offset.
@@ -585,12 +587,45 @@ export fn script_failure_report(stdout: String, stderr: String, funcmap: String,
 /// and the cut is counted.
 let engine_report_lines = 12
 
-/// The runner stopped with no test in its trace and no trap reason: say that
-/// no test failed, then replay the start of its stderr (#4126). The replay
-/// stops at a Rust `Stack backtrace:` block (wasmtime appends one when
-/// `RUST_BACKTRACE` is set): it locates the engine, not the module.
+/// Does the runner's stderr show the engine refusing the module? These are
+/// the compile / parse / link / instantiate messages of Node and wasmtime.
+/// Only this positive evidence lets a report say no test ran.
+fn is_engine_refusal(err: Array[String]) -> Bool {
+  let needles = [
+    "CompileError",
+    "LinkError",
+    "failed to compile",
+    "failed to parse WebAssembly",
+    "failed to instantiate",
+    "WebAssembly translation error",
+  ]
+  let mut i = 0
+  while i < Array::length(err) {
+    let line = Array::get(err, at = i)
+    let mut j = 0
+    while j < Array::length(needles) {
+      if String::contains(line, needle = Array::get(needles, at = j)) {
+        return true
+      } else ()
+      j = j + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// The runner stopped with no test in its trace and no trap reason: say what
+/// its stderr shows, then replay the start of it (#4126). Only an engine
+/// refusal is called "not a test failure"; any other such stderr is described
+/// without claiming that no test ran. The replay stops at a Rust
+/// `Stack backtrace:` block (wasmtime appends one when `RUST_BACKTRACE` is
+/// set): it locates the engine, not the module.
 fn push_engine_report(lines: Array[String], err: Array[String]) -> Unit {
-  Array::push(lines, value = "       not a test failure: the runner stopped before any test ran (the module did not compile or instantiate?)")
+  if is_engine_refusal(err = err) {
+    Array::push(lines, value = "       not a test failure: the runner stopped before any test ran (the module did not compile or instantiate?)")
+  } else {
+    Array::push(lines, value = "       runner failure: stderr names no test and no trap reason")
+  }
   let mut relevant = 0
   while relevant < Array::length(err) && drop_leading_space(drop_trailing_space(Array::get(err, at = relevant))) != "Stack backtrace:" {
     relevant = relevant + 1
