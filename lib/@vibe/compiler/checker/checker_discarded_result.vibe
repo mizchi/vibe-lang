@@ -17,7 +17,7 @@
 // of that spelling is its own business.
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, call_arg_value, registry_result_only_builtin
+  Expr, Pat, TypeEnv, call_arg_value, registry_result_only_builtin
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -26,6 +26,10 @@ import @vibe/compiler/checker/builtin_sigs {
 
 import @vibe/compiler/checker/diagnostics {
   off_marker_len
+}
+
+import @vibe/compiler/checker/resume {
+  arm_refs_resume_value, pat_binds_resume
 }
 
 /// Refuse every call of a functional builtin whose value `stmt`, a statement
@@ -72,11 +76,19 @@ fn discarded_result_walk(e: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
     EForIn(_, _, _, body) => {
       discarded_result_walk(e = body, env = env, errors = errors)
     },
-    // A `handle`'s value is its body's when the body completes. Its arms are
-    // not walked: whether an arm's value is the `handle`'s depends on how it
+    // A `handle`'s value is its body's when the body completes, unless an arm
+    // binds `resume` as a value: calling that continuation hands the body's
+    // value to the arm, which may keep it (`let k = resume; let r = k(v)`),
+    // so the body is walked only when no arm does. A tail `resume(v)` passes
+    // the body's value straight through as the arm's own. The arms are not
+    // walked: whether an arm's value is the `handle`'s depends on how it
     // resumes, and a wrong guess would refuse a program that is fine. A
     // `while` reached here is skipped too -- its own site walks its body.
-    EHandle(hbody, _) => discarded_result_walk(e = hbody, env = env, errors = errors),
+    EHandle(hbody, harms) => if !handle_arm_keeps_body_value(harms) {
+      discarded_result_walk(e = hbody, env = env, errors = errors)
+    } else {
+      ()
+    },
     _ => ()
   }
 }
@@ -117,4 +129,18 @@ fn discarded_result_message(name: String, args: Array[Expr], noff: Int) -> Strin
     "`" + receiver + "`"
   }
   edit + ": `" + name + "` returns a new map and leaves " + unchanged + " unchanged, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
+}
+
+/// Does an arm of this `handle` bind its continuation as a value? Such an arm
+/// receives the body's value from the continuation call and may keep it.
+fn handle_arm_keeps_body_value(_ harms: Array[(Pat, Expr)]) -> Bool {
+  let mut keeps = false
+  for arm in harms {
+    if arm_refs_resume_value(e = arm.1, sh = pat_binds_resume(arm.0)) {
+      keeps = true
+    } else {
+      ()
+    }
+  }
+  keeps
 }
