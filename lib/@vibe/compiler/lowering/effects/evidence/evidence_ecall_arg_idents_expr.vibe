@@ -1810,7 +1810,7 @@ fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_index: MutMap[
         let mut ai = 0
         while ai < Array::length(args) {
           match Array::get(args, at = ai) {
-            EIdent(an, ao) => if an == name && !edp_needs_callback_adapter(EIdent(an, ao)) {
+            EIdent(an, _) => if an == name {
               Array::push(rows, value = if labeled {
                 ""
               } else {
@@ -1819,7 +1819,7 @@ fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_index: MutMap[
             } else {
               ()
             },
-            ELabeledArg(l, _, EIdent(an, ao)) => if an == name && !edp_needs_callback_adapter(EIdent(an, ao)) {
+            ELabeledArg(l, _, EIdent(an, _)) => if an == name {
               Array::push(rows, value = edp_slot_row_or_empty(stmts = stmts, fn_index = fn_index, callee = cn, pos = edp_param_index_by_label(stmts = stmts, fn_index = fn_index, callee = cn, label = l)))
             } else {
               ()
@@ -1986,8 +1986,15 @@ fn edp_needs_callback_adapter(_ value: Expr) -> Bool {
   off >= 0 && Array::length(edp_callback_offsets) != 0 && MutSet::has(Array::get(edp_callback_offsets, at = 0), x = off)
 }
 
-fn edp_adapt_row_free_callback(value: Expr, arity: Int, row: String) -> Option[Expr] {
-  if edp_needs_callback_adapter(value) {
+fn edp_adapt_row_free_callback(value: Expr, arity: Int, row: String, scope: Array[String]) -> Option[Expr] {
+  // A let-bound literal used only at slots of one row takes that row in
+  // edp_stamp_let_literal. Its callers supply the handler, even after the
+  // callback leaves the scope where it was created.
+  let already_stamped = match value {
+    EIdent(name, _) => edp_local_lit_at(name = name, slot = edp_scope_last_index(scope = scope, name = name)) is Some(EFn(_, _, _, _, Some(_), _)),
+    _ => false
+  }
+  if !already_stamped && edp_needs_callback_adapter(value) {
     // This compiler-only name also tells the eligibility scan that
     // calling the captured value cannot request the slot's effect.
     let name = row_free_callback_capture_prefix + edp_snap_fresh_name("callback")
@@ -2006,7 +2013,7 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
   let callee = edp_take_slot_callee()
   match slot {
     None => a,
-    Some((arity, row)) => match edp_adapt_row_free_callback(value = a, arity = arity, row = row) {
+    Some((arity, row)) => match edp_adapt_row_free_callback(value = a, arity = arity, row = row, scope = scope) {
       Some(adapted) => adapted,
       None => match a {
         EFn(tps, tbs, ps, ret, None, b) => {

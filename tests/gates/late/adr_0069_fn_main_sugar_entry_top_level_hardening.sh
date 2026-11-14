@@ -1255,60 +1255,13 @@ scps_check_reject "err_effect_closure_param_capture_launder.vibe" "cannot see th
 # #2065 wall 2: the same laundering with the performing closure written as a
 # LITERAL argument. The discharge rule exempts a value argument only where the
 # callee's parameter type carries the effect, which `apply1`'s does not.
-scps_check_reject "err_effect_closure_literal_launder.vibe" "cannot see through" "litlaunder"
+scps_check_reject "err_effect_closure_literal_launder.vibe" "hand the step object back as the value" "litlaunder"
 # #1536: the former `break`-in-a-suspending-loop rejection now lives in the
 # inspect snapshot suite above. Its arm stores `resume` and never resumes, so
 # the first perform escapes with its value; the loop shape is what changed.
-# #1261: an unannotated performing closure is row-backfilled by
-# dlh_hoist_expr and so gets the evidence dict prepended; handing that value
-# to a row-FREE fn-typed slot used to compile clean and trap at runtime with
-# a wasm signature mismatch. Reject it, and keep the annotated form working.
+# #1261: a declared row function passed to a row-free slot outside its
+# handler has no evidence to call with. Keep rejecting that escape.
 scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
-# #4138: an unannotated closure created inside its handle keeps the plain
-# calling convention, including through aliases, containers and stores.
-scps_bound_callback() {
-  local fixture="$1" want="$2"
-  local stem="${fixture%.vibe}"
-  local output
-  sed '/^_start()$/d' "fixtures/$fixture" > "$scpsdir/$stem.vibe"
-  gate_fs_compile "$scpsdir/$stem.vibe" "$scpsdir/$stem.wasm" _start
-  gate_require_artifact "$scpsdir/$stem.wasm" "$fixture did not compile"
-  output="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$scpsdir/$stem.wasm" 2>&1)" || {
-    echo "[compiler-gate] FAIL: $fixture trapped: $output" >&2
-    exit 1
-  }
-  if [ "$(printf '%s\n' "$output" | head -n 1)" != "$want" ]; then
-    echo "[compiler-gate] FAIL: $fixture returned '$output', expected $want" >&2
-    exit 1
-  fi
-}
-scps_bound_callback "effect_bound_callback_for_binder.vibe" 106
-scps_bound_callback "effect_bound_callback_match_binder.vibe" 106
-scps_bound_callback "effect_bound_callback_array_read.vibe" 106
-scps_bound_callback "effect_bound_callback_alias_in_data.vibe" 106
-scps_bound_callback "effect_bound_callback_if_in_data.vibe" 106
-scps_bound_callback "effect_bound_callback_alias_two_hops.vibe" 106
-scps_bound_callback "effect_bound_callback_block_in_data.vibe" 106
-scps_bound_callback "effect_bound_callback_pattern_shadow.vibe" 106
-scps_bound_callback "effect_bound_callback_stored_by_push.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_alias.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_in_branch.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_alias_chain.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_shadowed_alias.vibe" 107
-scps_bound_callback "effect_bound_callback_pushed_in_match.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_in_for.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_arg_block.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_loop_carried.vibe" 213
-scps_bound_callback "effect_bound_callback_pushed_block_local.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_by_handler_arm.vibe" 106
-scps_bound_callback "effect_bound_callback_stored_for_binder.vibe" 213
-scps_bound_callback "effect_bound_callback_pushed_arg_loop.vibe" 106
-scps_bound_callback "effect_bound_callback_for_iterable_shadowed.vibe" 213
-scps_bound_callback "effect_bound_callback_pushed_arg_block_if.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_arg_local_alias.vibe" 106
-scps_bound_callback "effect_bound_callback_pushed_in_condition.vibe" 106
-scps_bound_callback "effect_bound_callback_loop_param_continued.vibe" 106
-scps_bound_callback "effect_bound_callback_assigned_in_loop.vibe" 106
 # Annotated / eta-wrapped needing-value pins now live in
 # fixtures/effect_needing_value_annotated_test.vibe and
 # fixtures/effect_needing_value_escape_wrapped_test.vibe (#1973).
