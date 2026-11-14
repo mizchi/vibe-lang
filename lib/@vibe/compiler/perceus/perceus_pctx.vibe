@@ -680,9 +680,21 @@ let pe_imm_field_keys: Array[String] = []
 
 let pe_imm_field_token: Array[Int] = [0]
 
-/// The current plan's parameters whose declared type is a plain struct name
-/// and whose name the body never rebinds: `(name, struct)`.
-let pe_param_structs: Array[(String, String)] = []
+/// The current plan's parameters and body, kept by reference -- recording
+/// them allocates nothing, so a plan that never reads a field pays nothing.
+/// Only a field read that would otherwise count as immediate looks at them.
+let pe_plan_params: Array[Array[(String, Option[TypeExpr])]] = [[]]
+
+let pe_plan_body: Array[Expr] = [EInt(0)]
+
+/// 1 when the current plan may consult the field table at all.
+let pe_plan_fields_on: Array[Int] = [0]
+
+/// Parameters asked about in the current plan, and whether the body rebinds
+/// each (1 never, 2 rebound): the body is walked at most once per name.
+let pe_rebind_names: Array[String] = []
+
+let pe_rebind_state: Array[Int] = []
 
 /// The pin the current plan's caller supplied -- 0 for an unpinned plan,
 /// which installed no table. Not the cached context's pin: an unpinned plan
@@ -723,20 +735,49 @@ export fn perceus_immediate_field_keys(_ stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-/// Record the plan's struct-typed parameters (see `pe_param_structs`).
+/// Record the plan's parameters and body. An unpinned plan, or one whose pin
+/// installed no keys, leaves the field table off.
 export fn pe_set_param_structs(plan_pin: Int, params: Array[(String, Option[TypeExpr])], body: Expr) -> Unit {
   Array::set(pe_plan_pin, at = 0, value = plan_pin)
-  Array::truncate(pe_param_structs, length = 0)
-  for p in params {
-    let (pname, ptype) = p
-    match ptype {
-      Some(TyName(t)) => if !pe_body_binds_name(e = body, name = pname) {
-        Array::push(pe_param_structs, value = (pname, t))
-      },
-      _ => ()
-    }
+  let on = plan_pin != 0 && plan_pin == Array::get(pe_imm_field_token, at = 0) && Array::length(pe_imm_field_keys) > 0
+  Array::set(pe_plan_fields_on, at = 0, value = if on {
+    1
+  } else {
+    0
+  })
+  if on {
+    Array::set(pe_plan_params, at = 0, value = params)
+    Array::set(pe_plan_body, at = 0, value = body)
+  }
+  if Array::length(pe_rebind_names) > 0 {
+    Array::truncate(pe_rebind_names, length = 0)
+    Array::truncate(pe_rebind_state, length = 0)
   }
   ()
+}
+
+/// Does the current plan's body leave parameter `name` unbound?
+fn pe_param_never_rebound(name: String) -> Bool {
+  let mut state = 0
+  let mut i = 0
+  while i < Array::length(pe_rebind_names) {
+    if Array::get(pe_rebind_names, at = i) == name {
+      state = Array::get(pe_rebind_state, at = i)
+    }
+    i = i + 1
+  }
+  if state == 0 {
+    let rebound = pe_body_binds_name(e = Array::get(pe_plan_body, at = 0), name = name)
+    Array::push(pe_rebind_names, value = name)
+    Array::push(pe_rebind_state, value = if rebound {
+      2
+    } else {
+      1
+    })
+    !rebound
+  } else {
+    state == 1
+  }
 }
 
 /// Does `e` bind `name` anywhere -- a `let`, a pattern, a loop or `for`
@@ -800,17 +841,21 @@ fn pe_arms_bind_name(arms: Array[(Pat, Expr)], name: String) -> Bool {
 }
 
 /// Is `obj.field` a read of a field declared `Int`, `Bool` or `Unit`? Only
-/// for a recorded parameter (`pe_param_structs`) and only while the table
-/// belongs to the pin this plan's caller supplied (`pe_plan_pin`).
+/// for a parameter declared with a plain struct name that the body never
+/// rebinds, and only while the table belongs to the pin this plan's caller
+/// supplied (`pe_plan_pin`).
 fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
   let pin = Array::get(pe_plan_pin, at = 0)
-  if pin == 0 || pin != Array::get(pe_imm_field_token, at = 0) {
+  if Array::get(pe_plan_fields_on, at = 0) == 0 || pin != Array::get(pe_imm_field_token, at = 0) {
     false
   } else {
     let mut sname = ""
-    for p in pe_param_structs {
+    for p in Array::get(pe_plan_params, at = 0) {
       if p.0 == obj {
-        sname = p.1
+        sname = match p.1 {
+          Some(TyName(t)) => t,
+          _ => ""
+        }
       }
     }
     if sname == "" {
@@ -818,7 +863,7 @@ fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
     } else {
       let key = sname + "." + field
       let slot = bsearch_leftmost(sorted = pe_imm_field_keys, name = key)
-      slot >= 0 && slot < Array::length(pe_imm_field_keys) && Array::get(pe_imm_field_keys, at = slot) == key
+      slot >= 0 && slot < Array::length(pe_imm_field_keys) && Array::get(pe_imm_field_keys, at = slot) == key && pe_param_never_rebound(name = obj)
     }
   }
 }
