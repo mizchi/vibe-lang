@@ -111,11 +111,15 @@ import ./checker_closure_capture_row.vibe {
 }
 
 import ./checker_region_retention.vibe {
-  retention_active_region_names, retention_arg_predates, retention_param_base
+  retention_active_region_names, retention_arg_predates, retention_local_closure_literal, retention_param_base
 }
 
 import ./checker_region_retention_arms.vibe {
   retention_arg_values, retention_decl_value, retention_is_function_type, retention_module_env_cell, retention_result_items
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  let_rhs_closure_literal
 }
 
 import ./checker_retaining_write.vibe {
@@ -320,7 +324,10 @@ fn content_facts_new(names: Array[String], calls: ContentCalls, track_results: B
     track_results,
     type_aliases,
     return_ids: [],
-    alias_types: MutMap::new_string()
+    alias_types: MutMap::new_string(),
+    closure_params: MutMap::new_string(),
+    prior_closures: MutMap::new_string(),
+    closure_fixed_regions: MutMap::new_string()
   }
 }
 
@@ -347,7 +354,14 @@ fn content_held_regions(facts: ContentFacts, env: TypeEnv, s: Subst) -> Array[Ar
   let value_fixed: Array[Array[String]] = []
   let mut fv = 0
   while fv < Array::length(facts.store_own_storage) {
-    Array::push(value_fixed, value = content_fixed_regions(own = Array::get(facts.store_own_storage, at = fv), aliases = Array::get(facts.store_value_alias, at = fv), env = env, s = s, locals = facts.scope_ids))
+    let fixed = content_fixed_regions(own = Array::get(facts.store_own_storage, at = fv), aliases = Array::get(facts.store_value_alias, at = fv), env = env, s = s, locals = facts.scope_ids)
+    for alias in Array::get(facts.store_value_alias, at = fv) {
+      match MutMap::get(facts.closure_fixed_regions, k = alias) {
+        Some(regions) => content_union(out = fixed, items = regions),
+        None => ()
+      }
+    }
+    Array::push(value_fixed, value = fixed)
     fv = fv + 1
   }
   // The binders bound from each local -- itself, an element read out of it,
@@ -360,7 +374,8 @@ fn content_held_regions(facts: ContentFacts, env: TypeEnv, s: Subst) -> Array[Ar
       let mut b = 0
       while b < Array::length(facts.bind_names) {
         let x = Array::get(facts.bind_names, at = b)
-        if !content_listed(items = set, wanted = x) && content_any_listed(names = Array::get(facts.bind_alias, at = b), set = set) {
+        let aliases = Array::get(facts.bind_alias, at = b)
+        if !content_listed(items = set, wanted = x) && content_any_listed(names = aliases, set = set) {
           Array::push(set, value = x)
           grew = true
         }
@@ -441,7 +456,10 @@ struct ContentFacts {
   track_results: Bool;
   type_aliases: Bool;
   return_ids: Array[String];
-  alias_types: MutMap[String, Type]
+  alias_types: MutMap[String, Type];
+  closure_params: MutMap[String, Array[String]];
+  prior_closures: MutMap[String, String];
+  closure_fixed_regions: MutMap[String, Array[String]]
 }
 
 fn content_union(out: Array[String], items: Array[String]) -> Unit {
@@ -618,9 +636,8 @@ fn content_outer_into(value: Expr, env: TypeEnv, out: Array[String], s: Subst) -
 fn content_walk_result(expr: Expr, facts: ContentFacts, env: TypeEnv) -> (Bool, Array[String]) {
   match expr {
     ELet(x, v, body, off) => {
-      let value = content_walk_result(expr = v, facts = facts, env = env)
       let mark = Array::length(facts.scope_ids)
-      content_bind_let(name = x, off = off, expr = v, value = value, env = env, facts = facts)
+      content_read_let(name = x, off = off, expr = v, facts = facts, env = env)
       let result = content_walk_result(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
       result
@@ -717,9 +734,8 @@ fn content_facts_value(expr: Expr, facts: ContentFacts, env: TypeEnv) -> (Bool, 
 fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
   match expr {
     ELet(x, v, body, off) => {
-      let value = content_facts_value(expr = v, facts = facts, env = env)
       let mark = Array::length(facts.scope_ids)
-      content_bind_let(name = x, off = off, expr = v, value = value, env = env, facts = facts)
+      content_read_let(name = x, off = off, expr = v, facts = facts, env = env)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
@@ -733,8 +749,13 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
     ELetRec(x, v, body) => {
       let mark = Array::length(facts.scope_ids)
       let id = content_push(name = x, facts = facts)
-      content_facts_into(expr = v, facts = facts, env = env)
-      content_bind(id = id, value = content_value_fact(value = v, env = env, facts = facts), facts = facts)
+      match let_rhs_closure_literal(v) {
+        Some(EFn(tparams, _, ps, _, _, lambda)) => content_bind_closure(id = id, tparams = tparams, ps = ps, body = lambda, facts = facts, env = env),
+        _ => {
+          content_facts_into(expr = v, facts = facts, env = env)
+          content_bind(id = id, value = content_value_fact(value = v, env = env, facts = facts), facts = facts)
+        }
+      }
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
@@ -816,16 +837,24 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
 /// -- or, past the end of `bound`, to none.
 fn content_lambda_facts(ps: Array[(String, Option[TypeExpr])], body: Expr, bound: Array[Array[(Bool, Array[String])]], facts: ContentFacts, env: TypeEnv) -> Unit {
   let mark = Array::length(facts.scope_ids)
+  let ids = content_push_params(ps = ps, facts = facts)
   let mut i = 0
-  while i < Array::length(ps) {
-    let id = content_push(name = retention_param_base(Array::get(ps, at = i).0), facts = facts)
-    if i < Array::length(bound) {
-      for v in Array::get(bound, at = i) {
-        content_bind(id = id, value = v, facts = facts)
-      }
+  while i < Array::length(ids) && i < Array::length(bound) {
+    for value in Array::get(bound, at = i) {
+      content_bind(id = Array::get(ids, at = i), value = value, facts = facts)
     }
     i = i + 1
   }
+  content_lambda_body(body = body, mark = mark, facts = facts, env = env)
+}
+
+fn content_push_params(ps: Array[(String, Option[TypeExpr])], facts: ContentFacts) -> Array[String] {
+  for param in ps {
+    content_push(name = retention_param_base(param.0), facts = facts)
+  }
+}
+
+fn content_lambda_body(body: Expr, mark: Int, facts: ContentFacts, env: TypeEnv) -> Unit {
   let returns = Array::length(facts.return_ids)
   if returns > 0 {
     Array::push(facts.return_ids, value = "")
@@ -833,6 +862,25 @@ fn content_lambda_facts(ps: Array[(String, Option[TypeExpr])], body: Expr, bound
   content_facts_into(expr = body, facts = facts, env = env)
   Array::truncate(facts.return_ids, length = returns)
   content_pop(mark = mark, facts = facts)
+}
+
+fn content_bind_closure(id: String, tparams: Array[String], ps: Array[(String, Option[TypeExpr])], body: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
+  let mark = Array::length(facts.scope_ids)
+  let params = content_push_params(ps = ps, facts = facts)
+  let defs = env_type_defs(env)
+  let mut i = 0
+  while i < Array::length(ps) {
+    match Array::get(ps, at = i).1 {
+      Some(annotation) => {
+        let ty = resolve_type_expr_shadowed(te = annotation, defs = defs, shadow = tparams)
+        MutMap::set(facts.alias_types, k = Array::get(params, at = i), v = ty)
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  MutMap::set(facts.closure_params, k = id, v = params)
+  content_lambda_body(body = body, mark = mark, facts = facts, env = env)
 }
 
 /// Bring a binder of `name` into scope as a new occurrence; its occurrence
@@ -937,6 +985,50 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
   (content_own_storage(value = value, env = env, facts = facts), content_alias_names(value = value, env = env, facts = facts))
 }
 
+// Keep a closure's parameter occurrences so later calls can link their
+// arguments to the stores read in the closure's lexical scope.
+fn content_read_let(name: String, off: Int, expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
+  match let_rhs_closure_literal(expr) {
+    Some(EFn(tparams, _, ps, _, _, body)) => {
+      let closure_type = content_alias_type(value = expr, env = env, facts = facts)
+      let id = content_push_let(name = name, off = off, facts = facts)
+      // An ordinary let does not bind its name in the initializer.
+      let mark = Array::length(facts.scope_ids) - 1
+      content_pop(mark = mark, facts = facts)
+      content_bind_closure(id = id, tparams = tparams, ps = ps, body = body, facts = facts, env = env)
+      let _ = content_push_id(name = name, id = id, facts = facts)
+      content_bind_typed(id = id, value = (false, []), alias_type = closure_type, facts = facts)
+    },
+    _ => {
+      let source = content_alias_source(expr)
+      let source_id = content_resolve(name = source, facts = facts)
+      let value = content_facts_value(expr = expr, facts = facts, env = env)
+      content_bind_let(name = name, off = off, expr = expr, value = value, env = env, facts = facts)
+      let id = content_resolve(name = name, facts = facts)
+      match MutMap::get(facts.closure_params, k = source_id) {
+        Some(ids) => MutMap::set(facts.closure_params, k = id, v = ids),
+        None => match MutMap::get(facts.prior_closures, k = source_id) {
+          Some(prior) => MutMap::set(facts.prior_closures, k = id, v = prior),
+          None => if source != "" && source == source_id && retention_name_scope(env = env, name = source) == 1 {
+            MutMap::set(facts.prior_closures, k = id, v = source)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn content_alias_source(_ expr: Expr) -> String {
+  match expr {
+    EIdent(name, _) => name,
+    ECall(callee, args, _, _) => match ascription_call_value(callee = callee, args = args) {
+      Some(value) => content_alias_source(value),
+      None => ""
+    },
+    _ => ""
+  }
+}
+
 fn content_bind_let(name: String, off: Int, expr: Expr, value: (Bool, Array[String]), env: TypeEnv, facts: ContentFacts) -> Unit {
   let alias_type = content_alias_type(value = expr, env = env, facts = facts)
   let id = content_push_let(name = name, off = off, facts = facts)
@@ -1028,11 +1120,32 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
     EFn(_, _, ps, _, _, body) => content_lambda_facts(ps = ps, body = body, bound = for a in args {
       [content_value_fact(value = a, env = env, facts = facts)]
     }, facts = facts, env = env),
-    EIdent(name, _) => if Array::length(args) > 0 && content_resolve(name = name, facts = facts) == name {
-      for i in content_called_outer_params(name = name, env = env, calls = facts.calls) {
-        if i < Array::length(args) {
-          content_store(target = content_alias_names(value = Array::get(args, at = i), env = env, facts = facts), value = (true, [
-          ]), facts = facts)
+    EIdent(name, _) => if Array::length(args) > 0 {
+      let id = content_resolve(name = name, facts = facts)
+      match MutMap::get(facts.closure_params, k = id) {
+        Some(params) => {
+          let mut i = 0
+          while i < Array::length(params) && i < Array::length(args) {
+            content_bind(id = Array::get(params, at = i), value = content_value_fact(value = Array::get(args, at = i), env = env, facts = facts), facts = facts)
+            i = i + 1
+          }
+        },
+        None => if id == name {
+          for i in content_called_outer_params(name = name, env = env, calls = facts.calls) {
+            if i < Array::length(args) {
+              content_store(target = content_alias_names(value = Array::get(args, at = i), env = env, facts = facts), value = (true, [
+              ]), facts = facts)
+            }
+          }
+          if retention_name_scope(env = env, name = name) == 1 {
+            content_prior_closure_call(name = name, args = args, env = env, facts = facts)
+          }
+          ()
+        } else {
+          match MutMap::get(facts.prior_closures, k = id) {
+            Some(prior) => content_prior_closure_call(name = prior, args = args, env = env, facts = facts),
+            None => ()
+          }
         }
       }
     },
@@ -1047,6 +1160,38 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
     }
   }
   ()
+}
+
+// A closure declared before the binding being judged has no body in the
+// scope walk. Inspect it with its lexical environment and the call's regions.
+fn content_prior_closure_call(name: String, args: Array[Expr], env: TypeEnv, facts: ContentFacts) -> Unit {
+  match retention_local_closure_literal(env = env, name = name) {
+    Some((EFn(tparams, _, params, _, _, body), scope, key)) => {
+      // Recursive closure calls share the same syntactic body.
+      if content_listed(items = facts.calls.active, wanted = key) {
+        return ()
+      }
+      let mark = Array::length(facts.calls.active)
+      Array::push(facts.calls.active, value = key)
+      let held = content_parameter_regions(tparams = tparams, params = params, body = body, env = scope, calls = facts.calls)
+      Array::truncate(facts.calls.active, length = mark)
+      let mut i = 0
+      while i < Array::length(held) && i < Array::length(args) {
+        let regions = Array::get(held, at = i)
+        if Array::length(regions) > 0 {
+          let id = content_push(name = "#captured_store", facts = facts)
+          let mark = Array::length(facts.scope_ids) - 1
+          content_pop(mark = mark, facts = facts)
+          MutMap::set(facts.closure_fixed_regions, k = id, v = regions)
+          content_store(target = content_alias_names(value = Array::get(args, at = i), env = env, facts = facts), value = (false, [
+            id
+          ]), facts = facts)
+        }
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
 }
 
 fn content_store_all(parts: Array[(Bool, Array[String])], facts: ContentFacts) -> Unit {
@@ -1502,6 +1647,22 @@ fn content_summary_scope(names: Array[String], env: TypeEnv) -> TypeEnv {
     scope = env_bind(env = scope, name = name, ty = CtVar(-1))
   }
   scope
+}
+
+fn content_parameter_regions(tparams: Array[String], params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Array[String]] {
+  let defs = env_type_defs(env)
+  let mut scope = env
+  let names = for param in params {
+    let name = retention_param_base(param.0)
+    let ty = match param.1 {
+      Some(annotation) => resolve_type_expr_shadowed(te = annotation, defs = defs, shadow = tparams),
+      None => CtVar(-1)
+    }
+    scope = env_bind(env = scope, name = name, ty = ty)
+    name
+  }
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = false, type_aliases = false)
+  content_held_regions(facts = facts, env = scope, s = SubstEmpty)
 }
 
 fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Int] {
