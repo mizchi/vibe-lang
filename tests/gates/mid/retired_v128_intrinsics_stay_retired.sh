@@ -1916,10 +1916,10 @@ echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc,
 #        either -- is not borrow-returning. The classifier judged such a tail
 #        by its callee alone, so behind an `if` or a `match` the binding's
 #        scope-end drop freed the value the branch returned (the answer was
-#        62000 here, not 0, on rc and shadow, which do not trap on it), and a
+#        72000 here, not 0, on rc and shadow, which do not trap on it), and a
 #        direct projection tail leaked the reference its `let` retained, 88 B
 #        a call. The answer is checked on bump, rc, shadow and gc; the rc heap
-#        bound catches the leak (176,844 B before, 1,372 B after).
+#        bound catches the leak (176,844 B before, 1,460 B after).
 echo "[compiler-gate] 40f0t/40 a result that reads into a binding of the function is owned, not borrowed (#4153)"
 gate_workdir otdir "_build/_gate_rc_owned_local_tail_view"
 for ot_lane in bump rc shadow gc; do
@@ -1937,6 +1937,15 @@ for ot_lane in bump rc shadow gc; do
       echo "[compiler-gate] FAIL: rc_owned_local_tail_view heap_used=$ot_used >= 8000 (#4153: a caller does not release a result that reads into a binding of the callee)" >&2; exit 1
     fi
   fi
+done
+# The companion fixture mixes a local path with a parameter path; it answered
+# 5000 on rc and shadow before (the local path), and its parameter path still
+# leaks, so only its answer is checked.
+for ot_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ot_lane" "fixtures/rc_owned_local_tail_mixed_param_test.vibe" "$otdir/otm.wasm" main
+  gate_require_artifact "$otdir/otm.wasm" "rc_owned_local_tail_mixed_param fixture did not compile on the $ot_lane lane (#4153)"
+  gate_run otm_out last "$otdir/otm.wasm"
+  gate_require_eq "$otm_out" "0" "rc_owned_local_tail_mixed_param got '$otm_out' on the $ot_lane lane (want 0). A parameter handed back next to a local read was released twice, or the local read was freed (#4153)."
 done
 rm -rf "$otdir"
 echo "[compiler-gate] owned-local tail view guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ot_used B)"
