@@ -1854,9 +1854,9 @@ echo "[compiler-gate] aggregate branch-tail retain guard ok (0 on bump/rc/shadow
 #        gives it a counted path drop, but the `let` lowering declined that
 #        drop for a projection value, so every path that skipped the consume
 #        kept the reference. Unfixed, the fixture measured 3,522,728 B at
-#        N=20000 and 2,728 B fixed; the bound is 8,000. Its controls keep the consumed values
-#        past the call, so the shadow run is what proves no path drop released
-#        a value still held.
+#        N=20000, fixed 2,728 B; the bound is 8,000. Its controls keep the
+#        consumed values past the call, so the shadow run is what proves no
+#        path drop released a value still held.
 echo "[compiler-gate] 40f0s/40 a projection let consumed on one branch releases what the path kept (#1980)"
 gate_workdir pjdir "_build/_gate_rc_projection_let"
 for pj_lane in bump rc shadow gc; do
