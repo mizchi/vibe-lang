@@ -23,6 +23,8 @@
 //#     result is otherwise taken to carry what its arguments carry;
 //#   - `i>cj` -- argument `i` may be stored through the contents of `j`;
 //#   - `g>j` -- argument `j` may receive storage no argument supplied;
+//#   - `g>cr` -- the result contains storage no argument supplied. Only a
+//#     write through its contents can reach that storage;
 //#   - `g>r` -- the result may be storage no argument supplied, such as a
 //#     module-level array a getter returns (#4091), so a write into it is a
 //#     write into a location declared before every region. A function value
@@ -44,7 +46,7 @@
 //# retaining operations are listed by name and checked like `Array::push`.
 
 import @vibe/compiler/core {
-  Expr, Stmt, Type, TypeDef, TypeEnv, env_bind, env_lookup
+  Expr, Stmt, Type, TypeDef, TypeEnv, collect_exported_type_names, collect_exported_value_names, env_bind, env_lookup
 }
 
 import @vibe/core {
@@ -52,7 +54,7 @@ import @vibe/core {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  held_result_param_indices, type_mentions_named
+  held_result_param_indices, type_can_carry_region, type_mentions_named
 }
 
 import ./checker_region_retention_types.vibe {
@@ -60,7 +62,7 @@ import ./checker_region_retention_types.vibe {
 }
 
 import ./checker_region_call_result.vibe {
-  held_has_module_storage, region_module_storage_row, region_path_is_standard_library, region_summary_prefix
+  held_has_module_storage, region_module_storage_row, region_path_is_standard_library, region_result_content_row, region_summary_prefix
 }
 
 let retention_summary_prefix: String = region_summary_prefix()
@@ -409,13 +411,15 @@ fn retention_summary_names(_ stmts: Array[Stmt]) -> Array[String] {
 /// value whose body cannot be traced, `(0, _)` for one that is not this
 /// module's (a re-export carries its own summary). `recheck(literal,
 /// overrides, key)` is `retention_summarize`'s re-check of that literal.
-export fn retention_summaries_bind(outer_params: (Expr) -> Array[Int], stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String], Array[String])], String) -> (Int, Bool)) -> TypeEnv {
+export fn retention_summaries_bind(outer_params: (Expr) -> Array[Int], result_contents: (Expr) -> Bool, stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String], Array[String])], String) -> (Int, Bool)) -> TypeEnv {
   let candidates: Array[(String, Int, Expr, Array[Type])] = []
   // #4091: every published function is bound a summary, so an importer that
   // finds none knows the module published none. Past the budget no argument
   // is re-checked, but the result's `g>r` row, read from the body alone, is
   // still published.
   let names = retention_summary_names(stmts)
+  let exports = collect_exported_value_names(stmts)
+  let exported_types = collect_exported_type_names(stmts)
   let within_budget = Array::length(stmts) <= retention_summary_budget()
   let candidate_names = if within_budget {
     names
@@ -453,10 +457,11 @@ export fn retention_summaries_bind(outer_params: (Expr) -> Array[Int], stmts: Ar
         retention_summary_opaque(params = params, defs = defs)
       }
       let full = retention_summary_with_storage(outer_params = outer_params, summary = summary, kind = kind, lit = lit)
+      let published = retention_publish_result_contents(summary = full, name = name, kind = kind, lit = lit, env = env, exports = exports, exported_types = exported_types, read = result_contents)
       Array::push(summarized, value = name)
       // One that keeps nothing is bound too, as `""`, so whatever binding of
       // the name is nearest is this module's own answer.
-      out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(full, [
+      out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(published, [
       ]))
     }
     // #4091: every other function still publishes whether its result is
@@ -476,13 +481,54 @@ export fn retention_summaries_bind(outer_params: (Expr) -> Array[Int], stmts: Ar
       if !seen && is_function {
         let (kind, lit) = resolve(name)
         if kind > 0 {
-          out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(retention_summary_with_storage(outer_params = outer_params, summary = "", kind = kind, lit = lit), [
+          let full = retention_summary_with_storage(outer_params = outer_params, summary = "", kind = kind, lit = lit)
+          let published = retention_publish_result_contents(summary = full, name = name, kind = kind, lit = lit, env = env, exports = exports, exported_types = exported_types, read = result_contents)
+          out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(published, [
           ]))
         }
       }
     }
     out
   }
+}
+
+fn retention_publish_result_contents(summary: String, name: String, kind: Int, lit: Expr, env: TypeEnv, exports: Array[String], exported_types: Array[String], read: (Expr) -> Bool) -> String {
+  if kind != 1 || !retention_result_exported(name = name, exports = exports, types = exported_types) {
+    return summary
+  }
+  let may_hold = match env_lookup(env = env, name = name) {
+    Some(ty) => retention_fn_result_may_hold(ty),
+    None => false
+  }
+  if !may_hold || !read(lit) {
+    summary
+  } else if summary == "" {
+    region_result_content_row()
+  } else {
+    String::concat(summary, String::concat(",", region_result_content_row()))
+  }
+}
+
+fn retention_fn_result_may_hold(_ ty: Type) -> Bool {
+  match ty {
+    CtForAll(_, _, body) => retention_fn_result_may_hold(body),
+    CtFn(_, ret, _) => type_can_carry_region(ret),
+    _ => false
+  }
+}
+
+fn retention_result_exported(name: String, exports: Array[String], types: Array[String]) -> Bool {
+  for exported in exports {
+    if exported == name {
+      return true
+    }
+  }
+  for exported in types {
+    if String::starts_with(name, prefix = String::concat(exported, "::")) {
+      return true
+    }
+  }
+  false
 }
 
 /// #4091: `summary` with the `g>r` row when the function's result may be

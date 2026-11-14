@@ -48,6 +48,7 @@ import @vibe/compiler/core {
   TypeExpr,
   ascription_call_annotation,
   ascription_call_value,
+  canonical_builtin_name,
   env_bind,
   env_lookup,
   env_type_defs,
@@ -58,6 +59,7 @@ import @vibe/compiler/core {
 import ./checker_region_call_result.vibe {
   held_has_module_storage,
   region_callee_returns_own_storage,
+  region_import_result_has_outer_contents,
   region_method_call_at,
   region_method_callee,
   region_outer_content_marker,
@@ -79,7 +81,7 @@ import @vibe/compiler/checker/resolution {
 }
 
 import @vibe/compiler/checker/builtin_sigs {
-  lookup_builtin
+  builtin_resolves_at, lookup_builtin
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -134,22 +136,68 @@ export fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: T
 }
 
 fn content_initializer_regions_into(init: Expr, env: TypeEnv, out: Array[String]) -> Unit {
-  match init {
+  if content_call_has_outer_contents(expr = init, env = env, calls = content_calls_new()) {
+    content_union(out = out, items = retention_active_region_names(env))
+  }
+}
+
+fn content_call_has_outer_contents(expr: Expr, env: TypeEnv, calls: ContentCalls) -> Bool {
+  match expr {
     ECall(callee, args, off, _) => match ascription_call_value(callee = callee, args = args) {
-      Some(inner) => content_initializer_regions_into(init = inner, env = env, out = out),
+      Some(inner) => content_call_has_outer_contents(expr = inner, env = env, calls = calls),
       None => {
         let name = match callee {
           EIdent(n, _) => n,
           EDot(recv, method, _, _) => content_method_name(recv = recv, method = method, off = off, env = env),
           _ => ""
         }
-        if name != "" && retention_name_scope(env = env, name = name) != 1 && content_result_may_hold(name = name, env = env) && content_named_result_has_outer(name = name, env = env, calls = content_calls_new()) {
-          content_union(out = out, items = retention_active_region_names(env))
-        }
+        name != "" && retention_name_scope(env = env, name = name) != 1 && content_result_may_hold(name = name, env = env) && content_named_result_has_outer(name = name, env = env, calls = calls)
       }
     },
-    _ => ()
+    _ => false
   }
+}
+
+/// A write can reach outer storage through a projection of a helper result.
+/// The helper's fresh container itself is still a valid destination.
+export fn region_result_part_reaches_outer(target: Expr, env: TypeEnv) -> Bool {
+  let roots = content_projection_root(target, env = env)
+  match roots {
+    Some(root) => content_call_has_outer_contents(expr = root, env = env, calls = content_calls_new()),
+    None => false
+  }
+}
+
+fn content_projection_root(_ expr: Expr, env: TypeEnv) -> Option[Expr] {
+  let receiver = match expr {
+    EDot(obj, _, _, _) => Some(obj),
+    ECall(EIdent(name, off), args, _, _) => if Array::length(args) > 0 && content_reads_element(name) && builtin_resolves_at(env = env, name = name, ident_off = off) {
+      Some(Array::get(args, at = 0))
+    } else {
+      None
+    },
+    ECall(EDot(obj, method, _, _), _, off, _) => {
+      let name = content_method_name(recv = obj, method = method, off = off, env = env)
+      if content_reads_element(name) && builtin_resolves_at(env = env, name = name, ident_off = 0) {
+        Some(obj)
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+  match receiver {
+    Some(obj) => match content_projection_root(obj, env = env) {
+      Some(root) => Some(root),
+      None => Some(obj)
+    },
+    None => None
+  }
+}
+
+fn content_reads_element(_ name: String) -> Bool {
+  let canonical = canonical_builtin_name(name)
+  canonical == "__index" || canonical == "Array::get" || canonical == "FixedArray::get" || canonical == "MutList::get" || canonical == "Map::get"
 }
 
 fn content_method_name(recv: Expr, method: String, off: Int, env: TypeEnv) -> String {
@@ -170,7 +218,7 @@ fn content_method_name(recv: Expr, method: String, off: Int, env: TypeEnv) -> St
 fn content_named_result_has_outer(name: String, env: TypeEnv, calls: ContentCalls) -> Bool {
   match retention_decl_value(name) {
     Some(EFn(tparams, _, params, _, _, body)) => content_call_result_has_outer(name = name, tparams = tparams, params = params, body = body, env = env, calls = calls),
-    _ => false
+    _ => region_import_result_has_outer_contents(callee = name, env = env)
   }
 }
 
@@ -483,7 +531,7 @@ fn content_own_storage(value: Expr, env: TypeEnv, facts: ContentFacts) -> Bool {
               // A name nothing binds is an intrinsic the checker types by
               // its spelling (`MutList::empty`), read as a builtin is.
               None => match env_lookup(env = env, name = cname) {
-                Some(_) => region_callee_returns_own_storage(callee = cname, env = env),
+                Some(_) => region_callee_returns_own_storage(callee = cname, env = env) || region_import_result_has_outer_contents(callee = cname, env = env),
                 None => false
               }
             }
@@ -1257,6 +1305,16 @@ fn content_any_listed(names: Array[String], set: Array[String]) -> Bool {
     }
   }
   found
+}
+
+/// Analyze each published result lazily and share helper summaries across
+/// exports of the same module.
+export fn content_result_summary_reader(env: TypeEnv) -> (Expr) -> Bool {
+  let calls = content_calls_new()
+  (lit) -> match lit {
+    EFn(tparams, _, params, _, _, body) => content_result_has_outer(tparams = tparams, params = params, body = body, env = env, calls = calls),
+    _ => false
+  }
 }
 
 export fn content_literal_outer_params(lit: Expr, env: TypeEnv) -> Array[Int] {
