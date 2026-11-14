@@ -2458,7 +2458,13 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr
 /// report is written -- the telemetry sidecar's guard, applied to this
 /// destination.
 fn refuse_rc_selfcheck_destination_conflict(_ destination: String) -> Unit with Fs + Env + Exception {
-  let conflict = telemetry_destination_conflict(destination = destination, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = "")
+  let found = telemetry_destination_conflict(destination = destination, input = own_host_string(read_arg_or_env(index = 0, env_name = "VIBE_INPUT")), output = own_host_string(read_arg_or_env(index = 1, env_name = "VIBE_OUTPUT")), trace = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"))
+  // The incremental telemetry sidecar is written by the same invocation.
+  let conflict = if found == "" && fs_paths_name_same_file(left = destination, right = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")) {
+    "VIBE_INCREMENTAL_TELEMETRY_OUT"
+  } else {
+    found
+  }
   if conflict != "" {
     throw(String::concat("VIBE_RC_SELFCHECK_OUT must not name ", conflict))
   } else {
@@ -2502,6 +2508,13 @@ fn rc_selfcheck_shard(_ raw: String) -> (Int, Int) {
 /// reason `main` is: only the entry file's own exports keep their public
 /// names through the flatten.
 export fn cli_main_compile_only() -> Int with Exception + Fs + Env + Profiler + Stdin + Console + Stderr + Process {
+  // #3718: the RC self-check is wired into `cli_main` only; refuse the
+  // request here rather than compile and leave no report.
+  if Env::get("VIBE_RC_SELFCHECK_OUT") != "" {
+    throw("VIBE_RC_SELFCHECK_OUT is not supported by the compile-only artifact -- run the self-check with a generation's stage2 (scripts/check_rc_selfcheck.sh)")
+  } else {
+    ()
+  }
   cli_main_with_lanes(fs_lanes = fs_lane_compile_production, ss_lanes = ss_lane_compile_production, component_tools = component_tools_none, format_tool = format_tool_unavailable, lsp_tool = lsp_tool_unavailable)
 }
 
