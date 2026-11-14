@@ -1,0 +1,34 @@
+// #4065: a handler arm stores the handle-bound closure into an outer array,
+// and after `resume` the handled body reads it back. The read hands the
+// closure at its evidence arity to a row-free parameter, which is refused at
+// build time.
+effect Ask {
+  Get() -> Int
+}
+
+effect Put {
+  Store() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+let _start = () -> Int {
+  handle {
+    let g = () -> perform Ask::Get() + 1
+    let xs: Array[() -> Int] = [() -> 7]
+    handle {
+      let _ = perform Put::Store()
+      apply(f = Array::get(xs, at = 1))
+    } with {
+      Put::Store() => {
+        Array::push(xs, value = g)
+        resume(0)
+      }
+    }
+  } with {
+    Ask::Get() => resume(5)
+  }
+}
+_start()
