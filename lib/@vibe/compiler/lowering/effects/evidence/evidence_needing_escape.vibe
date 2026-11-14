@@ -174,9 +174,14 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         hit
       }
     },
-    ELoop(pairs, b) => edp_needing_escape_or(a = edp_needing_escape_pairs(pairs = pairs, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape_loop(parts = [
-      b
-    ], needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
+    ELoop(pairs, b) => {
+      let first = edp_needing_escape_pairs(pairs = pairs, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      if first != "" {
+        first
+      } else {
+        edp_needing_escape_param_loop(pairs = pairs, body = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      }
+    },
     ELet(n, v, b, _) => {
       let before = edp_escape_snapshot()
       let root = edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs)
@@ -217,7 +222,18 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       if first != "" {
         first
       } else {
-        // The binding holds the assigned value from here on.
+        // The binding holds the assigned value from here on. A `let mut`
+        // outlives this statement: an enclosing loop reads it again on its
+        // next pass (`while .. { apply(f = f); f = Array::get([g], at = 0) }`),
+        // so a tainting assignment also taints the binding itself, in place,
+        // where the loop's next pass finds it.
+        if root != "" {
+          let idx = edp_escape_find(name = n, below = edp_escape_top())
+          if idx >= 0 {
+            let (bn, _, binit) = Array::get(edp_escape_tainted, at = idx)
+            Array::set(edp_escape_tainted, at = idx, value = (bn, root, binit))
+          }
+        }
         let mark = edp_escape_taint(name = n, root = root, init = Some(v))
         let hit = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
         edp_escape_untaint(mark)
@@ -643,6 +659,73 @@ fn edp_needing_escape_loop(parts: Array[Expr], needing: Array[String], ename: St
     rounds = rounds + 1
   }
   hit
+}
+
+/// A parameterized `loop (i = init) { .. }`: its parameters shadow outer
+/// bindings of their names for the body. Each starts from its initializer, and
+/// a `continue(..)` rebinds it, so a parameter a `continue` argument reads a
+/// needing function into is tainted on the next pass; the body is walked again
+/// until no binding changes.
+fn edp_needing_escape_param_loop(pairs: Array[(String, Expr)], body: Expr, needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let roots: Array[String] = []
+  for pair in pairs {
+    let (_, v) = pair
+    Array::push(roots, value = edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs))
+  }
+  let mark = Array::length(edp_escape_tainted)
+  let mut k = 0
+  for pair in pairs {
+    let (n, v) = pair
+    let _ = edp_escape_taint(name = n, root = Array::get(roots, at = k), init = Some(v))
+    k = k + 1
+  }
+  let conts: Array[Array[Expr]] = []
+  edp_loop_continue_args(e = body, out = conts)
+  let mut hit = ""
+  let mut again = true
+  let mut rounds = 0
+  let limit = Array::length(edp_escape_tainted) + Array::length(pairs) + 1
+  while again && hit == "" && rounds <= limit {
+    let before = edp_escape_tainted_count()
+    hit = edp_needing_escape(e = body, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    let mut changed = false
+    let mut i = 0
+    while i < Array::length(pairs) {
+      let (n, _, _) = Array::get(edp_escape_tainted, at = mark + i)
+      let (_, cur, _) = Array::get(edp_escape_tainted, at = mark + i)
+      if cur == "" {
+        for args in conts {
+          if i < Array::length(args) {
+            let r = edp_data_root_items(items = [Array::get(args, at = i)], needing = needing, stmts = stmts, fn_defs = fn_defs)
+            let (_, now, _) = Array::get(edp_escape_tainted, at = mark + i)
+            if r != "" && now == "" {
+              Array::set(edp_escape_tainted, at = mark + i, value = (n, r, None))
+              changed = true
+            }
+          }
+        }
+      }
+      i = i + 1
+    }
+    again = changed || edp_escape_tainted_count() != before
+    rounds = rounds + 1
+  }
+  edp_escape_untaint(mark)
+  hit
+}
+
+/// The argument lists of the `continue`s that rebind the enclosing loop's
+/// parameters: those not inside a nested `loop` or a lambda, which own their
+/// own.
+fn edp_loop_continue_args(e: Expr, out: Array[Array[Expr]]) -> Unit {
+  match e {
+    EContinue(args) => Array::push(out, value = args),
+    ELoop(_, _) => (),
+    EFn(_, _, _, _, _, _) => (),
+    _ => for child in expr_children(e) {
+      edp_loop_continue_args(e = child, out = out)
+    }
+  }
 }
 
 /// How many walk bindings are tainted.
