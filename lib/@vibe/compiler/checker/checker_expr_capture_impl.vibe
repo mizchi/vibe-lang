@@ -353,7 +353,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
     match cur {
       ESeq(left, right) => {
         // #4142: a functional builtin's value thrown away by this statement.
-        refuse_discarded_functional_result(stmt = left, env = cenv, errors = errors, for_site_checks_root = true)
+        refuse_discarded_functional_result(stmt = left, env = cenv, errors = errors)
         // Only an EForIn heading a sequence is statement-shaped: directly, or
         // as the tail of a `let` / sequence spine there (#3716's loop-contract
         // wrapper). Not in TypeEnv: an ambient sentinel leaks through
@@ -1898,7 +1898,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         _ => Array::push(errors, value = "while condition must be Bool")
       }
       // #4142: a `while` throws its body's value away wherever it stands.
-      refuse_discarded_functional_result(stmt = body, env = env, errors = errors, for_site_checks_root = false)
+      refuse_discarded_functional_result(stmt = body, env = env, errors = errors)
       let (_, s2, c2) = check_expr_capture(expr = body, env = env_bind(env = env, name = "__in_loop__", ty = CtUnit), defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       (CtUnit, s2, c2)
     },
@@ -1919,11 +1919,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      // #4142: a statement `for` throws its body's value away; a `for` used
-      // as an expression collects it (ADR-0116).
-      if discarded_root {
-        refuse_discarded_functional_result(stmt = body, env = env, errors = errors, for_site_checks_root = false)
-      }
+      // #4142: a discarded `for` body is judged by the walker that reached
+      // this `for` in its discarded position (`check_seq_spine`, a `while`
+      // body), not here -- one authority, one report.
       // #1350: `for await x in s` was retired, so there is no longer a
       // `__await_iter(s)` marker to unwrap here -- the iterable is checked
       // directly, and whether the loop awaits each step is decided from the
