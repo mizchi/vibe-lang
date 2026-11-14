@@ -5,7 +5,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/core {
-  struct MutSet
+  struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/core {
@@ -384,14 +384,17 @@ fn bret_is_view_expr(known: MutSet[String], e: Expr) -> Bool {
 /// of a borrow-returning builtin (its first argument, as
 /// `scope_tail_proj_root` reads it), and every named argument of a
 /// borrow-returning user function, which may hand back a view of any of
-/// them. A fresh temporary or a literal argument names nothing.
+/// them. A fresh temporary or a literal argument names nothing. The two Map
+/// iterator accessors are read by the user-function rule: a program may
+/// define either name itself (`source_owned_shadowable_borrow_mask`), and its
+/// body may return a view of any parameter.
 fn bret_view_roots(known: MutSet[String], e: Expr, out: Array[String]) -> Unit {
   match bret_peel_ascription(e) {
     EIdent(n, _) => Array::push(out, value = n),
     EDot(obj, _, _, _) => bret_view_roots(known = known, e = obj, out = out),
     ELabeledArg(_, _, v) => bret_view_roots(known = known, e = v, out = out),
     ECall(EIdent(callee, _), args, _, _) => if MutSet::has(known, x = callee) && Array::length(args) > 0 {
-      if is_borrow_ret_builtin(callee) {
+      if is_borrow_ret_builtin(callee) && callee != "Map::iter_get" && callee != "Map::__iter_get_unchecked" {
         bret_view_roots(known = known, e = Array::get(args, at = 0), out = out)
       } else {
         for a in args {
@@ -410,26 +413,36 @@ fn bret_view_roots(known: MutSet[String], e: Expr, out: Array[String]) -> Unit {
 /// that holds a reference, `bk_unknown` when it reaches one whose value is
 /// flow-dependent, and `bk_view` when it reaches only names the function
 /// does not bind (a parameter, a global), which its caller keeps alive.
-/// `depth` bounds a cyclic alias chain, which only a flat, scope-blind
-/// search can see.
-fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, depth: Int) -> Int {
+///
+/// `memo` holds each name already resolved for this function, so a name is
+/// resolved -- and the body searched for it -- once, however many arguments
+/// reach it: `let x2 = choose(x1, x1, c)` over a chain of such bindings would
+/// otherwise double the work at every level. A name is entered as
+/// `bk_unknown` before its own roots are followed, which also cuts the cycle
+/// a flat, scope-blind search can see.
+fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, memo: MutMap[String, Int]) -> Int {
+  match MutMap::get(memo, k = name) {
+    Some(k) => return k,
+    None => ()
+  }
+  MutMap::set(memo, k = name, v = bk_unknown)
   let st = BretBinder::{ count: 0, kind: bk_view, view: EUnit }
   bret_find_binder(e = body, name = name, known = known, st = st)
-  if st.count == 0 {
+  let kind = if st.count == 0 {
     bk_view
-  } else if st.count > 1 || depth > 32 {
+  } else if st.count > 1 {
     bk_unknown
   } else if st.kind != bk_view {
     st.kind
   } else {
     let roots: Array[String] = []
     bret_view_roots(known = known, e = st.view, out = roots)
-    let mut kind = bk_view
+    let mut acc = bk_view
     for r in roots {
-      if kind != bk_owned {
-        let k = bret_resolve_root(known = known, body = body, name = r, depth = depth + 1)
+      if acc != bk_owned {
+        let k = bret_resolve_root(known = known, body = body, name = r, memo = memo)
         if k == bk_owned || k == bk_unknown {
-          kind = k
+          acc = k
         } else {
           ()
         }
@@ -437,8 +450,10 @@ fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, depth: Int
         ()
       }
     }
-    kind
+    acc
   }
+  MutMap::set(memo, k = name, v = kind)
+  kind
 }
 
 /// #4153: does a result path of `top` read into a binding the function owns?
@@ -453,20 +468,24 @@ fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, depth: Int
 /// such read, and callers release it. Only a read the marker always retains
 /// -- a field read or a borrow-returning call -- declines the verdict.
 fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> Bool {
+  bret_tail_walk(known = known, body = body, top = top, memo = MutMap::new_string())
+}
+
+fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[String, Int]) -> Bool {
   match top {
-    ELet(_, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
-    ELetMut(_, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
-    ELetRec(_, _, b) => bret_tail_reads_owned_local(known = known, body = body, top = b),
-    ESeq(_, b) => bret_tail_reads_owned_local(known = known, body = body, top = b),
-    EAssign(_, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
-    EAssignOp(_, _, _, b, _) => bret_tail_reads_owned_local(known = known, body = body, top = b),
-    EIf(_, t, el) => bret_tail_reads_owned_local(known = known, body = body, top = t) || bret_tail_reads_owned_local(known = known, body = body, top = el),
+    ELet(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    ELetMut(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    ELetRec(_, _, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    ESeq(_, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    EAssign(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    EAssignOp(_, _, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
+    EIf(_, t, el) => bret_tail_walk(known = known, body = body, top = t, memo = memo) || bret_tail_walk(known = known, body = body, top = el, memo = memo),
     EMatch(_, arms) => {
       let mut found = false
       let mut i = 0
       while !found && i < Array::length(arms) {
         let (_, arm_body) = Array::get(arms, at = i)
-        found = bret_tail_reads_owned_local(known = known, body = body, top = arm_body)
+        found = bret_tail_walk(known = known, body = body, top = arm_body, memo = memo)
         i = i + 1
       }
       found
@@ -485,7 +504,7 @@ fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> 
       let mut found = false
       let mut i = 0
       while !found && i < Array::length(roots) {
-        found = bret_resolve_root(known = known, body = body, name = Array::get(roots, at = i), depth = 0) != bk_view
+        found = bret_resolve_root(known = known, body = body, name = Array::get(roots, at = i), memo = memo) != bk_view
         i = i + 1
       }
       found

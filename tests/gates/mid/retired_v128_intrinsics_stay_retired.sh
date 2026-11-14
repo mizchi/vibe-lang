@@ -1916,10 +1916,10 @@ echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc,
 #        either -- is not borrow-returning. The classifier judged such a tail
 #        by its callee alone, so behind an `if` or a `match` the binding's
 #        scope-end drop freed the value the branch returned (the answer was
-#        2000 here, not 0, on rc and shadow, which do not trap on it), and a
+#        62000 here, not 0, on rc and shadow, which do not trap on it), and a
 #        direct projection tail leaked the reference its `let` retained, 88 B
 #        a call. The answer is checked on bump, rc, shadow and gc; the rc heap
-#        bound catches the leak (177,108 B before, 1,284 B after).
+#        bound catches the leak (176,844 B before, 1,372 B after).
 echo "[compiler-gate] 40f0t/40 a result that reads into a binding of the function is owned, not borrowed (#4153)"
 gate_workdir otdir "_build/_gate_rc_owned_local_tail_view"
 for ot_lane in bump rc shadow gc; do

@@ -29,8 +29,13 @@ struct Pair {
 }
 
 enum Slot {
-  Full(Array[Int]);
+  Full(Array[Array[Int]]);
   Empty
+}
+
+enum Side {
+  Left(Array[Array[Int]]);
+  Right(Array[Array[Int]])
 }
 
 fn mka(_ i: Int) -> Array[Int] {
@@ -63,16 +68,31 @@ fn field_tail(_ i: Int) -> Array[Int] {
   }
 }
 
-// A match binder of a value this function made.
+// A read into a match binder of a value this function made.
 fn match_tail(_ i: Int) -> Array[Int] {
   let s = if i >= 0 {
-    Full(mka(i))
+    Full([mka(i)])
   } else {
     Empty
   }
+  let fallback = [mka(0)]
   match s {
-    Full(xs) => xs,
-    Empty => mka(0)
+    Full(xss) => Array::get(xss, at = 0),
+    Empty => Array::get(fallback, at = 0)
+  }
+}
+
+// Sibling arms bind the same name: the flat binder search cannot tell the
+// two apart, and an ambiguous root declines like an owned one.
+fn same_binder_tail(_ i: Int) -> Array[Int] {
+  let s = if i % 2 == 0 {
+    Left([mka(i), mka(i + 2)])
+  } else {
+    Right([mka(i), mka(i + 2)])
+  }
+  match s {
+    Left(xss) => Array::get(xss, at = 0),
+    Right(xss) => Array::get(xss, at = 1)
   }
 }
 
@@ -83,12 +103,13 @@ fn alias_tail(_ i: Int) -> Array[Int] {
     let w = Array::get(v, at = 0)
     w
   } else {
-    mka(i + 2)
+    Array::get(v, at = 1)
   }
 }
 
-// Controls: a borrow-returning accessor over a parameter, and a view of a
-// parameter bound to a name. Both stay borrow-returning.
+// Controls: a borrow-returning accessor over a parameter (also applied to a
+// local by `user_tail`), and a view of a parameter bound to a name. Both stay
+// borrow-returning.
 fn first(_ xs: Array[Array[Int]]) -> Array[Int] {
   Array::get(xs, at = 0)
 }
@@ -99,7 +120,23 @@ fn user_tail(_ i: Int) -> Array[Int] {
   if i % 2 == 0 {
     first(v)
   } else {
-    mka(i + 2)
+    Array::get(v, at = 1)
+  }
+}
+
+// A program-defined `Map::iter_get` (the name is shadowable) that returns a
+// view of its SECOND parameter. Reading only the first argument, as the
+// builtin's rule does, missed that this reads into `v`.
+fn Map::iter_get(_ m: Int, _ xs: Array[Array[Int]]) -> Array[Int] {
+  Array::get(xs, at = m)
+}
+
+fn source_owned_tail(_ i: Int) -> Array[Int] {
+  let v = [mka(i), mka(i + 2)]
+  if i % 2 == 0 {
+    Map::iter_get(0, v)
+  } else {
+    Map::iter_get(1, v)
   }
 }
 
@@ -115,6 +152,8 @@ fn probe(_ i: Int) -> Int {
   let d = match_tail(i)
   let e = alias_tail(i)
   let f = user_tail(i)
+  let m = same_binder_tail(i)
+  let n = source_owned_tail(i)
   let fresh = [mka(i + 7), mka(i + 9), mka(i + 11)]
   let held = [[mka(i), mka(i + 4)]]
   let g = second_of_first(held)
@@ -125,7 +164,7 @@ fn probe(_ i: Int) -> Int {
   } else {
     2
   }
-  (Array::get(a, at = 0) - i - k) + (Array::get(b, at = 2) - (i + 4)) + (Array::get(c, at = 1) - (i + 1 + k)) + (Array::get(d, at = 2) - (i + 2)) + (Array::get(e, at = 0) - i - k) + (Array::get(f, at = 0) - i - k) + (Array::get(g, at = 0) - (i + 4)) + (Array::get(h, at = 0) - (i + 7)) + Array::length(fresh) - 3
+  (Array::get(a, at = 0) - i - k) + (Array::get(b, at = 2) - (i + 4)) + (Array::get(c, at = 1) - (i + 1 + k)) + (Array::get(d, at = 2) - (i + 2)) + (Array::get(e, at = 0) - i - k) + (Array::get(f, at = 0) - i - k) + (Array::get(m, at = 0) - i - k) + (Array::get(n, at = 0) - i - k) + (Array::get(g, at = 0) - (i + 4)) + (Array::get(h, at = 0) - (i + 7)) + Array::length(fresh) - 3
 }
 
 fn main() -> Int {

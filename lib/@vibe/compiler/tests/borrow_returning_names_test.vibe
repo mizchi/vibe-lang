@@ -136,6 +136,22 @@ test "a bare name keeps the verdict: the owning-return marker may not retain it"
   inspect(contains(names = borrow_set_of(src), name = "pick"), "true")
 }
 
+test "a long chain of views through a two-argument helper resolves once per name" {
+  // Each binding passes the previous one twice; following every argument
+  // occurrence separately doubled the work per binding, so 30 of them did
+  // not finish. Every name is resolved once now.
+  let mut src = "fn choose(a: Array[Array[Int]], b: Array[Array[Int]], c: Bool) -> Array[Array[Int]] {\n  if c {\n    a\n  } else {\n    b\n  }\n}\n\nfn pick(xs: Array[Array[Array[Int]]], c: Bool) -> Array[Array[Int]] {\n  let x0 = Array::get(xs, 0)\n"
+  let mut i = 1
+  while i <= 30 {
+    src = src + "  let x" + Int::to_string(i) + " = choose(x" + Int::to_string(i - 1) + ", x" + Int::to_string(i - 1) + ", c)\n"
+    i = i + 1
+  }
+  src = src + "  if c {\n    choose(x30, x30, c)\n  } else {\n    Array::get(xs, 1)\n  }\n}\n"
+  let names = borrow_set_of(src)
+  inspect(contains(names = names, name = "choose"), "true")
+  inspect(contains(names = names, name = "pick"), "true")
+}
+
 test "a read into a parameter, through a view or a binder, stays borrow-returning" {
   let through_let = "fn pick(xs: Array[Array[Array[Int]]], i: Int) -> Array[Int] {\n  let w = Array::get(xs, 0)\n  if i > 0 {\n    Array::get(w, 0)\n  } else {\n    Array::get(w, 1)\n  }\n}\n"
   inspect(contains(names = borrow_set_of(through_let), name = "pick"), "true")
