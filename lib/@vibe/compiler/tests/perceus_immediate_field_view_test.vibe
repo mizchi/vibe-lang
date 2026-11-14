@@ -7,7 +7,7 @@
 // guarded drop there. A `String` field stays a possible view, so its shape
 // keeps today's plan.
 import @vibe/compiler/query {
-  rc_plan_source
+  rc_plan_source, rc_validate_source, rc_validate_source_edited
 }
 
 import @vibe/compiler/perceus {
@@ -43,6 +43,28 @@ let shapes: String = "struct Ctx {\n  n: Int;\n  items: Array[Int]\n}\n\nfn keep
 test "an Int field read lets a lambda's parameter take its guarded drop" {
   let rows = plan_rows(source = shapes, fname = "lam_shape")
   inspect(String::contains(rows, needle = "lam_shape ctx path_drop"), content = "true")
+}
+
+// Codex review on #4170: `vibe rc-validate` plans through the query's pin
+// too, so it checks the plan codegen emits -- the guarded drop -- and that
+// plan balances on both paths.
+let seen_path_drops: Array[Int] = [0]
+
+fn count_path_drops(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
+  for a in plan {
+    if pa_is_path_drop(a) {
+      Array::set(seen_path_drops, at = 0, value = Array::get(seen_path_drops, at = 0) + 1)
+    }
+  }
+  plan
+}
+
+test "rc-validate checks the guarded-drop plan, and it balances" {
+  Array::set(seen_path_drops, at = 0, value = 0)
+  let edited = rc_validate_source_edited(source = shapes, fn_filter = "lam_shape", edit = count_path_drops, checked_error_row = false)
+  inspect(edited, content = "")
+  inspect(Array::get(seen_path_drops, at = 0) > 0, content = "true")
+  inspect(rc_validate_source(source = shapes, fn_filter = "lam_shape", checked_error_row = false), content = "")
 }
 
 test "a String field read keeps the parameter's ordinary drop" {
