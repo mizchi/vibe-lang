@@ -1000,10 +1000,7 @@ fn content_read_let(name: String, off: Int, expr: Expr, facts: ContentFacts, env
       content_bind_typed(id = id, value = (false, []), alias_type = closure_type, facts = facts)
     },
     _ => {
-      let source = match expr {
-        EIdent(source, _) => source,
-        _ => ""
-      }
+      let source = content_alias_source(expr)
       let source_id = content_resolve(name = source, facts = facts)
       let value = content_facts_value(expr = expr, facts = facts, env = env)
       content_bind_let(name = name, off = off, expr = expr, value = value, env = env, facts = facts)
@@ -1018,6 +1015,17 @@ fn content_read_let(name: String, off: Int, expr: Expr, facts: ContentFacts, env
         }
       }
     }
+  }
+}
+
+fn content_alias_source(_ expr: Expr) -> String {
+  match expr {
+    EIdent(name, _) => name,
+    ECall(callee, args, _, _) => match ascription_call_value(callee = callee, args = args) {
+      Some(value) => content_alias_source(value),
+      None => ""
+    },
+    _ => ""
   }
 }
 
@@ -1158,14 +1166,14 @@ fn content_call_facts(callee: Expr, args: Array[Expr], facts: ContentFacts, env:
 // scope walk. Inspect it with its lexical environment and the call's regions.
 fn content_prior_closure_call(name: String, args: Array[Expr], env: TypeEnv, facts: ContentFacts) -> Unit {
   match retention_local_closure_literal(env = env, name = name) {
-    Some((EFn(_, _, params, _, _, body), scope, key)) => {
+    Some((EFn(tparams, _, params, _, _, body), scope, key)) => {
       // Recursive closure calls share the same syntactic body.
       if content_listed(items = facts.calls.active, wanted = key) {
         return ()
       }
       let mark = Array::length(facts.calls.active)
       Array::push(facts.calls.active, value = key)
-      let held = content_parameter_regions(params = params, body = body, env = scope, calls = facts.calls)
+      let held = content_parameter_regions(tparams = tparams, params = params, body = body, env = scope, calls = facts.calls)
       Array::truncate(facts.calls.active, length = mark)
       let mut i = 0
       while i < Array::length(held) && i < Array::length(args) {
@@ -1641,12 +1649,20 @@ fn content_summary_scope(names: Array[String], env: TypeEnv) -> TypeEnv {
   scope
 }
 
-fn content_parameter_regions(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Array[String]] {
+fn content_parameter_regions(tparams: Array[String], params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Array[String]] {
+  let defs = env_type_defs(env)
+  let mut scope = env
   let names = for param in params {
-    retention_param_base(param.0)
+    let name = retention_param_base(param.0)
+    let ty = match param.1 {
+      Some(annotation) => resolve_type_expr_shadowed(te = annotation, defs = defs, shadow = tparams),
+      None => CtVar(-1)
+    }
+    scope = env_bind(env = scope, name = name, ty = ty)
+    name
   }
-  let facts = content_collect(names = names, scope = body, env = env, calls = calls, track_results = false, type_aliases = false)
-  content_held_regions(facts = facts, env = env, s = SubstEmpty)
+  let facts = content_collect(names = names, scope = body, env = scope, calls = calls, track_results = false, type_aliases = false)
+  content_held_regions(facts = facts, env = scope, s = SubstEmpty)
 }
 
 fn content_outer_params(params: Array[(String, Option[TypeExpr])], body: Expr, env: TypeEnv, calls: ContentCalls) -> Array[Int] {
