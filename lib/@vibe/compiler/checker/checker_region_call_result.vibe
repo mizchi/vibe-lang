@@ -243,7 +243,11 @@ fn retention_arg_content_into(arg: Expr, env: TypeEnv, out: Array[String]) -> Un
       retention_arg_content_into(arg = b, env = env, out = out)
     },
     ESeq(_, body) => retention_arg_content_into(arg = body, env = env, out = out),
-    EAssign(_, _, body, _) => retention_arg_content_into(arg = body, env = env, out = out),
+    EAssign(n, v, body, _) => {
+      let regions = retention_arg_content(arg = v, env = env)
+      let scope = retention_arg_content_mark(name = n, regions = regions, env = env)
+      retention_arg_content_into(arg = body, env = scope, out = out)
+    },
     EAssignOp(_, _, _, body, _) => retention_arg_content_into(arg = body, env = env, out = out),
     ELet(n, v, body, _) => retention_arg_content_let(name = n, value = v, body = body, env = env, out = out),
     ELetMut(n, v, body, _) => retention_arg_content_let(name = n, value = v, body = body, env = env, out = out),
@@ -263,14 +267,18 @@ fn retention_content_has(out: Array[String], name: String) -> Bool {
 fn retention_arg_content_let(name: String, value: Expr, body: Expr, env: TypeEnv, out: Array[String]) -> Unit {
   let regions = retention_arg_content(arg = value, env = env)
   let bound = env_bind(env = env, name = name, ty = CtVar(-1))
-  let scope = if Array::length(regions) == 0 {
-    bound
+  let scope = retention_arg_content_mark(name = name, regions = regions, env = bound)
+  retention_arg_content_into(arg = body, env = scope, out = out)
+}
+
+fn retention_arg_content_mark(name: String, regions: Array[String], env: TypeEnv) -> TypeEnv {
+  if Array::length(regions) == 0 {
+    env
   } else {
-    env_bind(env = bound, name = region_outer_content_marker(name), ty = CtTuple(for rname in regions {
+    env_bind(env = env, name = region_outer_content_marker(name), ty = CtTuple(for rname in regions {
       CtNamed(rname, [])
     }))
   }
-  retention_arg_content_into(arg = body, env = scope, out = out)
 }
 
 /// The prefix of the binding that carries a function's retention summary
