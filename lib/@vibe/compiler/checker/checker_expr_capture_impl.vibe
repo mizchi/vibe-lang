@@ -21,7 +21,7 @@ import ./checker_call_placement.vibe {
 }
 
 import ./checker_deferred_method_rows.vibe {
-  defer_expr_check, deferred_result_pending, has_deferred_checks
+  defer_expr_check, defer_pattern_check, deferred_result_pending, has_deferred_checks, struct DeferredPatternCheck
 }
 
 import ./checker_call_arguments.vibe {
@@ -140,7 +140,11 @@ import ./checker_handle_closure_escape.vibe {
 }
 
 import @vibe/compiler/checker/patterns {
-  check_pattern, ctor_pattern_scrutinee_mismatch, match_nonexhaustive_witness, pat_has_unsupported_or_binding, pat_repeated_binder
+  check_pattern_with_open_scrutinee,
+  ctor_pattern_scrutinee_mismatch,
+  match_nonexhaustive_witness,
+  pat_has_unsupported_or_binding,
+  pat_repeated_binder
 }
 
 import ./checker_resolve.vibe {
@@ -1152,7 +1156,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Array::push(errors, value = String::concat("rename one of the two `\{repeated}` in this pattern: a pattern binds each name once (to compare two parts, bind them apart and test `a == b` in a guard)", off_marker(railway_expr_off(scrutinee))))
           }
           let pat_err_before = Array::length(errors)
-          let arm_env = check_pattern(pat = pat, scrutinee_ty = subst_apply(s = si, ty = scr_ty), env = rail_env, defs = defs, errors = errors)
+          let pattern_off = if railway_expr_off(body) >= 0 {
+            railway_expr_off(body)
+          } else {
+            railway_expr_off(scrutinee)
+          }
+          let arm_env = check_pattern_with_open_scrutinee(pat = pat, scrutinee_ty = subst_apply(s = si, ty = scr_ty), env = rail_env, defs = defs, errors = errors, on_open = (id, pending) -> {
+            if !checker_call_header_is_probe() {
+              defer_pattern_check(DeferredPatternCheck::{
+                recv: id,
+                pat: pending,
+                env: rail_env,
+                defs: defs,
+                off: pattern_off
+              })
+            }
+          })
           // #3640: `Some(t)` out of a spawn-shaped function's optional closure
           // parameter is trusted like the parameter (`spawn_safe_marker`).
           let arm_env = match spawn_safe_option_binder(env = env, scrutinee = scrutinee, pat = pat) {

@@ -11,7 +11,7 @@
 // checker.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, fresh_var, subst_apply
+  Expr, Pat, Subst, Type, TypeDef, TypeEnv, fresh_var, subst_apply
 }
 
 /// One pending dot call. `recv` is the receiver's variable; `callee` is the
@@ -43,10 +43,20 @@ export struct DeferredExprCheck {
   check: (Subst, Array[String]) -> (Type, Subst)
 }
 
-/// Calls and expressions using their results share evaluation order.
+/// A representation-dependent pattern on a type that has yet to settle.
+export struct DeferredPatternCheck {
+  recv: Int;
+  pat: Pat;
+  env: TypeEnv;
+  defs: Array[TypeDef];
+  off: Int
+}
+
+/// Calls, patterns and expressions using their results share evaluation order.
 export enum DeferredCheck {
   DeferredMethod(DeferredMethodCall)
-  DeferredExpr(DeferredExprCheck)
+  DeferredExpr(DeferredExprCheck);
+  DeferredPattern(DeferredPatternCheck)
 }
 
 /// The pending rows, in recording order. Reset per run, since variable ids
@@ -72,6 +82,11 @@ export fn defer_expr_check(operands: Array[Int], subject: String, off: Int, c: I
   (result, next)
 }
 
+/// Remember a pattern at the point where its scrutinee's representation is unknown.
+export fn defer_pattern_check(_ row: DeferredPatternCheck) -> Unit {
+  Array::push(deferred_checks, value = DeferredPattern(row))
+}
+
 /// Whether the current checker run has any pending checks.
 export fn has_deferred_checks() -> Bool {
   Array::length(deferred_checks) > 0
@@ -83,13 +98,16 @@ export fn deferred_result_pending(id: Int, s: Subst) -> Bool {
   while i >= 0 {
     let result = match Array::get(deferred_checks, at = i) {
       DeferredMethod(row) => row.result,
-      DeferredExpr(row) => row.result
+      DeferredExpr(row) => row.result,
+      DeferredPattern(_) => -1
     }
-    match subst_apply(s = s, ty = CtVar(result)) {
-      CtVar(resolved_id) => if resolved_id == id {
-        return true
-      },
-      _ => ()
+    if result >= 0 {
+      match subst_apply(s = s, ty = CtVar(result)) {
+        CtVar(resolved_id) => if resolved_id == id {
+          return true
+        },
+        _ => ()
+      }
     }
     i = i - 1
   }

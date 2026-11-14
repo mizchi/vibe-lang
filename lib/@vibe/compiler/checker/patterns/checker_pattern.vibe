@@ -345,6 +345,10 @@ fn cp_declared_field_ty(defs: Array[TypeDef], sname: String, field: String) -> T
 }
 
 export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> TypeEnv {
+  check_pattern_with_open_scrutinee(pat = pat, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors, on_open = (_, _) -> ())
+}
+
+export fn check_pattern_with_open_scrutinee(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String], on_open: (Int, Pat) -> Unit) -> TypeEnv {
   match pat {
     PWild => env,
     PBind(name) => env_bind(env = env, name = name, ty = scrutinee_ty),
@@ -417,6 +421,10 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
       env
     },
     PCtor(raw_name, sub_pats) => {
+      match scrutinee_ty {
+        CtVar(id) => on_open(id, pat),
+        _ => ()
+      }
       // #3422: a qualified `Maybe::Some` resolves by its bare variant name.
       let name = pattern_ctor_base_name(raw_name)
       let qualifier = pattern_ctor_owner(raw_name)
@@ -546,7 +554,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(pat = Array::get(sub_pats, at = i), scrutinee_ty = sub_ty, env = acc_env, defs = defs, errors = errors)
+              let next_env = check_pattern_with_open_scrutinee(pat = Array::get(sub_pats, at = i), scrutinee_ty = sub_ty, env = acc_env, defs = defs, errors = errors, on_open = on_open)
               bind_subs(i + 1, next_env)
             }
           }
@@ -558,7 +566,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
             if i >= splen {
               acc_env
             } else {
-              let next_env = check_pattern(pat = Array::get(sub_pats, at = i), scrutinee_ty = CtUnknown, env = acc_env, defs = defs, errors = errors)
+              let next_env = check_pattern_with_open_scrutinee(pat = Array::get(sub_pats, at = i), scrutinee_ty = CtUnknown, env = acc_env, defs = defs, errors = errors, on_open = on_open)
               bind_unknown(i + 1, next_env)
             }
           }
@@ -567,6 +575,14 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
       }
     },
     PTuple(pats) => {
+      match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
+        Some(n) => Array::push(errors, value = opaque_type_refusal(name = n, what = "it cannot be destructured as a tuple")),
+        None => ()
+      }
+      match scrutinee_ty {
+        CtVar(id) => on_open(id, pat),
+        _ => ()
+      }
       let plen = Array::length(pats)
       match scrutinee_ty {
         CtTuple(elem_tys) => {
@@ -589,7 +605,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(pat = Array::get(pats, at = i), scrutinee_ty = et, env = acc_env, defs = defs, errors = errors)
+              let next_env = check_pattern_with_open_scrutinee(pat = Array::get(pats, at = i), scrutinee_ty = et, env = acc_env, defs = defs, errors = errors, on_open = on_open)
               bind_tuple(i + 1, next_env)
             }
           }
@@ -629,7 +645,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
             if i >= plen {
               acc_env
             } else {
-              let next_env = check_pattern(pat = Array::get(pats, at = i), scrutinee_ty = CtUnknown, env = acc_env, defs = defs, errors = errors)
+              let next_env = check_pattern_with_open_scrutinee(pat = Array::get(pats, at = i), scrutinee_ty = CtUnknown, env = acc_env, defs = defs, errors = errors, on_open = on_open)
               bind_unk(i + 1, next_env)
             }
           }
@@ -638,10 +654,14 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
       }
     },
     POr(left, right) => {
-      let _ = check_pattern(pat = right, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors)
-      check_pattern(pat = left, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors)
+      let _ = check_pattern_with_open_scrutinee(pat = right, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors, on_open = on_open)
+      check_pattern_with_open_scrutinee(pat = left, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors, on_open = on_open)
     },
     PStruct(sname, fields) => {
+      match scrutinee_ty {
+        CtVar(id) => on_open(id, pat),
+        _ => ()
+      }
       // #4115: a struct pattern reads the fields of what it destructures.
       let opaque = match opaque_type_name_of(defs = defs, ty = scrutinee_ty) {
         Some(n) => Some(n),
@@ -665,7 +685,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
             },
             None => cp_struct_field_ty(defs = defs, scrutinee_ty = scrutinee_ty, field = fname)
           }
-          let next_env = check_pattern(pat = fpat, scrutinee_ty = field_ty, env = acc_env, defs = defs, errors = errors)
+          let next_env = check_pattern_with_open_scrutinee(pat = fpat, scrutinee_ty = field_ty, env = acc_env, defs = defs, errors = errors, on_open = on_open)
           bind_fields(i + 1, next_env)
         }
       }
