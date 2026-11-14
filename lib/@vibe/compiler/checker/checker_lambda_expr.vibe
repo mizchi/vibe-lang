@@ -9,7 +9,7 @@ import ./checker_int32.vibe {
 }
 
 import ./checker_deferred_method_call.vibe {
-  resolve_deferred_checks
+  refuse_generalized_patterns, resolve_deferred_checks
 }
 
 import ./checker_lambda_result.vibe {
@@ -66,6 +66,8 @@ import @vibe/compiler/core {
   fresh_var,
   instantiate,
   is_hkt_app,
+  opaque_type_name_of,
+  opaque_type_refusal,
   pattern_ctor_base_name,
   resolve_builtin,
   row_items,
@@ -289,6 +291,20 @@ export fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type, captur
   ty
 }
 
+fn refuse_opaque_field_write(receiver: Type, field: String, off: Int, defs: Array[TypeDef], errors: Array[String]) -> Bool {
+  match opaque_type_name_of(defs = defs, ty = receiver) {
+    Some(oname) => {
+      Array::push(errors, value = opaque_type_refusal(name = oname, what = "its field `" + field + "` cannot be written here") + off_marker(off))
+      true
+    },
+    None => false
+  }
+}
+
+fn unresolved_field_write_message(_ field: String) -> String {
+  "annotate the receiver with its concrete struct type before writing field `" + field + "`"
+}
+
 /// #418: enforce that `obj.field = x` (which desugars to
 /// `__set_field(obj, "field", x)`) only targets a `mut`-declared struct field.
 /// Runs as a pure side-effect over a *throwaway* errors/tytab so it never
@@ -308,7 +324,24 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
         // #829: also recognise an INSTANTIATED generic struct receiver
         // (`CtNamed(S, targs)`), so `mut`-field enforcement and the written-
         // value type check cover generic structs too.
-        let recv_struct = match subst_apply(s = s, ty = obj_ty) {
+        let resolved = subst_apply(s = obj_s, ty = obj_ty)
+        let receiver = Array::get(args, at = 0)
+        let off = railway_expr_off(receiver)
+        if refuse_opaque_field_write(receiver = resolved, field = field, off = off, defs = defs, errors = errors) {
+          return (s, c)
+        }
+        match resolved {
+          CtVar(id) => if obj_c == c {
+            let recv = match receiver {
+              EIdent(n, _) => n,
+              _ => ""
+            }
+            // A write has no result variable to unify when the receiver settles.
+            Array::push(deferred_field_reads, value = (id, field, -1, off, recv, -1))
+          } else (),
+          _ => ()
+        }
+        let recv_struct = match resolved {
           CtStruct(sn) => Some((sn, array_empty())),
           CtNamed(sn, sargs) => Some((sn, sargs)),
           _ => None
@@ -918,13 +951,17 @@ export fn resolve_deferred_field_reads(s: Subst, defs: Array[TypeDef], errors: A
     match subst_apply(s = cur, ty = CtVar(vid)) {
       CtVar(rep) => {
         let formal = formal_name_for_var(id = rep, s = cur, open_only = open_only)
-        if formal != "" {
+        if result_id < 0 && (formal != "" || !open_only) {
+          Array::push(errors, value = unresolved_field_write_message(field) + off_marker(dot_off))
+        } else if formal != "" {
           Array::push(errors, value = String::concat(formal_field_access_message(tparam = formal, field = field), field_read_marker(field = field, field_off = field_off, dot_off = dot_off)))
         } else {
           Array::push(kept, value = (vid, field, field_off, dot_off, recv, result_id))
         }
       },
-      resolved => {
+      resolved => if result_id < 0 {
+        let _ = refuse_opaque_field_write(receiver = resolved, field = field, off = dot_off, defs = defs, errors = errors)
+      } else {
         let fty = field_read_type(resolved = resolved, field = field, defs = defs, s1 = cur, errors = errors, field_off = field_off, dot_off = dot_off)
         cur = unify_deferred_field_result(result_id = result_id, fty = fty, s = cur, defs = defs, field = field, field_off = field_off, dot_off = dot_off, errors = errors)
       }
@@ -1123,7 +1160,9 @@ export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Typ
               CtVar(rep) => rep == self_rep,
               _ => false
             }
-            if is_self {
+            if is_self && result_id < 0 {
+              let _ = refuse_opaque_field_write(receiver = target, field = field, off = dot_off, defs = defs, errors = errors)
+            } else if is_self {
               let fty = field_read_type(resolved = target, field = field, defs = defs, s1 = cur, errors = errors, field_off = field_off, dot_off = dot_off)
               cur = unify_deferred_field_result(result_id = result_id, fty = fty, s = cur, defs = defs, field = field, field_off = field_off, dot_off = dot_off, errors = errors)
             } else {
@@ -1268,6 +1307,7 @@ fn open_receiver_field_access_message(recv: String, field: String) -> String {
 export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[String]) -> Unit {
   match gen {
     CtForAll(vars, _, _) => {
+      refuse_generalized_patterns(vars = vars, s = s, errors = errors)
       let kept: Array[(Int, String, Int, Int, String, Int)] = []
       let mut i = 0
       while i < Array::length(deferred_field_reads) {
@@ -1276,7 +1316,9 @@ export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[Stri
           CtVar(rep) => int_array_has(items = vars, wanted = rep),
           _ => false
         }
-        if quantified {
+        if quantified && result_id < 0 {
+          Array::push(errors, value = unresolved_field_write_message(field) + off_marker(dot_off))
+        } else if quantified {
           Array::push(errors, value = String::concat(open_receiver_field_access_message(recv = recv, field = field), field_read_marker(field = field, field_off = field_off, dot_off = dot_off)))
         } else {
           Array::push(kept, value = (vid, field, field_off, dot_off, recv, result_id))
@@ -1301,6 +1343,13 @@ export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[Stri
 /// `resolve_deferred_field_reads`): the arms below never see a `CtVar` from
 /// that caller, which resolves the pending variable first.
 export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s1: Subst, errors: Array[String], field_off: Int, dot_off: Int) -> Type {
+  match opaque_type_name_of(defs = defs, ty = resolved) {
+    Some(oname) => {
+      Array::push(errors, value = opaque_type_refusal(name = oname, what = "its field `" + field + "` cannot be read here") + field_read_marker(field = field, field_off = field_off, dot_off = dot_off))
+      return CtUnknown
+    },
+    None => ()
+  }
   match resolved {
     CtStruct(sname) => match find_typedef(defs = defs, name = sname) {
       Some(td) => match td {

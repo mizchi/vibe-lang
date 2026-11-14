@@ -64,6 +64,7 @@ import @vibe/compiler/core {
   canonical_builtin_name,
   env_bind,
   env_bind_trait_definition_origin,
+  env_bind_type_definition_origin,
   env_bind_with_origin,
   env_flat_bindings,
   env_lookup,
@@ -210,7 +211,7 @@ fn engine_dependency_interface_lookup(interfaces: DependencyInterfaceSet, path: 
 /// The path resolver sees precisely the job's dependency paths, in their
 /// original order. Its environment and all projection facts come from the
 /// same published view, so no independent accelerator can replace authority.
-export fn engine_build_import_envs_from_interfaces(stmts: Array[Stmt], base_dir: String, interfaces: DependencyInterfaceSet, dependency_paths: Array[String], unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+export fn engine_build_import_envs_from_interfaces(stmts: Array[Stmt], base_dir: String, interfaces: DependencyInterfaceSet, dependency_paths: Array[String], unresolved: Array[String], contract_facade: Bool = false) -> (TypeEnv, TypeEnv) with Env {
   let cache: Array[(String, TypeEnv)] = []
   for path in dependency_paths {
     match engine_dependency_interface_lookup(interfaces = interfaces, path = path) {
@@ -218,7 +219,7 @@ export fn engine_build_import_envs_from_interfaces(stmts: Array[Stmt], base_dir:
       None => ()
     }
   }
-  engine_build_import_envs_using_interfaces(stmts = stmts, base_dir = base_dir, cache = cache, interfaces = interfaces, unresolved = unresolved)
+  engine_build_import_envs_using_interfaces(stmts = stmts, base_dir = base_dir, cache = cache, interfaces = interfaces, unresolved = unresolved, contract_facade = contract_facade)
 }
 fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Array[ImportItem]) -> Array[TypeDef] {
   let dep_defs = view.defs
@@ -256,7 +257,10 @@ fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Ar
             })),
             TDAlias(_, params, target) => TDAlias(local_name, params, target),
             TDEffect(_, ops, params, kinds, owner) => TDEffect(local_name, ops, params, kinds, owner),
-            TDEffectSet(_, members) => TDEffectSet(local_name, members)
+            TDEffectSet(_, members) => TDEffectSet(local_name, members),
+            TDOpaque(_, params, _, _) => TDAlias(local_name, params, CtNamed(name, for param in params {
+              CtNamed(param, array_empty())
+            }))
           }
           Array::push(selected, value = alias_def)
         } else {
@@ -301,7 +305,7 @@ fn engine_typedef_projection_find(defs: Array[TypeDef], name: String) -> Option[
   }
   found
 }
-fn engine_prepend_dependency_type_defs(view: DependencyInterfaceView, names: Array[ImportItem], tail: TypeEnv) -> TypeEnv {
+fn engine_prepend_dependency_type_defs(view: DependencyInterfaceView, names: Array[ImportItem], tail: TypeEnv, resolved: String) -> TypeEnv {
   let defs = engine_dependency_typedef_projection(view = view, names = names)
   if Array::length(defs) == 0 {
     tail
@@ -325,7 +329,17 @@ fn engine_prepend_dependency_type_defs(view: DependencyInterfaceView, names: Arr
       }
       i = i + 1
     }
-    env_preserve_type_definition_origins(env = EnvTypeDefs(defs, selectable, tail), source = view.env)
+    let mut projected = env_preserve_type_definition_origins(env = EnvTypeDefs(defs, selectable, tail), source = view.env)
+    for item in names {
+      match item.alias {
+        Some(local) => if local != item.name && engine_typedef_projection_contains(defs = defs, name = local) {
+          let origin = engine_selected_module_binding_origin(dep_env = view.env, resolved = resolved, source_name = item.name, reexport_surface_only = true)
+          projected = env_bind_type_definition_origin(env = projected, name = local, origin = origin)
+        } else (),
+        None => ()
+      }
+    }
+    projected
   }
 }
 /// `origin_path` is the import spelling the dependency was reached through
@@ -672,7 +686,9 @@ fn engine_typedef_payload_types(_ def: TypeDef) -> (Array[String], Array[Type]) 
       }
       (params, tys)
     },
-    TDEffectSet(_, _) => (array_empty(), tys)
+    TDEffectSet(_, _) => (array_empty(), tys),
+    // #4115: a withheld definition has no payload to interpret.
+    TDOpaque(_, params, _, _) => (params, tys)
   }
 }
 /// #3026, the declaration half: importing a TYPE brings its declaration and,
@@ -1162,7 +1178,11 @@ fn engine_typedef_identity(_ def: TypeDef) -> Type {
     // declaration, as the interface fingerprint already treats them.
     TDEffectSet(name, members) => CtNamed(String::concat("#typeid.effectset.", name), for m in engine_interface_sorted_unique(members) {
       CtNamed(m, array_empty())
-    })
+    }),
+    TDOpaque(name, params, _, origin) => CtTuple([
+      CtNamed("#typeid.opaque." + name, engine_identity_formals(params)),
+      CtNamed(origin, [])
+    ])
   }
 }
 /// The bare names `ty` may refer to a declaration by: every nominal head, and
@@ -1245,7 +1265,8 @@ fn engine_typedef_reference_names(_ def: TypeDef) -> Array[String] {
         }
         mi = mi + 1
       }
-    }
+    },
+    TDOpaque(_, _, _, _) => ()
   }
   out
 }
@@ -1704,8 +1725,15 @@ export fn engine_bind_type_reference_definitions(value_surface: Array[String], p
       let (n, def, ty, _) = Array::get(reached, at = k)
       match find_typedef(defs = published_defs, name = n) {
         Some(_) => (),
-        None => {
-          out = EnvBind(engine_type_reference_definition_marker(n), env_value_binding(engine_identity_definition_type(def = def, ty = ty)), out)
+        None => match def {
+          Some(sealed) => if sealed is TDOpaque(_, _, _, _) {
+            out = EnvTypeDefs([sealed], [], out)
+          } else {
+            out = EnvBind(engine_type_reference_definition_marker(n), env_value_binding(engine_identity_definition_type(def = def, ty = ty)), out)
+          },
+          None => {
+            out = EnvBind(engine_type_reference_definition_marker(n), env_value_binding(ty), out)
+          }
         }
       }
       k = k + 1
@@ -1810,7 +1838,7 @@ fn engine_note_imported_declaration_identities(view: DependencyInterfaceView, ra
     ai = ai + 1
   }
 }
-fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], interfaces: DependencyInterfaceSet, unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, Option[TypeDef], Type, String)]) -> TypeEnv {
+fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], interfaces: DependencyInterfaceSet, unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, contract_reexport: Bool, local_types: Array[String], seen_types: Array[(String, Option[TypeDef], Type, String)]) -> TypeEnv {
   let cached = engine_dependency_interface_lookup(interfaces = interfaces, path = resolved)
   let view = match cached {
     Some(v) => v,
@@ -1880,7 +1908,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
     }
     kii = kii + 1
   }
-  let kind_errors = import_item_kind_errors(items = kind_items, initial_env = dep_env, builtin_authority = raw_path == "@vibe/builtin", path = raw_path)
+  let kind_errors = import_item_kind_errors(items = kind_items, initial_env = dep_env, builtin_authority = raw_path == "@vibe/builtin", path = raw_path, contract_reexport = contract_reexport)
   let mut kei = 0
   while kei < Array::length(kind_errors) {
     Array::push(unresolved, value = Array::get(kind_errors, at = kei))
@@ -2085,16 +2113,42 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   let declaration_trait_mappings = engine_dependency_trait_projection_mappings(dep_env = dep_env, dep_bindings = dep_bindings, dep_traits = dep_traits, upper_slots = dep_upper_slots, names = declaration_names, unresolved = array_empty())
   engine_foreign_trait_impl_collisions(dep_env = dep_env, mappings = declaration_trait_mappings, raw_path = raw_path, resolved = resolved, dep_types = dep_types, local_types = local_types, unresolved = unresolved, reported = collision_reported)
   engine_note_trait_identities(dep_env = dep_env, mappings = declaration_trait_mappings, raw_path = raw_path, defs = id_defs, markers = id_markers, walked = id_walked, keep = id_keep, carried = carried_references, seen = seen_types, unresolved = unresolved)
-  let bound = bind_names(0, engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = declaration_trait_mappings, tail = engine_prepend_dependency_type_defs(view = view, names = declaration_names, tail = acc), origin_path = raw_path))
-  let mut with_references = bound
-  let mut ci = 0
-  while ci < Array::length(carried_references) {
-    let (tn, def) = Array::get(carried_references, at = ci)
-    with_references = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), with_references)
-    ci = ci + 1
-  }
-  with_references
+  let bound = bind_names(0, engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = declaration_trait_mappings, tail = engine_prepend_dependency_type_defs(view = view, names = declaration_names, tail = acc, resolved = resolved), origin_path = raw_path))
+  engine_prepend_type_references(env = bound, carried = carried_references, defs = id_defs)
 }
+
+fn engine_prepend_type_references(env: TypeEnv, carried: Array[(String, Type)], defs: Array[TypeDef]) -> TypeEnv {
+  let mut out = env
+  let opaque_defs: Array[TypeDef] = []
+  for row in carried {
+    let (name, identity) = row
+    let opaque = match identity {
+      CtTuple(items) => if Array::length(items) == 2 {
+        match Array::get(items, at = 0) {
+          CtNamed(tag, _) => String::starts_with(tag, prefix = "#typeid.opaque."),
+          _ => false
+        }
+      } else {
+        false
+      },
+      _ => false
+    }
+    if opaque {
+      match find_typedef(defs = defs, name = name) {
+        Some(def) => Array::push(opaque_defs, value = def),
+        None => out = EnvBind(engine_type_reference_definition_marker(name), env_value_binding(identity), out)
+      }
+    } else {
+      out = EnvBind(engine_type_reference_definition_marker(name), env_value_binding(identity), out)
+    }
+  }
+  if Array::length(opaque_defs) == 0 {
+    out
+  } else {
+    EnvTypeDefs(opaque_defs, [], out)
+  }
+}
+
 fn engine_reexport_items_with_alias(items: Array[ImportItem], want_alias: Bool) -> Array[ImportItem] {
   let out = array_empty()
   let mut i = 0
@@ -2159,17 +2213,10 @@ fn engine_prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, na
   let dep_upper_slots = view.upper_slots
   let ignored = array_empty()
   let mappings = engine_dependency_trait_projection_mappings(dep_env = dep_env, dep_bindings = dep_bindings, dep_traits = dep_traits, upper_slots = dep_upper_slots, names = names, unresolved = ignored)
-  let mut out = engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = mappings, tail = engine_prepend_dependency_type_defs(view = view, names = names, tail = acc), origin_path = "")
-  // #3036: the published surface names each carried type's declaration, so
-  // an importer of the alias checks it against its other imports.
-  let mut ci = 0
-  while ci < Array::length(carried) {
-    let (tn, def) = Array::get(carried, at = ci)
-    out = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), out)
-    ci = ci + 1
-  }
-  out
+  let projected = engine_prepend_dependency_trait_nodes(dep_env = dep_env, mappings = mappings, tail = engine_prepend_dependency_type_defs(view = view, names = names, tail = acc, resolved = resolved), origin_path = "")
+  engine_prepend_type_references(env = projected, carried = carried, defs = view.defs)
 }
+
 /// #2378: the marker a checked module's PUBLISHED environment carries for
 /// each `fn` (or bound lambda) it defines at a qualified name the builtin
 /// registry owns (`collect_builtin_shadowing_names`, checker_stmt.vibe). It
@@ -2219,7 +2266,7 @@ fn engine_builtin_shadow_diagnostics_into(dep_bindings: Array[(String, Type)], r
     i = i + 1
   }
 }
-export fn engine_build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet, unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+export fn engine_build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet, unresolved: Array[String], contract_facade: Bool = false) -> (TypeEnv, TypeEnv) with Env {
   let show_status: MutMap[String, Int] = MutMap::new_string()
   let show_names: Array[String] = []
   let select_show_facts = (resolved: String, names: Array[ImportItem]) -> {
@@ -2274,7 +2321,7 @@ export fn engine_build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir
         } else {
           let resolved = engine_resolve_cached_import_path(base_dir = base_dir, raw_path = raw_path, cache = cache)
           select_show_facts(resolved, names)
-          (engine_bind_import_names_from_cache_collecting(acc = local_acc, resolved = resolved, raw_path = raw_path, names = names, declaration_names = names, interfaces = interfaces, unresolved = unresolved, trait_claims = trait_claims, reexport_surface_only = false, local_types = local_types, seen_types = seen_types), surface_acc)
+          (engine_bind_import_names_from_cache_collecting(acc = local_acc, resolved = resolved, raw_path = raw_path, names = names, declaration_names = names, interfaces = interfaces, unresolved = unresolved, trait_claims = trait_claims, reexport_surface_only = false, contract_reexport = false, local_types = local_types, seen_types = seen_types), surface_acc)
         },
         SReExport(raw_path, names) => {
           let resolved = engine_resolve_cached_import_path(base_dir = base_dir, raw_path = raw_path, cache = cache)
@@ -2282,7 +2329,7 @@ export fn engine_build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir
           let local_declarations = engine_reexport_items_with_alias(items = names, want_alias = false)
           let surface_declarations = engine_reexport_items_with_alias(items = names, want_alias = true)
           let carried = engine_note_reexport_surface_identities(resolved = resolved, raw_path = raw_path, names = surface_declarations, interfaces = interfaces, seen = seen_types, unresolved = unresolved)
-          (engine_bind_import_names_from_cache_collecting(acc = local_acc, resolved = resolved, raw_path = raw_path, names = names, declaration_names = local_declarations, interfaces = interfaces, unresolved = unresolved, trait_claims = trait_claims, reexport_surface_only = true, local_types = local_types, seen_types = seen_types), engine_prepend_reexport_alias_declarations(acc = surface_acc, resolved = resolved, names = surface_declarations, interfaces = interfaces, carried = carried))
+          (engine_bind_import_names_from_cache_collecting(acc = local_acc, resolved = resolved, raw_path = raw_path, names = names, declaration_names = local_declarations, interfaces = interfaces, unresolved = unresolved, trait_claims = trait_claims, reexport_surface_only = true, contract_reexport = contract_facade, local_types = local_types, seen_types = seen_types), engine_prepend_reexport_alias_declarations(acc = surface_acc, resolved = resolved, names = surface_declarations, interfaces = interfaces, carried = carried))
         },
         _ => (local_acc, surface_acc)
       }

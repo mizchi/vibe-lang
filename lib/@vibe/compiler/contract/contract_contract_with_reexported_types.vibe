@@ -760,7 +760,8 @@ export fn contract_imported_type_names(_ extra: Array[Stmt]) -> Array[(String, I
               ImportStruct => true,
               ImportEnum => true,
               ImportEffect => true,
-              ImportTrait => false
+              ImportTrait => false,
+              ImportOpaque => true
             },
             None => ctm_name_is_type_head(local)
           }
@@ -1222,7 +1223,7 @@ export fn contract_directory_shared_import_prefix_text(_ stmts: Array[Stmt]) -> 
 /// source, so everything downstream of the loader (type db, merge plan,
 /// codegen) needs no .vibei awareness — it rides the #716 re-export
 /// machinery unchanged.
-export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
+export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], sealed_names: Array[String], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
   let lines = array_empty()
   // #1840: when the loader materialized a types module, the facade
   // RE-EXPORTS the type family from it instead of defining it verbatim —
@@ -1335,10 +1336,13 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
           uti = uti + 1
         }
         if here {
-          // Generated facade carrier: this does not assert that the opaque
-          // implementation is a type alias (it may be a struct or enum).
-          // Keep the import item bare so Phase 1 records kind=None.
-          Array::push(names, value = oname)
+          // The contract owns the seal, including declarations it reaches
+          // through one of its implementation units' re-exports.
+          Array::push(names, value = if array_contains_string(xs = sealed_names, target = oname) {
+            String::concat("opaque ", oname)
+          } else {
+            oname
+          })
           Array::push(allocated, value = okey)
         } else ()
       }

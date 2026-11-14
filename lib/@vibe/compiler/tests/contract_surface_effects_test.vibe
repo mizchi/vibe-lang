@@ -1,7 +1,15 @@
 //# Imports
 
 import @vibe/compiler/contract {
-  classify_contract_stmts, contract_surface_effects, contract_surface_lines, contract_surface_rows_sorted, parse_contract_program
+  classify_contract_change,
+  classify_contract_stmts,
+  contract_hash_with,
+  contract_surface_effects,
+  contract_surface_lines,
+  contract_surface_lines_with_seals,
+  contract_surface_rows_sorted,
+  parse_contract_program,
+  parse_contract_surface
 }
 
 import @vibe/compiler/syntax {
@@ -67,4 +75,15 @@ test "a function-valued declaration's bare row sorts the same way" {
 test "a line without a row, and a parameter's row, are left as written" {
   let lines = surface("fn c() -> Int\nfn run(f: () -> Int with Http + Fs) -> Int\n")
   inspect(contract_surface_rows_sorted(lines) == lines, content = "true")
+}
+
+test "explicit opaque sealing changes the contract identity and requires a major bump" {
+  let (public_fns, public_types, public_defs, public_seals) = parse_contract_surface(lex("type Handle"))
+  let (sealed_fns, sealed_types, sealed_defs, sealed_names) = parse_contract_surface(lex("opaque type Handle"))
+  let public_lines = contract_surface_lines_with_seals(fn_decls = public_fns, opaque_names = public_types, type_defs = public_defs, sealed_names = public_seals)
+  let sealed_lines = contract_surface_lines_with_seals(fn_decls = sealed_fns, opaque_names = sealed_types, type_defs = sealed_defs, sealed_names = sealed_names)
+  assert(classify_contract_change(old_lines = public_lines, new_lines = sealed_lines) == "major")
+  let public_hash = contract_hash_with(algo = "b3", fn_decls = public_fns, opaque_names = public_types, type_defs = public_defs, sealed_names = public_seals)
+  let sealed_hash = contract_hash_with(algo = "b3", fn_decls = sealed_fns, opaque_names = sealed_types, type_defs = sealed_defs, sealed_names = sealed_names)
+  assert(public_hash != sealed_hash)
 }
