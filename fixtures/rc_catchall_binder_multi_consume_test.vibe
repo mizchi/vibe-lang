@@ -1,0 +1,127 @@
+// RC use-after-free guard (#4161): a match's catch-all binder consumed more
+// than once on one path takes one reference per consume.
+//
+// A catch-all binder (`leaf => ..`) aliases its scrutinee, a view it holds no
+// reference to. The arm took exactly ONE reference for it (#2126), whatever
+// the body did with it, so `leaf => big(leaf) && big(leaf)` -- `big` owns its
+// parameter -- released the scrutinee twice against one retain. When the
+// scrutinee is an array element, the element was freed while the array still
+// held it: VIBE_RC=shadow trapped on the second release, and the compiler's
+// own worklist code (#4158's first `bret_tail_reads_owned_local`) freed
+// program AST nodes this way. A payload binder (`Some(v) => ..`) already took
+// one reference per consume (`bind_match_pat`); the catch-all binder now takes
+// the same count, and `mpr_compile_arm` releases at the arm's end what a path
+// did not spend.
+//
+// Every probe reads the array again after the match, so an element freed by
+// an extra release is read back (or released again by the array's drop),
+// which shadow traps on. `main` returns 0 on every lane.
+enum T {
+  Leaf(Array[Int]);
+  Pair(T, T)
+}
+
+// Hands back its argument, so it OWNS its parameter.
+fn peel(_ t: T) -> T {
+  match t {
+    Pair(a, _) => peel(a),
+    _ => t
+  }
+}
+
+fn big(_ t: T) -> Bool {
+  match peel(t) {
+    Leaf(xs) => Array::length(xs) > 1,
+    _ => false
+  }
+}
+
+fn width(_ t: T) -> Int {
+  match peel(t) {
+    Leaf(xs) => Array::length(xs),
+    _ => 0
+  }
+}
+
+// Two consumes in one expression.
+fn twice_and(_ work: Array[T]) -> Int {
+  match Array::get(work, at = 0) {
+    Pair(_, _) => 0,
+    leaf => if big(leaf) && big(leaf) {
+      1
+    } else {
+      0
+    }
+  }
+}
+
+// Two consumes in sequence.
+fn twice_seq(_ work: Array[T]) -> Int {
+  match Array::get(work, at = 0) {
+    Pair(_, _) => 0,
+    leaf => {
+      let a = width(leaf)
+      a + width(leaf) - 4
+    }
+  }
+}
+
+// The only arm, over a parameter scrutinee.
+fn twice_param(_ t: T) -> Int {
+  match t {
+    leaf => width(leaf) + width(leaf) - 4
+  }
+}
+
+// One consume in the condition and one in the branch (#4158's shape).
+fn cond_and_branch(_ work: Array[T]) -> Int {
+  match Array::get(work, at = 0) {
+    Pair(_, _) => 0,
+    leaf => if big(leaf) {
+      width(leaf) - 2
+    } else {
+      0
+    }
+  }
+}
+
+// Control: exclusive consumes, one per path; the other path spends none.
+fn one_per_path(_ work: Array[T], _ c: Bool) -> Int {
+  match Array::get(work, at = 0) {
+    Pair(_, _) => 0,
+    leaf => if c {
+      width(leaf) - 2
+    } else {
+      0
+    }
+  }
+}
+
+fn total(_ t: T) -> Int {
+  match t {
+    Leaf(xs) => Array::get(xs, at = 0) + Array::get(xs, at = 1),
+    Pair(a, b) => total(a) + total(b)
+  }
+}
+
+fn round(_ i: Int) -> Int {
+  let work = [Leaf([i, i + 1])]
+  let s = twice_and(work) - 1 + twice_seq(work) + twice_param(Array::get(work, at = 0)) + cond_and_branch(work) + one_per_path(work, i % 2 == 0)
+  let fresh = [Leaf([i + 5, i + 6]), Leaf([i + 7, i + 8])]
+  s + total(Array::get(work, at = 0)) - (2 * i + 1) + Array::length(fresh) - 2
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}
+
+test "a catch-all binder consumed more than once is retained per consume (#4161)" {
+  inspect(round(4), content = "0")
+  inspect(main(), content = "0")
+}

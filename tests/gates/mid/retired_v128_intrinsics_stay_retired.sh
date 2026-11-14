@@ -2013,6 +2013,37 @@ done
 rm -rf "$ssdir"
 echo "[compiler-gate] slice source release guard ok (20000 on bump/rc/shadow/gc, rc heap_used=$ss_used B)"
 
+# 40f0w. #4161: a match's catch-all binder (`leaf => ..`) aliases its
+#        scrutinee and holds no reference of its own. The arm took exactly one
+#        for it (#2126), so a body that consumed it twice -- `big(leaf) &&
+#        big(leaf)`, `big` owning its parameter -- released the scrutinee once
+#        more than it retained it, freeing an array element the array still
+#        held (shadow trapped; the compiler's own worklist code freed AST nodes
+#        this way). It now takes one reference per consume, as a payload binder
+#        does, and releases at the arm's end what a path did not spend. The
+#        answer is checked on bump, rc, shadow and gc; the rc heap bound
+#        catches a fix that retains too much.
+echo "[compiler-gate] 40f0w/40 a catch-all match binder consumed more than once is retained per consume (#4161)"
+gate_workdir cbdir "_build/_gate_rc_catchall_binder"
+for cb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$cb_lane" "fixtures/rc_catchall_binder_multi_consume_test.vibe" "$cbdir/cb.wasm" main
+  gate_require_artifact "$cbdir/cb.wasm" "rc_catchall_binder_multi_consume fixture did not compile on the $cb_lane lane (#4161)"
+  gate_run cb_out last "$cbdir/cb.wasm"
+  gate_require_eq "$cb_out" "0" "rc_catchall_binder_multi_consume got '$cb_out' on the $cb_lane lane (want 0). A trap means a catch-all binder was released more often than it was retained (#4161)."
+  if [ "$cb_lane" = rc ]; then
+    cb_json="$(node scripts/measure_heap.mjs "$cbdir/cb.wasm" main 2>/dev/null)"
+    cb_used="$(printf '%s' "$cb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$cb_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_catchall_binder_multi_consume heap ($cb_json)" >&2; exit 1
+    fi
+    if [ "$cb_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_catchall_binder_multi_consume heap_used=$cb_used >= 8000 (#4161: a catch-all binder keeps a reference no path spends)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$cbdir"
+echo "[compiler-gate] catch-all binder multi-consume guard ok (0 on bump/rc/shadow/gc, rc heap_used=$cb_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
