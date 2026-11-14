@@ -60,7 +60,8 @@ cat > "$WORK/wrap.sh" <<'WRAP'
 set -uo pipefail
 action="${PRELUDE_REUSE_ORACLE_ACTION:-none}"
 real="${PRELUDE_REUSE_ORACLE_REAL_RUNNER:?}"
-records() { grep -rl "vibe-prelude-reuse-v3" "$VIBE_BUILD_CACHE_DIR" 2>/dev/null; }
+# Any record version: the corruptions must not silently match nothing.
+records() { grep -rl "vibe-prelude-reuse-v" "$VIBE_BUILD_CACHE_DIR" 2>/dev/null; }
 if [ "${2:-}" != "cli_main" ]; then exec bash "$real" "$@"; fi
 # The header-cache warm-up before a faked CLI build: nothing to cache.
 if [ "${VIBE_DEPS:-}" = 1 ]; then exit 0; fi
