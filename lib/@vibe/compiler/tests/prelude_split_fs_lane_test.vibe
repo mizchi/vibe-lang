@@ -184,3 +184,22 @@ test "the split lane binds an extern effect declared in another module" {
   inspect(bytes_contain(hay = split, needle = "vibe:effect:./Greeter"), content = "true")
   inspect(whole == split, content = "true")
 }
+
+// #4082: an `extern effect` a package declares is imported under that
+// package's `name =` (`vibe:effect:<name>/<Effect>`), on the whole route and
+// on the split route alike, so two packages' effects cannot meet in one
+// import namespace. A declaration outside any package keeps `./<Effect>`
+// (the test above).
+test "an extern effect a package declares is imported under the package's name" {
+  let dir = "/tmp/vibe_xe_pkg_probe"
+  let _ = Fs::mkdir_p(dir)
+  Fs::write_file("\{dir}/index.vpkg", contents = "name = @acme/xe_pkg\nversion = 0.0.1\ndeps = {}\n\nextern effect Probe {\n  ping(String) -> String\n}\n\nfn call_probe(k: String) -> String with Probe\n")
+  Fs::write_file("\{dir}/impl.vibe", contents = "export extern effect Probe {\n  ping(String) -> String\n}\n\nexport fn call_probe(k: String) -> String with Probe {\n  Probe::ping(k)\n}\n")
+  let main = "/tmp/vibe_xe_pkg_probe_main.vibe"
+  Fs::write_file(main, contents = "import ./vibe_xe_pkg_probe {\n  Probe, call_probe\n}\n\nfn main() -> Unit allows Console + Probe {\n  println(call_probe(k = \"vibe\"))\n}\n")
+  let whole = compile_file_fs_mode_rc_body_cached(entry_path = main, entry_name = "main", cache_mode = "off", exports_stripped = false, checked_error_row = false)
+  let split = compile_file_fs_mode_rc_body_cached_split(entry_path = main, entry_name = "main", cache_mode = "off", use_split = true, exports_stripped = false, checked_error_row = false)
+  inspect(bytes_contain(hay = whole, needle = "vibe:effect:@acme/xe_pkg/Probe"), content = "true")
+  inspect(bytes_contain(hay = split, needle = "vibe:effect:@acme/xe_pkg/Probe"), content = "true")
+  inspect(bytes_contain(hay = whole, needle = "vibe:effect:./Probe"), content = "false")
+}
