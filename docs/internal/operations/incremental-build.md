@@ -2476,7 +2476,7 @@ reproduce entry-rooted DCE independently in each module, so it prints
 `unmeasured` when that condition holds. A `dce_entry=0` comparison describes the
 unpruned closure, not every `vibe build` of that closure.
 
-### Reusing the prelude's effect passes across builds (#4042, #4043)
+### Reusing the prelude's effect passes across builds (#4042, #4043, #4123)
 
 Suspend CPS and the evidence pass are whole-program, and rewrite about 100 of
 16,000 statements. `VIBE_PRELUDE_REUSE` (default `off`) keeps their output per
@@ -2492,12 +2492,24 @@ rule):
   replayed and, if not, why; in `verify` mode, `; verified` or the first
   statement that differed.
 
+An exception throw is not effect syntax for this rule (#4123). The desugar
+lowers `throw(v)` to `perform <Exception>::Throw(v)`, but the passes read
+whether a callee throws only off its declared row, which replay compares. So
+an edit inside a function that throws replays, while one that adds or drops
+`Exception` in its row does not. Likewise, the binders the desugar introduces
+with a fixed spelling (`__asc`, a generated comparison's `__ae_i` /
+`__oeq_l` / `__a<n>`, ...) do not keep an edit from replaying (#4130). The
+passes consult the binder census only for function, callee and minted-name
+spellings, and none of these is one. Any other generated `__` binder still
+does.
+
 **The gate: `scripts/prelude_reuse_oracle.mjs`** (stage2-oracles, with
 `scripts/prelude_reuse_oracle_test.sh` as its red self-test).
 
 - **Edits:** a small program with a handler is edited step by step: a pure
-  body, a comment, an added helper, the performing body, then a pure body
-  again. Three caches follow the sequence: `on`, `verify` and `off`.
+  body, a comment, an added helper, the performing body, a pure body again,
+  a `with Exception` body, then a function that gains `with Exception`.
+  Three caches follow the sequence: `on`, `verify` and `off`.
   - A step that must replay and does not fails the oracle, since its
     comparison would prove nothing.
   - Every `on` module must equal the `off` one in bytes and in its executed
@@ -2508,10 +2520,10 @@ rule):
   built oldest first in `verify` mode, through one cache. Every build must
   succeed. An older tree that this compiler cannot build is skipped and
   reported. HEAD's tree must build, and at least two trees must. Most real
-  commits miss, so HEAD's tree is then edited twice where a replay is
-  expected: a comment above everything in `core/hex.vibe`, then a function
-  appended to it. Each build must replay and verify, over the whole CLI
-  closure.
+  commits miss, so HEAD's tree is then edited where a replay is expected: a
+  comment above everything in `core/hex.vibe`, a function appended to it,
+  and a `let` inside its `with Exception` function `hex_digit_value`. Each
+  build must replay and verify, over the whole CLI closure.
 
 Reuse stays opt-in until this gate has stayed green.
 

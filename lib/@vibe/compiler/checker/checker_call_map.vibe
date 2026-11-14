@@ -24,6 +24,7 @@ import @vibe/compiler/core {
   fresh_var,
   subst_apply,
   type_to_string,
+  typed_map_dynamic_key_verdict,
   typed_map_key_row_head,
   typed_map_scalar_key_verdict
 }
@@ -45,7 +46,13 @@ import ./checker_lambda_expr.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
-  callee_inst_types_cell, check_assignable, map_key_site_offsets, map_key_site_types, scheme_var_types_from, value_inst_types_cell
+  callee_inst_types_cell,
+  check_assignable,
+  map_key_site_offsets,
+  map_key_site_types,
+  map_key_site_writes,
+  scheme_var_types_from,
+  value_inst_types_cell
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -60,18 +67,24 @@ import @vibe/compiler/checker/diagnostics {
 export fn map_key_sites_reset() -> Unit {
   Array::truncate(map_key_site_offsets, length = 0)
   Array::truncate(map_key_site_types, length = 0)
+  Array::truncate(map_key_site_writes, length = 0)
 }
 
-/// Record one keyed map site: the call (or index bracket) offset and its key type.
-export fn map_key_site_record(call_off: Int, key: Type) -> Unit {
+/// Record one keyed map site: the call (or index bracket) offset, its key
+/// type, and whether the call writes the key into a map (`Map::set`, every
+/// `MapBuilder` call) rather than reads it (#4121).
+export fn map_key_site_record(call_off: Int, key: Type, write: Bool) -> Unit {
   if call_off >= 0 {
     Array::push(map_key_site_offsets, value = call_off)
     Array::push(map_key_site_types, value = key)
+    Array::push(map_key_site_writes, value = write)
   } else {
     ()
   }
 }
 
+/// 1 for a scalar key, 2 for a key still a type variable (a generic body's
+/// map-key parameter, #4121), 0 otherwise.
 fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
   match subst_apply(s = s, ty = key) {
     CtInt => 1,
@@ -81,6 +94,7 @@ fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
     CtUInt32 => 1,
     CtChar => 1,
     CtBool => 1,
+    CtVar(_) => 2,
     _ => 0
   }
 }
@@ -89,8 +103,15 @@ fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
 /// final substitution resolves to `Int`, `Int32`, `UInt32`, `Char` or `Bool`,
 /// as parallel
 /// (offset, key) arrays. An offset recorded twice with different answers --
-/// one shared body checked under two instantiations -- files no row; the
-/// codegen backstop then traps rather than guess.
+/// one shared body checked under two instantiations -- files no scalar row;
+/// the codegen backstop then traps rather than guess.
+///
+/// #4121: a READ (`get` / `has_key` / `delete` / an index) whose key is still
+/// a type parameter, or whose records disagree, files a DYNAMIC row instead:
+/// its operation reads the map's own scalar-key marker at run time and takes
+/// the scalar or the `String` path, which is right for every key a map can
+/// hold. A write keeps no such row; `check_map_key_formal_instantiations`
+/// refuses its scalar instantiations.
 export fn map_scalar_key_rows(_ s: Subst) -> (Array[Int], Array[String]) {
   let offs: Array[Int] = []
   let keys: Array[String] = []
@@ -98,21 +119,51 @@ export fn map_scalar_key_rows(_ s: Subst) -> (Array[Int], Array[String]) {
   if n == 0 {
     (offs, keys)
   } else {
-    // 1 = every record of the offset is scalar, 0 = at least one is not.
+    // Per offset: 1 = every record is scalar, 0 = at least one is not.
     let verdicts: MutMap[Int, Int] = MutMap::new_int()
+    // Per offset: bit 1 = a record keyed by a type variable, bit 2 = records
+    // disagree on scalar-ness, bit 4 = a record writes.
+    let flags: MutMap[Int, Int] = MutMap::new_int()
     let order: Array[Int] = []
     let mut i = 0
     while i < n {
       let off = Array::get(map_key_site_offsets, at = i)
-      let scalar = map_key_resolves_scalar(s = s, key = Array::get(map_key_site_types, at = i))
+      let answer = map_key_resolves_scalar(s = s, key = Array::get(map_key_site_types, at = i))
+      let scalar = if answer == 1 {
+        1
+      } else {
+        0
+      }
+      let own = (if answer == 2 {
+        1
+      } else {
+        0
+      }) + (if Array::get(map_key_site_writes, at = i) {
+        4
+      } else {
+        0
+      })
       match MutMap::get(verdicts, k = off) {
-        Some(prev) => if prev != scalar {
-          MutMap::set(verdicts, k = off, v = 0)
-        } else {
-          ()
+        Some(prev) => {
+          let disagree = if prev != scalar {
+            2
+          } else {
+            0
+          }
+          if prev != scalar {
+            MutMap::set(verdicts, k = off, v = 0)
+          } else {
+            ()
+          }
+          let before = match MutMap::get(flags, k = off) {
+            Some(f) => f,
+            None => 0
+          }
+          MutMap::set(flags, k = off, v = before|own|disagree)
         },
         None => {
           MutMap::set(verdicts, k = off, v = scalar)
+          MutMap::set(flags, k = off, v = own)
           Array::push(order, value = off)
         }
       }
@@ -121,13 +172,27 @@ export fn map_scalar_key_rows(_ s: Subst) -> (Array[Int], Array[String]) {
     let key = impl_target_key(TyApp(typed_map_key_row_head(), [
       TyName(typed_map_scalar_key_verdict())
     ]))
+    let dynamic_key = impl_target_key(TyApp(typed_map_key_row_head(), [
+      TyName(typed_map_dynamic_key_verdict())
+    ]))
     for off in order {
+      let f = match MutMap::get(flags, k = off) {
+        Some(v) => v,
+        None => 0
+      }
       match MutMap::get(verdicts, k = off) {
         Some(1) => {
           Array::push(offs, value = off)
           Array::push(keys, value = key)
         },
-        _ => ()
+        _ => if (f&4) == 0 && (f&3) != 0 {
+          // A read keyed by a type variable (bit 1) or by disagreeing
+          // records (bit 2), and no write at this offset.
+          Array::push(offs, value = off)
+          Array::push(keys, value = dynamic_key)
+        } else {
+          ()
+        }
       }
     }
     (offs, keys)
@@ -172,7 +237,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
     let (v_ty, s3, c3) = check_child(Array::get(args, at = 2), env, defs, s2, c2, errors, tytab, capture, lane)
     let s4 = check_assignable(expected = map_receiver_key(s = s3, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s3, ty = k_ty), s = s3, errors = errors, what = "argument type mismatch for Map::set", off = call_off)
-    map_key_site_record(call_off = call_off, key = k_ty)
+    map_key_site_record(call_off = call_off, key = k_ty, write = true)
     let s5 = match subst_apply(s = s4, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
         check_assignable(expected = subst_apply(s = s4, ty = Array::get(margs, at = 1)), actual = subst_apply(s = s4, ty = v_ty), s = s4, errors = errors, what = "Map::set value type mismatch", off = call_off)
@@ -200,7 +265,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
     let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
     let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for Map::get", off = call_off)
-    map_key_site_record(call_off = call_off, key = k_ty)
+    map_key_site_record(call_off = call_off, key = k_ty, write = false)
     let result = match subst_apply(s = s3, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
         subst_apply(s = s3, ty = Array::get(margs, at = 1))
@@ -216,7 +281,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
     let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
     let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = String::concat("argument type mismatch for ", arm), off = call_off)
-    map_key_site_record(call_off = call_off, key = k_ty)
+    map_key_site_record(call_off = call_off, key = k_ty, write = false)
     (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtBool, capture = capture, lane = lane), s3, c2)
   } else if arm == "Map::delete" {
     // #983: delete preserves the receiver's map type (value slot included)
@@ -224,7 +289,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
     let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
     let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for Map::delete", off = call_off)
-    map_key_site_record(call_off = call_off, key = k_ty)
+    map_key_site_record(call_off = call_off, key = k_ty, write = false)
     let mret = match subst_apply(s = s3, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
         subst_apply(s = s3, ty = m_ty)
@@ -279,7 +344,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
     let (v_ty, s3, c3) = check_child(Array::get(args, at = 2), env, defs, s2, c2, errors, tytab, capture, lane)
     let s4 = check_assignable(expected = map_receiver_key(s = s3, m_ty = mb_ty, head = "MapBuilder"), actual = subst_apply(s = s3, ty = k_ty), s = s3, errors = errors, what = "argument type mismatch for MapBuilder::set", off = call_off)
-    map_key_site_record(call_off = call_off, key = k_ty)
+    map_key_site_record(call_off = call_off, key = k_ty, write = true)
     let s5 = match subst_apply(s = s4, ty = mb_ty) {
       CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
         check_assignable(expected = subst_apply(s = s4, ty = Array::get(margs, at = 1)), actual = subst_apply(s = s4, ty = v_ty), s = s4, errors = errors, what = "MapBuilder::set value type mismatch", off = call_off)
@@ -294,7 +359,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let (mb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
     let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
     let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = mb_ty, head = "MapBuilder"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for MapBuilder::has_key", off = call_off)
-    map_key_site_record(call_off = call_off, key = k_ty)
+    map_key_site_record(call_off = call_off, key = k_ty, write = true)
     (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtBool, capture = capture, lane = lane), s3, c2)
   } else if arm == "MapBuilder::get" {
     // #1310: mirror Map::get's #983 refinement -- an annotated/parameter
@@ -305,7 +370,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let (mb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
     let (mbk_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
     let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = mb_ty, head = "MapBuilder"), actual = subst_apply(s = s2, ty = mbk_ty), s = s2, errors = errors, what = "argument type mismatch for MapBuilder::get", off = call_off)
-    map_key_site_record(call_off = call_off, key = mbk_ty)
+    map_key_site_record(call_off = call_off, key = mbk_ty, write = true)
     let mbresult = match subst_apply(s = s3, ty = mb_ty) {
       CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
         CtOption(subst_apply(s = s3, ty = Array::get(margs, at = 1)))
@@ -324,7 +389,7 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     let frozen = match subst_apply(s = s1, ty = fb_ty) {
       CtNamed(fbn, fbargs) => if fbn == "MapBuilder" && Array::length(fbargs) == 2 {
         let key = Array::get(fbargs, at = 0)
-        map_key_site_record(call_off = call_off, key = key)
+        map_key_site_record(call_off = call_off, key = key, write = true)
         CtNamed("Map", [
           subst_apply(s = s1, ty = key),
           subst_apply(s = s1, ty = Array::get(fbargs, at = 1))
@@ -386,6 +451,23 @@ fn map_formal_key_instance_refusal(s: Subst, ty: Type, name: String, off: Int) -
     CtUInt32 => map_formal_key_refusal(name = name, scalar = "UInt32", off = off),
     CtChar => map_formal_key_refusal(name = name, scalar = "Char", off = off),
     CtBool => map_formal_key_refusal(name = name, scalar = "Bool", off = off),
+    CtString => "",
+    CtVar(_) => "",
+    CtUnknown => "",
+    other => map_formal_key_unsupported_refusal(name = name, key = type_to_string(other), off = off)
+  }
+}
+
+/// #4121: the refusal an instantiation of a READ-only map-key parameter at
+/// `ty` earns: none for a key the builtin map implements (its reads dispatch
+/// on the map at run time), the unsupported-key refusal otherwise.
+fn map_formal_key_read_instance_refusal(s: Subst, ty: Type, name: String, off: Int) -> String {
+  match subst_apply(s = s, ty = ty) {
+    CtInt => "",
+    CtInt32 => "",
+    CtUInt32 => "",
+    CtChar => "",
+    CtBool => "",
     CtString => "",
     CtVar(_) => "",
     CtUnknown => "",
@@ -489,41 +571,61 @@ fn map_type_lists_same_shape(xs: Array[Type], ys: Array[Type], ren: MutMap[Int, 
 /// `Char` or `Bool`. A parameter instantiated at another parameter (generic
 /// code calling generic code) passes the refusal on to the caller's parameter.
 ///
+/// #4121: only a WRITE keyed by the parameter (`Map::set`, a `MapBuilder`
+/// call) earns that refusal. A read (`get` / `has_key` / `delete` / an index)
+/// files a dynamic row (`map_scalar_key_rows`) and dispatches on the map's
+/// own scalar-key marker at run time, so its scalar instantiations compile; it
+/// still refuses a key type the builtin map has no implementation for. A
+/// generic READER taken as a value restricts that value's parameters as a
+/// writer does, so a call through it keeps its refusal, and an exported one
+/// stays refused below.
+///
 /// A call that precedes its callee's definition instantiates the HOISTED
 /// signature, whose variables are not the ones the body was checked with, so
 /// each call is also read through the callee's checked scheme in `env`: that
 /// scheme's variables are the body's, and its shape is the instantiation's.
 export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, s: Subst, errors: Array[String]) -> Unit {
   check_map_key_site_kinds(s = s, errors = errors)
+  // 2 = the parameter keys a write, 1 = it keys only reads.
   let keyed: MutMap[Int, Int] = MutMap::new_int()
   let mut any = false
-  for key in map_key_site_types {
-    match subst_apply(s = s, ty = key) {
+  let mut i = 0
+  while i < Array::length(map_key_site_types) {
+    match subst_apply(s = s, ty = Array::get(map_key_site_types, at = i)) {
       CtVar(id) => {
-        MutMap::set(keyed, k = id, v = 1)
+        let level = if Array::get(map_key_site_writes, at = i) {
+          2
+        } else {
+          1
+        }
+        map_keyed_raise(keyed = keyed, id = id, level = level)
         any = true
       },
       _ => ()
     }
+    i = i + 1
   }
   if any {
     let reported: MutMap[Int, Int] = MutMap::new_int()
     let mut changed = true
     let mut rounds = 0
     // A call and a value reference instantiate the same way; a value bound by
-    // `let f = look` passes the restriction on to `f`'s own variables.
-    let records: Array[(Int, Type, Type, String)] = []
+    // `let f = look` passes the restriction on to `f`'s own variables, as a
+    // writer's (#4121: a call through a value keeps its refusal).
+    let records: Array[(Int, Type, Type, String, Bool)] = []
     for r in callee_inst_types_cell {
-      Array::push(records, value = r)
+      let (o, st, it, nm) = r
+      Array::push(records, value = (o, st, it, nm, false))
     }
     for r in value_inst_types_cell {
-      Array::push(records, value = r)
+      let (o, st, it, nm) = r
+      Array::push(records, value = (o, st, it, nm, true))
     }
     while changed && rounds <= Array::length(records) {
       changed = false
       rounds = rounds + 1
       for recorded in records {
-        let (callee_off, scheme, inst, name) = recorded
+        let (callee_off, scheme, inst, name, as_value) = recorded
         let pairs: Array[(Int, Type)] = []
         let vars: Array[Int] = []
         match scheme {
@@ -554,30 +656,41 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
           CtForAll(_, _, _) => {
             for id in vars {
               match MutMap::get(keyed, k = id) {
-                Some(_) => for pair in pairs {
-                  let (pid, pty) = pair
-                  if pid == id {
-                    let refusal = map_formal_key_instance_refusal(s = s, ty = pty, name = name, off = callee_off)
-                    if refusal != "" {
-                      if MutMap::get(reported, k = callee_off) is None {
-                        MutMap::set(reported, k = callee_off, v = 1)
-                        Array::push(errors, value = refusal)
+                Some(level) => {
+                  // A value reference restricts as a write would.
+                  let effective = if as_value {
+                    2
+                  } else {
+                    level
+                  }
+                  for pair in pairs {
+                    let (pid, pty) = pair
+                    if pid == id {
+                      let refusal = if effective == 2 {
+                        map_formal_key_instance_refusal(s = s, ty = pty, name = name, off = callee_off)
                       } else {
-                        ()
+                        map_formal_key_read_instance_refusal(s = s, ty = pty, name = name, off = callee_off)
                       }
-                    } else {
-                      match subst_apply(s = s, ty = pty) {
-                        CtVar(caller_id) => if MutMap::get(keyed, k = caller_id) is None {
-                          MutMap::set(keyed, k = caller_id, v = 1)
-                          changed = true
+                      if refusal != "" {
+                        if MutMap::get(reported, k = callee_off) is None {
+                          MutMap::set(reported, k = callee_off, v = 1)
+                          Array::push(errors, value = refusal)
                         } else {
                           ()
-                        },
-                        _ => ()
+                        }
+                      } else {
+                        match subst_apply(s = s, ty = pty) {
+                          CtVar(caller_id) => if map_keyed_raise(keyed = keyed, id = caller_id, level = effective) {
+                            changed = true
+                          } else {
+                            ()
+                          },
+                          _ => ()
+                        }
                       }
+                    } else {
+                      ()
                     }
-                  } else {
-                    ()
                   }
                 },
                 None => ()
@@ -591,6 +704,22 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
     check_map_key_formal_escapes(stmts = stmts, env = env, s = s, keyed = keyed, errors = errors)
   } else {
     ()
+  }
+}
+
+/// Raise `id`'s restriction in `keyed` to at least `level`; true when it rose.
+fn map_keyed_raise(keyed: MutMap[Int, Int], id: Int, level: Int) -> Bool {
+  match MutMap::get(keyed, k = id) {
+    Some(prev) => if prev < level {
+      MutMap::set(keyed, k = id, v = level)
+      true
+    } else {
+      false
+    },
+    None => {
+      MutMap::set(keyed, k = id, v = level)
+      true
+    }
   }
 }
 

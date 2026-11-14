@@ -1,0 +1,31 @@
+// #4121: a generic READ through a map-key parameter is reached BEFORE the
+// generic function is declared, and through a generic caller: `outer`'s `K`
+// reaches `look`'s map key. Both used to be refused at a scalar key (#2334);
+// the read now dispatches on the map's own key-class mark, so each key class
+// answers as the concrete path does. Runs on the linear and the wasm-gc lanes
+// (tests/gates/mid/6b_40, step 40h8s).
+
+test "a forward generic read at Char, Int, Bool and String keys" {
+  let mc: Map[Char, Int] = Map::set(Map::new(), key = 'x', value = 10)
+  inspect(outer(m = mc, k = 'x'), content = "10")
+  let mi: Map[Int, Int] = Map::set(Map::set(Map::new(), key = 1 << 32, value = 1), key = 2 << 32, value = 2)
+  inspect(outer(m = mi, k = 2 << 32), content = "2")
+  inspect(outer_has(m = mi, k = 3 << 32), content = "false")
+  let mb: Map[Bool, Int] = Map::set(Map::new(), key = false, value = 30)
+  inspect(outer(m = mb, k = false), content = "30")
+  let ms: Map[String, Int] = Map::set(Map::new(), key = "s", value = 40)
+  inspect(outer(m = ms, k = "s"), content = "40")
+  inspect(outer_has(m = ms, k = "t"), content = "false")
+}
+
+fn outer[K](m: Map[K, Int], k: K) -> Int {
+  look(m = m, k = k)
+}
+
+fn outer_has[K](m: Map[K, Int], k: K) -> Bool {
+  Map::has_key(m, key = k)
+}
+
+fn look[K, V](m: Map[K, V], k: K) -> V {
+  Map::get(m, key = k)
+}

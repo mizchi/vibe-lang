@@ -12,6 +12,15 @@
 //#          trap: <reason>              the first RuntimeError / wasm trap line
 //#          at <fn> (<file>:<line>)     up to six frames, via the funcmap
 //#
+//# A run that stopped with no test function in its trace and no trap reason
+//# gets the runner's first stderr lines replayed under it, each as
+//# `       | <line>`, rather than a bare `FAIL <file>` (#4126). When that
+//# stderr shows the engine refusing the module (a compile, parse, link or
+//# instantiate error), the report says it is not a test failure. Otherwise
+//# it says only what stderr shows: no test name and no trap reason. A run
+//# can stop that way after a test started (a host stack overflow, a guest
+//# exit), so the absence of a test frame alone is no evidence that none ran.
+//#
 //# Strings are byte strings (ADR-0098), so a percent-encoded multibyte test
 //# name decodes back to its UTF-8 bytes and a source offset is a byte offset.
 
@@ -462,6 +471,11 @@ fn line_of_offset(source: String, offset: Int) -> Int {
 /// host's `[crash debug]` dump, or more of the assert block may come between.
 /// Any other line in between means the trap is something else, and it is
 /// reported (#2202, #2219).
+///
+/// When stderr names no `__test_` function and carries no trap reason, no
+/// test ran: the engine refused the module (#4126). The report says so and
+/// replays the first `engine_report_lines` lines of stderr, so a compiler
+/// that emitted an invalid module reads differently from a failing test.
 export fn script_failure_report(stdout: String, stderr: String, funcmap: String, base: String, source: String) -> String {
   let out_lines = report_lines(stdout)
   let err = report_lines(stderr)
@@ -562,5 +576,74 @@ export fn script_failure_report(stdout: String, stderr: String, funcmap: String,
     Array::push(lines, value = Array::get(frames, at = f))
     f = f + 1
   }
+  if name == "" && reason == "" && Array::length(err) > 0 {
+    push_engine_report(lines = lines, err = err)
+  } else ()
   joined_lines(lines)
+}
+
+/// How many of the runner's stderr lines a "not a test failure" report
+/// replays. An engine's compile error is a few lines; a longer stream is cut
+/// and the cut is counted.
+let engine_report_lines = 12
+
+/// Does the runner's stderr show the engine refusing the module? Only the
+/// forms the two engines actually print count: Node's `CompileError:
+/// WebAssembly.` / `LinkError: WebAssembly.` and wasmtime's `failed to
+/// compile: wasm[`, `failed to parse WebAssembly module` and `WebAssembly
+/// translation error`. A bare "failed to compile" or a `LinkError` named in
+/// some other message is not evidence. Only this lets a report say no test
+/// ran.
+fn is_engine_refusal(err: Array[String]) -> Bool {
+  let needles = [
+    "CompileError: WebAssembly.",
+    "LinkError: WebAssembly.",
+    "failed to compile: wasm[",
+    "failed to parse WebAssembly module",
+    "WebAssembly translation error",
+  ]
+  let mut i = 0
+  while i < Array::length(err) {
+    let line = Array::get(err, at = i)
+    let mut j = 0
+    while j < Array::length(needles) {
+      if String::contains(line, needle = Array::get(needles, at = j)) {
+        return true
+      } else ()
+      j = j + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// The runner stopped with no test in its trace and no trap reason: say what
+/// its stderr shows, then replay the start of it (#4126). Only an engine
+/// refusal is called "not a test failure"; any other such stderr is described
+/// without claiming that no test ran. The replay stops at a Rust
+/// `Stack backtrace:` block (wasmtime appends one when `RUST_BACKTRACE` is
+/// set): it locates the engine, not the module.
+fn push_engine_report(lines: Array[String], err: Array[String]) -> Unit {
+  if is_engine_refusal(err = err) {
+    Array::push(lines, value = "       not a test failure: the runner stopped before any test ran (the module did not compile or instantiate?)")
+  } else {
+    Array::push(lines, value = "       runner failure: stderr names no test and no trap reason")
+  }
+  let mut relevant = 0
+  while relevant < Array::length(err) && drop_leading_space(drop_trailing_space(Array::get(err, at = relevant))) != "Stack backtrace:" {
+    relevant = relevant + 1
+  }
+  let shown = if relevant < engine_report_lines {
+    relevant
+  } else {
+    engine_report_lines
+  }
+  let mut i = 0
+  while i < shown {
+    Array::push(lines, value = String::concat("       | ", Array::get(err, at = i)))
+    i = i + 1
+  }
+  if Array::length(err) > shown {
+    Array::push(lines, value = "       | ... (\{Array::length(err) - shown} more lines)")
+  } else ()
 }

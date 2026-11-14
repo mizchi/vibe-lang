@@ -119,3 +119,35 @@ test "assert offsets become source lines; a negative one is dropped" {
   inspect(script_failure_report(stdout = "assert_eq failed\n  at off=-1\n  at off=abc\n  at off=99999\nassert failed: aborting\n", stderr = node_trap("bad"), funcmap = "", base = "canned.vibe", source = "a\nb\nc"), content = "       failing test: bad\n       assert_eq failed\n       at line 1\n       at line 4\n")
   inspect(script_failure_report(stdout = "assert_eq failed\n  at off=4\nassert failed: aborting\n", stderr = node_trap("bad"), funcmap = "", base = "canned.vibe", source = ""), content = "       failing test: bad\n       assert_eq failed\n         at off=4\n")
 }
+
+test "a module the engine refused is not reported as a failing test" {
+  let wasmtime = "Error: failed to compile: wasm[0]::function[8]\n\nCaused by:\n    0: WebAssembly translation error\n    1: Invalid input WebAssembly code at offset 2131: invalid value type\n"
+  inspect(script_failure_report(stdout = "", stderr = wasmtime, funcmap = "", base = "canned.vibe", source = ""), content = "       not a test failure: the runner stopped before any test ran (the module did not compile or instantiate?)\n       | Error: failed to compile: wasm[0]::function[8]\n       | \n       | Caused by:\n       |     0: WebAssembly translation error\n       |     1: Invalid input WebAssembly code at offset 2131: invalid value type\n")
+  inspect(script_failure_report(stdout = "", stderr = "CompileError: WebAssembly.Module(): expected magic word 00 61 73 6d\n", funcmap = "", base = "canned.vibe", source = ""), content = "       not a test failure: the runner stopped before any test ran (the module did not compile or instantiate?)\n       | CompileError: WebAssembly.Module(): expected magic word 00 61 73 6d\n")
+}
+
+test "an engine report is cut after its first lines, and the cut is counted" {
+  let long = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\n"
+  inspect(script_failure_report(stdout = "", stderr = long, funcmap = "", base = "canned.vibe", source = ""), content = "       runner failure: stderr names no test and no trap reason\n       | l1\n       | l2\n       | l3\n       | l4\n       | l5\n       | l6\n       | l7\n       | l8\n       | l9\n       | l10\n       | l11\n       | l12\n       | ... (2 more lines)\n")
+}
+
+test "a trap outside any test keeps its reason and is not called an engine refusal" {
+  inspect(script_failure_report(stdout = "", stderr = "RuntimeError: unreachable\n    at _start (wasm://w:1)\n", funcmap = "", base = "canned.vibe", source = ""), content = "       trap: RuntimeError: unreachable\n")
+  assert(script_failure_report(stdout = "", stderr = "", funcmap = "", base = "canned.vibe", source = "") == "")
+}
+
+test "an engine report stops at a Rust backtrace" {
+  let traced = "Error: failed to parse WebAssembly module\n\nCaused by:\n    malformed section id: 127 (at offset 0xa)\n\nStack backtrace:\n   0: wasmtime_internal_core::error::backtrace::capture\n   1: wasmtime::compile::build_module_artifacts\n"
+  inspect(script_failure_report(stdout = "", stderr = traced, funcmap = "", base = "canned.vibe", source = ""), content = "       not a test failure: the runner stopped before any test ran (the module did not compile or instantiate?)\n       | Error: failed to parse WebAssembly module\n       | \n       | Caused by:\n       |     malformed section id: 127 (at offset 0xa)\n       | \n       | ... (3 more lines)\n")
+}
+
+test "stderr with no test, no trap and no engine refusal does not claim that no test ran" {
+  let overflow = "[vibe] stack overflow while running `_start`: the call depth exceeded the host stack -- usually unbounded or very deep recursion.\n"
+  inspect(script_failure_report(stdout = "", stderr = overflow, funcmap = "", base = "canned.vibe", source = ""), content = "       runner failure: stderr names no test and no trap reason\n       | [vibe] stack overflow while running `_start`: the call depth exceeded the host stack -- usually unbounded or very deep recursion.\n")
+  inspect(script_failure_report(stdout = "", stderr = "LinkError: WebAssembly.Instance(): Import #0 \"env\" \"f\": function import requires a callable\n", funcmap = "", base = "canned.vibe", source = ""), content = "       not a test failure: the runner stopped before any test ran (the module did not compile or instantiate?)\n       | LinkError: WebAssembly.Instance(): Import #0 \"env\" \"f\": function import requires a callable\n")
+}
+
+test "a lookalike of an engine message is not taken for a refusal" {
+  inspect(script_failure_report(stdout = "", stderr = "Error: failed to compile regular expression\n", funcmap = "", base = "canned.vibe", source = ""), content = "       runner failure: stderr names no test and no trap reason\n       | Error: failed to compile regular expression\n")
+  inspect(script_failure_report(stdout = "", stderr = "host: retrying after a LinkError in the cache\n", funcmap = "", base = "canned.vibe", source = ""), content = "       runner failure: stderr names no test and no trap reason\n       | host: retrying after a LinkError in the cache\n")
+}

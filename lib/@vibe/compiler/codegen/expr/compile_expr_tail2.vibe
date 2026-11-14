@@ -287,8 +287,14 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
       emit_i32_store(buf = buf, align = 2, offset = 12)
       let mut tri = 0
       while tri < num_elems {
+        // #4141: the per-site retain below reads the item's TOP node, so a view
+        // on a result path of a COMPOUND item -- `(if c { p.f } else { [] },
+        // 1)`, `{ let k = 1; Array::get(xs, at = 0) }` -- was stored unretained
+        // and the literal's drop released its source's value once too often.
+        // Retain those tails the way a compound call argument's are
+        // (`cc_retain_view_tails`); a bare item is left to the check below.
         let __tup_elem = Array::get(__tuple_elems, at = tri)
-        nl = compile_expr(buf, __tup_elem, local_names, nl, ctx, ld)
+        nl = compile_expr(buf, cet2_retain_item_tails(e = __tup_elem, local_names = local_names, ctx = ctx), local_names, nl, ctx, ld)
         let __tup_val_local = nl
         Array::push(local_names, value = "__tup_val")
         emit_local_set(buf = buf, idx = __tup_val_local)
@@ -417,8 +423,14 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
       // store elements at block_start + 20 + i*8
       let mut ai = 0
       while ai < n_elems {
+        // #4141: the per-site retain below reads the item's TOP node, so a view
+        // on a result path of a COMPOUND item -- `(if c { p.f } else { [] },
+        // 1)`, `{ let k = 1; Array::get(xs, at = 0) }` -- was stored unretained
+        // and the literal's drop released its source's value once too often.
+        // Retain those tails the way a compound call argument's are
+        // (`cc_retain_view_tails`); a bare item is left to the check below.
         let __arr_elem = Array::get(elems, at = ai)
-        nl = compile_expr(buf, __arr_elem, local_names, nl, ctx, ld)
+        nl = compile_expr(buf, cet2_retain_item_tails(e = __arr_elem, local_names = local_names, ctx = ctx), local_names, nl, ctx, ld)
         let __arr_val_local = nl
         Array::push(local_names, value = "__arr_val")
         emit_local_set(buf = buf, idx = __arr_val_local)
@@ -756,4 +768,16 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
     Array::push(local_names, value = "")
   }
   final_nl
+}
+
+/// #4141: a tuple or array literal item with the views on its result path
+/// retained (`cc_retain_view_tails_unlogged`); the item itself on a lane
+/// with no reference counts, and for a bare item, which the literal's
+/// per-site check retains.
+fn cet2_retain_item_tails(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr {
+  if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
+    cc_retain_view_tails_unlogged(e = e, local_names = local_names, ctx = ctx)
+  } else {
+    e
+  }
 }

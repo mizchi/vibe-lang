@@ -262,6 +262,89 @@ test "an edit the passes could see past the edited statement does not replay" {
   inspect(replays_onto("fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g() -> Int {\n  f(2)\n}\n\nfn h(n: Int, k: Int) -> Int {\n  n * k\n}\n"), content = "refused")
 }
 
+// #4123: a lowered `throw` (`perform <Exception>::Throw(..)`, the form the
+// desugar gives it before the passes run) is not effect syntax; a perform of
+// a user effect still is. `e` throws and `a` asks; `f` is rewritten by the
+// stand-in passes as above.
+fn row_src(e_head: String, e_body: String, a_body: String) -> String {
+  "effect Ask {\n  Get() -> Int\n}\n\nfn f(x: Int) -> Int {\n  x + 1\n}\n\n" + e_head + " {\n  " + e_body + "\n}\n\nfn a(n: Int) -> Int with Ask {\n  " + a_body + "\n}\n\nfn h(n: Int) -> Int {\n  n * 2\n}\n"
+}
+
+let row_e = "fn e(n: Int) -> Int with Exception"
+
+/// A body that throws `msg` the way the desugar lowers `throw(msg)`.
+fn throws(_ msg: String) -> String {
+  "if n < 0 {\n    let __exn_payload0 = \"" + msg + "\"\n    perform Exception::Throw(__exn_payload0)\n  } else {\n    n + 1\n  }"
+}
+
+/// `replays_onto`, from `row_src`'s unedited program instead of `edit_base`.
+fn row_replays_onto(_ src: String) -> String with Exception {
+  let base = parsed(row_src(e_head = row_e, e_body = throws("neg"), a_body = "perform Ask::Get() + n"))
+  match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = edit_passes(base)) {
+    Some(record) => {
+      let edited = parsed(src)
+      match prelude_reuse_replay(record = record, inputs = edited, keys = prelude_statement_keys(stmts = edited, row_offsets = no_ints(), row_keys = no_keys())) {
+        Some(outs) => replay_verdict(outs == edit_passes(edited)),
+        None => "refused"
+      }
+    },
+    None => "unrecordable"
+  }
+}
+
+test "an edit inside a function that throws replays" {
+  inspect(row_replays_onto(row_src(e_head = row_e, e_body = throws("negative"), a_body = "perform Ask::Get() + n")), content = "replayed")
+  // It stops throwing: the declared row, which the passes read, is the same.
+  inspect(row_replays_onto(row_src(e_head = row_e, e_body = "n + 1", a_body = "perform Ask::Get() + n")), content = "replayed")
+}
+
+test "an edit a user perform or a changed Exception row can see does not replay" {
+  // An edit inside a function that performs a user effect.
+  inspect(row_replays_onto(row_src(e_head = row_e, e_body = throws("neg"), a_body = "perform Ask::Get() + n + 1")), content = "refused")
+  // Dropping `Exception` from the row changes the signature callers read.
+  inspect(row_replays_onto(row_src(e_head = "fn e(n: Int) -> Int", e_body = throws("neg"), a_body = "perform Ask::Get() + n")), content = "refused")
+  // A throw whose payload performs a user effect.
+  inspect(row_replays_onto(row_src(e_head = row_e, e_body = "perform Exception::Throw(perform Ask::Get())", a_body = "perform Ask::Get() + n")), content = "refused")
+  // Another generated binder is still refused.
+  inspect(row_replays_onto(row_src(e_head = row_e, e_body = "let __show_v0 = n\n  __show_v0 + 1", a_body = "perform Ask::Get() + n")), content = "refused")
+}
+
+// #4130: the binders the desugar introduces with a fixed spelling do not keep
+// an edit from replaying; any other generated (`__`) binder still does.
+fn binder_src(_ e_body: String) -> String {
+  row_src(e_head = "fn e(n: Int) -> Int", e_body = e_body, a_body = "perform Ask::Get() + n")
+}
+
+fn binder_replays_onto(_ e_body: String) -> String with Exception {
+  let base = parsed(binder_src("n + 1"))
+  match prelude_reuse_record_of(header = "h", inputs = base, keys = prelude_statement_keys(stmts = base, row_offsets = no_ints(), row_keys = no_keys()), outputs = edit_passes(base)) {
+    Some(record) => {
+      let edited = parsed(binder_src(e_body))
+      match prelude_reuse_replay(record = record, inputs = edited, keys = prelude_statement_keys(stmts = edited, row_offsets = no_ints(), row_keys = no_keys())) {
+        Some(outs) => replay_verdict(outs == edit_passes(edited)),
+        None => "refused"
+      }
+    },
+    None => "unrecordable"
+  }
+}
+
+test "an edit binding a fixed desugar binder replays" {
+  // A type ascription's identity closure.
+  inspect(binder_replays_onto("((__asc: Int) -> __asc)(n) + 1"), content = "replayed")
+  // A generated comparison's loop state and operands.
+  inspect(binder_replays_onto("let __ae_i = n\n  let __oeq_l = __ae_i\n  __oeq_l + 1"), content = "replayed")
+  // A derived comparison's field binders.
+  inspect(binder_replays_onto("let __a0 = n\n  let __b12 = __a0\n  __b12 + 1"), content = "replayed")
+}
+
+test "an edit binding another generated name does not replay" {
+  inspect(binder_replays_onto("let __teq_l0_ = n\n  __teq_l0_ + 1"), content = "refused")
+  // `__a` followed by anything but digits is not a derived field binder.
+  inspect(binder_replays_onto("let __ax = n\n  __ax + 1"), content = "refused")
+  inspect(binder_replays_onto("let __a = n\n  __a + 1"), content = "refused")
+}
+
 test "an unedited statement between two edits is produced as the record has it" {
   // `f`, which the passes rewrite, sits between `a` and `h`, both edited.
   let base = parsed("fn a(n: Int) -> Int {\n  n\n}\n\nfn f(x: Int) -> Int {\n  x + 1\n}\n\nfn h(n: Int) -> Int {\n  n * 2\n}\n")

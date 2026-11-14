@@ -7,9 +7,9 @@
 // them?" Two facts are kept per build:
 //
 // - which statements are RELEVANT: the passes rewrote or dropped them, or
-//   they hold effect syntax (`handle`, `perform`, `resume`, an effect
-//   definition, a row naming a user effect or a row variable, a declaration
-//   whose types carry a row);
+//   they hold effect syntax (`handle`, `perform` other than an exception
+//   throw, `resume`, an effect definition, a row naming a user effect or a
+//   row variable, a declaration whose types carry a row);
 // - what to AVOID: every name from which a relevant statement is reachable
 //   (the relevant names included), and every name a relevant statement binds
 //   to a local lambda (the evidence pass counts those spellings program-wide
@@ -29,9 +29,33 @@
 // This is the conservative syntactic check #3999 measured (19 of 26 recent
 // commits admitted, none wrongly), with reachability taken transitively
 // rather than one call deep.
+//
+// An exception throw is not effect syntax (#4123). The desugar lowers
+// `throw(v)` to `perform <Exception>::Throw(v)` before the passes run, so
+// every function that throws held a `perform`, and editing any of them
+// missed. The passes read whether a callee throws only off its declared row:
+// suspend CPS through `scps_fn_row_of` (`scps_row_may_throw`), the evidence
+// pass's handler-set split through `edp_fn_row_label_table`
+// (`edp_ao_arm_may_perform`), which looks into a body only for the handle it
+// is splitting -- a statement that holds a `handle`, and so is relevant
+// anyway. No function is rewritten for throwing. The payload temp the
+// desugar binds for each throw (`__exn_payload<n>`) is admitted too
+// (`prelude_reuse_binder_ok`). A declared row is part of
+// the signature replay compares, so an edit that adds or drops `Exception`
+// there still misses, and one that throws differently inside the body no
+// longer has to. `VIBE_PRELUDE_REUSE=verify` and the oracle's
+// `exception-body` steps hold this to the passes' own output.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, dce_statement_refs, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+  Expr,
+  Stmt,
+  TypeExpr,
+  dce_statement_refs,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_throw_operation
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -181,6 +205,39 @@ fn prelude_reuse_type_has_row(_ ty: TypeExpr) -> Bool {
 /// top-level function (`let x = f`): either keeps a statement from being
 /// quiet. `effect` counts only the first; both are false for a quiet body.
 fn prelude_reuse_expr_flags(expr: Expr, scope: PreludeReuseScope, out: Array[Bool]) -> Unit {
+  match prelude_reuse_exception_throw(expr) {
+    // A lowered `throw`: only its payload can hold effect syntax.
+    Some(payload) => {
+      for p in payload {
+        prelude_reuse_expr_flags(expr = p, scope = scope, out = out)
+      }
+      ()
+    },
+    None => prelude_reuse_expr_flags_at(expr = expr, scope = scope, out = out)
+  }
+}
+
+/// The arguments of `perform <Exception>::Throw(..)`, the form the desugar
+/// gives `throw(..)` (see the file comment); `None` for anything else.
+fn prelude_reuse_exception_throw(_ expr: Expr) -> Option[Array[Expr]] {
+  match expr {
+    ECall(EIdent(nm, _), args, _, _) => if nm == "perform" && Array::length(args) == 1 {
+      match Array::get(args, at = 0) {
+        ECall(EIdent(op, _), payload, _, _) => if is_exception_throw_operation(op) {
+          Some(payload)
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn prelude_reuse_expr_flags_at(expr: Expr, scope: PreludeReuseScope, out: Array[Bool]) -> Unit {
   match expr {
     EHandle(_, _) => Array::set(out, at = 0, value = true),
     EIdent(name, _) => if name == "perform" || name == "resume" {
@@ -284,7 +341,11 @@ fn prelude_reuse_body(_ stmt: Stmt) -> Option[(Option[TypeExpr], Expr)] {
 
 /// The names `stmt` references by spelling, and whether any reference is
 /// opaque (`dce_statement_refs`).
-fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
+/// The names `stmt` references, and whether it references something opaque
+/// (`dce_statement_refs`, definition and root together). A build takes it
+/// once per statement and hands it to `prelude_reuse_avoid` and
+/// `prelude_reuse_quiet`.
+export fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
   let (def_refs, def_opaque, root_refs, root_opaque) = dce_statement_refs(stmt)
   let all: Array[String] = []
   for r in def_refs {
@@ -297,7 +358,45 @@ fn prelude_reuse_refs(_ stmt: Stmt) -> (Array[String], Bool) {
 }
 
 /// Whether `stmt` is quiet against `avoid` (see the file comment).
-export fn prelude_reuse_quiet(stmt: Stmt, scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
+/// Whether a quiet statement may bind `name`: not a generated (`__`) name,
+/// except the binders the desugar introduces with a fixed spelling (#4123,
+/// #4130). The passes consult the program-wide binder census only for
+/// particular spellings: top-level function names (alias inlining), callee
+/// names (whether a call may perform), and the fresh names they mint
+/// (`__scps_*`, `__edp*`, `__shadow_*`, ...). None of these spellings is
+/// one of those -- none is a top-level function, none is ever called, no
+/// pass mints it -- and each is counted per top-level statement (#3829), so
+/// binding one cannot move a name the passes look up or pick:
+/// - `__exn_payload<n>`: a lowered `throw`'s payload temp;
+/// - `__asc`: the identity closure a type ascription lowers to;
+/// - `__ae_i`, `__ae_ok`, `__be_i`, `__be_ok`, `__as_i`, `__as_acc`: the
+///   loop state of a generated array or slice comparison;
+/// - `__oeq_l`, `__oeq_r`: an option comparison's operands;
+/// - `__a<n>`, `__b<n>`: a derived comparison's field binders.
+fn prelude_reuse_binder_ok(_ name: String) -> Bool {
+  if !String::starts_with(name, prefix = "__") || String::starts_with(name, prefix = "__exn_payload") {
+    true
+  } else if name == "__asc" || name == "__ae_i" || name == "__ae_ok" || name == "__be_i" || name == "__be_ok" || name == "__as_i" || name == "__as_acc" || name == "__oeq_l" || name == "__oeq_r" {
+    true
+  } else {
+    (String::starts_with(name, prefix = "__a") || String::starts_with(name, prefix = "__b")) && prelude_reuse_all_digits(text = name, from = 3)
+  }
+}
+
+/// Whether `text` from byte `from` on is one or more ASCII digits.
+fn prelude_reuse_all_digits(text: String, from: Int) -> Bool {
+  let n = String::length(text)
+  let mut ok = n > from
+  let mut i = from
+  while ok && i < n {
+    let c = String::byte_at(text, at = i)
+    ok = c >= 48 && c <= 57
+    i = i + 1
+  }
+  ok
+}
+
+export fn prelude_reuse_quiet(stmt: Stmt, refs: (Array[String], Bool), scope: PreludeReuseScope, avoid: MutSet[String]) -> Bool {
   match prelude_reuse_body(stmt) {
     // A marker only the checker reads (positional parameters, a test's
     // declared row, qualified pattern references): the passes skip it, so
@@ -306,13 +405,13 @@ export fn prelude_reuse_quiet(stmt: Stmt, scope: PreludeReuseScope, avoid: MutSe
     Some((ann, body)) => {
       let flags = [false, false]
       prelude_reuse_expr_flags(expr = body, scope = scope, out = flags)
-      let (refs, opaque) = prelude_reuse_refs(stmt)
+      let (names, opaque) = refs
       let mut ok = !Array::get(flags, at = 0) && !Array::get(flags, at = 1) && !opaque && !prelude_reuse_opt_type_effectful(ty = ann, effects = scope.effects)
-      for r in refs {
+      for r in names {
         ok = ok && !MutSet::has(avoid, x = r)
       }
       for b in edp_statement_binder_log(stmt) {
-        ok = ok && !MutSet::has(scope.top, x = b) && !String::starts_with(b, prefix = "__") && !MutSet::has(avoid, x = b)
+        ok = ok && !MutSet::has(scope.top, x = b) && prelude_reuse_binder_ok(b) && !MutSet::has(avoid, x = b)
       }
       // Its own name: a statement some relevant statement reaches is not
       // quiet whatever its body holds.
@@ -428,7 +527,7 @@ fn prelude_reuse_lambda_binders(expr: Expr, out: MutSet[String]) -> Unit {
 /// The names a quiet statement must avoid, given which statements are
 /// relevant: every name from which a relevant statement is reachable, and
 /// every name a relevant statement binds to a lambda.
-export fn prelude_reuse_avoid(stmts: Array[Stmt], relevant: Array[Bool]) -> MutSet[String] {
+export fn prelude_reuse_avoid(stmts: Array[Stmt], refs: Array[(Array[String], Bool)], relevant: Array[Bool]) -> MutSet[String] {
   let avoid = MutSet::new_string()
   // name -> the statements that reference it
   let users: MutMap[String, Array[Int]] = MutMap::new_string()
@@ -441,8 +540,8 @@ export fn prelude_reuse_avoid(stmts: Array[Stmt], relevant: Array[Bool]) -> MutS
       SLetMut(name, _, _) => name,
       _ => ""
     })
-    let (refs, _) = prelude_reuse_refs(stmt)
-    for r in refs {
+    let (names_here, _) = Array::get(refs, at = i)
+    for r in names_here {
       match MutMap::get(users, k = r) {
         Some(at) => Array::push(at, value = i),
         None => MutMap::set(users, k = r, v = [i])

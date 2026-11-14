@@ -1817,6 +1817,37 @@ done
 rm -rf "$psdir"
 echo "[compiler-gate] scalar-result parameter path release guard ok (3009552 on bump/rc/shadow/gc, rc heap_used=$ps_used B)"
 
+# 40f0r. #4141: a record field, tuple item, array item or map value whose value
+#        is a branch or a block ending in a borrowed view -- a projection, a
+#        borrow-returning call, a loop-borrowed name -- takes a reference
+#        before the literal stores it. The literal lowerings checked only the
+#        item's top node, so the view behind an `if`, a `match` or a block was
+#        stored unretained and the literal's drop released its source's value
+#        once too often: the shadow lane trapped with `drop of freed value`
+#        (the compiler's own `lc_build_emission_layout` did this to
+#        `input.struct_names`). The answer is checked on bump, rc, shadow and
+#        gc; the rc heap bound catches a fix that retains a fresh value too.
+echo "[compiler-gate] 40f0r/40 a branch or block view stored into an aggregate literal is retained (#4141)"
+gate_workdir abdir "_build/_gate_rc_aggregate_branch_tail"
+for ab_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$ab_lane" "fixtures/rc_aggregate_branch_tail_test.vibe" "$abdir/ab.wasm" main
+  gate_require_artifact "$abdir/ab.wasm" "rc_aggregate_branch_tail fixture did not compile on the $ab_lane lane (#4141)"
+  gate_run ab_out last "$abdir/ab.wasm"
+  gate_require_eq "$ab_out" "0" "rc_aggregate_branch_tail got '$ab_out' on the $ab_lane lane (want 0). A trap means a literal released a branch or block view it never retained (#4141)."
+  if [ "$ab_lane" = rc ]; then
+    ab_json="$(node scripts/measure_heap.mjs "$abdir/ab.wasm" main 2>/dev/null)"
+    ab_used="$(printf '%s' "$ab_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ab_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_aggregate_branch_tail heap ($ab_json)" >&2; exit 1
+    fi
+    if [ "$ab_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_aggregate_branch_tail heap_used=$ab_used >= 8000 (#4141: a literal retains a value that needs no reference of its own)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$abdir"
+echo "[compiler-gate] aggregate branch-tail retain guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ab_used B)"
+
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
