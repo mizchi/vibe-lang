@@ -80,39 +80,37 @@ fn retaining_write_operation_mask(_ operation: Int) -> Int {
 }
 
 /// The retained-argument mask of a call by `name` inside an active region,
-/// with the checker's `operation` for it. A call with an operation identity is
-/// classified by it. Any other call is classified by the BINDING it reaches
-/// (`retaining_write_alias_target`), not by how it is spelled:
+/// with the checker's `operation` for it. A spelling with no answer of its own
+/// is asked through the aliases it may name (`retaining_write_alias_target`):
 ///
-/// - through function aliases to a builtin operation, that operation's mask.
-///   That includes a program binding of a builtin spelling (`operation < 0`):
+/// - an alias of a builtin operation answers that operation's mask. That
+///   includes a program binding of a builtin spelling (`operation < 0`):
 ///   Codex on #3984 found `let MutList::push = Array::push` answered -1, so
-///   the call stored nothing here;
-/// - to a spelling no binding of this module declares (a shipped primitive,
-///   or an imported library wrapper such as `MutMap::set`), the ladder in
-///   `retaining_write_argument_mask` for THAT spelling. #3255: an alias of a
-///   library wrapper (`let put = MutMap::set; put(outer, 1, cell)`) named no
-///   ladder entry, so a region value it stored into an outer map was
-///   accepted;
-/// - to a program's own binding, 0: it retains what its body retains, and
-///   `retention_call_region_check` re-checks that body at the call. #3255: a
-///   program's own `fn MutMap::set` that keeps nothing used to be refused
-///   inside a region because of its spelling.
+///   the call stored nothing here, and the body recheck trusts the builtin it
+///   follows the alias to;
+/// - #3255: an alias of a spelling the ladder lists -- an imported library
+///   wrapper such as `MutMap::set` or `MutSet::add`, by a local or top-level
+///   `let` -- answers the ladder for THAT spelling. It used to name no
+///   ladder entry, so `let put = MutMap::set; put(outer, 1, cell)` stored a
+///   region value into an outer map and was accepted.
 ///
-/// Outside a region nothing reads the mask, so the cheap spelling answer is
-/// returned there and the chain walk stays off those call sites (#2386).
+/// A program `fn` of a ladder spelling still answers the ladder for its
+/// spelling, as before: the region gate's fail-closed rows
+/// (`fixtures/err_region_escape_*_write.vibe`, #1938) stand in for the library
+/// wrappers with such functions, whose bodies keep nothing.
 export fn retaining_write_call_mask(env: TypeEnv, name: String, operation: Int) -> Int {
-  if operation > 0 || !env_has_active_region(env) {
-    retaining_write_argument_mask(source_name = name, operation = operation)
-  } else {
+  let named = retaining_write_argument_mask(source_name = name, operation = operation)
+  if named == 0 && operation <= 0 && env_has_active_region(env) {
     let (alias_operation, target) = retaining_write_alias_target(env = env, name = name)
     if alias_operation > 0 {
       retaining_write_operation_mask(alias_operation)
-    } else if target != "" {
+    } else if target != "" && target != name {
       retaining_write_argument_mask(source_name = target, operation = 0)
     } else {
       0
     }
+  } else {
+    named
   }
 }
 
@@ -135,11 +133,8 @@ export fn retaining_write_alias_operation(env: TypeEnv, name: String) -> Int {
 
 /// Where a call by `name` lands, following the aliases
 /// `retaining_write_alias_operation` describes: the builtin operation it
-/// reaches (0 for none), and the spelling the chain ends at when no binding of
-/// this module declares it -- a shipped primitive or an imported library
-/// function -- or "" when it ends at a program binding (a local, a parameter,
-/// a top-level `fn` or a `let` that is no alias). A call with no alias at all
-/// answers its own spelling, unless the module declares it.
+/// reaches (0 for none), and the spelling the chain ends at, or "" when it
+/// ends at a local binding that is no alias (a parameter, a closure).
 fn retaining_write_alias_target(env: TypeEnv, name: String) -> (Int, String) {
   let mut scope = env
   let mut current = name
@@ -184,11 +179,7 @@ fn retaining_write_alias_target(env: TypeEnv, name: String) -> (Int, String) {
           } else {
             ()
           }
-          if !retaining_write_top_level_declared(current) {
-            target = current
-          } else {
-            ()
-          }
+          target = current
           done = true
         }
       }
@@ -196,20 +187,6 @@ fn retaining_write_alias_target(env: TypeEnv, name: String) -> (Int, String) {
     depth = depth + 1
   }
   (operation, target)
-}
-
-/// Whether this module declares a top-level binding of `name`.
-fn retaining_write_top_level_declared(_ name: String) -> Bool {
-  let mut found = false
-  for decl in retention_decls {
-    let (decl_name, _) = decl
-    if !found && String::equals(decl_name, name) {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
 }
 
 /// The name a top-level `let` of `name` aliases, or "".
