@@ -243,7 +243,13 @@ export struct PCtx {
   // #1980: per candidate row, whether codegen may release it by the count of
   // consume marks the path ran (`pe_exit`, `pe_emit_exit_rows`).
   mut exit_counted: Array[Bool];
-  mut actions: Array[PerceusAction]
+  mut actions: Array[PerceusAction];
+  // #2509: the current plan's parameters and body, read only by a field read
+  // that would otherwise count as immediate (`pe_field_read_is_immediate`).
+  // Fields, not module-level cells, for the reason the tables above are: a
+  // field assignment releases the previous plan's, an Array::set would not.
+  mut plan_params: Array[(String, Option[TypeExpr])];
+  mut plan_body: Expr
 }
 
 export struct HeapInferCtx {
@@ -680,13 +686,6 @@ let pe_imm_field_keys: Array[String] = []
 
 let pe_imm_field_token: Array[Int] = [0]
 
-/// The current plan's parameters and body, kept by reference -- recording
-/// them allocates nothing, so a plan that never reads a field pays nothing.
-/// Only a field read that would otherwise count as immediate looks at them.
-let pe_plan_params: Array[Array[(String, Option[TypeExpr])]] = [[]]
-
-let pe_plan_body: Array[Expr] = [EInt(0)]
-
 /// 1 when the current plan may consult the field table at all.
 let pe_plan_fields_on: Array[Int] = [0]
 
@@ -735,9 +734,10 @@ export fn perceus_immediate_field_keys(_ stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-/// Record the plan's parameters and body. An unpinned plan, or one whose pin
-/// installed no keys, leaves the field table off.
-export fn pe_set_param_structs(plan_pin: Int, params: Array[(String, Option[TypeExpr])], body: Expr) -> Unit {
+/// Record the plan's parameters and body on `ctx`. An unpinned plan, or one
+/// whose pin installed no keys, leaves the field table off and releases the
+/// previous plan's.
+export fn pe_set_param_structs(ctx: PCtx, plan_pin: Int, params: Array[(String, Option[TypeExpr])], body: Expr) -> Unit {
   Array::set(pe_plan_pin, at = 0, value = plan_pin)
   let on = plan_pin != 0 && plan_pin == Array::get(pe_imm_field_token, at = 0) && Array::length(pe_imm_field_keys) > 0
   Array::set(pe_plan_fields_on, at = 0, value = if on {
@@ -746,8 +746,11 @@ export fn pe_set_param_structs(plan_pin: Int, params: Array[(String, Option[Type
     0
   })
   if on {
-    Array::set(pe_plan_params, at = 0, value = params)
-    Array::set(pe_plan_body, at = 0, value = body)
+    ctx.plan_params = params
+    ctx.plan_body = body
+  } else if Array::length(ctx.plan_params) > 0 {
+    ctx.plan_params = []
+    ctx.plan_body = EUnit
   }
   if Array::length(pe_rebind_names) > 0 {
     Array::truncate(pe_rebind_names, length = 0)
@@ -757,7 +760,7 @@ export fn pe_set_param_structs(plan_pin: Int, params: Array[(String, Option[Type
 }
 
 /// Does the current plan's body leave parameter `name` unbound?
-fn pe_param_never_rebound(name: String) -> Bool {
+fn pe_param_never_rebound(ctx: PCtx, name: String) -> Bool {
   let mut state = 0
   let mut i = 0
   while i < Array::length(pe_rebind_names) {
@@ -767,7 +770,7 @@ fn pe_param_never_rebound(name: String) -> Bool {
     i = i + 1
   }
   if state == 0 {
-    let rebound = pe_body_binds_name(e = Array::get(pe_plan_body, at = 0), name = name)
+    let rebound = pe_body_binds_name(e = ctx.plan_body, name = name)
     Array::push(pe_rebind_names, value = name)
     Array::push(pe_rebind_state, value = if rebound {
       2
@@ -850,7 +853,7 @@ fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
     false
   } else {
     let mut sname = ""
-    for p in Array::get(pe_plan_params, at = 0) {
+    for p in ctx.plan_params {
       if p.0 == obj {
         sname = match p.1 {
           Some(TyName(t)) => t,
@@ -863,7 +866,7 @@ fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
     } else {
       let key = sname + "." + field
       let slot = bsearch_leftmost(sorted = pe_imm_field_keys, name = key)
-      slot >= 0 && slot < Array::length(pe_imm_field_keys) && Array::get(pe_imm_field_keys, at = slot) == key && pe_param_never_rebound(name = obj)
+      slot >= 0 && slot < Array::length(pe_imm_field_keys) && Array::get(pe_imm_field_keys, at = slot) == key && pe_param_never_rebound(ctx = ctx, name = obj)
     }
   }
 }
