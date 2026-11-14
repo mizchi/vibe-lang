@@ -577,7 +577,7 @@ fn content_walk_result(expr: Expr, facts: ContentFacts, env: TypeEnv) -> (Bool, 
     ELetMut(x, v, body, off) => {
       let value = content_walk_result(expr = v, facts = facts, env = env)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = value, facts = facts)
+      content_bind_let(name = x, off = off, expr = v, value = value, env = env, facts = facts)
       let result = content_walk_result(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
       result
@@ -651,7 +651,7 @@ fn content_facts_into(expr: Expr, facts: ContentFacts, env: TypeEnv) -> Unit {
     ELetMut(x, v, body, off) => {
       let value = content_facts_value(expr = v, facts = facts, env = env)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = value, facts = facts)
+      content_bind_let(name = x, off = off, expr = v, value = value, env = env, facts = facts)
       content_facts_into(expr = body, facts = facts, env = env)
       content_pop(mark = mark, facts = facts)
     },
@@ -849,7 +849,7 @@ fn content_value_fact(value: Expr, env: TypeEnv, facts: ContentFacts) -> (Bool, 
     ELetMut(x, v, body, off) => {
       let bound = content_value_fact(value = v, env = env, facts = facts)
       let mark = Array::length(facts.scope_ids)
-      content_bind(id = content_push_let(name = x, off = off, facts = facts), value = bound, facts = facts)
+      content_bind_let(name = x, off = off, expr = v, value = bound, env = env, facts = facts)
       if off < 0 {
         content_facts_into(expr = body, facts = facts, env = env)
       }
@@ -1129,7 +1129,8 @@ fn content_alias_type(value: Expr, env: TypeEnv, facts: ContentFacts) -> Option[
   if !facts.type_aliases {
     return None
   }
-  // Immutable bindings can reuse the declared type of their initializer.
+  // Local bindings can reuse the type of their initializer. Assignments
+  // into a mutable binding are checked against the same type.
   // Resolve only names needed to read the type; call arguments do not
   // determine a declared (nongeneric) result.
   match value {
