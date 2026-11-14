@@ -1,0 +1,169 @@
+// RC leak guard (#1980): a projection `let` consumed on one branch releases
+// what the path did not spend.
+//
+// `let v = h.inner`, and every binder of a struct destructure (`let H::{ inner
+// } = h`), takes a reference of its own at the binding: the field is retained
+// there. When the binding is consumed on one branch only, the Perceus plan
+// gives it a counted path drop -- the merged dup's (`pe_dup_merge`) or, when
+// the consume is its last use, the initial reference's (#2389) -- but the
+// `let` lowering declined it, because its list of owned values had no
+// projection. Every path that skipped the consume kept that reference.
+//
+// Measured at N=20000 before this change (each shape alone):
+//
+//   | shape                                        |    before | after |
+//   |----------------------------------------------|----------:|------:|
+//   | `let H::{ inner } = H::{ .. }`, then a merge | 880,044 B | 136 B |
+//   | `let H::{ inner } = h`, `h` a parameter      | 880,044 B | 136 B |
+//   | `let v = h.inner`                            | 880,044 B | 136 B |
+//   | `let v = h.inner`, consumed last on a branch | 880,044 B | 136 B |
+//
+// Admitting it before #4141 freed a value early in the compiler itself: the
+// leak this releases in `lc_layout_fingerprint_at` was what balanced the
+// emission layout's unretained copy of `input.struct_names`.
+//
+// The controls keep the consumed values in an array past the call, so a
+// release on a path still holding the value would free it under the array:
+// VIBE_RC=shadow traps on that. The gate compiles this on bump, rc, shadow
+// and gc, checks the answer and bounds the rc heap
+// (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh, 40f0s). `main`
+// returns 0: every leak shape adds 0, so the answer cannot drift with the
+// allocation behaviour being measured.
+struct H {
+  inner: Array[Int]
+}
+
+fn mka(_ i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+// Takes its argument: stores it into a record that it then drops.
+fn sink(_ v: Array[Int]) -> Int {
+  let h = H::{ inner: v }
+  Array::get(h.inner, at = 0)
+}
+
+fn struct_let(_ i: Int) -> Int {
+  let H::{ inner } = H::{ inner: mka(i) }
+  let a = if i % 2 == 0 {
+    sink(inner) - i
+  } else {
+    0
+  }
+  (a + Array::get(inner, at = 2) - (i + 2)) * 0
+}
+
+fn struct_param(_ h: H, _ i: Int) -> Int {
+  let H::{ inner } = h
+  let a = if i % 2 == 0 {
+    sink(inner) - i
+  } else {
+    0
+  }
+  (a + Array::get(inner, at = 2) - (i + 2)) * 0
+}
+
+fn proj_let(_ h: H, _ i: Int) -> Int {
+  let v = h.inner
+  let a = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, at = 2) - (i + 2)) * 0
+}
+
+// The consume is the binding's last use, on one branch (#2389's split).
+fn proj_split(_ h: H, _ i: Int) -> Int {
+  let v = h.inner
+  let n = Array::get(v, at = 1) - (i + 1)
+  if i % 2 == 0 {
+    (sink(v) - i + n) * 0
+  } else {
+    n
+  }
+}
+
+// Controls: the consumed value outlives the call.
+fn keep_into(ks: Array[Array[Int]], v: Array[Int]) -> Int {
+  Array::push(ks, value = v)
+  0
+}
+
+fn kept_struct_let(ks: Array[Array[Int]], h: H, i: Int) -> Int {
+  let H::{ inner } = h
+  if i % 2 == 0 {
+    Array::push(ks, value = inner)
+  } else {
+    ()
+  }
+  Array::get(inner, at = 2) - (i + 2)
+}
+
+fn kept_proj_two(ks: Array[Array[Int]], h: H, i: Int) -> Int {
+  let v = h.inner
+  let a = if i % 3 == 0 {
+    keep_into(ks = ks, v = v) + keep_into(ks = ks, v = v)
+  } else if i % 3 == 1 {
+    keep_into(ks = ks, v = v)
+  } else {
+    0
+  }
+  a + Array::get(v, at = 2) - (i + 2)
+}
+
+fn kept_proj_split(ks: Array[Array[Int]], h: H, i: Int) -> Int {
+  let v = h.inner
+  let n = Array::get(v, at = 1) - (i + 1)
+  if i % 2 == 0 {
+    keep_into(ks = ks, v = v) + n
+  } else {
+    n
+  }
+}
+
+fn first_sum(ks: Array[Array[Int]]) -> Int {
+  let mut s = 0
+  let mut m = 0
+  while m < Array::length(ks) {
+    s = s + Array::get(Array::get(ks, at = m), at = 0)
+    m = m + 1
+  }
+  s
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + struct_let(i) + struct_param(H::{ inner: mka(i) }, i) + proj_let(H::{ inner: mka(i) }, i) + proj_split(H::{ inner: mka(i) }, i)
+    i = i + 1
+  }
+  let ks: Array[Array[Int]] = []
+  let hs: Array[H] = []
+  let mut j = 0
+  while j < 6 {
+    let h1 = H::{ inner: mka(j + 10) }
+    let h2 = H::{ inner: mka(j + 20) }
+    let h3 = H::{ inner: mka(j + 30) }
+    acc = acc + kept_struct_let(ks = ks, h = h1, i = j + 10) + kept_proj_two(ks = ks, h = h2, i = j + 20) + kept_proj_split(ks = ks, h = h3, i = j + 30)
+    Array::push(hs, value = h1)
+    Array::push(hs, value = h2)
+    Array::push(hs, value = h3)
+    j = j + 1
+  }
+  // The structs still hold every array the controls kept or read.
+  let mut hsum = 0
+  let mut q = 0
+  while q < Array::length(hs) {
+    hsum = hsum + Array::get(Array::get(hs, at = q).inner, at = 0)
+    q = q + 1
+  }
+  // 12 kept arrays with first elements summing to 269, and the structs'
+  // first elements summing to 405.
+  acc + first_sum(ks = ks) + Array::length(ks) * 1000 + hsum - 12674
+}
+
+test "a projection let consumed on one branch releases what the path kept" {
+  inspect(main(), content = "0")
+}
