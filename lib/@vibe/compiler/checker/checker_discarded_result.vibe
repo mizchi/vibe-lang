@@ -1,0 +1,81 @@
+//# A functional builtin's result thrown away (#4142)
+//
+// `Map::set` and `Map::delete` return a new map and leave their receiver
+// alone. Written as a statement -- the way `Array::push` / `Array::set`, which
+// do mutate in place, are written -- the call is a silent no-op: the program
+// checks, runs, and nothing reaches the map. Measured on #4140, a helper that
+// deduplicated names this way did nothing, and a test kept passing against a
+// fixture whose maps it had meant to fill.
+//
+// So a call to one of them whose value is thrown away is refused, with the
+// edit. A statement of a block (`taken = ..` missing), and the value of a
+// statement-position `if` / `match` branch, `for` or `while` body, are thrown
+// away; `let _ = Map::set(..)` still discards on purpose. Only the builtin is
+// judged: a program's own function of that spelling is its own business.
+
+import @vibe/compiler/core {
+  Expr, TypeEnv, call_arg_value
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  builtin_resolves_at
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
+}
+
+/// Refuse every call of a functional builtin whose value `stmt`, a statement
+/// of a block, throws away. A statement's own inner statements are judged
+/// when the checker reaches their block, so only the value it ends in is
+/// read here.
+export fn refuse_discarded_functional_result(stmt: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+  match stmt {
+    ECall(EIdent(name, noff), args, _, _) => if discarded_result_is_functional(name) && builtin_resolves_at(env = env, name = name, ident_off = noff) {
+      Array::push(errors, value = discarded_result_message(name = name, args = args, noff = noff))
+    },
+    ESeq(_, rest) => refuse_discarded_functional_result(stmt = rest, env = env, errors = errors),
+    ELet(_, _, body, _) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    ELetMut(_, _, body, _) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    ELetRec(_, _, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    EIf(_, then_e, else_e) => {
+      refuse_discarded_functional_result(stmt = then_e, env = env, errors = errors)
+      refuse_discarded_functional_result(stmt = else_e, env = env, errors = errors)
+    },
+    EMatch(_, arms) => for arm in arms {
+      refuse_discarded_functional_result(stmt = arm.1, env = env, errors = errors)
+    },
+    EForIn(_, _, _, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    EWhile(_, body) => refuse_discarded_functional_result(stmt = body, env = env, errors = errors),
+    _ => ()
+  }
+}
+
+/// A builtin whose only effect is the value it returns, and whose receiver a
+/// reader may expect it to change.
+fn discarded_result_is_functional(_ name: String) -> Bool {
+  name == "Map::set" || name == "Map::delete"
+}
+
+/// The refusal, the edit first: assign the new map back (or bind it).
+fn discarded_result_message(name: String, args: Array[Expr], noff: Int) -> String {
+  let receiver = if Array::length(args) > 0 {
+    match call_arg_value(Array::get(args, at = 0)) {
+      EIdent(r, _) => r,
+      _ => ""
+    }
+  } else {
+    ""
+  }
+  let edit = if receiver == "" {
+    "bind the result of `" + name + "` (`let updated = " + name + "(..)`)"
+  } else {
+    "write `" + receiver + " = " + name + "(" + receiver + ", ..)` (with `let mut " + receiver + "`), or bind the result (`let updated = " + name + "(" + receiver + ", ..)`)"
+  }
+  let unchanged = if receiver == "" {
+    "its argument"
+  } else {
+    "`" + receiver + "`"
+  }
+  edit + ": `" + name + "` returns a new map and leaves " + unchanged + " unchanged, so this statement does nothing. Write `let _ = " + name + "(..)` to discard it on purpose." + off_marker_len(off = noff, len = String::length(name))
+}
