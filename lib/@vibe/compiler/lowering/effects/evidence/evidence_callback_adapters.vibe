@@ -1,0 +1,157 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, expr_children_into, indexed_callback_row_from_key, is_indexed_callback_row_key, row_free_callback_offset
+}
+
+import @vibe/core {
+  struct MutMap, struct MutSet
+}
+
+import ./evidence_fn_statement_index.vibe {
+  edp_indexed_params_of_fn
+}
+
+import ./evidence_handle_effect_names_expr.vibe {
+  edp_expr_binds_name
+}
+
+import ./evidence_scan_view_expr.vibe {
+  edp_rename_free, edp_scope_last_index
+}
+
+import ./evidence_slot_refusals.vibe {
+  edp_alias_fn_type, edp_parameter_type, edp_slot_row_stampable
+}
+
+let indexed_callback_slots: Array[MutMap[Int, (Int, String, String)]] = []
+
+export fn edp_indexed_callback_slots_set(offsets: Array[Int], keys: Array[String], callbacks: MutSet[Int]) -> Unit {
+  let slots: MutMap[Int, (Int, String, String)] = MutMap::new_int()
+  let mut i = 0
+  while i < Array::length(keys) {
+    let key = Array::get(keys, at = i)
+    if is_indexed_callback_row_key(key) {
+      match indexed_callback_row_from_key(key) {
+        Some(slot) => {
+          let off = Array::get(offsets, at = i)
+          MutMap::set(slots, k = off, v = slot)
+          MutSet::insert(callbacks, x = off)
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(indexed_callback_slots, length = 0)
+  Array::push(indexed_callback_slots, value = slots)
+}
+
+export fn edp_indexed_callback_slot(_ arg: Expr) -> Option[(Int, String, String)] {
+  if Array::length(indexed_callback_slots) > 0 && edp_needs_callback_adapter(arg) {
+    MutMap::get(Array::get(indexed_callback_slots, at = 0), k = row_free_callback_offset(arg))
+  } else {
+    None
+  }
+}
+
+let edp_callback_offsets: Array[MutSet[Int]] = []
+
+export fn edp_callback_offsets_set(_ offsets: MutSet[Int]) -> Unit {
+  Array::truncate(edp_callback_offsets, length = 0)
+  Array::push(edp_callback_offsets, value = offsets)
+}
+
+// A callback accepted by the checker may appear in a call through a local
+// parameter absent from the global slot-callee index.
+export fn edp_expr_has_callback_adapter(e: Expr, offsets: MutSet[Int]) -> Bool {
+  if MutSet::size(offsets) == 0 {
+    return false
+  }
+  let stack = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack) - 1
+    let cur = Array::get(stack, at = n)
+    Array::truncate(stack, length = n)
+    match cur {
+      ECall(_, args, _, _) => for arg0 in args {
+        let arg = match arg0 {
+          ELabeledArg(_, _, value) => value,
+          _ => arg0
+        }
+        let off = row_free_callback_offset(arg)
+        if off >= 0 && MutSet::has(offsets, x = off) {
+          return true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    expr_children_into(expr = cur, out = stack)
+  }
+  false
+}
+
+export fn edp_needs_callback_adapter(_ value: Expr) -> Bool {
+  let off = row_free_callback_offset(value)
+  off >= 0 && Array::length(edp_callback_offsets) != 0 && MutSet::has(Array::get(edp_callback_offsets, at = 0), x = off)
+}
+
+fn edp_callback_callable_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  match ty {
+    TyFn(_, _, _) => Some(ty),
+    _ => edp_alias_fn_type(stmts = stmts, ty = ty)
+  }
+}
+
+export fn edp_parameter_callback_slot(stmts: Array[Stmt], binding: Int, pos: Int) -> Option[(Int, String)] {
+  let callable = match edp_parameter_type(binding) {
+    Some(ty) => edp_callback_callable_type(stmts = stmts, ty = ty),
+    None => None
+  }
+  match callable {
+    Some(TyFn(params, _, _)) => if pos >= 0 && pos < Array::length(params) {
+      match edp_callback_callable_type(stmts = stmts, ty = Array::get(params, at = pos)) {
+        Some(TyFn(args, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some((Array::length(args), row))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+// A function parameter or a top-level function is immutable. Resolve through
+// an alias only when its source name cannot be captured by an inner binder.
+export fn edp_resolve_callback_alias(name: String, value: Expr, body: Expr, scope: Array[String], stmts: Array[Stmt], index: MutMap[String, Array[Int]]) -> Expr {
+  if Array::length(edp_callback_offsets) == 0 || MutSet::size(Array::get(edp_callback_offsets, at = 0)) == 0 {
+    return body
+  } else {
+    ()
+  }
+  let offsets = Array::get(edp_callback_offsets, at = 0)
+  match value {
+    EIdent(source, _) => if name != source {
+      let binding = edp_scope_last_index(scope = scope, name = source)
+      let stable = if binding >= 0 {
+        edp_parameter_type(binding) is Some(TyFn(_, _, _))
+      } else {
+        edp_indexed_params_of_fn(stmts = stmts, index = index, nm = source) is Some(_)
+      }
+      if stable && edp_expr_has_callback_adapter(e = body, offsets = offsets) && !edp_expr_binds_name(expr = body, name = source) {
+        edp_rename_free(e = body, from = name, to = source)
+      } else {
+        body
+      }
+    } else {
+      body
+    },
+    _ => body
+  }
+}

@@ -4,6 +4,7 @@ import @vibe/compiler/core {
   Stmt,
   Type,
   TypeExpr,
+  expr_any_node,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -604,6 +605,48 @@ export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
     }
     edp_rq_merge(q = q, a = local, b = children)
   }
+}
+
+/// Compiler-only capture for a callback whose checked type has no row.
+export let row_free_callback_capture_prefix: String = "$row-free-callback:"
+
+let checked_index_calls: Array[MutMap[Int, String]] = []
+
+export fn edp_reset_checked_index_calls() -> Unit {
+  Array::truncate(checked_index_calls, length = 0)
+}
+
+export fn edp_note_checked_index_call(off: Int, row: String) -> Unit {
+  if Array::length(checked_index_calls) == 0 {
+    Array::push(checked_index_calls, value = MutMap::new_int())
+  } else {
+    ()
+  }
+  MutMap::set(Array::get(checked_index_calls, at = 0), k = off, v = row)
+}
+
+export fn edp_checked_index_call(off: Int, callee: Expr) -> Option[String] {
+  match callee {
+    ECall(_, _, _, _) => if off >= 0 && Array::length(checked_index_calls) != 0 {
+      MutMap::get(Array::get(checked_index_calls, at = 0), k = off)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+// Eligibility permits a checked indirect call when migration can supply the
+// dictionary. Such a call still prevents an enclosing function from being
+// classified as perform-free.
+export fn edp_calls_checked_index_effect(expr: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  Array::length(checked_index_calls) != 0 && expr_any_node(expr = expr, pred = (node) -> match node {
+    ECall(callee, _, off, _) => match edp_checked_index_call(off = off, callee = callee) {
+      Some(row) => edp_row_is_exactly(row = row, ename = ename, es_names = es_names, es_members_list = es_members_list),
+      None => false
+    },
+    _ => false
+  })
 }
 
 /// Is this callee one whose target this analysis can name? Anything else
@@ -1400,7 +1443,7 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
       r
     },
     ESeq(a, b) => edp_has_unsafe_construct_sc(expr = a, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
-    ECall(callee, args, _, _) => match callee {
+    ECall(callee, args, off, _) => match callee {
       // A type ascription -- how an annotated `let x: T = v` reaches this
       // pass, `((__asc: T) -> __asc)(v)` -- is an identity closure applied on
       // the spot: it performs nothing and runs nothing but its argument, so
@@ -1420,7 +1463,7 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
         edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
       } else {
         let local = edp_local_safe_lookup(ls_names = ls_names, ls_flags = ls_flags, name = nm)
-        if local == 1 {
+        if local == 1 || String::starts_with(nm, prefix = row_free_callback_capture_prefix) {
           edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
         } else if local == 0 {
           true
@@ -1443,7 +1486,10 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
           true
         }
       },
-      _ => true
+      _ => match edp_checked_index_call(off = off, callee = callee) {
+        Some(_) => edp_has_unsafe_construct_sc(expr = callee, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+        None => true
+      }
     },
     EBinOp(_, l, r, _) => edp_has_unsafe_construct_sc(expr = l, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = r, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
     EUnaryOp(_, e2) => edp_has_unsafe_construct_sc(expr = e2, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),

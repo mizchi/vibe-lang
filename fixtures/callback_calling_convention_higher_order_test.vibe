@@ -1,0 +1,102 @@
+effect Ask {
+  Get() -> Int
+}
+
+fn ask_at_call() -> Int with Ask {
+  perform Ask::Get()
+}
+
+fn apply_through(_ run: (() -> Int with Ask) -> Int with Ask, _ f: () -> Int) -> Int with Ask {
+  run(f)
+}
+
+fn consume(_ f: () -> Int with Ask) -> Int with Ask {
+  f()
+}
+
+test "adapting a conditional evaluates its condition once" {
+  let first = () -> 7
+  let second = () -> 8
+  let mut visits = 0
+  let value = handle {
+    let _ = consume(ask_at_call)
+    consume(if {
+      visits += 1; visits == 1
+    } {
+      first
+    } else {
+      second
+    })
+  } with { Ask::Get() => resume(5) }
+  inspect(value, content = "7")
+  inspect(visits, content = "1")
+}
+
+test "a function parameter can receive a row-free callback" {
+  let f = () -> 8
+  let value = handle {
+    let _ = consume(ask_at_call)
+    apply_through(consume, f)
+  } with { Ask::Get() => resume(5) }
+  inspect(value, content = "8")
+}
+
+test "a match result can fill a row-carrying callback parameter" {
+  let first = () -> 7
+  let second = () -> 8
+  let value = handle {
+    let _ = consume(ask_at_call)
+    consume(match Some(1) {
+      Some(_) => first,
+      None => second
+    })
+  } with { Ask::Get() => resume(5) }
+  inspect(value, content = "7")
+}
+
+fn apply_through_alias(_ run: (() -> Int with Ask) -> Int with Ask, _ f: () -> Int) -> Int with Ask {
+  let invoke = run
+  invoke(f)
+}
+
+test "a row-carrying callee keeps its callback slot through an alias" {
+  let value = handle {
+    let _ = consume(ask_at_call)
+    apply_through_alias(consume, () -> 9)
+  } with { Ask::Get() => resume(5) }
+  inspect(value, content = "9")
+}
+
+fn apply_indexed(_ runners: Array[(() -> Int with Ask) -> Int with Ask], _ i: Int, _ callback: () -> Int) -> Int with Ask {
+  runners[i](callback)
+}
+
+test "an indexed callee receives its handler and an adapted callback" {
+  let value = handle {
+    let _ = consume(ask_at_call)
+    apply_indexed([consume], 0, () -> 9)
+  } with { Ask::Get() => resume(5) }
+  inspect(value, content = "9")
+}
+
+effect Select {
+  Index() -> Int
+}
+
+fn apply_with_selection(_ runners: Array[(() -> Int with Ask) -> Int with Ask], _ callback: () -> Int) -> Int with Ask {
+  handle {
+    runners[perform Select::Index()](callback)
+  } with { Select::Index() => resume(1) }
+}
+
+fn add_one(_ f: () -> Int with Ask) -> Int with Ask {
+  f() + perform Ask::Get()
+}
+
+test "an index handles its own effect before invoking a callee with another row" {
+  let value = handle {
+    let _ = consume(ask_at_call)
+    apply_with_selection([consume, add_one], () -> 11)
+  } with { Ask::Get() => resume(5) }
+  inspect(value, content = "16")
+}

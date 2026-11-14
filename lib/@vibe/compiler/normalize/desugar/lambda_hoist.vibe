@@ -1184,25 +1184,29 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
           EFn(_, _, _, _, _, hb) => dlh_scan_free(expr = hb, bound = pb, bad = bad),
           _ => ()
         }
-        // A source-bound, explicitly row-annotated closure used as a value retains
-        // its closure convention. A hoisted native function may elide an
-        // unused dictionary, so its declared row alone cannot prove that
-        // convention to a field reader. Direct-only uses keep the #786 path.
-        // Substitute only unshadowed uses before testing for a value escape.
-        let hoistable = dlh_has_perform(fbody) && Array::length(bad) == 0 && (literal_args > 0 || eff_is_blank || {
+        // A source closure used as a first-class value keeps its written
+        // calling convention. The inferred row on a hoisted native function
+        // is only for direct calls, where we rewrite all uses together.
+        let performs = dlh_has_perform(fbody)
+        let direct_only = performs && {
           let mut marker = ":dlh-direct"
           while dinsp_scan(expr = rest, mode = 2, name = marker) {
             marker = String::concat(marker, ":")
           }
           dlh_marker_only_called_directly(expr = dlh_subst(expr = rest, from = name, to = marker), marker = marker)
-        })
+        }
+        let hoistable = performs && Array::length(bad) == 0 && (direct_only || literal_args > 0)
+        let kept_fn = match hoisted_fn {
+          EFn(htp, hbnds, hparams, hret, _, hbody) => EFn(htp, hbnds, hparams, hret, eff, hbody),
+          _ => hoisted_fn
+        }
         if hoistable {
           let idx = Array::get(ctr, at = 0)
           Array::set(ctr, at = 0, value = idx + 1)
           let fresh = dlh_hoisted_name(idx = idx, name = name)
           Array::push(hoisted, value = SLet(false, false, fresh, None, hoisted_fn))
           dlh_subst(expr = rest, from = name, to = fresh)
-        } else if dlh_has_perform(fbody) && Array::length(bad) > 0 {
+        } else if direct_only && Array::length(bad) > 0 {
           // #1069: `bad` is non-empty (the lambda captures at least one
           // ordinary enclosing local) but it still performs -- the exact
           // shape #786's own landed fix declined to touch, still hitting
@@ -1234,10 +1238,10 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
             Array::push(hoisted, value = SLet(false, false, fresh, None, hoisted_fn2))
             dlh_prepend_and_rename_calls(expr = rest_marked, marker = marker, fresh = fresh, extra_names = captured)
           } else {
-            ELet(name, hoisted_fn, rest, soff)
+            ELet(name, kept_fn, rest, soff)
           }
         } else {
-          ELet(name, hoisted_fn, rest, soff)
+          ELet(name, kept_fn, rest, soff)
         }
       },
       _ => ELet(name, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr), soff)

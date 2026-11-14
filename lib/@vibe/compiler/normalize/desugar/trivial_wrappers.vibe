@@ -1,11 +1,11 @@
 // Trivial wrappers.
 
 import @vibe/compiler/core {
-  Expr, Stmt
+  Expr, Stmt, row_free_callback_offset
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import ./renderer_scope.vibe {
@@ -263,39 +263,40 @@ fn dtpw_collect_wrappers(_ stmts: Array[Stmt]) -> Array[String] {
 /// traversal (mirrors this file's other full-coverage passes); the wrapper's
 /// own top-level definition is left completely untouched, so it remains
 /// valid wherever else it's referenced (as a value, or with a different
-/// arity that wouldn't match here anyway).
-fn dtpw_inline_expr(expr: Expr, wrappers: Array[String]) -> Expr {
+/// arity that wouldn't match here anyway). A checked callback conversion
+/// keeps the call boundary until evidence lowering adapts its argument.
+fn dtpw_inline_expr(expr: Expr, wrappers: Array[String], callback_offsets: MutSet[Int]) -> Expr {
   match expr {
     ECall(callee, args, off, callee_resolution) => match callee {
-      EIdent(wn, _) => if str_array_contains(arr = wrappers, val = wn) && Array::length(args) == 1 {
-        ECall(dtpw_inline_expr(expr = Array::get(args, at = 0), wrappers = wrappers), array_empty(), off, callee_resolution)
+      EIdent(wn, _) => if str_array_contains(arr = wrappers, val = wn) && Array::length(args) == 1 && !MutSet::has(callback_offsets, x = row_free_callback_offset(Array::get(args, at = 0))) {
+        ECall(dtpw_inline_expr(expr = Array::get(args, at = 0), wrappers = wrappers, callback_offsets = callback_offsets), array_empty(), off, callee_resolution)
       } else {
-        ECall(dtpw_inline_expr(expr = callee, wrappers = wrappers), for a in args {
-          dtpw_inline_expr(expr = a, wrappers = wrappers)
+        ECall(dtpw_inline_expr(expr = callee, wrappers = wrappers, callback_offsets = callback_offsets), for a in args {
+          dtpw_inline_expr(expr = a, wrappers = wrappers, callback_offsets = callback_offsets)
         }, off, callee_resolution)
       },
-      _ => ECall(dtpw_inline_expr(expr = callee, wrappers = wrappers), for a in args {
-        dtpw_inline_expr(expr = a, wrappers = wrappers)
+      _ => ECall(dtpw_inline_expr(expr = callee, wrappers = wrappers, callback_offsets = callback_offsets), for a in args {
+        dtpw_inline_expr(expr = a, wrappers = wrappers, callback_offsets = callback_offsets)
       }, off, callee_resolution)
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, dtpw_inline_expr(expr = l, wrappers = wrappers), dtpw_inline_expr(expr = r, wrappers = wrappers), boff),
-    EUnaryOp(op, e) => EUnaryOp(op, dtpw_inline_expr(expr = e, wrappers = wrappers)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dtpw_inline_expr(expr = l, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = r, wrappers = wrappers, callback_offsets = callback_offsets), boff),
+    EUnaryOp(op, e) => EUnaryOp(op, dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)),
     ETuple(es) => ETuple(for e in es {
-      dtpw_inline_expr(expr = e, wrappers = wrappers)
+      dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)
     }),
     EArray(es) => EArray(for e in es {
-      dtpw_inline_expr(expr = e, wrappers = wrappers)
+      dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)
     }),
-    ESpread(e) => ESpread(dtpw_inline_expr(expr = e, wrappers = wrappers)),
+    ESpread(e) => ESpread(dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)),
     EContinue(es) => EContinue(for e in es {
-      dtpw_inline_expr(expr = e, wrappers = wrappers)
+      dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)
     }),
     ERecord(rn, fs, targs) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
         let (k, v) = Array::get(fs, at = i)
-        Array::push(out, value = (k, dtpw_inline_expr(expr = v, wrappers = wrappers)))
+        Array::push(out, value = (k, dtpw_inline_expr(expr = v, wrappers = wrappers, callback_offsets = callback_offsets)))
         i = i + 1
       }
       ERecord(rn, out, targs)
@@ -305,45 +306,45 @@ fn dtpw_inline_expr(expr: Expr, wrappers: Array[String]) -> Expr {
       let mut i = 0
       while i < Array::length(fs) {
         let (k, v) = Array::get(fs, at = i)
-        Array::push(out, value = (k, dtpw_inline_expr(expr = v, wrappers = wrappers)))
+        Array::push(out, value = (k, dtpw_inline_expr(expr = v, wrappers = wrappers, callback_offsets = callback_offsets)))
         i = i + 1
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(dtpw_inline_expr(expr = c, wrappers = wrappers), dtpw_inline_expr(expr = t, wrappers = wrappers), dtpw_inline_expr(expr = e, wrappers = wrappers)),
-    ELet(n, v, b, soff) => ELet(n, dtpw_inline_expr(expr = v, wrappers = wrappers), dtpw_inline_expr(expr = b, wrappers = wrappers), soff),
-    ELetRec(n, v, b) => ELetRec(n, dtpw_inline_expr(expr = v, wrappers = wrappers), dtpw_inline_expr(expr = b, wrappers = wrappers)),
-    ELetMut(n, v, b, soff) => ELetMut(n, dtpw_inline_expr(expr = v, wrappers = wrappers), dtpw_inline_expr(expr = b, wrappers = wrappers), soff),
-    EAssign(n, v, c, target_off) => EAssign(n, dtpw_inline_expr(expr = v, wrappers = wrappers), dtpw_inline_expr(expr = c, wrappers = wrappers), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, dtpw_inline_expr(expr = v, wrappers = wrappers), dtpw_inline_expr(expr = c, wrappers = wrappers), target_off),
-    ESeq(a, b) => ESeq(dtpw_inline_expr(expr = a, wrappers = wrappers), dtpw_inline_expr(expr = b, wrappers = wrappers)),
-    EWhile(c, b) => EWhile(dtpw_inline_expr(expr = c, wrappers = wrappers), dtpw_inline_expr(expr = b, wrappers = wrappers)),
-    EForIn(n, idxn, it, b, for_off) => EForIn(n, idxn, dtpw_inline_expr(expr = it, wrappers = wrappers), dtpw_inline_expr(expr = b, wrappers = wrappers), for_off),
-    EDot(o, f, off, fdoff) => EDot(dtpw_inline_expr(expr = o, wrappers = wrappers), f, off, fdoff),
-    ELabeledArg(l, m, e) => ELabeledArg(l, m, dtpw_inline_expr(expr = e, wrappers = wrappers)),
-    EReturn(e) => EReturn(dtpw_inline_expr(expr = e, wrappers = wrappers)),
+    EIf(c, t, e) => EIf(dtpw_inline_expr(expr = c, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = t, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)),
+    ELet(n, v, b, soff) => ELet(n, dtpw_inline_expr(expr = v, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets), soff),
+    ELetRec(n, v, b) => ELetRec(n, dtpw_inline_expr(expr = v, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets)),
+    ELetMut(n, v, b, soff) => ELetMut(n, dtpw_inline_expr(expr = v, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets), soff),
+    EAssign(n, v, c, target_off) => EAssign(n, dtpw_inline_expr(expr = v, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = c, wrappers = wrappers, callback_offsets = callback_offsets), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, dtpw_inline_expr(expr = v, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = c, wrappers = wrappers, callback_offsets = callback_offsets), target_off),
+    ESeq(a, b) => ESeq(dtpw_inline_expr(expr = a, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets)),
+    EWhile(c, b) => EWhile(dtpw_inline_expr(expr = c, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets)),
+    EForIn(n, idxn, it, b, for_off) => EForIn(n, idxn, dtpw_inline_expr(expr = it, wrappers = wrappers, callback_offsets = callback_offsets), dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets), for_off),
+    EDot(o, f, off, fdoff) => EDot(dtpw_inline_expr(expr = o, wrappers = wrappers, callback_offsets = callback_offsets), f, off, fdoff),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)),
+    EReturn(e) => EReturn(dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)),
     EBreak(opt) => EBreak(match opt {
-      Some(e) => Some(dtpw_inline_expr(expr = e, wrappers = wrappers)),
+      Some(e) => Some(dtpw_inline_expr(expr = e, wrappers = wrappers, callback_offsets = callback_offsets)),
       None => None
     }),
-    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dtpw_inline_expr(expr = body, wrappers = wrappers)),
-    EMatch(s, arms) => EMatch(dtpw_inline_expr(expr = s, wrappers = wrappers), for a in arms {
+    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dtpw_inline_expr(expr = body, wrappers = wrappers, callback_offsets = callback_offsets)),
+    EMatch(s, arms) => EMatch(dtpw_inline_expr(expr = s, wrappers = wrappers, callback_offsets = callback_offsets), for a in arms {
       let (p, b) = a
-      (p, dtpw_inline_expr(expr = b, wrappers = wrappers))
+      (p, dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets))
     }),
-    EHandle(s, arms) => EHandle(dtpw_inline_expr(expr = s, wrappers = wrappers), for a in arms {
+    EHandle(s, arms) => EHandle(dtpw_inline_expr(expr = s, wrappers = wrappers, callback_offsets = callback_offsets), for a in arms {
       let (p, b) = a
-      (p, dtpw_inline_expr(expr = b, wrappers = wrappers))
+      (p, dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets))
     }),
     ELoop(params, b) => ELoop(for p in params {
       let (pn, init) = p
-      (pn, dtpw_inline_expr(expr = init, wrappers = wrappers))
-    }, dtpw_inline_expr(expr = b, wrappers = wrappers)),
+      (pn, dtpw_inline_expr(expr = init, wrappers = wrappers, callback_offsets = callback_offsets))
+    }, dtpw_inline_expr(expr = b, wrappers = wrappers, callback_offsets = callback_offsets)),
     _ => expr
   }
 }
 
-export fn dtpw_inline_trivial_wrappers(_ stmts: Array[Stmt]) -> Unit {
+export fn dtpw_inline_trivial_wrappers(stmts: Array[Stmt], callback_offsets: MutSet[Int]) -> Unit {
   let wrappers = dtpw_collect_wrappers(stmts)
   if Array::length(wrappers) == 0 {
     ()
@@ -352,7 +353,7 @@ export fn dtpw_inline_trivial_wrappers(_ stmts: Array[Stmt]) -> Unit {
     let mut i = 0
     while i < own_end {
       match Array::get(stmts, at = i) {
-        SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, dtpw_inline_expr(expr = expr, wrappers = wrappers))),
+        SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, dtpw_inline_expr(expr = expr, wrappers = wrappers, callback_offsets = callback_offsets))),
         _ => ()
       }
       i = i + 1

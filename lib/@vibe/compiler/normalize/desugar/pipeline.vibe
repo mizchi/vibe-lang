@@ -23,9 +23,11 @@ import @vibe/compiler/core {
   Stmt,
   TypeExpr,
   canonicalize_trait_ref_aliases,
+  is_indexed_callback_row_key,
   namespace_rename_originals_reset,
   prelude_ordering_stmt,
   rename_builtin_shadow_defs,
+  row_free_callback_key,
   stmts_declare_prelude_ordering_shape,
   stmts_shadow_prelude_ordering,
   stmts_use_prelude_ordering,
@@ -54,7 +56,7 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import ./collection_access.vibe {
@@ -539,6 +541,7 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
   // never reads one.
   let eq_offs: Array[Int] = []
   let eq_keys: Array[String] = []
+  let callback_offsets = MutSet::new_int()
   let render_offs: Array[Int] = []
   let render_keys: Array[String] = []
   let render_prefix = impl_target_key(TyApp(typed_render_row_head(), [
@@ -674,6 +677,8 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
       Array::push(i32_neg_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == u32_not_key {
       Array::push(u32_not_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == row_free_callback_key || is_indexed_callback_row_key(tkey) {
+      MutSet::insert(callback_offsets, x = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == scalar_local_key {
       Array::push(scalar_local_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == map_scalar_key {
@@ -713,6 +718,7 @@ export fn desugar_typed_rows(typed_eq_offsets: Array[Int], typed_eq_keys: Array[
   DtdTypedRows::{
     eq_offs: eq_offs,
     eq_keys: eq_keys,
+    callback_offsets: callback_offsets,
     render_offs: render_offs,
     render_keys: render_keys,
     index_offs: index_offs,
@@ -881,7 +887,7 @@ fn dtd_run(stmts: Array[Stmt], rows: DtdTypedRows, ctx_int32_free: Bool, report:
   // wherever else it's referenced) -- only matching call sites are
   // rewritten, so a wrapper used BOTH as a value AND as a direct call
   // elsewhere is still handled safely either way.
-  dtpw_inline_trivial_wrappers(stmts)
+  dtpw_inline_trivial_wrappers(stmts = stmts, callback_offsets = rows.callback_offsets)
   // #786: hoist non-capturing effectful local lambdas to top-level functions
   // before dictionary rewriting. A local `let f = (x) -> { perform ... }` that captures
   // nothing gets promoted to a top-level `let f = ...`, so codegen emits a direct

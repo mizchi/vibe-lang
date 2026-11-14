@@ -13,7 +13,14 @@ import @vibe/compiler/core {
   env_value_binding,
   expr_any_node,
   fresh_var,
+  indexed_callback_row_key,
+  is_effect_var_name,
+  is_row_provenance_label,
+  is_runtime_scheduled_effect,
   refine_trait_bounds_from_receiver,
+  row_free_callback_key,
+  row_free_callback_offset,
+  row_items,
   subst_apply
 }
 import ./checker_int32.vibe {
@@ -36,6 +43,82 @@ import @vibe/compiler/checker/type_relations {
 }
 import ./checker_row_effect_inst.vibe {
   callback_arg_env, callback_prefix_subst, effect_inst_arg_check
+}
+
+// Retention attaches provenance labels to parameter and captured values.
+// They describe where a value came from without changing its ABI.
+fn callback_row_has_effect(_ row: Option[String]) -> Bool {
+  match row {
+    Some(text) => {
+      for label in row_items(text) {
+        if !is_row_provenance_label(label) {
+          return true
+        } else {
+          ()
+        }
+      }
+      false
+    },
+    None => false
+  }
+}
+
+// An open or runtime-scheduled row has no fixed evidence dictionary.
+fn callback_row_needs_dictionary(_ row: String) -> Bool {
+  let mut has_effect = false
+  for label in row_items(row) {
+    if !is_row_provenance_label(label) {
+      if is_effect_var_name(label) || is_runtime_scheduled_effect(label) {
+        return false
+      }
+      has_effect = true
+    }
+  }
+  has_effect
+}
+
+export fn abi_effect_row(_ row: Option[String]) -> String {
+  match row {
+    Some(text) => {
+      let mut out = ""
+      for label in row_items(text) {
+        if !is_row_provenance_label(label) {
+          out = if out == "" {
+            label
+          } else {
+            out + ", " + label
+          }
+        } else {
+          ()
+        }
+      }
+      out
+    },
+    None => ""
+  }
+}
+
+export fn record_row_free_callback(arg: Expr, expected: Type, actual: Type, s: Subst, capture: Option[TypedOccurrenceRoleLaneCapture], indexed_callee_row: Option[String]) -> Unit {
+  match (capture, expected) {
+    (Some(rows), CtFn(params, _, Some(row))) => if callback_row_needs_dictionary(row) {
+      match subst_apply(s = s, ty = actual) {
+        CtFn(_, _, actual_row) => if !callback_row_has_effect(actual_row) {
+          let off = row_free_callback_offset(checker_call_argument_value(arg))
+          if off >= 0 {
+            let key = match indexed_callee_row {
+              Some(callee_row) => indexed_callback_row_key(arity = Array::length(params), callback_row = abi_effect_row(Some(row)), callee_row = callee_row),
+              None => row_free_callback_key
+            }
+            Array::push(rows.row_free_callbacks, value = (off, key))
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+    },
+    _ => ()
+  }
 }
 
 let labeled_value_marker: String = "#call.labeled.value"
@@ -410,6 +493,7 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
     // parameter's type, range-checked. An annotated `let` is such a call
     // (`ascribe_wrap`), so `let x: Int32 = 5` checks the same way.
     let at = int32_literal_adapt(e = arg, expected = expected, actual = at_raw, s = ns, errors = errors, off = -1)
+    record_row_free_callback(arg = arg, expected = expected, actual = at, s = ns, capture = capture, indexed_callee_row = None)
     if saved_child >= 0 {
       let _ = call_argument_capture_cursor(capture = capture, next = saved_child); ()
     } else {

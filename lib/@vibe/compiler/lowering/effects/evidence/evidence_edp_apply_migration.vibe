@@ -14,12 +14,14 @@ import @vibe/compiler/lowering/effects/direct {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_checked_index_call,
   edp_efn_eligible_for_migration,
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
   edp_mf_set_stmt,
   edp_pat_binds,
   edp_pat_qname,
+  edp_row_is_exactly,
   edp_rq_fold,
   edp_split_qualified,
   edp_str_array_contains
@@ -114,14 +116,14 @@ export fn edp_all_sites_eligible_with_index(stmts: Array[Stmt], ename: String, n
       }
     }
     edp_append_self_discharging_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
-    edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
+    let es_names = array_empty()
+    let es_members_list = array_empty()
+    edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
+    edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels, es_names = es_names, es_members_list = es_members_list)
     match binders {
       Some(census) => edp_append_effect_irrelevant_row_fns_with_binders(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels, binders = census),
       None => edp_append_effect_irrelevant_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
     }
-    let es_names = array_empty()
-    let es_members_list = array_empty()
-    edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
     // ADR-0076 追記34 V1: type-directed widening. When the program holds
     // row-E closure VALUES, names directly bound to row-E literals are
     // safe callees everywhere (the sweep gives every such literal the
@@ -892,14 +894,14 @@ export fn edp_apply_migration_with_tree_facts(stmts: Array[Stmt], ename: String,
     }
   }
   edp_append_self_discharging_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
-  edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
+  edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels, es_names = es_names, es_members_list = es_members_list)
   match binders {
     Some(census) => edp_append_effect_irrelevant_row_fns_with_binders(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels, binders = census),
     None => edp_append_effect_irrelevant_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
   }
-  let es_names = array_empty()
-  let es_members_list = array_empty()
-  edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
   // #1070 (general case): compute + commit closure-parameter migrations
   // for EVERY needing function BEFORE any needing function's own
   // params/body are rewritten below -- edp_collect_ecall_arg_idents scans
@@ -1325,7 +1327,19 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
       } else {
         ECall(callee, edp_rewrite_needing_body_exprs(exprs = args, ename = ename, dict_pname = dict_pname, needing = needing), off, callee_resolution)
       },
-      _ => ECall(callee, edp_rewrite_needing_body_exprs(exprs = args, ename = ename, dict_pname = dict_pname, needing = needing), off, callee_resolution)
+      _ => {
+        let rewritten_callee = match edp_checked_index_call(off = off, callee = callee) {
+          Some(_) => edp_rewrite_needing_body(expr = callee, ename = ename, dict_pname = dict_pname, needing = needing),
+          None => callee
+        }
+        let rewritten_args = edp_rewrite_needing_body_exprs(exprs = args, ename = ename, dict_pname = dict_pname, needing = needing)
+        let call_args = if edp_index_call_needs_dict(callee = callee, off = off, ename = ename) {
+          edp_prepend_expr(v = EIdent(dict_pname, -1), args = rewritten_args)
+        } else {
+          rewritten_args
+        }
+        ECall(rewritten_callee, call_args, off, callee_resolution)
+      }
     },
     EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_needing_body(expr = l, ename = ename, dict_pname = dict_pname, needing = needing), edp_rewrite_needing_body(expr = r, ename = ename, dict_pname = dict_pname, needing = needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_needing_body(expr = e2, ename = ename, dict_pname = dict_pname, needing = needing)),
@@ -1353,6 +1367,13 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
 fn edp_rewrite_needing_body_exprs(exprs: Array[Expr], ename: String, dict_pname: String, needing: Array[String]) -> Array[Expr] {
   for e in exprs {
     edp_rewrite_needing_body(expr = e, ename = ename, dict_pname = dict_pname, needing = needing)
+  }
+}
+
+fn edp_index_call_needs_dict(callee: Expr, off: Int, ename: String) -> Bool {
+  match edp_checked_index_call(off = off, callee = callee) {
+    Some(row) => Array::length(edp_rh_es_names_cell) > 0 && edp_row_is_exactly(row = row, ename = ename, es_names = Array::get(edp_rh_es_names_cell, at = 0), es_members_list = Array::get(edp_rh_es_members_cell, at = 0)),
+    None => false
   }
 }
 
@@ -1657,7 +1678,19 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
       } else {
         ECall(callee, edp_rewrite_handle_body_exprs(exprs = args, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), off, callee_resolution)
       },
-      _ => ECall(callee, edp_rewrite_handle_body_exprs(exprs = args, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), off, callee_resolution)
+      _ => {
+        let rewritten_callee = match edp_checked_index_call(off = off, callee = callee) {
+          Some(_) => edp_rewrite_handle_body(expr = callee, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing),
+          None => callee
+        }
+        let rewritten_args = edp_rewrite_handle_body_exprs(exprs = args, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing)
+        let call_args = if edp_index_call_needs_dict(callee = callee, off = off, ename = ename) {
+          edp_prepend_expr(v = dict_literal, args = rewritten_args)
+        } else {
+          rewritten_args
+        }
+        ECall(rewritten_callee, call_args, off, callee_resolution)
+      }
     },
     EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_handle_body(expr = l, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), edp_rewrite_handle_body(expr = r, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_handle_body(expr = e2, ename = ename, op_names = op_names, bind_names_list = bind_names_list, prepared_bodies = prepared_bodies, dict_literal = dict_literal, needing = needing)),

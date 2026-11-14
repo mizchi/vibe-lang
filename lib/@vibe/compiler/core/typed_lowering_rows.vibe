@@ -1,5 +1,86 @@
 // One encoding for checker facts, their persisted carrier, and file rebasing.
 
+import @vibe/ast {
+  Expr, TypeExpr, impl_target_from_key, impl_target_key
+}
+
+import ./expr_children.vibe {
+  typed_render_row_offset
+}
+
+// Branches and blocks carry no offset of their own. Use a value-producing
+// leaf, which cannot also be an argument of the enclosing call.
+export fn row_free_callback_offset(_ expr: Expr) -> Int {
+  match expr {
+    EIf(_, yes, no) => {
+      let off = row_free_callback_offset(yes)
+      if off >= 0 {
+        off
+      } else {
+        row_free_callback_offset(no)
+      }
+    },
+    EMatch(_, arms) => {
+      for arm in arms {
+        let off = row_free_callback_offset(arm.1)
+        if off >= 0 {
+          return off
+        } else {
+          ()
+        }
+      }
+      -1
+    },
+    ELet(_, _, result, _) => row_free_callback_offset(result),
+    ELetMut(_, _, result, _) => row_free_callback_offset(result),
+    ELetRec(_, _, result) => row_free_callback_offset(result),
+    ESeq(_, result) => row_free_callback_offset(result),
+    EAssign(_, _, result, _) => row_free_callback_offset(result),
+    EAssignOp(_, _, _, result, _) => row_free_callback_offset(result),
+    _ => typed_render_row_offset(expr)
+  }
+}
+
+/// The argument's checked function type has no row and the receiving slot
+/// has one. Keep this fact with the existing offset-keyed lowering rows.
+export let row_free_callback_key: String = impl_target_key(TyName("#row-free-callback"))
+
+// The additional row describes a callback slot of a callee that has no
+// declaration name. The argument offset is still the row's coordinate.
+let indexed_callback_row_head: String = "#indexed-callback"
+
+export fn indexed_callback_row_key(arity: Int, callback_row: String, callee_row: String) -> String {
+  impl_target_key(TyApp(indexed_callback_row_head, [
+    TyName(Int::to_string(arity)),
+    TyName(callback_row),
+    TyName(callee_row)
+  ]))
+}
+
+let indexed_callback_key_sample = indexed_callback_row_key(arity = 0, callback_row = "", callee_row = "")
+let indexed_callback_key_prefix = String::substring(indexed_callback_key_sample, start = 0, end = String::index_of(indexed_callback_key_sample, needle = impl_target_key(TyName("0"))))
+
+export fn is_indexed_callback_row_key(_ key: String) -> Bool {
+  String::starts_with(key, prefix = indexed_callback_key_prefix)
+}
+
+export fn indexed_callback_row_from_key(_ key: String) -> Option[(Int, String, String)] {
+  match impl_target_from_key(key) {
+    Some(TyApp(head, args)) => if head == indexed_callback_row_head && Array::length(args) == 3 {
+      match (Array::get(args, at = 0), Array::get(args, at = 1), Array::get(args, at = 2)) {
+        (TyName(arity), TyName(callback), TyName(callee)) => match Int::parse(arity) {
+          Some(n) => Some((n, callback, callee)),
+          None => None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 /// Four low tag bits leave scalar/callee tags 0–7 unchanged as channels.
 export fn lowering_row_encode(payload: Int, tag: Int) -> Int {
   payload * 16 + tag

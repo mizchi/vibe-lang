@@ -17,7 +17,8 @@ import @vibe/compiler/core {
   generated_owner_tag,
   is_exception_effect_name,
   is_exception_throw_operation,
-  lookup_registry_builtin
+  lookup_registry_builtin,
+  row_free_callback_key
 }
 
 import @vibe/core {
@@ -54,6 +55,10 @@ import ./evidence_needing_escape.vibe {
 
 import ./evidence_ecall_arg_idents_expr.vibe {
   edp_any_row_typed_param, edp_etawrap_stmts_in, edp_row_typed_param_owner, edp_stamp_alias_annotated_lets, edp_stamp_slot_rows
+}
+
+import ./evidence_callback_adapters.vibe {
+  edp_indexed_callback_slots_set
 }
 
 import ./evidence_edp_apply_migration.vibe {
@@ -576,6 +581,11 @@ fn evidence_split_handler_sets_in(stmts: Array[Stmt], statements: Array[Int], bi
 }
 
 export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]) -> Array[String] {
+  evidence_dict_pass_with_callback_rows(stmts = stmts, roots = roots, offsets = [
+  ], keys = [])
+}
+
+export fn evidence_dict_pass_with_callback_rows(stmts: Array[Stmt], roots: Array[String], offsets: Array[Int], keys: Array[String]) -> Array[String] {
   let errs = empty_str_array()
   // #3176: a call spelled like an audited pure builtin reaches the program's
   // own function when the program declares one; judge it by that row.
@@ -745,7 +755,18 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   let fn_row_labels = edp_fn_row_label_table(fn_defs = fn_defs, es_names = edp_es_names, es_members_list = edp_es_members_list)
   // #3370: a row-free closure literal at a row-typed parameter takes that
   // row, so the type-directed sweep gives it the dict its callee passes.
-  edp_stamp_slot_rows(stmts = stmts, fn_defs = fn_defs, facts = Some(statement_facts))
+  let callback_offsets = MutSet::new_int()
+  let mut ri = 0
+  while ri < Array::length(offsets) {
+    if Array::get(keys, at = ri) == row_free_callback_key {
+      MutSet::insert(callback_offsets, x = Array::get(offsets, at = ri))
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  edp_indexed_callback_slots_set(offsets = offsets, keys = keys, callbacks = callback_offsets)
+  edp_stamp_slot_rows(stmts = stmts, fn_defs = fn_defs, facts = Some(statement_facts), callback_offsets = callback_offsets)
   // Reachability from the statement facts (#4040): every write since the
   // last refresh went through edp_mf_set_stmt or appended.
   edp_mf_refresh(facts = statement_facts, stmts = stmts)
@@ -1832,7 +1853,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // so both views classify these names identically.
       let pf_inert = Array::concat(plan_base_inert, empty_str_array())
       edp_append_self_discharging_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pf_inert, row_labels = row_labels)
-      edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pf_inert, row_labels = row_labels)
+      edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pf_inert, row_labels = row_labels, es_names = es_names, es_members_list = es_members_list)
       edp_append_effect_irrelevant_row_fns_with_binders(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pf_inert, row_labels = row_labels, binders = binders)
       let needing_full = array_empty()
       let mut pfi = 0
@@ -2016,14 +2037,14 @@ fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[Str
   edp_append_ctor_inert_names(stmts = stmts, pure_fns = pure_fns)
   edp_append_visible_pure_lambda_names(stmts = stmts, pure_fns = pure_fns)
   edp_append_self_discharging_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
-  edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
+  edp_append_perform_free_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels, es_names = es_names, es_members_list = es_members_list)
   match binders {
     Some(census) => edp_append_effect_irrelevant_row_fns_with_binders(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels, binders = census),
     None => edp_append_effect_irrelevant_row_fns(stmts = stmts, fn_defs = fn_defs, ename = ename, pure_fns = pure_fns, row_labels = row_labels)
   }
-  let es_names = array_empty()
-  let es_members_list = array_empty()
-  edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
   let mut si = 0
   let mut found = false
   while si < Array::length(stmts) && !found {

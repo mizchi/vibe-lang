@@ -319,6 +319,7 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/int_bit_primitives_test.vibe \
     fixtures/bytes_alloc_backend_parity_test.vibe \
     fixtures/gc_handle_aggregate_test.vibe \
+    fixtures/callback_calling_convention_higher_order_test.vibe \
     fixtures/trait_namespace_operation_test.vibe \
     fixtures/trait_namespace_import_test.vibe \
     fixtures/trait_namespace_inherited_import_test.vibe \
