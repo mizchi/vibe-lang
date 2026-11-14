@@ -1898,13 +1898,36 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       //
       // The Perceus plan cannot cover this: it has no rows for the enclosing
       // function at all, so no PaDup was ever planned to insert here.
+      //
+      // #4161: and ONE reference was not enough. The binder is a view of the
+      // scrutinee like a payload binder, so it needs one reference per consume
+      // the arm may perform -- `leaf => f(leaf) && g(leaf)`, both owning their
+      // parameter, released the scrutinee once more than it was retained, and
+      // freed an array element still in the array. It now takes the same count
+      // `bind_match_pat` gives a payload binder, and `mpr_compile_arm` releases
+      // at the arm's end what a path did not spend. A binder the body never
+      // consumes keeps the single reference it always took.
+      let __catch_pbm = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
+      let __catch_n = if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
+        md_view_consume_count_pre_store(e = __catch_body, name = bname, bfns = ctx.borrow_param_user, bmasks_zeroed = __catch_pbm, store_names = ctx.rc_store_dup_names, store_offs = ctx.rc_store_dup_offs)
+      } else {
+        0
+      }
       if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
-        emit_rc_dup_guarded(buf = buf, local_idx = bind_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+        emit_rc_dup_guarded_n(buf = buf, local_idx = bind_local, n = if __catch_n > 1 {
+          __catch_n
+        } else {
+          1
+        }, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
       } else {
         ()
       }
       Array::push(local_names, value = bname)
-      ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+      if __catch_n > 0 {
+        mpr_compile_arm(buf = buf, pat = __catch_p, body = __catch_body, names_mark = names_len_at_match, local_names = local_names, ctx = ctx, ld = ld_catch, md_bmasks = __catch_pbm, ce = ce)
+      } else {
+        ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+      }
     } else {
       if is_pctor(__catch_p) {
         // #705 dup note as above; recursive bind_match_pat replaces the
