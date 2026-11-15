@@ -238,3 +238,46 @@ within 8–29 MiB of the published route, with the remaining canonical
 product validation in the final compiler. The
 [12 follow-up samples](../../../bench/perf/analysis/checker-taskgroup-direct-lifetime-2026-11-15.json)
 include the sampled phase boundaries and the older comparison medians.
+
+## Shared dependency plan
+
+With `VIBE_TASKGROUP_DIRECT=1 VIBE_TASKGROUP_REUSE_PLAN=1`, the final
+compiler consumes the canonical module order and ranks that the worker
+frontend already produced. It compares the ingested source with the
+producer snapshot, checks the current loader's resolved dependency
+occurrences in order, verifies each rank from its dependencies, and
+checks that the ordered closure leads to the requested root. It then
+runs the existing typecheck walk with the saved order. Linked source
+group collection and per-module header validation still run.
+
+Both lanes use the direct checked-product handoff and the same stage2
+and worker images. The control builds and ranks the final compiler's
+dependency graph in the existing way. The experiment validates the
+shared plan and uses its order. Each corpus and temperature has three
+alternating runs with isolated build caches and four workers.
+
+| Corpus | Cache | Wall, rebuilt → shared plan | Peak process-tree RSS, rebuilt → shared |
+|---|---|---:|---:|
+| Compiler closure | Cold | 19.17 → 19.29 s | 942 → 951 MiB |
+| Compiler closure | Warm | 8.35 → 8.33 s | 919 → 950 MiB |
+| Split CLI | Cold | 34.79 → 34.92 s | 1,788 → 1,802 MiB |
+| Split CLI | Warm | 16.45 → 16.68 s | 1,781 → 1,783 MiB |
+
+The wall differences are below 1.5% on both
+`CLOCK_MONOTONIC` and `CLOCK_MONOTONIC_RAW`. The raw clock's absolute
+readings differ on this WSL host, and the relative comparison agrees.
+The shared plan does not show an end-to-end speedup on either corpus.
+Aggregate RSS grows by about 2–31 MiB. The selector remains opt-in.
+
+On a three-module diamond, editing a leaf checks two worker jobs and
+reuses the unaffected leaf in both lanes. The edit medians are
+1.12 → 1.15 s. An unchanged warm build replays all jobs. The main
+measurements and the edit runs agree on emitted Wasm within each input
+state. The final compiler performs zero rechecks in every sample.
+Source, dependency and rank mutations are rejected by the public-replay
+oracle, which also exercises the installed launcher.
+
+The [raw data](../../../bench/perf/analysis/checker-taskgroup-shared-plan-2026-11-15.json)
+include 24 large-corpus runs and 18 diamond runs. To reproduce, use the
+direct build command above with `VIBE_TASKGROUP_REUSE_PLAN=0` and
+`VIBE_TASKGROUP_REUSE_PLAN=1` in separate caches on the same images.
