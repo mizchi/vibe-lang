@@ -45,7 +45,7 @@ import ./equality_shape_queries.vibe {
 }
 
 import ./formal_scope.vibe {
-  arr_helper_tparams, subst_field_formals, subst_variant_formals, type_param_names_reset
+  arr_helper_tparams, subst_field_formals, subst_variant_formals, type_param_names_install, type_param_names_reset
 }
 
 import ./name_encoding.vibe {
@@ -261,6 +261,18 @@ fn gen_enum_eq_fn(ename: String, variants: Array[(String, Array[TypeExpr])], kno
 }
 
 export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
+  let known_types = collect_decl_type_names(stmts)
+  type_param_names_reset(stmts = stmts, known_types = known_types)
+  desugar_derives_with_known_types(stmts = stmts, known_types = known_types)
+}
+
+export fn desugar_derives_with_type_params(stmts: Array[Stmt], type_params: Array[String]) -> Unit {
+  let known_types = collect_decl_type_names(stmts)
+  type_param_names_install(found = type_params, known_types = known_types)
+  desugar_derives_with_known_types(stmts = stmts, known_types = known_types)
+}
+
+fn desugar_derives_with_known_types(stmts: Array[Stmt], known_types: Array[String]) -> Unit {
   let gen = empty_stmt_list()
   // Every derived operation and helper below asks whether the program already
   // defines it. `stmts` is not written until the generated statements are
@@ -268,14 +280,8 @@ export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
   // taken on the first question.
   let defined: Array[MutSet[String]] = []
   let own_end = dtd_own_end(stmts)
-  let known_types = collect_decl_type_names(stmts)
   // #3544: the types whose `hash_key` a derived key may call for a field.
   let hash_types = collect_hash_key_types(stmts)
-  // #2136: the type variables a generated `Array[e]` helper has to bind. Filled
-  // here because this is the first pass that generates one, and read again by
-  // `emit_recorded_arr_equals`, which runs later in the same
-  // `desugar_trait_dicts` call.
-  type_param_names_reset(stmts = stmts, known_types = known_types)
   // #694 Layer 2: collect `Array[e]` element types referenced by Show/Hash-
   // deriving types' fields/payloads, so each gets a `__arr_to_string__<key>`
   // helper. A worklist closes nesting (`Array[Array[Int]]` -> `Array[Int]`).

@@ -22,7 +22,7 @@ import @vibe/compiler/lowering/array_spread {
 import @vibe/compiler/core {
   Stmt,
   TypeExpr,
-  canonicalize_trait_ref_aliases,
+  canonicalize_trait_ref_aliases_collect_type_params,
   is_indexed_callback_row_key,
   namespace_rename_originals_reset,
   prelude_ordering_stmt,
@@ -80,7 +80,7 @@ import ./derive_operations.vibe {
 }
 
 import ./derive_pass.vibe {
-  desugar_derives
+  desugar_derives_with_type_params
 }
 
 import ./equality_content_types.vibe {
@@ -916,11 +916,14 @@ fn dtd_run(stmts: Array[Stmt], rows: DtdTypedRows, ctx_int32_free: Bool, report:
   eq_known_types_reset(stmts)
   // #3947: one spelling for every applied trait key, as the checker gave its
   // modules, before any collector reads an impl's key or a bound.
-  let key_errors = canonicalize_trait_ref_aliases(stmts)
+  // Reuse that same walk to collect the binders that derive lowering needs
+  // when synthesizing Array helpers (#2136).
+  let type_params: Array[String] = []
+  let key_errors = canonicalize_trait_ref_aliases_collect_type_params(stmts = stmts, type_params = type_params)
   if Array::length(key_errors) > 0 {
     throw(Array::get(key_errors, at = 0))
   }
-  desugar_derives(stmts)
+  desugar_derives_with_type_params(stmts = stmts, type_params = type_params)
   // #2205's reset used to be HERE and is now at the LANE boundary
   // (`desugar_trait_dicts_with_typed_eq`, and the per-module driver after its
   // last module). Its purpose is unchanged -- the derive generators above are

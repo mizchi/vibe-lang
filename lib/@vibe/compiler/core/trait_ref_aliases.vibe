@@ -55,13 +55,23 @@ export fn canonicalize_trait_ref_aliases(_ stmts: Array[Stmt]) -> Array[String] 
 /// imports as well (#3953). A type the module declares itself wins over an
 /// import of the same name (`canonical_key_defs_with`).
 export fn canonicalize_trait_ref_aliases_with(stmts: Array[Stmt], imported: Array[TypeDef]) -> Array[String] {
+  trk_canonicalize(stmts = stmts, imported = imported, type_params = None)
+}
+
+/// Canonicalize keys and collect the type parameters needed by derive lowering.
+/// Key canonicalization changes bounds and impl names without changing binders.
+export fn canonicalize_trait_ref_aliases_collect_type_params(stmts: Array[Stmt], type_params: Array[String]) -> Array[String] {
+  trk_canonicalize(stmts = stmts, imported = [], type_params = Some(type_params))
+}
+
+fn trk_canonicalize(stmts: Array[Stmt], imported: Array[TypeDef], type_params: Option[Array[String]]) -> Array[String] {
   // The definitions are built on the first applied key the pass meets: most
   // modules spell none, and those pay nothing for them.
   Array::truncate(trk_defs, length = 0)
   Array::truncate(trk_source, length = 0)
   Array::push(trk_source, value = (stmts, imported))
   let errors: Array[String] = []
-  trk_stmts(errors = errors, stmts = stmts)
+  trk_stmts(walk = TraitRefWalk::{ errors: errors, type_params: type_params }, stmts = stmts)
   // The definitions stay for `canonical_program_trait_key`, which witness
   // generation asks later in the same run; the next run replaces them. The
   // program itself is not kept.
@@ -102,9 +112,18 @@ fn trk_key_defs() -> Array[TypeDef] {
   Array::get(trk_defs, at = 0)
 }
 
-/// The pass over every top-level statement; an impl whose key changed has its
-/// method bindings renamed after the loop.
-fn trk_stmts(errors: Array[String], stmts: Array[Stmt]) -> Unit {
+struct TraitRefWalk {
+  errors: Array[String];
+  type_params: Option[Array[String]]
+}
+
+/// The pass over every top-level statement. Rename an impl's method bindings
+/// after the loop if its key changed.
+fn trk_stmts(walk: TraitRefWalk, stmts: Array[Stmt]) -> Unit {
+  let errors = walk.errors
+  // The derive census only reads the declaration and expression forms
+  // visited by the dictionary rewrite.
+  let without_type_params = TraitRefWalk::{ errors: errors, type_params: None }
   let owner_renames: Array[(String, String)] = []
   let mut i = 0
   while i < Array::length(stmts) {
@@ -155,40 +174,41 @@ fn trk_stmts(errors: Array[String], stmts: Array[Stmt]) -> Unit {
       // (`let inner = [V: Value[Alias]](v: V) -> ..`), in every statement that
       // holds an executable expression, as the dictionary rewriting visits
       // them (Codex on #3956).
-      SLet(exported, is_rec, name, ty, body) => match trk_expr(errors = errors, e = body, names = [
+      SLet(exported, is_rec, name, ty, body) => match trk_expr(walk = walk, e = body, names = [
       ]) {
         Some(next) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, next)),
         None => ()
       },
-      SFnDecl(exported, name, body, attrs, off) => match trk_expr(errors = errors, e = body, names = [
+      SFnDecl(exported, name, body, attrs, off) => match trk_expr(walk = without_type_params, e = body, names = [
       ]) {
         Some(next) => Array::set(stmts, at = i, value = SFnDecl(exported, name, next, attrs, off)),
         None => ()
       },
-      STest(label, body) => match trk_expr(errors = errors, e = body, names = []) {
+      STest(label, body) => match trk_expr(walk = walk, e = body, names = []) {
         Some(next) => Array::set(stmts, at = i, value = STest(label, next)),
         None => ()
       },
-      SLetMut(name, ty, body) => match trk_expr(errors = errors, e = body, names = [
+      SLetMut(name, ty, body) => match trk_expr(walk = walk, e = body, names = [
       ]) {
         Some(next) => Array::set(stmts, at = i, value = SLetMut(name, ty, next)),
         None => ()
       },
-      SBench(label, body) => match trk_expr(errors = errors, e = body, names = [
-      ]) {
+      SBench(label, body) => match trk_expr(walk = walk, e = body, names = []) {
         Some(next) => Array::set(stmts, at = i, value = SBench(label, next)),
         None => ()
       },
-      SExample(label, body) => match trk_expr(errors = errors, e = body, names = [
+      SExample(label, body) => match trk_expr(walk = without_type_params, e = body, names = [
       ]) {
         Some(next) => Array::set(stmts, at = i, value = SExample(label, next)),
         None => ()
       },
-      SExpr(body) => match trk_expr(errors = errors, e = body, names = []) {
+      SExpr(body) => match trk_expr(walk = walk, e = body, names = []) {
         Some(next) => Array::set(stmts, at = i, value = SExpr(next)),
         None => ()
       },
-      SLetPat(pat, body) => match trk_expr(errors = errors, e = body, names = []) {
+      SStruct(_, _, _, _, _, params) => trk_note_type_params(walk = walk, params = params),
+      SEnum(_, _, params, _, _) => trk_note_type_params(walk = walk, params = params),
+      SLetPat(pat, body) => match trk_expr(walk = walk, e = body, names = []) {
         Some(next) => Array::set(stmts, at = i, value = SLetPat(pat, next)),
         None => ()
       },
@@ -284,18 +304,37 @@ fn trk_renamed_owner(name: String, renames: Array[(String, String)]) -> Option[S
   out
 }
 
+fn trk_note_type_params(walk: TraitRefWalk, params: Array[String]) -> Unit {
+  match walk.type_params {
+    Some(out) => {
+      for param in params {
+        let mut i = 0
+        while i < Array::length(out) && Array::get(out, at = i) != param {
+          i = i + 1
+        }
+        if i == Array::length(out) {
+          Array::push(out, value = param)
+        }
+      }
+      ()
+    },
+    None => ()
+  }
+}
+
 /// `e` with every lambda's bounds canonical, or None when nothing changed.
 /// `names` are the binders in scope, which shadow an alias of their spelling.
-fn trk_expr(errors: Array[String], e: Expr, names: Array[String]) -> Option[Expr] {
+fn trk_expr(walk: TraitRefWalk, e: Expr, names: Array[String]) -> Option[Expr] {
   match e {
     EFn(tp, bs, ps, ret, eff, body) => if Array::length(tp) == 0 && Array::length(bs) == 0 {
       // An ordinary lambda binds no type and asks for no witness: only its
       // body can change, under the same binders.
-      match trk_expr(errors = errors, e = body, names = names) {
+      match trk_expr(walk = walk, e = body, names = names) {
         Some(next) => Some(EFn(tp, bs, ps, ret, eff, next)),
         None => None
       }
     } else {
+      trk_note_type_params(walk = walk, params = tp)
       let inner: Array[String] = []
       for n in names {
         Array::push(inner, value = n)
@@ -303,37 +342,37 @@ fn trk_expr(errors: Array[String], e: Expr, names: Array[String]) -> Option[Expr
       for t in tp {
         Array::push(inner, value = t)
       }
-      let nb = trk_bounds(errors = errors, bounds = bs, names = inner)
-      let nbody = trk_expr(errors = errors, e = body, names = inner)
+      let nb = trk_bounds(errors = walk.errors, bounds = bs, names = inner)
+      let nbody = trk_expr(walk = walk, e = body, names = inner)
       if nb != bs || trk_changed(nbody) {
         Some(EFn(tp, nb, ps, ret, eff, trk_or(o = nbody, e = body)))
       } else {
         None
       }
     },
-    ETuple(items) => match trk_list(errors = errors, es = items, names = names) {
+    ETuple(items) => match trk_list(walk = walk, es = items, names = names) {
       Some(next) => Some(ETuple(next)),
       None => None
     },
-    EArray(items) => match trk_list(errors = errors, es = items, names = names) {
+    EArray(items) => match trk_list(walk = walk, es = items, names = names) {
       Some(next) => Some(EArray(next)),
       None => None
     },
-    EContinue(items) => match trk_list(errors = errors, es = items, names = names) {
+    EContinue(items) => match trk_list(walk = walk, es = items, names = names) {
       Some(next) => Some(EContinue(next)),
       None => None
     },
-    ERecord(n, fields, tas) => match trk_fields(errors = errors, fields = fields, names = names) {
+    ERecord(n, fields, tas) => match trk_fields(walk = walk, fields = fields, names = names) {
       Some(next) => Some(ERecord(n, next, tas)),
       None => None
     },
-    EMap(fields) => match trk_fields(errors = errors, fields = fields, names = names) {
+    EMap(fields) => match trk_fields(walk = walk, fields = fields, names = names) {
       Some(next) => Some(EMap(next)),
       None => None
     },
     ELoop(binds, body) => {
-      let nbinds = trk_fields(errors = errors, fields = binds, names = names)
-      let nbody = trk_expr(errors = errors, e = body, names = names)
+      let nbinds = trk_fields(walk = walk, fields = binds, names = names)
+      let nbody = trk_expr(walk = walk, e = body, names = names)
       if trk_changed(nbinds) || trk_changed(nbody) {
         Some(ELoop(match nbinds {
           Some(x) => x,
@@ -344,54 +383,54 @@ fn trk_expr(errors: Array[String], e: Expr, names: Array[String]) -> Option[Expr
       }
     },
     EIf(c, t, el) => {
-      let a = trk_expr(errors = errors, e = c, names = names)
-      let b = trk_expr(errors = errors, e = t, names = names)
-      let d = trk_expr(errors = errors, e = el, names = names)
+      let a = trk_expr(walk = walk, e = c, names = names)
+      let b = trk_expr(walk = walk, e = t, names = names)
+      let d = trk_expr(walk = walk, e = el, names = names)
       if trk_changed(a) || trk_changed(b) || trk_changed(d) {
         Some(EIf(trk_or(o = a, e = c), trk_or(o = b, e = t), trk_or(o = d, e = el)))
       } else {
         None
       }
     },
-    ELet(n, v, b, off) => match trk_pair(errors = errors, a = v, b = b, names = names) {
+    ELet(n, v, b, off) => match trk_pair(walk = walk, a = v, b = b, names = names) {
       Some((x, y)) => Some(ELet(n, x, y, off)),
       None => None
     },
-    ELetRec(n, v, b) => match trk_pair(errors = errors, a = v, b = b, names = names) {
+    ELetRec(n, v, b) => match trk_pair(walk = walk, a = v, b = b, names = names) {
       Some((x, y)) => Some(ELetRec(n, x, y)),
       None => None
     },
-    ELetMut(n, v, b, off) => match trk_pair(errors = errors, a = v, b = b, names = names) {
+    ELetMut(n, v, b, off) => match trk_pair(walk = walk, a = v, b = b, names = names) {
       Some((x, y)) => Some(ELetMut(n, x, y, off)),
       None => None
     },
-    EAssign(n, v, c, off) => match trk_pair(errors = errors, a = v, b = c, names = names) {
+    EAssign(n, v, c, off) => match trk_pair(walk = walk, a = v, b = c, names = names) {
       Some((x, y)) => Some(EAssign(n, x, y, off)),
       None => None
     },
-    EAssignOp(n, op, v, c, off) => match trk_pair(errors = errors, a = v, b = c, names = names) {
+    EAssignOp(n, op, v, c, off) => match trk_pair(walk = walk, a = v, b = c, names = names) {
       Some((x, y)) => Some(EAssignOp(n, op, x, y, off)),
       None => None
     },
-    ESeq(a, b) => match trk_pair(errors = errors, a = a, b = b, names = names) {
+    ESeq(a, b) => match trk_pair(walk = walk, a = a, b = b, names = names) {
       Some((x, y)) => Some(ESeq(x, y)),
       None => None
     },
-    EWhile(c, b) => match trk_pair(errors = errors, a = c, b = b, names = names) {
+    EWhile(c, b) => match trk_pair(walk = walk, a = c, b = b, names = names) {
       Some((x, y)) => Some(EWhile(x, y)),
       None => None
     },
-    EBinOp(op, l, r, off) => match trk_pair(errors = errors, a = l, b = r, names = names) {
+    EBinOp(op, l, r, off) => match trk_pair(walk = walk, a = l, b = r, names = names) {
       Some((x, y)) => Some(EBinOp(op, x, y, off)),
       None => None
     },
-    EForIn(n, idx, it, b, for_off) => match trk_pair(errors = errors, a = it, b = b, names = names) {
+    EForIn(n, idx, it, b, for_off) => match trk_pair(walk = walk, a = it, b = b, names = names) {
       Some((x, y)) => Some(EForIn(n, idx, x, y, for_off)),
       None => None
     },
     EMatch(sc, arms) => {
-      let a = trk_expr(errors = errors, e = sc, names = names)
-      let narms = trk_arms(errors = errors, arms = arms, names = names)
+      let a = trk_expr(walk = walk, e = sc, names = names)
+      let narms = trk_arms(walk = walk, arms = arms, names = names)
       if trk_changed(a) || trk_changed(narms) {
         Some(EMatch(trk_or(o = a, e = sc), match narms {
           Some(x) => x,
@@ -402,8 +441,8 @@ fn trk_expr(errors: Array[String], e: Expr, names: Array[String]) -> Option[Expr
       }
     },
     EHandle(body, arms) => {
-      let a = trk_expr(errors = errors, e = body, names = names)
-      let narms = trk_arms(errors = errors, arms = arms, names = names)
+      let a = trk_expr(walk = walk, e = body, names = names)
+      let narms = trk_arms(walk = walk, arms = arms, names = names)
       if trk_changed(a) || trk_changed(narms) {
         Some(EHandle(trk_or(o = a, e = body), match narms {
           Some(x) => x,
@@ -414,8 +453,8 @@ fn trk_expr(errors: Array[String], e: Expr, names: Array[String]) -> Option[Expr
       }
     },
     ECall(callee, args, off, cell) => {
-      let a = trk_expr(errors = errors, e = callee, names = names)
-      let nargs = trk_list(errors = errors, es = args, names = names)
+      let a = trk_expr(walk = walk, e = callee, names = names)
+      let nargs = trk_list(walk = walk, es = args, names = names)
       if trk_changed(a) || trk_changed(nargs) {
         Some(ECall(trk_or(o = a, e = callee), match nargs {
           Some(x) => x,
@@ -425,27 +464,27 @@ fn trk_expr(errors: Array[String], e: Expr, names: Array[String]) -> Option[Expr
         None
       }
     },
-    EUnaryOp(op, x) => match trk_expr(errors = errors, e = x, names = names) {
+    EUnaryOp(op, x) => match trk_expr(walk = walk, e = x, names = names) {
       Some(next) => Some(EUnaryOp(op, next)),
       None => None
     },
-    EDot(o, f, o1, o2) => match trk_expr(errors = errors, e = o, names = names) {
+    EDot(o, f, o1, o2) => match trk_expr(walk = walk, e = o, names = names) {
       Some(next) => Some(EDot(next, f, o1, o2)),
       None => None
     },
-    ELabeledArg(l, n, v) => match trk_expr(errors = errors, e = v, names = names) {
+    ELabeledArg(l, n, v) => match trk_expr(walk = walk, e = v, names = names) {
       Some(next) => Some(ELabeledArg(l, n, next)),
       None => None
     },
-    EReturn(x) => match trk_expr(errors = errors, e = x, names = names) {
+    EReturn(x) => match trk_expr(walk = walk, e = x, names = names) {
       Some(next) => Some(EReturn(next)),
       None => None
     },
-    ESpread(x) => match trk_expr(errors = errors, e = x, names = names) {
+    ESpread(x) => match trk_expr(walk = walk, e = x, names = names) {
       Some(next) => Some(ESpread(next)),
       None => None
     },
-    EBreak(Some(x)) => match trk_expr(errors = errors, e = x, names = names) {
+    EBreak(Some(x)) => match trk_expr(walk = walk, e = x, names = names) {
       Some(next) => Some(EBreak(Some(next))),
       None => None
     },
@@ -467,9 +506,9 @@ fn trk_or(o: Option[Expr], e: Expr) -> Expr {
   }
 }
 
-fn trk_pair(errors: Array[String], a: Expr, b: Expr, names: Array[String]) -> Option[(Expr, Expr)] {
-  let na = trk_expr(errors = errors, e = a, names = names)
-  let nb = trk_expr(errors = errors, e = b, names = names)
+fn trk_pair(walk: TraitRefWalk, a: Expr, b: Expr, names: Array[String]) -> Option[(Expr, Expr)] {
+  let na = trk_expr(walk = walk, e = a, names = names)
+  let nb = trk_expr(walk = walk, e = b, names = names)
   if trk_changed(na) || trk_changed(nb) {
     Some((trk_or(o = na, e = a), trk_or(o = nb, e = b)))
   } else {
@@ -477,13 +516,13 @@ fn trk_pair(errors: Array[String], a: Expr, b: Expr, names: Array[String]) -> Op
   }
 }
 
-fn trk_list(errors: Array[String], es: Array[Expr], names: Array[String]) -> Option[Array[Expr]] {
+fn trk_list(walk: TraitRefWalk, es: Array[Expr], names: Array[String]) -> Option[Array[Expr]] {
   // Allocates only from the first element that changes.
   let n = Array::length(es)
   let mut i = 0
   let mut first: Option[Expr] = None
   while i < n && !trk_changed(first) {
-    first = trk_expr(errors = errors, e = Array::get(es, at = i), names = names)
+    first = trk_expr(walk = walk, e = Array::get(es, at = i), names = names)
     if !trk_changed(first) {
       i = i + 1
     }
@@ -501,7 +540,7 @@ fn trk_list(errors: Array[String], es: Array[Expr], names: Array[String]) -> Opt
       j = i + 1
       while j < n {
         let x = Array::get(es, at = j)
-        Array::push(out, value = trk_or(o = trk_expr(errors = errors, e = x, names = names), e = x))
+        Array::push(out, value = trk_or(o = trk_expr(walk = walk, e = x, names = names), e = x))
         j = j + 1
       }
       Some(out)
@@ -509,13 +548,13 @@ fn trk_list(errors: Array[String], es: Array[Expr], names: Array[String]) -> Opt
   }
 }
 
-fn trk_fields(errors: Array[String], fields: Array[(String, Expr)], names: Array[String]) -> Option[Array[(String, Expr)]] {
+fn trk_fields(walk: TraitRefWalk, fields: Array[(String, Expr)], names: Array[String]) -> Option[Array[(String, Expr)]] {
   let n = Array::length(fields)
   let mut i = 0
   let mut first: Option[Expr] = None
   while i < n && !trk_changed(first) {
     let (_, x) = Array::get(fields, at = i)
-    first = trk_expr(errors = errors, e = x, names = names)
+    first = trk_expr(walk = walk, e = x, names = names)
     if !trk_changed(first) {
       i = i + 1
     }
@@ -534,7 +573,7 @@ fn trk_fields(errors: Array[String], fields: Array[(String, Expr)], names: Array
       j = i + 1
       while j < n {
         let (fname, x) = Array::get(fields, at = j)
-        Array::push(out, value = (fname, trk_or(o = trk_expr(errors = errors, e = x, names = names), e = x)))
+        Array::push(out, value = (fname, trk_or(o = trk_expr(walk = walk, e = x, names = names), e = x)))
         j = j + 1
       }
       Some(out)
@@ -542,13 +581,13 @@ fn trk_fields(errors: Array[String], fields: Array[(String, Expr)], names: Array
   }
 }
 
-fn trk_arms(errors: Array[String], arms: Array[(Pat, Expr)], names: Array[String]) -> Option[Array[(Pat, Expr)]] {
+fn trk_arms(walk: TraitRefWalk, arms: Array[(Pat, Expr)], names: Array[String]) -> Option[Array[(Pat, Expr)]] {
   let n = Array::length(arms)
   let mut i = 0
   let mut first: Option[Expr] = None
   while i < n && !trk_changed(first) {
     let (_, x) = Array::get(arms, at = i)
-    first = trk_expr(errors = errors, e = x, names = names)
+    first = trk_expr(walk = walk, e = x, names = names)
     if !trk_changed(first) {
       i = i + 1
     }
@@ -567,7 +606,7 @@ fn trk_arms(errors: Array[String], arms: Array[(Pat, Expr)], names: Array[String
       j = i + 1
       while j < n {
         let (p, x) = Array::get(arms, at = j)
-        Array::push(out, value = (p, trk_or(o = trk_expr(errors = errors, e = x, names = names), e = x)))
+        Array::push(out, value = (p, trk_or(o = trk_expr(walk = walk, e = x, names = names), e = x)))
         j = j + 1
       }
       Some(out)

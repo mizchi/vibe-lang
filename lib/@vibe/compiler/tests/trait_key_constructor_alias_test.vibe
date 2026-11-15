@@ -1,6 +1,6 @@
 // #3995: a bare parameterized alias is a constructor, not its applied body.
 import @vibe/compiler/core {
-  Stmt, canonicalize_trait_ref_aliases
+  Expr, Stmt, canonicalize_trait_ref_aliases, canonicalize_trait_ref_aliases_collect_type_params
 }
 import @vibe/compiler/checker {
   check_program
@@ -60,4 +60,21 @@ test "preserving the constructor does not hide a wrong receiving kind" {
 
 test "a constructor alias key matches a bound at an actual call" {
   inspect(diagnostic("type Vec[T] = Array[T]\ntrait Functor[F[_]] { tag(Self) -> Int }\nstruct Note { n: Int }\nimpl Functor[Vec] for Note { tag(self) -> Int { self.n } }\nfn tagged[T: Functor[Vec]](_ value: T) -> Int { T::tag(value) }\nfn main() -> Int { tagged(Note::{ n: 37 }) }\n"), content = "")
+}
+
+test "trait key normalization collects derive binders in declaration and expression order" {
+  let source = "type Scalar = Int\ntrait Value[A] {}\nstruct Box[S] { value: S }\nenum Item[E] { Item(E) }\nfn outer[T: Value[Scalar]](x: T) -> T {\n  let inner = [U](value: U) -> U { value }\n  let again = [T](value: T) -> T { value }\n  again(inner(x))\n}\n"
+  let stmts = parse_program(lex(source))
+  let params: Array[String] = []
+  let errors = canonicalize_trait_ref_aliases_collect_type_params(stmts = stmts, type_params = params)
+  inspect(Array::length(errors), content = "0")
+  inspect(params, content = "[S, E, T, U]")
+  match Array::get(stmts, at = 4) {
+    SLet(_, _, "outer", _, EFn(_, bounds, _, _, _, _)) => {
+      let (_, keys) = Array::get(bounds, at = 0)
+      let canonical = impl_key_after_pass("trait Value[A] {}\nstruct Note { n: Int }\nimpl Value[Int] for Note {}\n")
+      inspect(Array::get(keys, at = 0) == canonical, content = "true")
+    },
+    _ => assert(false)
+  }
 }
