@@ -16,11 +16,12 @@ import @vibe/compiler/lowering/effects/evidence {
   edp_note_row_field_structs,
   edp_result_slot,
   edp_row_top_labels,
-  edp_slot_row_stampable
+  edp_slot_row_stampable,
+  evidence_dict_pass
 }
 
 import @vibe/compiler/core {
-  Stmt, TypeExpr
+  Expr, Stmt, TypeExpr
 }
 import @vibe/ast {
   type_param_key
@@ -102,4 +103,19 @@ test "indexed callback aliases preserve arity, declaration order, and stamp scop
   assert(edp_alias_fn_row(ty = TyName("Cycle")) is None)
   edp_note_program_aliases([])
   assert(edp_alias_fn_row(ty = TyName("Callback")) is None)
+}
+
+test "top-level closure stamping reads aliases from the current evidence pass" {
+  edp_note_program_aliases([
+    STypeAlias(false, "Thunk", [], TyFn([], TyName("Int"), Some("Previous")))
+  ])
+  let stmts: Array[Stmt] = [
+    STypeAlias(false, "Thunk", [], TyFn([], TyName("Int"), Some("Current"))),
+    SLet(false, false, "main", Some(TyName("Thunk")), EFn([], [], [], Some(TyName("Int")), None, EInt(42)))
+  ]
+  inspect(evidence_dict_pass(stmts = stmts, entry_name = "main"), content = "[]")
+  match Array::get(stmts, at = 1) {
+    SLet(_, _, "main", Some(TyFn(_, _, Some(row))), _) => inspect(row, content = "Current"),
+    _ => assert(false)
+  }
 }
