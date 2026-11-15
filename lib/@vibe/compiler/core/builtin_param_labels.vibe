@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import ./builtin_name.vibe {
@@ -285,24 +285,30 @@ let builtin_param_label_rows: Array[(String, Array[String])] = [
   ("compiler_lowering_run", ["_"])
 ]
 
+// Build the index once. Keep the rows as the declaration-order inventory
+// and preserve the first row if a spelling appears more than once.
+fn build_builtin_param_label_index() -> MutMap[String, Array[String]] {
+  let capacity = Array::length(builtin_param_label_rows) * 2
+  let index = MutMap::with_capacity_string(capacity)
+  for row in builtin_param_label_rows {
+    let (name, labels) = row
+    if !MutMap::has(index, k = name) {
+      MutMap::set(index, k = name, v = labels)
+    } else {
+      ()
+    }
+  }
+  index
+}
+
+let builtin_param_label_index: MutMap[String, Array[String]] = build_builtin_param_label_index()
+
 /// The labels of builtin `name`, `_` for a positional slot; `None` when the
 /// builtin has no row, in which case every label on a call to it is refused.
 /// A legacy spelling (`Fs::ReadFile`) answers for its canonical name, the way
 /// `lookup_builtin` resolves it.
 export fn builtin_param_labels(_ raw: String) -> Option[Array[String]] {
-  let name = canonical_builtin_name(raw)
-  let mut found = None
-  let mut i = 0
-  while i < Array::length(builtin_param_label_rows) {
-    let (n, labels) = Array::get(builtin_param_label_rows, at = i)
-    if n == name {
-      found = Some(labels)
-      i = Array::length(builtin_param_label_rows)
-    } else {
-      i = i + 1
-    }
-  }
-  found
+  MutMap::get(builtin_param_label_index, k = canonical_builtin_name(raw))
 }
 
 /// Every name the table covers, in table order, for the census test.
