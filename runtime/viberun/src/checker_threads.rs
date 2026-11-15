@@ -94,11 +94,15 @@ impl BatchImage {
     }
 
     pub(super) fn wave(&self) -> Self {
+        self.capture_since(Instant::now())
+    }
+
+    pub(super) fn capture_since(&self, started: Instant) -> Self {
         Self {
             engine: self.engine.clone(),
             module: self.module.clone(),
             env: self.env.clone(),
-            started: Instant::now(),
+            started,
             trace: false,
             events: Some(Mutex::new(Vec::new())),
         }

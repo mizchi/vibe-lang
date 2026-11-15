@@ -28,4 +28,5 @@ python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT"
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct --checker-backend thread
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct --checker-backend thread --checker-coordinator session
+python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct --checker-backend thread --checker-coordinator session --checker-schedule ready
 echo "TaskGroup checker dogfood oracle passed; artifacts: $OUT"

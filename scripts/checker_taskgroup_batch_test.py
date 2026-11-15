@@ -192,6 +192,21 @@ if threaded:
     compare(first + second)
     rows.append({"case": "session", "successful_waves": 2, "stops_after_failed_wave": True})
     print("checker session reuses its process and stops after a failed wave", flush=True)
+    slow = prepare("ready-cancelled", 1, slow=True)
+    bad = prepare("ready-bad-version", 1, bad=True)
+    plans = [write_plan("ready-cancelled", [slow, [], [], []]),
+             write_plan("ready-bad-version", [bad, [], [], []])]
+    ready = subprocess.run(
+        [str(runner), "--checker-ready-session", str(coordinator), str(worker), "2"],
+        cwd=root, env=base, input="".join(
+            json.dumps({"id": index, "manifest": str(plan)}) + "\n" for index, plan in enumerate(plans)
+        ), text=True, capture_output=True, timeout=120,
+    )
+    assert ready.returncode == 1 and "999" in ready.stderr, (ready.stdout, ready.stderr)
+    assert not ready.stdout and not (Path(slow[0]) / "outcome.txt").exists(), ready.stdout
+    rows.append({"case": "ready-session", "failed_batch_cancels_active_sibling": True})
+    print("ready checker session cancels an active sibling after a worker trap", flush=True)
+
 
 (out / "results.json").write_text(json.dumps({"status": "passed", "backend": args.backend, "rows": rows,
                                                "invalid_plan_rejected_before_spawn": True}, indent=2) + "\n")

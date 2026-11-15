@@ -2282,6 +2282,24 @@ fn real_main() {
             }
         }
     }
+    if args
+        .first()
+        .is_some_and(|flag| flag == "--checker-ready-session")
+    {
+        let [_, component, worker, slots] = args.as_slice() else {
+            eprintln!("usage: viberun --checker-ready-session <coordinator.component.wasm> <worker.wasm> <slots>");
+            std::process::exit(2);
+        };
+        let result = slots
+            .parse::<usize>()
+            .map_err(|error| wasmtime::format_err!("{error}"))
+            .and_then(|slots| checker_workers::run_ready_session(component, worker, slots));
+        if let Err(error) = result {
+            eprintln!("viberun: checker ready session: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().is_some_and(|flag| flag == "--checker-session") {
         let [_, component, worker] = args.as_slice() else {
             eprintln!(

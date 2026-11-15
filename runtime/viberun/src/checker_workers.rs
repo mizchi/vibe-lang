@@ -22,7 +22,7 @@ use super::component_runtime::{
 
 const LABELS: [&str; 4] = ["checker-0", "checker-1", "checker-2", "checker-3"];
 const BATCH_SIZE: usize = 16;
-pub(super) const WORKER_ENV_REMOVALS: [&str; 18] = [
+pub(super) const WORKER_ENV_REMOVALS: [&str; 19] = [
     "VIBE_CHECKER_WORKERS",
     "VIBE_CHECKER_WORKER_TRACE",
     "VIBE_CHECKER_BATCH",
@@ -41,6 +41,7 @@ pub(super) const WORKER_ENV_REMOVALS: [&str; 18] = [
     "VIBE_MEM_SAMPLE_MS",
     "VIBE_CHECKER_WORKER_BACKEND",
     "VIBE_CHECKER_COORDINATOR",
+    "VIBE_CHECKER_SCHEDULE",
 ];
 
 struct Slot {
@@ -107,8 +108,9 @@ impl Plan {
         let wasm = absolute_path(&value["wasm"], "wasm")?;
         // A manifest cannot implicitly authorize unsafe native-code loading.
         // Use ordinary Wasm and the runner's validated native compilation cache.
-        let bytes = std::fs::read(&wasm)?;
-        if bytes.get(..8) != Some(b"\0asm\x01\0\0\0") {
+        let mut header = [0; 8];
+        std::fs::File::open(&wasm)?.read_exact(&mut header)?;
+        if &header != b"\0asm\x01\0\0\0" {
             bail!("worker plan: wasm must be a core Wasm module");
         }
         let cwd = absolute_path(&value["cwd"], "cwd")?;
@@ -592,15 +594,7 @@ fn link_plan(
     }
     let mut interface = linker.instance("vibe:checker/worker@0.0.1")?;
     let info = format!("1,{},{},{},{}", counts[0], counts[1], counts[2], counts[3]).into_bytes();
-    interface.func_wrap_concurrent("load-plan", move |acc: &Accessor<StoreLimits>, _: ()| {
-        let info = info.clone();
-        Box::pin(async move {
-            let body = acc.with(|mut access| {
-                wasmtime::component::StreamReader::<u8>::new(&mut access, info)
-            })?;
-            Ok((super::component_runtime::HostResponse { status: 0, body },))
-        })
-    })?;
+    link_counts(&mut interface, info)?;
     interface.func_wrap_concurrent(
         "check",
         move |acc: &Accessor<StoreLimits>, (slot_text,): (String,)| {
@@ -615,13 +609,7 @@ fn link_plan(
                 }
                 let (permit, jobs) = slots[slot].take(slot, BATCH_SIZE)?;
                 if let Some(image) = threads {
-                    image
-                        .start(&jobs, slot, permit)?
-                        .wait()
-                        .await
-                        .map_err(|error| {
-                            format_err!("checker-{slot}: threaded batch failed: {error:#}")
-                        })?;
+                    check_thread_batch(&image, &jobs, slot, permit).await?;
                 } else {
                     let mut process =
                         CheckerProcess::start_batch(&wasm, &cwd, &jobs, slot, permit)?;
@@ -633,14 +621,7 @@ fn link_plan(
                         );
                     }
                 }
-                let mut diagnosed = 0;
-                for job in jobs {
-                    match std::fs::read_to_string(job.join("outcome.txt"))?.trim() {
-                        "ok" => (),
-                        "diag" => diagnosed += 1,
-                        other => bail!("checker-{slot}: invalid committed outcome {other:?}"),
-                    }
-                }
+                let diagnosed = count_diagnostics(&jobs, slot)?;
                 let body = acc.with(|mut access| {
                     wasmtime::component::StreamReader::<u8>::new(&mut access, Vec::<u8>::new())
                 })?;
@@ -651,5 +632,182 @@ fn link_plan(
             })
         },
     )?;
+    Ok(())
+}
+
+fn link_counts(
+    interface: &mut wasmtime::component::LinkerInstance<'_, StoreLimits>,
+    info: Vec<u8>,
+) -> Result<()> {
+    interface.func_wrap_concurrent("load-plan", move |acc: &Accessor<StoreLimits>, _: ()| {
+        let info = info.clone();
+        Box::pin(async move {
+            let body = acc.with(|mut access| {
+                wasmtime::component::StreamReader::<u8>::new(&mut access, info)
+            })?;
+            Ok((super::component_runtime::HostResponse { status: 0, body },))
+        })
+    })
+}
+
+async fn check_thread_batch(
+    image: &Arc<BatchImage>,
+    jobs: &[PathBuf],
+    slot: usize,
+    permit: SlotPermit,
+) -> Result<()> {
+    image
+        .start(jobs, slot, permit)?
+        .wait()
+        .await
+        .map_err(|error| format_err!("checker-{slot}: threaded batch failed: {error:#}"))
+}
+
+fn count_diagnostics(jobs: &[PathBuf], slot: usize) -> Result<i32> {
+    let mut diagnosed = 0;
+    for job in jobs {
+        match std::fs::read_to_string(job.join("outcome.txt"))?.trim() {
+            "ok" => (),
+            "diag" => diagnosed += 1,
+            other => bail!("checker-{slot}: invalid committed outcome {other:?}"),
+        }
+    }
+    Ok(diagnosed)
+}
+
+struct ReadyBatch {
+    id: u64,
+    jobs: Vec<PathBuf>,
+}
+
+impl ReadyBatch {
+    fn read(
+        line: &str,
+        expected_id: u64,
+        worker: &Path,
+        cwd: &Path,
+        seen: &mut HashSet<PathBuf>,
+    ) -> Result<Self> {
+        let request: serde_json::Value = serde_json::from_str(line)?;
+        if request["id"].as_u64() != Some(expected_id) {
+            bail!("checker ready session: expected batch {expected_id}");
+        }
+        let manifest = absolute_path(&request["manifest"], "manifest")?;
+        let plan = Plan::parse(&std::fs::read_to_string(manifest)?)?;
+        if plan.wasm != worker || plan.cwd != cwd {
+            bail!("checker ready session: batch changes the checker image or working directory");
+        }
+        let jobs: Vec<_> = plan.queues.into_iter().flatten().collect();
+        if jobs.is_empty() || jobs.len() > BATCH_SIZE {
+            bail!("checker ready session: expected 1 to {BATCH_SIZE} jobs");
+        }
+        if jobs.iter().any(|dir| !seen.insert(dir.clone())) {
+            bail!("checker ready session: repeated job directory");
+        }
+        Ok(Self {
+            id: expected_id,
+            jobs,
+        })
+    }
+}
+
+// A single Vibe TaskGroup owns all slot loops until the frontend closes stdin.
+// The reader blocks outside the async runtime. At EOF it closes the bounded
+// channel so each slot can return after its current worker has been joined.
+pub(super) fn run_ready_session(
+    component_path: &str,
+    worker_path: &str,
+    slots: usize,
+) -> Result<()> {
+    if ![1, 2, 4].contains(&slots) {
+        bail!("checker ready session: expected 1, 2 or 4 slots");
+    }
+    let cwd = std::env::current_dir()?.canonicalize()?;
+    let worker = Path::new(worker_path).canonicalize()?;
+    let engine = async_component_engine()?;
+    let component = Component::from_file(&engine, component_path)?;
+    let image = Arc::new(BatchImage::load(&worker, &cwd)?);
+    let started = Instant::now();
+    let mut linker = Linker::new(&engine);
+    link_component_sleep(&mut linker, async_delay_scale())?;
+    let mut interface = linker.instance("vibe:checker/worker@0.0.1")?;
+    let counts: Vec<_> = (0..LABELS.len())
+        .map(|slot| if slot < slots { "1" } else { "0" })
+        .collect();
+    link_counts(
+        &mut interface,
+        format!("2,{}", counts.join(",")).into_bytes(),
+    )?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel(slots);
+    let rx = Arc::new(tokio::sync::Mutex::new(rx));
+    let permits: Arc<Vec<_>> = Arc::new(
+        (0..slots)
+            .map(|_| Arc::new(AtomicBool::new(false)))
+            .collect(),
+    );
+    interface.func_wrap_concurrent(
+        "check",
+        move |acc: &Accessor<StoreLimits>, (slot,): (String,)| {
+            let rx = rx.clone();
+            let image = image.clone();
+            let permits = permits.clone();
+            Box::pin(async move {
+                let slot: usize = slot.parse()?;
+                let active = permits
+                    .get(slot)
+                    .ok_or_else(|| format_err!("checker: unknown slot {slot}"))?;
+                if active.swap(true, Ordering::Acquire) {
+                    bail!("checker-{slot}: previous worker is still owned by its future");
+                }
+                let permit = SlotPermit(active.clone());
+                let request = rx.lock().await.recv().await.transpose()?;
+                let status = if let Some(ReadyBatch { id, jobs }) = request {
+                    let batch_image = Arc::new(image.capture_since(started));
+                    check_thread_batch(&batch_image, &jobs, slot, permit).await?;
+                    let diagnosed = count_diagnostics(&jobs, slot)?;
+                    let mut stdout = std::io::stdout().lock();
+                    writeln!(
+                        stdout,
+                        "{}",
+                        serde_json::json!({
+                            "id": id, "diagnosed": diagnosed, "events": batch_image.take_events(),
+                        })
+                    )?;
+                    stdout.flush()?;
+                    diagnosed
+                } else {
+                    -1
+                };
+                let body = acc.with(|mut access| {
+                    wasmtime::component::StreamReader::<u8>::new(&mut access, Vec::<u8>::new())
+                })?;
+                Ok((super::component_runtime::HostResponse { status, body },))
+            })
+        },
+    )?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()?;
+    let reader = std::thread::Builder::new()
+        .name("checker-ready-input".into())
+        .spawn(move || {
+            let mut seen = HashSet::new();
+            for (index, line) in std::io::stdin().lock().lines().enumerate() {
+                let result = line.map_err(Into::into).and_then(|line| {
+                    ReadyBatch::read(&line, index as u64, &worker, &cwd, &mut seen)
+                });
+                let invalid = result.is_err();
+                if tx.blocking_send(result).is_err() || invalid {
+                    return;
+                }
+            }
+        })?;
+    // On error the command exits after the Store drops and joins its workers.
+    // The input thread may still be waiting for stdin in that case.
+    invoke_async_component(&rt, &engine, &linker, &component)?;
+    reader
+        .join()
+        .map_err(|_| format_err!("checker ready input panicked"))?;
     Ok(())
 }

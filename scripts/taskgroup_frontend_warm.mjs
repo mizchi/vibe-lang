@@ -1,8 +1,5 @@
 // Experimental native TaskGroup frontend. The host freezes source/dependency
 // snapshots and publishes checked products; Vibe owns CPU worker tasks and waits.
-// Ready waves are barriers. This is not yet the default build path or a claim
-// that warm eligibility, independent package ownership or dynamic DAG scheduling
-// is complete.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -53,34 +50,51 @@ function runCoordinator(nativeRunner, component, manifest, cwd) {
   });
 }
 
-function startCoordinatorSession(nativeRunner, component, worker, cwd) {
-  const child = spawn(nativeRunner, ["--checker-session", component, worker], {
-    cwd, detached: true, stdio: ["pipe", "pipe", "pipe"],
-  });
-  const replies = createInterface({ input: child.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]();
-  let stderr = "", failure;
+function startCoordinatorSession(nativeRunner, component, worker, cwd, readySlots) {
+  const args = readySlots ? ["--checker-ready-session", component, worker, String(readySlots)]
+    : ["--checker-session", component, worker];
+  const child = spawn(nativeRunner, args, { cwd, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+  const replies = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const pending = new Map();
+  let stderr = "", failure, nextId = 0, exited;
   child.stderr.on("data", data => { stderr = (stderr + data).slice(-1048576); });
   const stop = () => child.kill("SIGKILL");
+  const fail = error => { failure ??= error; stop(); };
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
-  child.stdin.on("error", error => { failure ??= error; stop(); });
+  child.stdin.on("error", fail);
   child.on("error", error => { failure ??= error; });
+  replies.on("line", line => {
+    try {
+      const result = JSON.parse(line);
+      const id = readySlots ? result.id : pending.keys().next().value;
+      const request = pending.get(id);
+      if (!request || !Number.isSafeInteger(result.diagnosed) || result.diagnosed < 0 || !Array.isArray(result.events)) {
+        throw new Error("invalid TaskGroup coordinator session result");
+      }
+      pending.delete(id);
+      request.resolve(result);
+    } catch (error) {
+      fail(error);
+    }
+  });
   const closed = new Promise(resolveClose => child.once("close", (code, signal) => {
     process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop);
-    resolveClose(code === 0 && !failure ? null
-      : new Error(`TaskGroup coordinator session exited ${code ?? signal}: ${stderr || failure?.message || ""}`));
+    exited = new Error(`TaskGroup coordinator session exited ${code ?? signal}: ${stderr || failure?.message || ""}`);
+    for (const request of pending.values()) request.reject(exited);
+    const incomplete = pending.size > 0;
+    pending.clear();
+    resolveClose(code === 0 && !failure && !incomplete ? null : exited);
   }));
   return {
     async check(manifest) {
+      if (exited) throw exited;
+      const id = nextId++;
       const timer = setTimeout(stop, 300000);
       try {
-        child.stdin.write(JSON.stringify(manifest) + "\n");
-        const { value, done } = await replies.next();
-        if (done) throw (await closed) ?? new Error("TaskGroup coordinator session closed before replying");
-        const result = JSON.parse(value);
-        if (!Number.isSafeInteger(result.diagnosed) || result.diagnosed < 0 || !Array.isArray(result.events)) {
-          throw new Error("invalid TaskGroup coordinator session result");
-        }
-        return result;
+        return await new Promise((resolveResult, reject) => {
+          pending.set(id, { resolve: resolveResult, reject });
+          child.stdin.write(JSON.stringify(readySlots ? { id, manifest } : manifest) + "\n");
+        });
       } finally {
         clearTimeout(timer);
       }
@@ -100,6 +114,108 @@ function startCoordinatorSession(nativeRunner, component, worker, cwd) {
       await closed;
     },
   };
+}
+
+// Resolve readiness only from validated products. Propagate diagnoses to all
+// consumers while leaving independent work eligible for checking.
+async function dispatchReady({ modules, jobs, work, cache, outcomes, fresh, workerWasm, projectRoot, check }) {
+  const dependents = new Map([...modules.keys()].map(id => [id, []]));
+  const remaining = new Map();
+  const ready = [];
+  for (const { id, dependencies } of modules.values()) {
+    remaining.set(id, dependencies.length);
+    for (const dep of dependencies) dependents.get(dep).push(id);
+    if (!dependencies.length) ready.push(id);
+  }
+
+  function complete(id, outcome) {
+    const resolved = [[id, outcome]];
+    while (resolved.length) {
+      const [key, result] = resolved.pop();
+      if (outcomes.has(key)) continue;
+      outcomes.set(key, result);
+      for (const dep of dependents.get(key)) {
+        if (result.kind !== "checked") {
+          resolved.push([dep, { kind: "blocked" }]);
+        } else {
+          const count = remaining.get(dep) - 1;
+          remaining.set(dep, count);
+          if (!count && !outcomes.has(dep)) ready.push(dep);
+        }
+      }
+    }
+  }
+
+  function accept(id, product) {
+    if (product.diagnostic) {
+      complete(id, { kind: "diagnosed", diagnostics: [product.diagnostic] });
+      return 1;
+    }
+    if (!product.cacheProduct) throw new Error(`worker has no checked lowering product for ${id}`);
+    complete(id, { kind: "checked", artifact: { module: id, ...product } });
+    return 0;
+  }
+
+  let executed = 0, reused = 0, sequence = 0;
+  const waves = [], active = new Map();
+  while (ready.length || active.size) {
+    while (ready.length && active.size < jobs) {
+      ready.sort();
+      const count = Math.min(16, Math.ceil(ready.length / (jobs - active.size)));
+      const misses = [], batch = sequence++, preparing = performance.now();
+      let hits = 0;
+      for (const [index, id] of ready.splice(0, count).entries()) {
+        if (outcomes.has(id)) continue;
+        const module = modules.get(id);
+        const dir = join(work, `wave-${batch}-job-${index}`);
+        const inputs = moduleJobInputs(module, module.dependencies.map(dep => ({ id: dep, outcome: outcomes.get(dep) })));
+        const key = cache ? cache.inputKey(inputs) : null;
+        const cached = cache ? await cache.lookup(key, module) : null;
+        if (cached) {
+          accept(id, cached);
+          hits++;
+        } else {
+          await writeModuleJobInputs(dir, inputs);
+          misses.push({ id, dir, key });
+        }
+      }
+      reused += hits;
+      executed += misses.length;
+      const trace = { modules: misses.length + hits, executed: misses.length, reused: hits, diagnosed: 0, events: [],
+        prepare_ms: 0, coordinator_ms: 0, read_ms: 0 };
+      if (trace.modules) waves.push(trace);
+      if (misses.length) {
+        const manifest = join(work, `wave-${batch}.json`);
+        await writeFile(manifest, JSON.stringify({
+          version: 1, wasm: workerWasm, cwd: projectRoot, queues: [misses.map(({ dir }) => dir), [], [], []],
+        }));
+        const submitted = performance.now();
+        trace.prepare_ms = submitted - preparing;
+        active.set(batch, check(manifest).then(
+          result => ({ batch, misses, trace, result, elapsed: performance.now() - submitted }),
+          error => ({ batch, error }),
+        ));
+      } else {
+        trace.prepare_ms = performance.now() - preparing;
+      }
+    }
+    if (!active.size) continue;
+    const completed = await Promise.race(active.values());
+    if (completed.error) throw completed.error;
+    const { batch, misses, trace, result, elapsed } = completed;
+    active.delete(batch);
+    const reading = performance.now();
+    for (const { id, dir, key } of misses) {
+      const product = await readModuleJobProduct(dir, modules.get(id), { exit_code: 0 }, { cleanup: false });
+      if (!accept(id, product) && cache) fresh.push([key, dir]);
+      if (product.diagnostic) trace.diagnosed++;
+    }
+    if (trace.diagnosed !== result.diagnosed) throw new Error("TaskGroup diagnostic count disagrees with committed worker outcomes");
+    Object.assign(trace, { events: result.events, coordinator_ms: elapsed, read_ms: performance.now() - reading,
+      dispatched: misses.map(({ id }) => id) });
+  }
+  if (outcomes.size !== modules.size) throw new Error("TaskGroup frontend has pending modules without a ready job");
+  return { waves, executed, reused };
 }
 
 // The final compiler validates canonical encoding and binds each product to
@@ -147,6 +263,9 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
   if (coordinator === "session" && process.env.VIBE_CHECKER_WORKER_BACKEND !== "thread") {
     throw new Error("the checker session requires VIBE_CHECKER_WORKER_BACKEND=thread");
   }
+  const schedule = process.env.VIBE_CHECKER_SCHEDULE ?? "waves";
+  if (schedule !== "waves" && schedule !== "ready") throw new Error("VIBE_CHECKER_SCHEDULE must be waves or ready");
+  if (schedule === "ready" && coordinator !== "session") throw new Error("ready dispatch requires VIBE_CHECKER_COORDINATOR=session");
   const start = performance.now();
   const timing = {};
   const cache = process.env.VIBE_TASKGROUP_JOB_CACHE === "1" ? await TaskGroupJobCache.create(projectRoot,
@@ -161,9 +280,18 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
       await discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, entryFile, work, nativeCompiler),
     );
     timing.discovery_ms = performance.now() - discoveryStart;
-    const pending = new Set(modules.keys());
+    const dispatchStarted = performance.now();
+    const pending = new Set(schedule === "waves" ? modules.keys() : []);
     const outcomes = new Map();
-    const waves = [];
+    let waves = [];
+    if (schedule === "ready") {
+      ({ waves, executed, reused } = await dispatchReady({ modules, jobs, work, cache, outcomes, fresh, workerWasm, projectRoot,
+        check: manifest => {
+          session ??= startCoordinatorSession(nativeRunner, coordinatorWasm, workerWasm, projectRoot, jobs);
+          return session.check(manifest);
+        },
+      }));
+    }
     while (pending.size) {
       // A failed dependency is never represented by an empty success environment.
       let changed;
@@ -231,6 +359,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
       session = undefined;
       timing.coordinator_shutdown_ms = performance.now() - closing;
     }
+    timing.dispatch_ms = performance.now() - dispatchStarted;
     // Publication order is independent of completion or wave order.
     const canonical = new Map([...outcomes.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
     const publicationStart = performance.now();
@@ -257,7 +386,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
     timing.coordinator_ms = waves.reduce((sum, wave) => sum + wave.coordinator_ms, 0);
     timing.read_ms = waves.reduce((sum, wave) => sum + wave.read_ms, 0);
     timing.total_ms = performance.now() - start;
-    const report = { modules: moduleCount, ...counts, executed, reused, warmed, timing, waves, coordinator,
+    const report = { modules: moduleCount, ...counts, executed, reused, warmed, timing, waves, coordinator, schedule,
       handoff: directory ? "direct" : "published", ...(keepWork ? { work } : {}) };
     if (process.env.VIBE_TASKGROUP_TRACE_OUT) await writeFile(process.env.VIBE_TASKGROUP_TRACE_OUT, JSON.stringify(report));
     return report;

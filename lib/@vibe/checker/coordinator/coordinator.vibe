@@ -2,10 +2,8 @@ import @vibe/concurrent/experimental {
   TaskGroup, TaskHandle
 }
 
-// The native bridge supplies only immutable batch counts and starts bounded
-// checker processes. TaskGroup owns every wait, failure and child lifetime.
-// Source discovery, dependency snapshots and canonical publication surround
-// this wave; neither child closures nor this component need filesystem access.
+// The native bridge supplies worker batches. TaskGroup owns every wait,
+// failure and child lifetime. The component needs no filesystem access.
 export fn run() -> Int with Async + Exception {
   let response = await(host_response_named("vibe:checker/worker@0.0.1#load-plan"))
   if HostResponse::status(response) != 0 {
@@ -23,7 +21,12 @@ export fn run() -> Int with Async + Exception {
     text = String::concat(text, digit)
   }
   let rows = String::split(text, sep = ",")
-  if Array::length(rows) != 5 || Array::get(rows, at = 0) != "1" {
+  if Array::length(rows) != 5 {
+    throw("checker: unsupported wave plan")
+  } else ()
+  let version = Array::get(rows, at = 0)
+  let ready_mode = version == "2"
+  if version != "1" && !ready_mode {
     throw("checker: unsupported wave plan")
   } else ()
   let counts: Array[Int] = []
@@ -45,11 +48,17 @@ export fn run() -> Int with Async + Exception {
       let task = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
         let mut failed = 0
         let mut batch = 0
-        while batch < batches {
+        let mut accepting = batches > 0
+        while accepting && (ready_mode || batch < batches) {
           let result = await(host_response_named_with("vibe:checker/worker@0.0.1#check?slot", body = __to_string(worker_slot)))
           host_stream_close(HostResponse::body(result))
-          failed = failed + HostResponse::status(result)
-          batch = batch + 1
+          let status = HostResponse::status(result)
+          if ready_mode && status == -1 {
+            accepting = false
+          } else {
+            failed = failed + status
+            batch = batch + 1
+          }
         }
         failed
       })
