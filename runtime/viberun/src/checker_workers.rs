@@ -4,7 +4,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
@@ -12,12 +12,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use wasmtime::component::{Accessor, FutureProducer, FutureReader, Linker};
+use wasmtime::component::{Accessor, Component, FutureProducer, FutureReader, Linker};
 use wasmtime::{bail, format_err, Result, StoreContextMut, StoreLimits};
+
+use super::checker_threads::BatchImage;
+use super::component_runtime::{
+    async_component_engine, async_delay_scale, invoke_async_component, link_component_sleep,
+};
 
 const LABELS: [&str; 4] = ["checker-0", "checker-1", "checker-2", "checker-3"];
 const BATCH_SIZE: usize = 16;
-pub(super) const WORKER_ENV_REMOVALS: [&str; 17] = [
+pub(super) const WORKER_ENV_REMOVALS: [&str; 18] = [
     "VIBE_CHECKER_WORKERS",
     "VIBE_CHECKER_WORKER_TRACE",
     "VIBE_CHECKER_BATCH",
@@ -35,6 +40,7 @@ pub(super) const WORKER_ENV_REMOVALS: [&str; 17] = [
     "VIBE_MEM",
     "VIBE_MEM_SAMPLE_MS",
     "VIBE_CHECKER_WORKER_BACKEND",
+    "VIBE_CHECKER_COORDINATOR",
 ];
 
 struct Slot {
@@ -491,11 +497,61 @@ pub(super) fn link(linker: &mut Linker<StoreLimits>) -> Result<()> {
     let plan = Plan::parse(&std::fs::read_to_string(path)?)?;
     let threads = match std::env::var("VIBE_CHECKER_WORKER_BACKEND").as_deref() {
         Err(std::env::VarError::NotPresent) | Ok("process") => None,
-        Ok("thread") => Some(Arc::new(super::checker_threads::BatchImage::load(
-            &plan.wasm, &plan.cwd,
-        )?)),
+        Ok("thread") => Some(Arc::new(BatchImage::load(&plan.wasm, &plan.cwd)?)),
         _ => bail!("VIBE_CHECKER_WORKER_BACKEND must be process or thread"),
     };
+    link_plan(linker, plan, threads)
+}
+
+// The host keeps the compiled images and runtime across waves. Each request
+// builds a new linker and Store with just that wave's prepared inputs.
+pub(super) fn run_session(component_path: &str, worker_path: &str) -> Result<()> {
+    let cwd = std::env::current_dir()?.canonicalize()?;
+    let worker = Path::new(worker_path).canonicalize()?;
+    let engine = async_component_engine()?;
+    let component = Component::from_file(&engine, component_path)?;
+    let image = BatchImage::load(&worker, &cwd)?;
+    let scale = async_delay_scale();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()?;
+    let mut stdout = std::io::stdout().lock();
+    for line in std::io::stdin().lock().lines() {
+        let manifest: PathBuf = serde_json::from_str(&line?)?;
+        let plan = Plan::parse(&std::fs::read_to_string(manifest)?)?;
+        if plan.wasm != worker || plan.cwd != cwd {
+            bail!("checker session: wave changes the checker image or working directory");
+        }
+        let wave = Arc::new(image.wave());
+        let mut linker = Linker::new(&engine);
+        link_component_sleep(&mut linker, scale)?;
+        link_plan(&mut linker, plan, Some(wave.clone()))?;
+        let result = invoke_async_component(&rt, &engine, &linker, &component);
+        let events = wave.take_events();
+        let diagnosed = match result {
+            Ok(diagnosed) => diagnosed,
+            Err(error) => {
+                for event in events {
+                    eprintln!("vibe-checker-worker {event}");
+                }
+                return Err(error);
+            }
+        };
+        writeln!(
+            stdout,
+            "{}",
+            serde_json::json!({ "diagnosed": diagnosed, "events": events })
+        )?;
+        stdout.flush()?;
+    }
+    Ok(())
+}
+
+fn link_plan(
+    linker: &mut Linker<StoreLimits>,
+    plan: Plan,
+    threads: Option<Arc<BatchImage>>,
+) -> Result<()> {
     let counts: Vec<usize> = plan
         .queues
         .iter()

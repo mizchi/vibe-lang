@@ -78,6 +78,7 @@ def main():
     parser.add_argument("artifacts", type=Path)
     parser.add_argument("--direct", action="store_true")
     parser.add_argument("--checker-backend", choices=["process", "thread"], default="process")
+    parser.add_argument("--checker-coordinator", choices=["wave", "session"], default="wave")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
     runner = repo / "runtime/viberun/target/release/viberun"
@@ -85,7 +86,21 @@ def main():
     env.update(VIBE_CLI_WASM=str(args.compiler.resolve()), VIBE_RUNNER=str(runner),
                VIBE_TASKGROUP_ARTIFACT_DIR=str(args.artifacts.resolve()), VIBE_LIB=str(repo / "lib"),
                VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT="1" if args.direct else "0",
-               VIBE_CHECKER_WORKER_BACKEND=args.checker_backend)
+               VIBE_CHECKER_WORKER_BACKEND=args.checker_backend, VIBE_CHECKER_COORDINATOR=args.checker_coordinator)
+
+    def verify_coordinator(report, *, cold):
+        assert report["coordinator"] == args.checker_coordinator, report
+        waves = [[event for event in wave["events"] if event["event"] == "finished"]
+                 for wave in report["waves"] if wave["executed"]]
+        workers = [event for wave in waves for event in wave]
+        assert bool(workers) == cold, report
+        assert all(("thread" in event) == (args.checker_backend == "thread") for event in workers), report
+        if args.checker_coordinator == "session":
+            assert ("coordinator_shutdown_ms" in report["timing"]) == cold, report
+            if cold:
+                assert len(waves) >= 2 and all(waves), report
+                assert len({event["pid"] for event in workers}) == 1, report
+
     with tempfile.TemporaryDirectory(prefix="vibe public replay ") as directory:
         project = Path(directory)
         (project / "left.vibe").write_text("export fn left() -> Int { 25 }\n")
@@ -112,13 +127,10 @@ def main():
 
         cold, cold_report = build("cold")
         assert cold_report["checked"] == cold_report["warmed"] == 3
-        cold_workers = [event for wave in cold_report["waves"] for event in wave["events"] if event["event"] == "finished"]
-        assert cold_workers and all(("thread" in event) == (args.checker_backend == "thread")
-                                    for event in cold_workers), cold_report
+        verify_coordinator(cold_report, cold=True)
         warm, warm_report = build("warm")
         assert warm == cold, "warm public build changed Wasm bytes"
-        assert not any(e["event"] == "finished" for w in warm_report["waves"] for e in w["events"]), \
-            "warm public build still starts CPU workers"
+        verify_coordinator(warm_report, cold=False)
         assert warm_report["executed"] == 0 and warm_report["reused"] == 3, warm_report
         changed = "export fn right() -> Int { 18 }\n"
         assert changed != (project / "right.vibe").read_text(), "source mutation did not land"
@@ -183,6 +195,7 @@ def main():
         installed_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
         installed_env.update(VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT=env["VIBE_TASKGROUP_DIRECT"],
                              VIBE_CHECKER_WORKER_BACKEND=args.checker_backend,
+                             VIBE_CHECKER_COORDINATOR=args.checker_coordinator,
                              VIBE_BUILD_CACHE_DIR=str(project / "installed-cache"))
         for temperature, expected in [("cold", 3), ("warm", 0)]:
             output = project / f"installed-{temperature}.wasm"
@@ -197,9 +210,7 @@ def main():
             report = json.loads(trace.read_text())
             assert report["executed"] == expected and report["reused"] == 3 - expected, report
             assert report["handoff"] == ("direct" if args.direct else "published"), report
-            workers = [event for wave in report["waves"] for event in wave["events"] if event["event"] == "finished"]
-            assert bool(workers) == (expected > 0), report
-            assert all(("thread" in event) == (args.checker_backend == "thread") for event in workers), report
+            verify_coordinator(report, cold=expected > 0)
 
         if args.direct:
             check_direct_product_rejections(repo, project, args.compiler.resolve(), args.artifacts.resolve(), env)

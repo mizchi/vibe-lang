@@ -10,7 +10,7 @@ use super::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wasmtime::{bail, format_err, Engine, Linker, Module, Result, Store, UpdateDeadline};
@@ -21,6 +21,7 @@ pub(super) struct BatchImage {
     env: Arc<HashMap<String, String>>,
     started: Instant,
     trace: bool,
+    events: Option<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl BatchImage {
@@ -88,7 +89,23 @@ impl BatchImage {
             env: Arc::new(env),
             started: Instant::now(),
             trace: std::env::var("VIBE_CHECKER_WORKER_TRACE").as_deref() == Ok("1"),
+            events: None,
         })
+    }
+
+    pub(super) fn wave(&self) -> Self {
+        Self {
+            engine: self.engine.clone(),
+            module: self.module.clone(),
+            env: self.env.clone(),
+            started: Instant::now(),
+            trace: false,
+            events: Some(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub(super) fn take_events(&self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut *self.events.as_ref().unwrap().lock().unwrap())
     }
 
     pub(super) fn start(
@@ -202,17 +219,20 @@ impl BatchImage {
         status: Option<u32>,
         memory: Option<&serde_json::Value>,
     ) {
-        if self.trace {
-            eprintln!(
-                "vibe-checker-worker {}",
-                serde_json::json!({
-                    "event": event, "slot": slot, "pid": std::process::id(),
-                    "thread": format!("{:?}", thread::current().id()),
-                    "at_us": self.started.elapsed().as_micros(),
-                    "elapsed_us": started.elapsed().as_micros(), "status": status,
-                    "cpu_ticks": thread_cpu_ticks(), "memory": memory
-                })
-            );
+        if !self.trace && self.events.is_none() {
+            return;
+        }
+        let record = serde_json::json!({
+            "event": event, "slot": slot, "pid": std::process::id(),
+            "thread": format!("{:?}", thread::current().id()),
+            "at_us": self.started.elapsed().as_micros(),
+            "elapsed_us": started.elapsed().as_micros(), "status": status,
+            "cpu_ticks": thread_cpu_ticks(), "memory": memory
+        });
+        if let Some(events) = &self.events {
+            events.lock().unwrap().push(record);
+        } else {
+            eprintln!("vibe-checker-worker {record}");
         }
     }
 }

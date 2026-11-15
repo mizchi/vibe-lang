@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { discoverProjectViaPlan, publishCheckedOutcomes } from "./parallel_project_transport.mjs";
 import { normalizeParallelProject } from "./parallel_scheduler_trace.mjs";
@@ -52,6 +53,55 @@ function runCoordinator(nativeRunner, component, manifest, cwd) {
   });
 }
 
+function startCoordinatorSession(nativeRunner, component, worker, cwd) {
+  const child = spawn(nativeRunner, ["--checker-session", component, worker], {
+    cwd, detached: true, stdio: ["pipe", "pipe", "pipe"],
+  });
+  const replies = createInterface({ input: child.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]();
+  let stderr = "", failure;
+  child.stderr.on("data", data => { stderr = (stderr + data).slice(-1048576); });
+  const stop = () => child.kill("SIGKILL");
+  process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  child.stdin.on("error", error => { failure ??= error; stop(); });
+  child.on("error", error => { failure ??= error; });
+  const closed = new Promise(resolveClose => child.once("close", (code, signal) => {
+    process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop);
+    resolveClose(code === 0 && !failure ? null
+      : new Error(`TaskGroup coordinator session exited ${code ?? signal}: ${stderr || failure?.message || ""}`));
+  }));
+  return {
+    async check(manifest) {
+      const timer = setTimeout(stop, 300000);
+      try {
+        child.stdin.write(JSON.stringify(manifest) + "\n");
+        const { value, done } = await replies.next();
+        if (done) throw (await closed) ?? new Error("TaskGroup coordinator session closed before replying");
+        const result = JSON.parse(value);
+        if (!Number.isSafeInteger(result.diagnosed) || result.diagnosed < 0 || !Array.isArray(result.events)) {
+          throw new Error("invalid TaskGroup coordinator session result");
+        }
+        return result;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    async finish() {
+      const timer = setTimeout(stop, 300000);
+      try {
+        child.stdin.end();
+        const error = await closed;
+        if (error) throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    async abort() {
+      stop();
+      await closed;
+    },
+  };
+}
+
 // The final compiler validates canonical encoding and binds each product to
 // the fingerprint from its own walk. Check that the worker's two views agree
 // before handing over the combined product, as in persistent publication.
@@ -92,12 +142,18 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
   projectRoot = resolve(projectRoot);
   compilerWasm = resolve(compilerWasm); runnerPath = resolve(runnerPath);
   workerWasm = resolve(workerWasm); coordinatorWasm = resolve(coordinatorWasm); nativeRunner = resolve(nativeRunner);
+  const coordinator = process.env.VIBE_CHECKER_COORDINATOR ?? "wave";
+  if (coordinator !== "wave" && coordinator !== "session") throw new Error("VIBE_CHECKER_COORDINATOR must be wave or session");
+  if (coordinator === "session" && process.env.VIBE_CHECKER_WORKER_BACKEND !== "thread") {
+    throw new Error("the checker session requires VIBE_CHECKER_WORKER_BACKEND=thread");
+  }
   const start = performance.now();
   const timing = {};
   const cache = process.env.VIBE_TASKGROUP_JOB_CACHE === "1" ? await TaskGroupJobCache.create(projectRoot,
     [compilerWasm, workerWasm, coordinatorWasm, nativeRunner]) : null;
   const fresh = [];
   let executed = 0, reused = 0;
+  let session;
   const work = directWork ? resolve(directWork) : await mkdtemp(join(tmpdir(), "vibe-taskgroup-frontend-"));
   try {
     const discoveryStart = performance.now();
@@ -144,8 +200,13 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
       const manifest = join(work, `wave-${waves.length}.json`);
       await writeFile(manifest, JSON.stringify({ version: 1, wasm: workerWasm, cwd: projectRoot, queues }));
       const prepared = performance.now();
-      const result = misses ? await runCoordinator(nativeRunner, coordinatorWasm, manifest, projectRoot)
-        : { diagnosed: 0, events: [] };
+      let result = { diagnosed: 0, events: [] };
+      if (misses && coordinator === "session") {
+        session ??= startCoordinatorSession(nativeRunner, coordinatorWasm, workerWasm, projectRoot);
+        result = await session.check(manifest);
+      } else if (misses) {
+        result = await runCoordinator(nativeRunner, coordinatorWasm, manifest, projectRoot);
+      }
       const checked = performance.now();
       let diagnosed = 0;
       for (const id of ready) {
@@ -163,6 +224,12 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
       const read = performance.now();
       waves.push({ modules: ready.length, executed: misses, reused: cached.size, diagnosed, events: result.events,
         prepare_ms: prepared - waveStart, coordinator_ms: checked - prepared, read_ms: read - checked });
+    }
+    if (session) {
+      const closing = performance.now();
+      await session.finish();
+      session = undefined;
+      timing.coordinator_shutdown_ms = performance.now() - closing;
     }
     // Publication order is independent of completion or wave order.
     const canonical = new Map([...outcomes.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
@@ -190,11 +257,12 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
     timing.coordinator_ms = waves.reduce((sum, wave) => sum + wave.coordinator_ms, 0);
     timing.read_ms = waves.reduce((sum, wave) => sum + wave.read_ms, 0);
     timing.total_ms = performance.now() - start;
-    const report = { modules: moduleCount, ...counts, executed, reused, warmed, timing, waves,
+    const report = { modules: moduleCount, ...counts, executed, reused, warmed, timing, waves, coordinator,
       handoff: directory ? "direct" : "published", ...(keepWork ? { work } : {}) };
     if (process.env.VIBE_TASKGROUP_TRACE_OUT) await writeFile(process.env.VIBE_TASKGROUP_TRACE_OUT, JSON.stringify(report));
     return report;
   } finally {
+    await session?.abort();
     if (!directWork && !keepWork) await rm(work, { recursive: true, force: true });
   }
 }

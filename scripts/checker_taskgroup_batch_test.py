@@ -56,10 +56,15 @@ def prepare(name, count, *, bad=False, slow=False, cfg=False):
     return jobs
 
 
-def invoke(name, queues, environment=None, *, plan_version=1):
+def write_plan(name, queues, *, plan_version=1):
     plan = out / f"{name}.json"
     plan.write_text(json.dumps({"version": plan_version, "wasm": str(worker),
                                 "cwd": str(root), "queues": queues}))
+    return plan
+
+
+def invoke(name, queues, environment=None, *, plan_version=1):
+    plan = write_plan(name, queues, plan_version=plan_version)
     result = subprocess.run([str(runner), str(coordinator)], cwd=root,
                             env={**base, **(environment or {}), "VIBE_CHECKER_WORKERS": str(plan),
                                  "VIBE_CHECKER_WORKER_TRACE": "1", "VIBE_CHECKER_WORKER_MEM": "1"},
@@ -155,6 +160,39 @@ print("WIT failure preserves child error and cancels/reaps sibling", flush=True)
 unused = prepare("invalid-plan", 1)
 result, events, _ = invoke("invalid-plan", [unused, [], [], []], plan_version=2)
 assert result.returncode == 1 and b"expected version 1" in result.stderr and not events
+
+if threaded:
+    first, second = prepare("session-first", 1), prepare("session-second", 2)
+    slow = prepare("session-cancelled", 1, slow=True)
+    bad = prepare("session-bad-version", 1, bad=True)
+    unused = prepare("session-after-failure", 1)
+    plans = [
+        write_plan("session-first", [first, [], [], []]),
+        write_plan("session-second", [[], second, [], []]),
+        write_plan("session-failure", [slow, bad, [], []]),
+        write_plan("session-after-failure", [unused, [], [], []]),
+    ]
+    result = subprocess.run(
+        [str(runner), "--checker-session", str(coordinator), str(worker)], cwd=root, env=base,
+        input="".join(json.dumps(str(plan)) + "\n" for plan in plans),
+        text=True, capture_output=True, timeout=120,
+    )
+    assert result.returncode == 1 and "999" in result.stderr, result.stderr
+    replies = [json.loads(line) for line in result.stdout.splitlines()]
+    assert len(replies) == 2 and all(reply["diagnosed"] == 0 for reply in replies), replies
+    for slot, reply in enumerate(replies):
+        assert [(event["event"], event["slot"]) for event in reply["events"]] == [
+            ("started", slot), ("finished", slot),
+        ], reply
+    assert len({event["pid"] for reply in replies for event in reply["events"]}) == 1, replies
+    failed = [json.loads(line.split(" ", 1)[1]) for line in result.stderr.splitlines()
+              if line.startswith("vibe-checker-worker ")]
+    assert any(event["event"] == "cancelled" and event["slot"] == 0 for event in failed), failed
+    assert all(not (Path(job) / "outcome.txt").exists() for job in slow + unused)
+    compare(first + second)
+    rows.append({"case": "session", "successful_waves": 2, "stops_after_failed_wave": True})
+    print("checker session reuses its process and stops after a failed wave", flush=True)
+
 (out / "results.json").write_text(json.dumps({"status": "passed", "backend": args.backend, "rows": rows,
                                                "invalid_plan_rejected_before_spawn": True}, indent=2) + "\n")
 print("retained WIT batch oracle:", out, flush=True)

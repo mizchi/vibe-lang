@@ -2282,6 +2282,19 @@ fn real_main() {
             }
         }
     }
+    if args.first().is_some_and(|flag| flag == "--checker-session") {
+        let [_, component, worker] = args.as_slice() else {
+            eprintln!(
+                "usage: viberun --checker-session <coordinator.component.wasm> <worker.wasm>"
+            );
+            std::process::exit(2);
+        };
+        if let Err(error) = checker_workers::run_session(component, worker) {
+            eprintln!("viberun: checker session: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         std::process::exit(0);
