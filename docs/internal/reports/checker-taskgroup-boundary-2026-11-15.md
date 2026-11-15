@@ -144,7 +144,7 @@ VIBE_BUILD_CACHE_DIR="$taskgroup_cache" VIBE_TASKGROUP_JOB_CACHE=1 \
 cmp ordinary.wasm taskgroup.wasm
 ```
 
-## Direct checked-product handoff
+## Initial direct checked-product handoff
 
 `VIBE_TASKGROUP_DIRECT=1` selects the direct route for `vibe build --jobs 4`
 and `scripts/build_taskgroup_project.sh`. The host stages one combined
@@ -171,13 +171,11 @@ installed launcher was validated separately.
 
 The separate publisher invocation disappears. The final compiler's
 allocator frontier rises by 13 MiB for the compiler closure and 23 MiB
-for the split CLI, where it now validates canonical products. The
-Node frontend waits for the final compiler's acceptance receipt before
-caching fresh replay products. Its own RSS peak is 160–189 MiB for the
-compiler closure and 219–274 MiB for the split CLI, and the process
-remains live during final compilation. Those process peaks are separate
-observations from the aggregate peak. The direct route remains opt-in
-given its whole-build RSS cost.
+for the split CLI, where it now validates canonical products. In this first version, the Node frontend waited for the final compiler's
+acceptance receipt before caching fresh replay products. The frontend
+remained live during final compilation and peaked at 160–189 MiB for the
+compiler closure and 219–274 MiB for the split CLI. Those process peaks
+are separate observations from the aggregate peak.
 
 All 24 Wasm outputs matched byte-for-byte within each corpus. Final compiler
 telemetry recorded zero rechecks. Cold ran every worker job and warm
@@ -195,3 +193,30 @@ staging and image verification, while the persistent publication span also
 includes the auxiliary compiler and cold replay writes. The
 [24 direct-comparison samples](../../../bench/perf/analysis/checker-taskgroup-direct-2026-11-15.json)
 retain hashes, counters, per-build wall times and peaks.
+
+## Exit the frontend before final compilation
+
+The launcher now waits for the Node frontend to exit after staging the
+checked products, then starts the final compiler. A separate replay commit
+runs after a successful final build with an acceptance receipt and fresh
+products. The commit uses the captured cache keys and verifies the producer
+images again. A fully warm build needs no replay commit process.
+
+The follow-up is a second three-round series on the same host, corpora,
+stage2, worker and coordinator images. Process samples show the frontend
+exiting before the final compiler started in all 12 runs. Outputs match
+both previous lanes byte for byte and final compiler rechecks remain zero.
+
+| Corpus | Cache | Wall, first direct → sequential | Peak RSS, first direct → sequential | Earlier published RSS |
+|---|---|---:|---:|---:|
+| Compiler closure | Cold | 19.21 → 19.32 s | 1,092 → 945 MiB (−13.4%) | 920 MiB |
+| Compiler closure | Warm | 8.32 → 8.31 s | 1,092 → 927 MiB (−15.0%) | 920 MiB |
+| Split CLI | Cold | 34.91 → 34.97 s | 2,033 → 1,791 MiB (−11.9%) | 1,768 MiB |
+| Split CLI | Warm | 16.55 → 16.46 s | 1,995 → 1,780 MiB (−10.8%) | 1,751 MiB |
+
+The final compiler's guest frontier changes by less than 0.1 MiB between
+the two direct implementations. Peak RSS after exiting the frontend comes
+within 8–29 MiB of the published route, with the remaining canonical
+product validation in the final compiler. The
+[12 follow-up samples](../../../bench/perf/analysis/checker-taskgroup-direct-lifetime-2026-11-15.json)
+include the sampled phase boundaries and the older comparison medians.
