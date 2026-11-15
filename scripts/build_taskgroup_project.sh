@@ -30,10 +30,28 @@ export VIBE_LIB="${VIBE_LIB:-$ROOT_DIR/lib}" VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 export VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}"
 cd "$PROJECT_ROOT"
 if [ "${VIBE_TASKGROUP_DIRECT:-0}" = 1 ]; then
-  exec node "$ROOT_DIR/scripts/taskgroup_frontend_warm.mjs" "$COMPILER" "$ENTRY" "$JOBS" \
+  work="$(mktemp -d "${TMPDIR:-/tmp}/vibe-taskgroup-direct.XXXXXX")"
+  if [ "${VIBE_TASKGROUP_KEEP_JOBS:-0}" != 1 ]; then
+    trap 'rm -r -- "$work"' EXIT
+  fi
+  frontend="$ROOT_DIR/scripts/taskgroup_frontend_warm.mjs"
+  node "$frontend" "$COMPILER" "$ENTRY" "$JOBS" \
     "$PROJECT_ROOT" "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
     "$ARTIFACTS/worker.wasm" "$ARTIFACTS/coordinator.component.wasm" \
-    "$ROOT_DIR/runtime/viberun/target/release/viberun" direct "$OUTPUT" "$ENTRY_FUNCTION"
+    "$ROOT_DIR/runtime/viberun/target/release/viberun" direct "$work"
+  products="$work/checked-products"
+  [ -d "$products" ] || products=""
+  VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR="$products" VIBE_FS_COMPILE=1 VIBE_RUNNER_EXIT_WITH_RESULT=1 \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+    "$COMPILER" "$ENTRY" "$OUTPUT" "$ENTRY_FUNCTION"
+  if [ -n "$products" ] && { [ ! -f "$products/accepted" ] || [ "$(cat "$products/accepted")" != checked-taskgroup-v1 ]; }; then
+    echo "final compiler did not consume the TaskGroup checked products" >&2
+    exit 1
+  fi
+  if [ -f "$work/pending-replay.json" ]; then
+    node "$frontend" --commit-direct "$work"
+  fi
+  exit 0
 fi
 node "$ROOT_DIR/scripts/taskgroup_frontend_warm.mjs" "$COMPILER" "$ENTRY" "$JOBS" \
   "$PROJECT_ROOT" "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \

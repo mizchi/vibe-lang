@@ -2,15 +2,15 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { runTaskGroupFinal, warmTaskGroupProject } from "./taskgroup_frontend_warm.mjs";
+import { warmTaskGroupProject } from "./taskgroup_frontend_warm.mjs";
 
 const request = process.argv.slice(2), verifyOnly = request[0] === "--verify";
-const [compiler, entryFile, count, root, artifacts, runner, launcher, ...buildArgs] = verifyOnly
+const [compiler, entryFile, count, root, artifacts, runner, directWork] = verifyOnly
   ? [request[1], null, null, null, request[2], null] : request;
 try {
   if (verifyOnly ? !compiler || !artifacts || request.length !== 3
-    : ![compiler, entryFile, count, root, artifacts, runner].every(Boolean)) {
-    throw new Error("usage: taskgroup_build_frontend.mjs <compiler> <entry> <jobs> <root> <artifacts> <native-runner>");
+    : ![compiler, entryFile, count, root, artifacts, runner].every(Boolean) || request.length > 7) {
+    throw new Error("usage: taskgroup_build_frontend.mjs <compiler> <entry> <jobs> <root> <artifacts> <native-runner> [direct-work]");
   }
   const compilerWasm = resolve(compiler), artifactRoot = resolve(artifacts);
   const receipt = JSON.parse(await readFile(join(artifactRoot, "build.json"), "utf8"));
@@ -25,15 +25,10 @@ try {
     }
   }
   if (!verifyOnly) {
-    const finishBuild = launcher
-      ? directory => runTaskGroupFinal("bash", [launcher, ...buildArgs], root, directory,
-        { VIBE_CLI_WASM: compilerWasm, VIBE_RUNNER: resolve(runner) })
-      : undefined;
-    const report = await warmTaskGroupProject({ compilerWasm, entryFile, jobs: Number(count), projectRoot: root,
+    await warmTaskGroupProject({ compilerWasm, entryFile, jobs: Number(count), projectRoot: root,
       runnerPath: resolve(runner), nativeRunner: resolve(runner), nativeCompiler: true,
       workerWasm: join(artifactRoot, "worker.wasm"),
-      coordinatorWasm: join(artifactRoot, "coordinator.component.wasm"), finishBuild });
-    process.exitCode = report.build_exit ?? 0;
+      coordinatorWasm: join(artifactRoot, "coordinator.component.wasm"), directWork });
   }
 } catch (error) {
   console.error(`build --jobs: ${error.message}`);

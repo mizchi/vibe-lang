@@ -55,6 +55,19 @@ def check_direct_product_rejections(repo, project, compiler, images, env):
         product.write_bytes(raw)
         source.write_text(original_source.replace("42", "43"))
         rejects("stale TaskGroup checked product")
+
+        # A prepared ledger is insufficient on its own. Revoke acceptance
+        # and remove the existing replay entry so accidental publication is
+        # observable even when the attempted write would be byte-identical.
+        ledger = json.loads((work / "pending-replay.json").read_text())
+        key, _ = ledger["fresh"][0]
+        replay_record = Path(ledger["cache"]["root"]) / f"{key}.json"
+        replay_record.unlink()
+        (directory / "accepted").unlink()
+        rejected = subprocess.run([
+            "node", str(repo / "scripts/taskgroup_frontend_warm.mjs"), "--commit-direct", str(work),
+        ], cwd=project, env=common, text=True, capture_output=True, timeout=120)
+        assert rejected.returncode != 0 and not replay_record.exists(), (rejected.stdout, rejected.stderr)
     finally:
         shutil.rmtree(work)
 

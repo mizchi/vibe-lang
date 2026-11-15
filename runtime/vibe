@@ -819,9 +819,24 @@ execute_host_action() {
       case "$src" in *.vibex) ;; *) build_args+=(--entry "$entry") ;; esac
       [ "$(sed -n '7p' "$plan")" = 1 ] && build_args+=(--minify)
       if [ "${VIBE_TASKGROUP_DIRECT:-0}" = 1 ]; then
-        ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS \
-            VIBE_PREOPEN_DIR="$PROJECT_ROOT" node "$frontend" "$compiler" "$src" "$jobs" \
-            "$PROJECT_ROOT" "$images" "$RUNNER" "$SELF/vibe" "${build_args[@]}" )
+        (
+          cd "$PROJECT_ROOT" || exit $?
+          work="$(mktemp -d "${TMPDIR:-/tmp}/vibe-taskgroup-direct.XXXXXX")" || exit $?
+          trap 'rm -r -- "$work"' EXIT
+          env $ADAPTER_MODE_CLEARS VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+            node "$frontend" "$compiler" "$src" "$jobs" "$PROJECT_ROOT" "$images" "$RUNNER" "$work" || exit $?
+          products="$work/checked-products"
+          [ -d "$products" ] || products=""
+          VIBE_CLI_WASM="$compiler" VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR="$products" \
+            invoke_cli "${build_args[@]}" || exit $?
+          if [ -n "$products" ] && { [ ! -f "$products/accepted" ] || [ "$(cat "$products/accepted")" != checked-taskgroup-v1 ]; }; then
+            echo "final compiler did not consume the TaskGroup checked products" >&2
+            exit 1
+          fi
+          if [ -f "$work/pending-replay.json" ]; then
+            node "$(dirname "$frontend")/taskgroup_frontend_warm.mjs" --commit-direct "$work"
+          fi
+        )
         return $?
       fi
       ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS \
