@@ -13,6 +13,7 @@ import tempfile
 
 
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--backend", choices=["process", "thread"], default="process")
 for name in ["compiler", "runner", "worker", "coordinator"]:
     parser.add_argument("--" + name, type=Path, required=True)
 args = parser.parse_args()
@@ -24,6 +25,8 @@ compiler, runner, worker, coordinator = [
 assert all(path.is_file() for path in [compiler, runner, worker, coordinator])
 base = {key: value for key, value in os.environ.items() if not key.startswith("VIBE_")}
 base["VIBE_NATIVE_CACHE_DIR"] = str(out / "native-cache")
+base["VIBE_CHECKER_WORKER_BACKEND"] = args.backend
+threaded = args.backend == "thread"
 
 
 def prepare(name, count, *, bad=False, slow=False, cfg=False):
@@ -111,19 +114,28 @@ for name, count, settings in [("mixed", 17, {}), ("cfg", 17, {"VIBE_CFG": " dev 
     assert len(finished) == 2 and maximum == 1, events
     assert all(event["status"] == 0 and event["memory"]["allocated"] > 0 for event in finished)
     compare(jobs, settings)
-    rows.append({"case": name, "jobs": count, "fresh_processes": 2,
+    rows.append({"case": name, "jobs": count, "fresh_batches": 2,
                  "products_match_serial": True, "all_workers_reaped": True})
     print(name, "two bounded batches match serial products", flush=True)
 
-queues = [prepare("parallel-" + str(slot), 2) for slot in range(4)]
-result, events, maximum = invoke("parallel", queues)
-assert result.returncode == 0 and result.stdout.strip() == b"0", result.stderr.decode()
-assert maximum == 4, events
-for queue in queues:
-    compare(queue)
-rows.append({"case": "parallel", "jobs": 8, "max_owned_children": maximum,
-             "products_match_serial": True, "all_workers_reaped": True})
-print("four slots complete real checks and reap workers", flush=True)
+for count in ([2, 4] if threaded else [4]):
+    queues = [prepare(f"parallel-{count}-{slot}", 2, slow=threaded) for slot in range(count)]
+    result, events, maximum = invoke(f"parallel-{count}", queues + [[] for _ in range(4 - count)])
+    assert result.returncode == 0 and result.stdout.strip() == b"0", result.stderr.decode()
+    assert maximum == count, events
+    for queue in queues:
+        compare(queue)
+    if threaded:
+        started = {event["thread"]: event for event in events if event["event"] == "started"}
+        finished = {event["thread"]: event for event in events if event["event"] == "finished"}
+        assert len(started) == len(finished) == count, events
+        assert started.keys() == finished.keys()
+        assert len({event["pid"] for event in events}) == 1, events
+        assert max(event["at_us"] for event in started.values()) < min(event["at_us"] for event in finished.values()), events
+        assert all(finished[tid]["cpu_ticks"] > event["cpu_ticks"] for tid, event in started.items()), events
+    rows.append({"case": f"parallel-{count}", "jobs": count * 2, "max_owned_batches": maximum,
+                 "products_match_serial": True, "all_workers_reaped": True})
+    print(count, "slots complete real checks and reap workers", flush=True)
 
 # Corrupt the actual input, fail in the host WIT call, and force TaskGroup's
 # pending sibling through Drop. Its large real check cannot commit first.
@@ -131,7 +143,8 @@ slow = prepare("cancelled", 1, slow=True)
 bad = prepare("bad-version", 1, bad=True)
 result, events, maximum = invoke("failure", [slow, bad, [], []])
 assert result.returncode == 1, result.stderr.decode()
-assert b"batch exited" in result.stderr and b"999" in result.stderr, result.stderr.decode()
+message = b"threaded batch failed" if threaded else b"batch exited"
+assert message in result.stderr and b"999" in result.stderr, result.stderr.decode()
 assert len([event for event in events if event["event"] == "started"]) == 2, events
 assert any(event["event"] in ["cancelled", "dropped"] for event in events), events
 assert not (Path(slow[0]) / "outcome.txt").exists(), "cancelled check committed a product"
@@ -142,6 +155,6 @@ print("WIT failure preserves child error and cancels/reaps sibling", flush=True)
 unused = prepare("invalid-plan", 1)
 result, events, _ = invoke("invalid-plan", [unused, [], [], []], plan_version=2)
 assert result.returncode == 1 and b"expected version 1" in result.stderr and not events
-(out / "results.json").write_text(json.dumps({"status": "passed", "rows": rows,
+(out / "results.json").write_text(json.dumps({"status": "passed", "backend": args.backend, "rows": rows,
                                                "invalid_plan_rejected_before_spawn": True}, indent=2) + "\n")
 print("retained WIT batch oracle:", out, flush=True)

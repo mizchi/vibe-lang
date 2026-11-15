@@ -17,6 +17,25 @@ use wasmtime::{bail, format_err, Result, StoreContextMut, StoreLimits};
 
 const LABELS: [&str; 4] = ["checker-0", "checker-1", "checker-2", "checker-3"];
 const BATCH_SIZE: usize = 16;
+pub(super) const WORKER_ENV_REMOVALS: [&str; 17] = [
+    "VIBE_CHECKER_WORKERS",
+    "VIBE_CHECKER_WORKER_TRACE",
+    "VIBE_CHECKER_BATCH",
+    "VIBE_FS_COMPILE",
+    "VIBE_DIAGNOSTICS",
+    "VIBE_TYPE_AT",
+    "VIBE_BINDING_AT",
+    "VIBE_SYMBOLS",
+    "VIBE_NORMALIZE",
+    "VIBE_COVERAGE",
+    "VIBE_DEBUG",
+    "VIBE_DEBUG_BREAK",
+    "VIBE_EMIT_MODULE_SOURCE",
+    "VIBE_GUEST_PROFILE",
+    "VIBE_MEM",
+    "VIBE_MEM_SAMPLE_MS",
+    "VIBE_CHECKER_WORKER_BACKEND",
+];
 
 struct Slot {
     queue: Mutex<VecDeque<PathBuf>>,
@@ -169,24 +188,7 @@ impl CheckerProcess {
             .env("VIBE_MODULE_JOB_DIR", "1")
             .env("VIBE_IMPORT_ABI", "raw")
             .env("VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE", "1");
-        for name in [
-            "VIBE_CHECKER_WORKERS",
-            "VIBE_CHECKER_WORKER_TRACE",
-            "VIBE_CHECKER_BATCH",
-            "VIBE_FS_COMPILE",
-            "VIBE_DIAGNOSTICS",
-            "VIBE_TYPE_AT",
-            "VIBE_BINDING_AT",
-            "VIBE_SYMBOLS",
-            "VIBE_NORMALIZE",
-            "VIBE_COVERAGE",
-            "VIBE_DEBUG",
-            "VIBE_DEBUG_BREAK",
-            "VIBE_EMIT_MODULE_SOURCE",
-            "VIBE_GUEST_PROFILE",
-            "VIBE_MEM",
-            "VIBE_MEM_SAMPLE_MS",
-        ] {
+        for name in WORKER_ENV_REMOVALS {
             command.env_remove(name);
         }
         if batch {
@@ -401,24 +403,29 @@ impl CheckerProcess {
         slot: usize,
         permit: SlotPermit,
     ) -> Result<Self> {
-        let dir = jobs[0].join("batch-input");
-        std::fs::create_dir(&dir)?;
-        let mut text = String::from("checked-worker-batch\t1\n");
-        for job in jobs {
-            let path = job
-                .to_str()
-                .ok_or_else(|| format_err!("batch job path must be UTF-8"))?;
-            if path.contains(['\n', '\r']) {
-                bail!("batch job path contains a line break");
-            }
-            text.push_str(path);
-            text.push('\n');
-        }
-        std::fs::write(dir.join("jobs.list"), text)?;
+        let dir = write_batch(jobs)?;
         // Keep the same supervised child path; the batch flag selects only a
         // bounded list of the already prepared immutable jobs.
         Self::start_mode(wasm, cwd, &dir, slot, permit, true)
     }
+}
+
+pub(super) fn write_batch(jobs: &[PathBuf]) -> Result<PathBuf> {
+    let dir = jobs[0].join("batch-input");
+    std::fs::create_dir(&dir)?;
+    let mut text = String::from("checked-worker-batch\t1\n");
+    for job in jobs {
+        let path = job
+            .to_str()
+            .ok_or_else(|| format_err!("batch job path must be UTF-8"))?;
+        if path.contains(['\n', '\r']) {
+            bail!("batch job path contains a line break");
+        }
+        text.push_str(path);
+        text.push('\n');
+    }
+    std::fs::write(dir.join("jobs.list"), text)?;
+    Ok(dir)
 }
 
 impl Drop for CheckerProcess {
@@ -482,6 +489,13 @@ pub(super) fn link(linker: &mut Linker<StoreLimits>) -> Result<()> {
         return Ok(());
     };
     let plan = Plan::parse(&std::fs::read_to_string(path)?)?;
+    let threads = match std::env::var("VIBE_CHECKER_WORKER_BACKEND").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("process") => None,
+        Ok("thread") => Some(Arc::new(super::checker_threads::BatchImage::load(
+            &plan.wasm, &plan.cwd,
+        )?)),
+        _ => bail!("VIBE_CHECKER_WORKER_BACKEND must be process or thread"),
+    };
     let counts: Vec<usize> = plan
         .queues
         .iter()
@@ -497,6 +511,7 @@ pub(super) fn link(linker: &mut Linker<StoreLimits>) -> Result<()> {
             .collect(),
     );
     for slot in 0..LABELS.len() {
+        let threaded = threads.is_some();
         let slots = slots.clone();
         let wasm = plan.wasm.clone();
         let cwd = plan.cwd.clone();
@@ -507,6 +522,9 @@ pub(super) fn link(linker: &mut Linker<StoreLimits>) -> Result<()> {
                 let wasm = wasm.clone();
                 let cwd = cwd.clone();
                 Box::pin(async move {
+                    if threaded {
+                        bail!("threaded checker requires the batch interface");
+                    }
                     let (permit, jobs) = slots[slot].take(slot, 1)?;
                     let producer = CheckerProcess::start(&wasm, &cwd, &jobs[0], slot, permit)?;
                     let reader =
@@ -533,19 +551,31 @@ pub(super) fn link(linker: &mut Linker<StoreLimits>) -> Result<()> {
             let slots = slots.clone();
             let wasm = plan.wasm.clone();
             let cwd = plan.cwd.clone();
+            let threads = threads.clone();
             Box::pin(async move {
                 let slot = slot_text.parse::<usize>()?;
                 if slot >= slots.len() {
                     bail!("checker: unknown slot {slot}");
                 }
                 let (permit, jobs) = slots[slot].take(slot, BATCH_SIZE)?;
-                let mut process = CheckerProcess::start_batch(&wasm, &cwd, &jobs, slot, permit)?;
-                let code = process.wait().await?;
-                if code != 0 {
-                    bail!(
-                        "checker-{slot}: batch exited {code}: {}",
-                        process.failure_detail()
-                    );
+                if let Some(image) = threads {
+                    image
+                        .start(&jobs, slot, permit)?
+                        .wait()
+                        .await
+                        .map_err(|error| {
+                            format_err!("checker-{slot}: threaded batch failed: {error:#}")
+                        })?;
+                } else {
+                    let mut process =
+                        CheckerProcess::start_batch(&wasm, &cwd, &jobs, slot, permit)?;
+                    let code = process.wait().await?;
+                    if code != 0 {
+                        bail!(
+                            "checker-{slot}: batch exited {code}: {}",
+                            process.failure_detail()
+                        );
+                    }
                 }
                 let mut diagnosed = 0;
                 for job in jobs {
