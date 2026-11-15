@@ -10,7 +10,13 @@
 //# Imports
 
 import @vibe/compiler/lowering/effects/evidence {
-  edp_field_slot, edp_note_program_aliases, edp_note_row_field_structs, edp_result_slot, edp_row_top_labels, edp_slot_row_stampable
+  edp_alias_fn_row,
+  edp_field_slot,
+  edp_note_program_aliases,
+  edp_note_row_field_structs,
+  edp_result_slot,
+  edp_row_top_labels,
+  edp_slot_row_stampable
 }
 
 import @vibe/compiler/core {
@@ -74,4 +80,26 @@ test "a kinded alias row is withheld when it cannot be instantiated" {
     None => (),
     Some(_) => assert(false)
   }
+}
+
+test "indexed callback aliases preserve arity, declaration order, and stamp scope" {
+  let stmts: Array[Stmt] = [
+    STypeAlias(false, "Callback", [], TyName("Thunk")),
+    STypeAlias(false, "Thunk", [], TyFn([], TyName("Int"), Some("First"))),
+    STypeAlias(false, "Thunk", ["T"], TyFn([], TyName("T"), Some("Generic"))),
+    STypeAlias(false, "Thunk", [], TyFn([], TyName("Int"), Some("Last"))),
+    STypeAlias(false, "Cycle", [], TyName("Cycle"))
+  ]
+  edp_note_program_aliases(stmts)
+  match edp_alias_fn_row(ty = TyName("Callback")) {
+    Some(row) => assert_eq(row, "Last"),
+    None => assert(false)
+  }
+  match edp_alias_fn_row(ty = TyApp("Thunk", [TyName("Int")])) {
+    Some(row) => assert_eq(row, "Generic"),
+    None => assert(false)
+  }
+  assert(edp_alias_fn_row(ty = TyName("Cycle")) is None)
+  edp_note_program_aliases([])
+  assert(edp_alias_fn_row(ty = TyName("Callback")) is None)
 }

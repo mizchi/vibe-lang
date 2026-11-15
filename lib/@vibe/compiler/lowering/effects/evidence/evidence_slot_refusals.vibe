@@ -487,18 +487,54 @@ export fn edp_row_top_labels(_ row: String) -> Array[String] {
   out
 }
 
-/// The row of a non-generic type alias that names a function type with a
-/// concrete row, or None.
-export fn edp_alias_fn_row(stmts: Array[Stmt], ty: TypeExpr) -> Option[String] {
-  match edp_alias_fn_type(stmts = stmts, ty = ty) {
+// The slot-stamping walk replaces expression bodies. Type alias
+// declarations stay fixed, so keep all their rows in program order.
+let edp_program_aliases: Array[MutMap[String, Array[Stmt]]] = []
+let edp_no_alias_rows: Array[Stmt] = []
+
+// review-lint: allow-program-walk (indexes the program's alias declarations)
+export fn edp_note_program_aliases(_ stmts: Array[Stmt]) -> Unit {
+  let aliases: MutMap[String, Array[Stmt]] = MutMap::new_string()
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(_, name, _, _) => match MutMap::get(aliases, k = name) {
+        Some(rows) => Array::push(rows, value = stmt),
+        None => MutMap::set(aliases, k = name, v = [stmt])
+      },
+      _ => ()
+    }
+  }
+  Array::truncate(edp_program_aliases, length = 0)
+  Array::push(edp_program_aliases, value = aliases)
+}
+
+export fn edp_is_program_alias(_ name: String) -> Bool {
+  Array::length(edp_program_aliases) > 0 && MutMap::has(Array::get(edp_program_aliases, at = 0), k = name)
+}
+
+fn edp_program_alias_rows(_ name: String) -> Array[Stmt] {
+  if Array::length(edp_program_aliases) > 0 {
+    match MutMap::get(Array::get(edp_program_aliases, at = 0), k = name) {
+      Some(rows) => rows,
+      None => edp_no_alias_rows
+    }
+  } else {
+    edp_no_alias_rows
+  }
+}
+
+/// The row of a type alias in the current stamp walk, when it names a
+/// function type with a concrete row.
+export fn edp_alias_fn_row(ty: TypeExpr) -> Option[String] {
+  match edp_alias_fn_type(ty = ty) {
     Some(TyFn(_, _, Some(row))) => Some(row),
     _ => None
   }
 }
 
-/// The function type a non-generic type alias names, directly or through
-/// other aliases, when its row is concrete, or None.
-export fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+/// Resolve an alias of the current stamp walk to a function type with a
+/// concrete row, following other aliases and substituting type arguments.
+export fn edp_alias_fn_type(ty: TypeExpr) -> Option[TypeExpr] {
   // An alias of an alias is followed, as the checker's
   // `dh_expand_type_alias` does; the step bound stops a cycle (Codex on
   // #3426).
@@ -518,9 +554,9 @@ export fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr
       done = true
     } else {
       let mut next: Option[TypeExpr] = None
-      for st in edp_program_decls_named(stmts = stmts, name = alias) {
+      for st in edp_program_alias_rows(alias) {
         match st {
-          STypeAlias(_, n, tparams, body) => if n == alias && Array::length(tparams) == Array::length(targs) {
+          STypeAlias(_, _, tparams, body) => if Array::length(tparams) == Array::length(targs) {
             next = Some(edp_alias_subst(ty = body, params = tparams, args = targs))
           } else {
             ()

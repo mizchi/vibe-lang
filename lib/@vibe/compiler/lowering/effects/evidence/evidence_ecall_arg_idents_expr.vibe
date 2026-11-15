@@ -83,6 +83,7 @@ import ./evidence_slot_refusals.vibe {
   edp_fn_result_has_row,
   edp_join_and,
   edp_note_params,
+  edp_note_program_aliases,
   edp_note_slot_methods,
   edp_record_arg_needs_context,
   edp_refuse_assigned_calls,
@@ -127,7 +128,6 @@ import ./evidence_declared_slots.vibe {
   edp_local_alias_mark,
   edp_note_field_literal,
   edp_note_local_alias,
-  edp_note_program_aliases,
   edp_note_record_slot_callees,
   edp_note_row_field_structs,
   edp_param_index_by_label,
@@ -1022,7 +1022,7 @@ export fn edp_stamp_alias_annotated_lets(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
-      SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_type(stmts = stmts, ty = ty) {
+      SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_type(ty = ty) {
         Some(TyFn(fps, fr, Some(row))) => if edp_literal_calls_local(lit = EFn(tps, tbs, ps, ret, None, b), body = b, scope = [
         ]) {
           ()
@@ -1479,7 +1479,7 @@ fn edp_local_lit_at(name: String, slot: Int) -> Option[Expr] {
 /// Stamp callback slots while retaining lexical bindings and value provenance.
 fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
   match e {
-    ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee = callee, args = args, stmts = stmts, scope = scope) {
+    ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee = callee, args = args, scope = scope) {
       Some(lit) => edp_stamp_expr(e = lit, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names),
       None => match edp_ascribed_record_targs(stmts = stmts, callee = callee, args = args) {
         Some(targs) => ECall(callee, [
@@ -1932,7 +1932,7 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
           edp_stamp_slot_arg(a = other, stmts = stmts, fn_index = fn_index, scope = scope, pure_names = pure_names, callee = named, pos = ai + shift)
         } else if String::length(local_callee) > 0 && !labeled {
           edp_set_slot_callee(callee = local_callee, used = true)
-          edp_stamp_slot_arg_at(a = other, scope = scope, pure_names = pure_names, slot = edp_local_slot_fn_type(callee = local_callee, scope = scope, stmts = stmts, pos = ai))
+          edp_stamp_slot_arg_at(a = other, scope = scope, pure_names = pure_names, slot = edp_local_slot_fn_type(callee = local_callee, scope = scope, pos = ai))
         } else {
           other
         }
@@ -1950,12 +1950,12 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
 /// `() -> Int with Ask` annotation is folded into the literal by the parser,
 /// an alias is not. The literal takes the alias's row, and the wrapper goes,
 /// so the tree is the one the direct annotation gives.
-fn edp_alias_ascribed_literal(callee: Expr, args: Array[Expr], stmts: Array[Stmt], scope: Array[String]) -> Option[Expr] {
+fn edp_alias_ascribed_literal(callee: Expr, args: Array[Expr], scope: Array[String]) -> Option[Expr] {
   match callee {
     EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(params = aparams, body = abody) {
       let (_, aty) = Array::get(aparams, at = 0)
       match (aty, Array::get(args, at = 0)) {
-        (Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_row(stmts = stmts, ty = ty) {
+        (Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_row(ty = ty) {
           Some(row) => if edp_literal_calls_local(lit = Array::get(args, at = 0), body = b, scope = scope) {
             None
           } else {
@@ -2095,11 +2095,11 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
 /// way `edp_slot_fn_type` reads a top-level function's. Its handle passes a
 /// row-typed parameter the dict (`edp_rh_extend`), so a callback literal
 /// written there needs the parameter too.
-fn edp_local_slot_fn_type(callee: String, scope: Array[String], stmts: Array[Stmt], pos: Int) -> Option[(Int, String)] {
+fn edp_local_slot_fn_type(callee: String, scope: Array[String], pos: Int) -> Option[(Int, String)] {
   let binding = edp_scope_last_index(scope = scope, name = callee)
   match edp_local_lit_at(name = callee, slot = binding) {
     Some(lit) => edp_literal_slot_fn_type(local = Some(lit), pos = pos),
-    None => edp_parameter_callback_slot(stmts = stmts, binding = binding, pos = pos)
+    None => edp_parameter_callback_slot(binding = binding, pos = pos)
   }
 }
 
