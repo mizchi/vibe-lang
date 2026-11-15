@@ -9,17 +9,68 @@ import shutil
 import tempfile
 
 
+def check_direct_product_rejections(repo, project, compiler, images, env):
+    # Keep one successful handoff so the same final compiler can exercise
+    # mutations against real bytes and a real module fingerprint.
+    source = project / "producer.vibe"
+    original_source = "export fn main() -> Int { 42 }\n"
+    source.write_text(original_source)
+    trace = project / "direct-product.json"
+    output = project / "direct-product.wasm"
+    common = {**env, "VIBE_PREOPEN_DIR": str(project), "VIBE_BUILD_CACHE_DIR": str(project / "direct-product-cache"),
+              "VIBE_TASKGROUP_TRACE_OUT": str(trace)}
+    completed = subprocess.run([
+        "bash", str(repo / "scripts/build_taskgroup_project.sh"), str(compiler), source.name,
+        str(output), "main", "4", str(images),
+    ], cwd=project, env={**common, "VIBE_TASKGROUP_KEEP_JOBS": "1"}, text=True, capture_output=True, timeout=120)
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    report = json.loads(trace.read_text())
+    assert report["handoff"] == "direct" and report["checked"] == 1, report
+    work = Path(report["work"])
+    try:
+        directory = work / "checked-products"
+        product, = [path for path in directory.iterdir() if path.name != "accepted"]
+        raw = product.read_bytes()
+        output.unlink()
+        # The raw adapter's output is separate from the public launcher.
+        command = [
+            "bash", str(repo / "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main",
+            str(compiler), source.name, str(output), "main",
+        ]
+        check_env = {**common, "VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR": str(directory),
+                     "VIBE_FS_COMPILE": "1", "VIBE_IMPORT_ABI": "raw", "VIBE_RUNNER_EXIT_WITH_RESULT": "1"}
+
+        def rejects(expected):
+            diagnostic = output.with_suffix(".wasm.diag")
+            diagnostic.unlink(missing_ok=True)
+            result = subprocess.run(command, cwd=project, env=check_env, text=True, capture_output=True, timeout=120)
+            assert result.returncode != 0 and not output.exists(), (result.stdout, result.stderr)
+            combined = result.stdout + result.stderr + (diagnostic.read_text() if diagnostic.exists() else "")
+            assert expected in combined, combined
+
+        product.unlink()
+        rejects("missing TaskGroup checked product")
+        product.write_bytes(raw + b"trailing bytes")
+        rejects("unreadable TaskGroup checked product")
+        product.write_bytes(raw)
+        source.write_text(original_source.replace("42", "43"))
+        rejects("stale TaskGroup checked product")
+    finally:
+        shutil.rmtree(work)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("compiler", type=Path)
     parser.add_argument("artifacts", type=Path)
+    parser.add_argument("--direct", action="store_true")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
     runner = repo / "runtime/viberun/target/release/viberun"
     env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
     env.update(VIBE_CLI_WASM=str(args.compiler.resolve()), VIBE_RUNNER=str(runner),
                VIBE_TASKGROUP_ARTIFACT_DIR=str(args.artifacts.resolve()), VIBE_LIB=str(repo / "lib"),
-               VIBE_TASKGROUP_JOB_CACHE="1")
+               VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT="1" if args.direct else "0")
     with tempfile.TemporaryDirectory(prefix="vibe public replay ") as directory:
         project = Path(directory)
         (project / "left.vibe").write_text("export fn left() -> Int { 25 }\n")
@@ -40,7 +91,9 @@ def main():
             assert result.returncode == expected, (label, result.stdout, result.stderr)
             if expected:
                 assert not output.exists(), label
-            return output.read_bytes() if not expected else result.stderr, json.loads(trace.read_text())
+            report = json.loads(trace.read_text())
+            assert report["handoff"] == ("direct" if args.direct and not expected else "published"), report
+            return output.read_bytes() if not expected else result.stderr, report
 
         cold, cold_report = build("cold")
         assert cold_report["checked"] == cold_report["warmed"] == 3
@@ -111,7 +164,8 @@ def main():
         ], env=env, text=True, capture_output=True, timeout=120)
         assert install.returncode == 0, (install.stdout, install.stderr)
         installed_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
-        installed_env.update(VIBE_TASKGROUP_JOB_CACHE="1", VIBE_BUILD_CACHE_DIR=str(project / "installed-cache"))
+        installed_env.update(VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT=env["VIBE_TASKGROUP_DIRECT"],
+                             VIBE_BUILD_CACHE_DIR=str(project / "installed-cache"))
         for temperature, expected in [("cold", 3), ("warm", 0)]:
             output = project / f"installed-{temperature}.wasm"
             trace = project / f"installed-{temperature}.json"
@@ -124,6 +178,10 @@ def main():
             assert output.read_bytes() == edited, "standalone installed replay changed output"
             report = json.loads(trace.read_text())
             assert report["executed"] == expected and report["reused"] == 3 - expected, report
+            assert report["handoff"] == ("direct" if args.direct else "published"), report
+
+        if args.direct:
+            check_direct_product_rejections(repo, project, args.compiler.resolve(), args.artifacts.resolve(), env)
 
         (project / "right.vibe").write_text('export fn right() -> Int { "wrong" }\n')
         first, report = build("diagnosed-first", expected=1)

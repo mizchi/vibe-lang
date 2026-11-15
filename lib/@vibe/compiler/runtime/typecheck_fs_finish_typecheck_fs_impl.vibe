@@ -43,7 +43,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, sha256
 }
 
 import @vibe/ast {
@@ -136,6 +136,7 @@ import ./persistent_env_codec.vibe {
   load_persistent_dep_list_in_namespace,
   load_persistent_type_env,
   load_persistent_type_env_in_namespace,
+  parse_persistent_module_cache,
   parse_persistent_type_env,
   persistent_leaf_fingerprint_text,
   persistent_module_cache_text,
@@ -904,6 +905,7 @@ export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, S
 /// Use this invocation's target flags for parsing and cache identity.
 export fn plan_import_graph_fs_with_config(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String, cfg: TargetCfg, checked_error_row: Bool) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
   let leaf_fps = typecheck_fs_empty_dep_fps()
+  let use_persistent_leaves = Env::get("VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR") == ""
   let plan_diags: Array[(String, String)] = []
   let edges: Array[(String, Array[String])] = []
   let seen = empty_stack()
@@ -960,7 +962,12 @@ export fn plan_import_graph_fs_with_config(rdb: RippleDb, dep_source_cache: Arra
         // site is simply absent at the other. Both were, until Codex found
         // them on #2771.
         let _ = ast_cache_prefetch_fs_with_config(path = path, source = source, cfg = cfg, checked_error_row = checked_error_row)
-        match valid_persistent_leaf_fingerprint_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row) {
+        let leaf = if use_persistent_leaves {
+          valid_persistent_leaf_fingerprint_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row)
+        } else {
+          None
+        }
+        match leaf {
           Some(leaf_fingerprint) => Array::push(leaf_fps, value = (path, leaf_fingerprint)),
           None => {
             // Codex review P2: resolving a module's imports PARSES it, so a
@@ -1066,6 +1073,34 @@ fn commit_leaf_fingerprint_fs_with_config(rdb: RippleDb, env_cache: Array[(Strin
     None => finish_typecheck_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = empty_stack(), dep_fps = typecheck_fs_empty_dep_fps(), fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = typecheck_fs_empty_dep_fps(), semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg), interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
   }
 }
+/// A private TaskGroup handoff carries the same complete worker product as
+/// publication. Key by module path because distinct owners may have identical
+/// typing fingerprints. Accept only the product for the current walk's inputs.
+fn load_taskgroup_checked_product(directory: String, path: String, fingerprint: String) -> (TypeEnv, Array[Int], Array[Int], Array[String]) with Exception + Fs {
+  let product_path = "\{directory}/\{sha256(path)}"
+  if !Fs::exists(product_path) {
+    throw("type_db: missing TaskGroup checked product for \{path}")
+  } else ()
+  let product = Fs::read_file(product_path)
+  let header = "checked-worker-cache\t1\t\{fingerprint}\n"
+  if !String::starts_with(product, prefix = header) {
+    throw("type_db: stale TaskGroup checked product for \{path}")
+  } else ()
+  let text = product[String::length(header): String::length(product)]
+  match parse_persistent_module_cache(text) {
+    Some(record) => match record.lowering {
+      Some((offsets, eq_offs, eq_keys)) => {
+        if persistent_module_cache_text(env = record.env, lowering = record.lowering) != text {
+          throw("type_db: non-canonical TaskGroup checked product for \{path}")
+        } else ()
+        (record.env, offsets, eq_offs, eq_keys)
+      },
+      None => throw("type_db: TaskGroup checked product has no lowering for \{path}")
+    },
+    None => throw("type_db: unreadable TaskGroup checked product for \{path}")
+  }
+}
+
 /// One module's step, once its dependency list is known and every dependency
 /// already has a fingerprint. Folds the dependency fingerprints in
 /// DECLARATION order (build_fingerprint folds them as a sequence, not a set),
@@ -1092,6 +1127,19 @@ fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, 
     i = i + 1
   }
   let fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = dep_fps, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg)
+  let direct_products = Env::get("VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR")
+  if direct_products != "" {
+    let (env, offsets, eq_offs, eq_keys) = load_taskgroup_checked_product(directory = direct_products, path = path, fingerprint = fingerprint)
+    module_typed_lowering_memo_put(path = path, fingerprint = fingerprint, offsets = offsets, eq_offs = eq_offs, eq_keys = eq_keys)
+    module_typed_lowering_bind_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row)
+    if incremental_interface_trace_enabled() {
+      incremental_trace_observe_checked_env_with_config(path = path, source = source, env = env, cfg = cfg, checked_error_row = checked_error_row)
+    } else ()
+    incremental_typecheck_telemetry_add(index = 7, amount = 1)
+    let next_db = ripple_record_eval(db = rdb, path = path, fingerprint = fingerprint, deps = deps)
+    let next_env_cache = typecheck_fs_upsert_env_cache(cache = env_cache, path = path, env = env)
+    return (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
+  } else ()
   if checked_module_cache_mode() != "off" {
     return finish_checked_module_artifact_fs_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, dep_fps = dep_fps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
   }

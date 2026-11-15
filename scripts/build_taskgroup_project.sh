@@ -29,6 +29,12 @@ bash "$ROOT_DIR/scripts/ensure_viberun.sh"
 export VIBE_LIB="${VIBE_LIB:-$ROOT_DIR/lib}" VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 export VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}"
 cd "$PROJECT_ROOT"
+if [ "${VIBE_TASKGROUP_DIRECT:-0}" = 1 ]; then
+  exec node "$ROOT_DIR/scripts/taskgroup_frontend_warm.mjs" "$COMPILER" "$ENTRY" "$JOBS" \
+    "$PROJECT_ROOT" "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
+    "$ARTIFACTS/worker.wasm" "$ARTIFACTS/coordinator.component.wasm" \
+    "$ROOT_DIR/runtime/viberun/target/release/viberun" direct "$OUTPUT" "$ENTRY_FUNCTION"
+fi
 node "$ROOT_DIR/scripts/taskgroup_frontend_warm.mjs" "$COMPILER" "$ENTRY" "$JOBS" \
   "$PROJECT_ROOT" "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
   "$ARTIFACTS/worker.wasm" "$ARTIFACTS/coordinator.component.wasm" \

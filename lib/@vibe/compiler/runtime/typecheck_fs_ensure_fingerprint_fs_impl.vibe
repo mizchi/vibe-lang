@@ -55,7 +55,7 @@ import @vibe/compiler/checker/artifacts/module {
 }
 
 import @vibe/compiler/runtime/checked_module_cache {
-  checked_module_cache_reset, checked_module_cache_reset_in_namespace
+  checked_module_cache_mode, checked_module_cache_reset, checked_module_cache_reset_in_namespace
 }
 
 import @vibe/compiler/core {
@@ -367,6 +367,10 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
 
 /// Use this invocation's target flags for parsing and cache identity.
 export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  let direct_products = Env::get("VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR")
+  if direct_products != "" && checked_module_cache_mode() != "off" {
+    throw("TaskGroup direct checked products require VIBE_CHECKED_MODULE_CACHE=off")
+  } else ()
   let interfaces = dependency_interface_set_new()
   module_typed_lowering_memo_reset()
   typing_dependency_env_reuse_valid_witness_memo_reset()
@@ -410,6 +414,9 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
     Array::set(result_state, at = 0, value = finished)
     resume(error)
   } }
+  if direct_products != "" {
+    Fs::write_file("\{direct_products}/accepted", contents = "checked-taskgroup-v1")
+  } else ()
   let state = Array::get(result_state, at = 0)
   (fingerprint, state.rdb, state.env_cache, state.dep_sources, state.parse_count)
 }
