@@ -17,7 +17,7 @@ import ./checker_lambda_result.vibe {
 }
 
 import ./checker_retaining_write.vibe {
-  retaining_write_argument_mask, retaining_write_call_mask
+  retaining_write_argument_mask, retaining_write_call_mask_in_region
 }
 
 import @vibe/compiler/checker/annotations {
@@ -149,7 +149,6 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_assignable,
   check_assignable_set_end,
   direct_result_enum_payload_param_indices,
-  env_has_active_region,
   interp_is_shim_body,
   return_provenance_was_written,
   row_variable_labels,
@@ -431,16 +430,12 @@ export fn field_write_mut_check(name: String, callee_off: Int, args: Array[Expr]
 
 /// Mutable container operations are assignments with a non-syntactic target.
 /// Check every stored argument against the same region lifetime rule as
-/// `EAssign`; skip the duplicate type walk entirely outside a region.
+/// `EAssign`. The caller has already established an active region.
 /// `operation` is the checker's answer for the callee (see
 /// `retaining_write_argument_mask`).
-export fn retaining_write_region_check(name: String, operation: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
-  // #2386: the name test is a compare ladder; the region test is a chain
-  // lookup. Asking the ladder first keeps the lookup off every call site
-  // whose callee retains nothing -- nearly all of them -- and the check
-  // itself does nothing for those either way.
-  let retained = retaining_write_call_mask(env = env, name = name, operation = operation)
-  if Array::length(args) > 0 && retained != 0 && env_has_active_region(env) {
+export fn check_retaining_write_in_region(name: String, operation: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+  let retained = retaining_write_call_mask_in_region(env = env, name = name, operation = operation)
+  if Array::length(args) > 0 && retained != 0 {
     let target = Array::get(args, at = 0)
     let reaches_outer = region_result_part_reaches_outer(target = target, env = env)
     let mut value_index = 1
