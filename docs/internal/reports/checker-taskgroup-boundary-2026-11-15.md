@@ -25,6 +25,24 @@ The frontend has already exited when that compiler starts. Warm builds run no
 worker processes and still incur discovery, product lookup and republication
 before the final build.
 
+### Clock discrepancy
+
+The harness recorded elapsed time from `CLOCK_MONOTONIC` (`wall_s`) and
+`CLOCK_REALTIME` (`realtime_elapsed_s`) over the same interval. Several
+runs across all three series differ by about 2.8–3.0 s. For example, the
+initial split CLI warm comparison has medians of 17.32 → 16.55 s on the
+monotonic clock and 14.35 → 16.54 s on realtime, so the comparison reverses.
+A later four-clock probe on the same WSL host observed two steps during
+which realtime moved backwards by 2.9257 s and 2.9255 s, respectively.
+Across those same sample intervals, `CLOCK_MONOTONIC` advanced by
+26.8 ms and 27.5 ms, while `CLOCK_MONOTONIC_RAW` advanced by 24.3 ms and
+25.0 ms. This reproduces the size and direction of the disagreement.
+The trigger for the realtime steps is unverified. Use the monotonic
+readings for elapsed time and retain both readings in the raw data.
+Differences under 5% remain inconclusive for rollout.
+Output hashes, checker counters, and the observed process-tree RSS peaks
+are separate observations.
+
 ## What limits scaling
 
 | Corpus | Cache | Discovery | Job preparation | Coordinator | Product reads | Publication | Frontend total |
@@ -143,3 +161,80 @@ VIBE_BUILD_CACHE_DIR="$taskgroup_cache" VIBE_TASKGROUP_JOB_CACHE=1 \
 
 cmp ordinary.wasm taskgroup.wasm
 ```
+
+## Initial direct checked-product handoff
+
+`VIBE_TASKGROUP_DIRECT=1` selects the direct route for `vibe build --jobs 4`
+and `scripts/build_taskgroup_project.sh`. The host stages one combined
+environment/lowering product per module in its private work directory.
+The final compiler reads each product at the corresponding step of its
+own import walk. It checks the current typing fingerprint and canonical
+encoding before hydrating the ordinary environment and lowering memos.
+Missing, malformed and stale products stop the build. Projects with
+diagnosed modules retain the established diagnostic route.
+
+Three alternating cold/warm pairs per workload used the same candidate
+stage2, checker and coordinator images in both lanes. Both lanes used
+four process workers and successful-product replay. Cache isolation,
+corpora, target RC1 and process-tree RSS sampling match the protocol
+above. The measured command is the filesystem build helper. The
+installed launcher was validated separately.
+
+| Corpus | Cache | Wall, published → direct | Aggregate peak RSS, published → direct |
+|---|---|---:|---:|
+| Compiler closure | Cold | 19.53 → 19.21 s (−1.6%) | 920 → 1,092 MiB (+18.7%) |
+| Compiler closure | Warm | 8.81 → 8.32 s (−5.5%) | 920 → 1,092 MiB (+18.7%) |
+| Split CLI | Cold | 35.48 → 34.91 s (−1.6%) | 1,768 → 2,033 MiB (+14.9%) |
+| Split CLI | Warm | 17.32 → 16.55 s (−4.5%) | 1,751 → 1,995 MiB (+13.9%) |
+
+The separate publisher invocation disappears. The final compiler's
+allocator frontier rises by 13 MiB for the compiler closure and 23 MiB
+for the split CLI, where it now validates canonical products. In this first version, the Node frontend waited for the final compiler's
+acceptance receipt before caching fresh replay products. The frontend
+remained live during final compilation and peaked at 160–189 MiB for the
+compiler closure and 219–274 MiB for the split CLI. Those process peaks
+are separate observations from the aggregate peak.
+
+All 24 Wasm outputs matched byte-for-byte within each corpus. Final compiler
+telemetry recorded zero rechecks. Cold ran every worker job and warm
+replayed every product with zero workers. The candidate stage2/stage3
+fixpoint and the checkout and installed public replay tests passed for
+both routes, including direct rejection of missing, malformed and stale
+products.
+
+To reproduce, run the TaskGroup build command above with
+`VIBE_TASKGROUP_DIRECT=0` and `VIBE_TASKGROUP_DIRECT=1` in separate caches
+on the same images. Inspect `handoff` in `VIBE_TASKGROUP_TRACE_OUT` and the
+final compiler's reuse counters. Whole wall time includes final validation
+and replay writes. In the trace, the direct publication span measures
+staging and image verification, while the persistent publication span also
+includes the auxiliary compiler and cold replay writes. The
+[24 direct-comparison samples](../../../bench/perf/analysis/checker-taskgroup-direct-2026-11-15.json)
+retain hashes, counters, per-build wall times and peaks.
+
+## Exit the frontend before final compilation
+
+The launcher now waits for the Node frontend to exit after staging the
+checked products, then starts the final compiler. A separate replay commit
+runs after a successful final build with an acceptance receipt and fresh
+products. The commit uses the captured cache keys and verifies the producer
+images again. A fully warm build needs no replay commit process.
+
+The follow-up is a second three-round series on the same host, corpora,
+stage2, worker and coordinator images. Process samples show the frontend
+exiting before the final compiler started in all 12 runs. Outputs match
+both previous lanes byte for byte and final compiler rechecks remain zero.
+
+| Corpus | Cache | Wall, first direct → sequential | Peak RSS, first direct → sequential | Earlier published RSS |
+|---|---|---:|---:|---:|
+| Compiler closure | Cold | 19.21 → 19.32 s | 1,092 → 945 MiB (−13.4%) | 920 MiB |
+| Compiler closure | Warm | 8.32 → 8.31 s | 1,092 → 927 MiB (−15.0%) | 920 MiB |
+| Split CLI | Cold | 34.91 → 34.97 s | 2,033 → 1,791 MiB (−11.9%) | 1,768 MiB |
+| Split CLI | Warm | 16.55 → 16.46 s | 1,995 → 1,780 MiB (−10.8%) | 1,751 MiB |
+
+The final compiler's guest frontier changes by less than 0.1 MiB between
+the two direct implementations. Peak RSS after exiting the frontend comes
+within 8–29 MiB of the published route, with the remaining canonical
+product validation in the final compiler. The
+[12 follow-up samples](../../../bench/perf/analysis/checker-taskgroup-direct-lifetime-2026-11-15.json)
+include the sampled phase boundaries and the older comparison medians.
