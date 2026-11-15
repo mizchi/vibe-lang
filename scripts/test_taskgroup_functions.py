@@ -319,6 +319,38 @@ def assert_phase_observation_cleanup(artifacts, runner, env, project, expected):
     print("actual sampler/profiler cleanup and parent-only filesystem counters preserve phase outputs", flush=True)
 
 
+def assert_flat_bump(repo, compiler, artifacts, runner, env, project, source):
+    root = project / "flat-bump"
+    root.mkdir()
+    entry = root / "source.vibe"
+    entry.write_text(source)
+    control = root / "ordinary.wasm"
+    settings = dict(env, VIBE_RC="0", VIBE_INTERNAL_TRUSTED_SOURCE="1", VIBE_IMPORT_ABI="raw",
+                    VIBE_PREOPEN_DIR=str(root), VIBE_FS_COMPILE="0")
+    subprocess.run(
+        ["bash", str(repo / "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main",
+         str(compiler), str(entry), str(control), "main"],
+        cwd=root, env=settings, text=True, capture_output=True, check=True, timeout=180,
+    )
+    for jobs in (1, 2, 4):
+        output, trace = root / f"jobs-{jobs}.wasm", root / f"jobs-{jobs}.json"
+        command = [
+            "node", str(repo / "scripts/taskgroup_functions_frontend.mjs"), str(compiler), str(entry),
+            str(output), "main", str(jobs), str(root), str(artifacts), str(runner),
+        ]
+        result = subprocess.run(command, cwd=root, env=dict(settings, VIBE_FUNCTION_TRACE_OUT=str(trace),
+                                VIBE_FUNCTION_FLAT_BOOTSTRAP="1"), capture_output=True, text=True, timeout=180)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert output.read_bytes() == control.read_bytes(), jobs
+        report = json.loads(trace.read_text())
+        assert report["workers"] == jobs and report["finisher_source_reads"] == 0, report
+    refused = subprocess.run(command, cwd=root, env=dict(settings, VIBE_FUNCTION_FLAT_BOOTSTRAP="1",
+                             VIBE_INTERNAL_TRUSTED_SOURCE="0"), capture_output=True, text=True, timeout=180)
+    assert refused.returncode != 0 and "trusted generated source" in refused.stderr, refused
+    assert output.read_bytes() == control.read_bytes()
+    print("flat RC0 function workers match ordinary output at 1/2/4 jobs and refuse untrusted input", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("compiler", type=Path)
@@ -345,6 +377,9 @@ def main():
             ("exception", 'fn fail() -> Int with Exception { throw("expected") }\nfn main() -> Int { handle { fail() } with { Exception::Throw(_) => 17 } }', "17"),
             ("large-string", 'let value: String = "' + "z" * 131072 + 'é🍣"\nfn main() -> Int { String::length(value) }', "131078"),
         ]
+
+        closure_source = next(source for name, source, _ in cases if name == "closures")
+        assert_flat_bump(repo, compiler, artifacts, runner, env, project, closure_source)
 
         def build(label, jobs=None, extra=None, expected=0):
             output, trace = project / f"{label}.wasm", project / f"{label}.json"

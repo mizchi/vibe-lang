@@ -8,6 +8,9 @@ import @vibe/compiler/codegen/executable {
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc_body_cached, prepare_file_fs_mode_rc_body
 }
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_generated_source_wasi_only, prepare_generated_wasi_bump
+}
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache, codegen_body_cache_merge
 }
@@ -74,8 +77,17 @@ fn phase_begin() -> Bool with Env + Exception {
     throw("function phases: an instance may execute only one phase")
   } else ()
   Array::set(phase_used, at = 0, value = true)
-  if Env::get("VIBE_UNSTABLE") != "1" || Env::get("VIBE_RC") != "1" {
-    throw("function phases: requires unstable target RC1")
+  let flat_bootstrap = Env::get("VIBE_FUNCTION_FLAT_BOOTSTRAP") == "1"
+  let rc = Env::get("VIBE_RC")
+  if Env::get("VIBE_UNSTABLE") != "1" || (if flat_bootstrap {
+    rc != "0"
+  } else {
+    rc != "1"
+  }) {
+    throw("function phases: requires unstable target RC1 or the flat RC0 bootstrap")
+  } else ()
+  if flat_bootstrap && (Env::get("VIBE_INTERNAL_TRUSTED_SOURCE") != "1" || Env::get("VIBE_CFG") != "") {
+    throw("function phases: flat bootstrap requires trusted generated source and empty VIBE_CFG")
   } else ()
   let backend = Env::get("VIBE_BACKEND")
   let cache = Env::get("VIBE_CODEGEN_BODY_CACHE")
@@ -117,8 +129,15 @@ export fn function_phase_prepare() -> Bytes with Env + Exception + Fs {
 fn phase_prepare_impl() -> Bytes with Env + Exception + Fs {
   let checked_error_row = phase_begin()
   let jobs = phase_jobs()
-  let prepared = prepare_file_fs_mode_rc_body(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")), checked_error_row = checked_error_row)
-  let ctx = function_context_new(plan = prepared.functions, input = prepared.input, debug_break = false, debug_trace = false, enable_rc = true, rc_shadow = false)
+  let input_path = Env::get("VIBE_LOWERING_INPUT")
+  let entry_name = Env::get("VIBE_LOWERING_ENTRY")
+  let exports_stripped = executable_exports_stripped(entry_name)
+  let prepared = if Env::get("VIBE_FUNCTION_FLAT_BOOTSTRAP") == "1" {
+    prepare_generated_wasi_bump(source = Fs::read_file(input_path), entry_name = entry_name, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
+  } else {
+    prepare_file_fs_mode_rc_body(entry_path = input_path, entry_name = entry_name, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
+  }
+  let ctx = function_context_new(plan = prepared.functions, input = prepared.input, debug_break = false, debug_trace = false, enable_rc = prepared.enable_rc, rc_shadow = false)
   let shared = write_function_context(ctx)
   let context_digest = blake3_bytes_simd(shared)
   let directory = Env::get("VIBE_LOWERING_DIRECTORY")
@@ -212,5 +231,13 @@ export fn function_phase_serial() -> Bytes with Env + Exception + Fs {
 
 fn phase_serial_impl() -> Bytes with Env + Exception + Fs {
   let checked_error_row = phase_begin()
-  strip_executable_wasm_env(wasm = compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", exports_stripped = executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")), checked_error_row = checked_error_row), entry_name = Env::get("VIBE_LOWERING_ENTRY"))
+  let input_path = Env::get("VIBE_LOWERING_INPUT")
+  let entry_name = Env::get("VIBE_LOWERING_ENTRY")
+  let exports_stripped = executable_exports_stripped(entry_name)
+  let bytes = if Env::get("VIBE_FUNCTION_FLAT_BOOTSTRAP") == "1" {
+    compile_generated_source_wasi_only(source = Fs::read_file(input_path), entry_name = entry_name, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
+  } else {
+    compile_file_fs_mode_rc_body_cached(entry_path = input_path, entry_name = entry_name, cache_mode = "off", exports_stripped = exports_stripped, checked_error_row = checked_error_row)
+  }
+  strip_executable_wasm_env(wasm = bytes, entry_name = entry_name)
 }

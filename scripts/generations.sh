@@ -52,6 +52,7 @@ SKIP_RUN_INIT="${VIBE_GENERATION_SKIP_RUN_INIT:-1}"
 GENERATION_INVOKE_MODE=""
 GENERATION_ENTRY=""
 GENERATION_VALIDATION_SOURCE=""
+STAGE3_FUNCTION_JOBS="${VIBE_GENERATION_STAGE3_FUNCTION_JOBS:-0}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -64,6 +65,8 @@ usage:
 
 The build command implements the Rust-style compiler generation policy:
 stage0 fixed seed -> stage1 current source -> stage2 current source.
+For the flat RC0 compiler, VIBE_GENERATION_STAGE3_FUNCTION_JOBS=1, 2, or 4
+selects function workers for the optional --stage3 hop.
 
 The status command is read-only: it reports the pinned seed (with sha
 verification), the current source commit, and the latest generation manifest
@@ -519,6 +522,22 @@ run_selfbuild_compile() {
   [ -s "$out" ] || die_compile "$label" "$out" "did not produce output: $out"
 }
 
+run_stage3_functions() (
+  local compiler="$1" entry="$2" out="$3" entry_name="$4"
+  local images candidate
+  images="$(dirname "$out")/stage3-function-images"
+  candidate="$images/stage3.candidate.wasm"
+  cd "$PROJECT_ROOT" || return $?
+  echo "[selfhost-gen] stage2 -> stage3 (RC0 function workers: $STAGE3_FUNCTION_JOBS)"
+  bash "$SCRIPT_DIR/build_taskgroup_functions.sh" "$compiler" "$images" || return $?
+  VIBE_UNSTABLE=1 VIBE_FUNCTION_FLAT_BOOTSTRAP=1 VIBE_FUNCTION_TRACE_OUT="$out.functions.json" \
+    node "$SCRIPT_DIR/taskgroup_functions_frontend.mjs" "$compiler" "$entry" "$candidate" "$entry_name" \
+    "$STAGE3_FUNCTION_JOBS" "$PROJECT_ROOT" "$images" "$PROJECT_ROOT/runtime/viberun/target/release/viberun" || return $?
+  cmp -s "$compiler" "$candidate" || die "stage3 function worker output differs from stage2"
+  mv -f "$candidate" "$out" || return $?
+  rm -f "$out.diag"
+)
+
 # Each stage hop is one span (docs/internal/compiler/tracing-design.md step 0). This is the
 # smallest place that makes the bootstrap chain legible as a tree:
 # seed -> stage1 -> stage2 -> stage3 is four full compiles in four processes,
@@ -537,11 +556,15 @@ run_generation_compile() {
   trace_begin "$label"
   local tok="$TRACE_TOKEN"
   local rc=0
-  case "$GENERATION_INVOKE_MODE" in
-    cli) run_cli_compile "$label" "$compiler" "$entry" "$out" "$compile_entry_name" || rc=$? ;;
-    selfbuild) run_selfbuild_compile "$label" "$compiler" "$out" || rc=$? ;;
-    *) trace_end "$tok" 2; die "unknown generation invoke mode: $GENERATION_INVOKE_MODE" ;;
-  esac
+  if [ "$STAGE3_FUNCTION_JOBS" != 0 ] && [ "$label" = "stage2 -> stage3" ]; then
+    run_stage3_functions "$compiler" "$entry" "$out" "${compile_entry_name:-$SEED_ENTRY_NAME}" || rc=$?
+  else
+    case "$GENERATION_INVOKE_MODE" in
+      cli) run_cli_compile "$label" "$compiler" "$entry" "$out" "$compile_entry_name" || rc=$? ;;
+      selfbuild) run_selfbuild_compile "$label" "$compiler" "$out" || rc=$? ;;
+      *) trace_end "$tok" 2; die "unknown generation invoke mode: $GENERATION_INVOKE_MODE" ;;
+    esac
+  fi
   trace_end "$tok" "$rc"
   return "$rc"
 }
@@ -620,7 +643,7 @@ write_generation_manifest() {
   local stage3="${7:-}"
   local entry_sha256="$8"
   local generation_json="$out_dir/generation.json"
-  node - "$PROJECT_ROOT" "$manifest" "$generation_json" "$entry" "$stage0" "$stage1" "$stage2" "$stage3" "$(git_commit)" "$(git_dirty)" "$entry_sha256" <<'NODE'
+  node - "$PROJECT_ROOT" "$manifest" "$generation_json" "$entry" "$stage0" "$stage1" "$stage2" "$stage3" "$(git_commit)" "$(git_dirty)" "$entry_sha256" "$STAGE3_FUNCTION_JOBS" <<'NODE'
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -637,6 +660,7 @@ const [
   sourceCommit,
   dirty,
   entrySha256,
+  stage3FunctionJobs,
 ] = process.argv.slice(2);
 
 const seedManifest = JSON.parse(fs.readFileSync(seedManifestPath, "utf8"));
@@ -661,6 +685,7 @@ const stages = {
 let stage3EqualStage2 = null;
 if (stage3Path && fs.existsSync(stage3Path)) {
   stages.stage3 = artifact(stage3Path, "stage2");
+  if (stage3FunctionJobs !== "0") stages.stage3.function_workers = Number(stage3FunctionJobs);
   stage3EqualStage2 = stages.stage2.sha256 === stages.stage3.sha256;
 }
 
@@ -833,6 +858,17 @@ command_build() {
     die "split CLI generation requires a bootstrap bump first; current fixed seed uses legacy cli_support.vibe"
   fi
   GENERATION_COMPILE_ENTRY_NAME="${entry_name:-$SEED_ENTRY_NAME}"
+  case "$STAGE3_FUNCTION_JOBS" in
+    0) ;;
+    1|2|4)
+      [ "$build_stage3" = 1 ] && [ "$VIBE_RC" = 0 ] && [ "$VIBE_INTERNAL_TRUSTED_SOURCE" = 1 ] &&
+        [ "$GENERATION_COMPILE_ENTRY_NAME" = cli_main ] && [ "${VIBE_FS_COMPILE:-0}" != 1 ] && [ -z "${VIBE_CFG:-}" ] &&
+        [ "$RUNNER_SCRIPT" = "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" ] &&
+        use_cli_invoke "$requested_entry" && use_flat_cli_source "$requested_entry" ||
+        die "stage3 function workers require the trusted flat RC0 cli_main generation with --stage3"
+      ;;
+    *) die "VIBE_GENERATION_STAGE3_FUNCTION_JOBS must be 0, 1, 2, or 4" ;;
+  esac
   select_generation_entry "$out_dir" "$requested_entry"
   entry="$GENERATION_ENTRY"
   # Codex review on #1225: run_selfbuild_compile has no entry_name parameter

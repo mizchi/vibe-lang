@@ -397,3 +397,67 @@ Alternate `VIBE_CHECKER_SCHEDULE=waves` and `VIBE_CHECKER_SCHEDULE=ready` with
 separate cold/warm cache directories. The
 [24 ready-dispatch comparison samples](../../../bench/perf/analysis/checker-taskgroup-ready-dispatch-2026-11-15.json)
 contain runner and image digests, execution counters, wall times and RSS.
+
+## Flat RC0 bootstrap stage3
+
+The production compiler generation uses one trusted, generated flat source
+with `VIBE_RC=0`. Passing that source to `VIBE_MODULE_PLAN=1` refused its
+reserved `@vibe/compiler/internal/iterator_boundary` import. The
+filesystem plan accepts the split CLI and finds 750 modules there. That
+plan describes a different input and emission path.
+
+The flat bump compiler and the function-phase preparation now share the
+same source checking, desugaring and linked-module preparation. The
+function coordinator uses the existing bounded TaskGroup process workers,
+with the bump target carried in the validated context. The preparation
+Store exits before workers begin. The fresh finisher reads only worker
+products and owned assembly state.
+
+`VIBE_GENERATION_STAGE3_FUNCTION_JOBS=4 bash scripts/generations.sh build --stage3`
+selects the experiment for the native stage2 to stage3 hop. It builds
+producer-bound helper images, requires byte identity with stage2 before
+publishing stage3 and records the worker count in the generation receipt.
+The opt-in accepts 1, 2 or 4 jobs on the trusted flat RC0 `cli_main` lane.
+
+### Fixed-input stage measurement
+
+Three fresh process runs per mode in rotating order used the actual
+flat source and fixed-point stage2 from the preceding compiler generation.
+The mode labeled native serial uses the same phase image and runner with
+`VIBE_LOWERING_MODE=serial`. The native code cache was primed, persistent
+build caches were disabled, and helper production is outside this table.
+All nine outputs match the selected stage2 byte for byte.
+
+| Mode | Monotonic wall, median | Aggregate peak RSS, median |
+|---|---:|---:|
+| Ordinary Node compiler | 32.07 s | 3,544 MiB |
+| Native serial control | 33.31 s | 3,405 MiB |
+| Four function workers | 33.47 s | 3,394 MiB |
+
+Median native preparation was 32.19 s, followed by 0.56 s of worker
+execution and 0.46 s of finalization. The worker plan covered 13,335
+functions and 354 lambdas. The preparation guest ended at 3.39 GiB of
+bump heap. Most of the RSS difference from the Node compiler already
+appears in the native serial control.
+
+### Complete compiler generation
+
+One complete run per mode in separate output directories reproduced
+stage2 == stage3. All four artifacts matched each other. The worker run
+recorded four completed ranges and zero finisher source reads.
+
+| Mode | Full monotonic wall | Peak RSS | Sampled stage3 compilation |
+|---|---:|---:|---:|
+| Ordinary generation | 184.18 s | 3,611 MiB | 31.93 s |
+| Four stage3 function workers | 163.60 s | 3,607 MiB | 62.16 s |
+
+Stage3 in the worker run includes 26.62 s to produce the matching
+helper images. The earlier flat-source generator was observed for
+117.22 s in the ordinary run and 66.15 s in the worker run. That
+difference accounts for the shorter observed total. The one-shot full
+generation pair establishes artifact parity and the cost of the tested
+integration. Repeated fixed-input stage runs are the basis for the
+wall/RSS comparison above.
+
+The [measurement samples](../../../bench/perf/analysis/rc0-flat-bootstrap-function-workers-2026-11-15.json)
+include per-run timings, digests, aggregate RSS and phase receipts.

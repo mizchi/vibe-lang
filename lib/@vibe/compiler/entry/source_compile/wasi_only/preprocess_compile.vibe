@@ -17,12 +17,14 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/codegen/wasi {
+  LinkedModulePreparation,
   compile_wasi_module_impl,
-  compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_rc_impl,
   compile_wasi_module_rc_impl_with_typed_offsets,
   compile_wasi_module_rc_shadow_impl_with_typed_offsets,
-  compile_wasi_module_with_sources_coverage_impl_with_typed_offsets
+  compile_wasi_module_with_sources_coverage_impl_with_typed_offsets,
+  lc_finish_linked_module,
+  lc_prepare_wasi_bump_typed
 }
 
 import @vibe/compiler/syntax {
@@ -445,7 +447,7 @@ fn validate_source_exports_if_user(stmts: Array[Stmt], env: Option[TypeEnv], tru
   }
 }
 
-fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_generated: Bool, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {
+fn prepare_source_wasi_bump(source: String, entry_name: String, trusted_generated: Bool, exports_stripped: Bool, checked_error_row: Bool) -> (LinkedModulePreparation, Bool, Bool) with Exception {
   // #3126 review: one source, no recorded files -- drop what a previous
   // FS compile in this process left, so no site is placed in its files.
   merged_offset_space_reset()
@@ -465,7 +467,21 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   desugar_after_check(stmts = stmts, eq_offsets = eq_offsets, eq_keys = eq_keys)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts = stmts, entry_name = entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(bytes = compile_wasi_module_impl_with_typed_offsets(stmts = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys, exports_stripped = exports_stripped), wrap_async = wrap_async, user_exits = user_exits)
+  let prepared = lc_prepare_wasi_bump_typed(stmts = stmts, entry_name = entry_name, srcs = array_empty(), checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys, grants = array_empty(), exports_stripped = exports_stripped)
+  (prepared, wrap_async, user_exits)
+}
+
+fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_generated: Bool, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {
+  let (prepared, wrap_async, user_exits) = prepare_source_wasi_bump(source = source, entry_name = entry_name, trusted_generated = trusted_generated, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
+  maybe_wrap_async_component(bytes = lc_finish_linked_module(prepared), wrap_async = wrap_async, user_exits = user_exits)
+}
+
+export fn prepare_generated_wasi_bump(source: String, entry_name: String, exports_stripped: Bool, checked_error_row: Bool) -> LinkedModulePreparation with Exception {
+  let (prepared, wrap_async, _) = prepare_source_wasi_bump(source = source, entry_name = entry_name, trusted_generated = true, exports_stripped = exports_stripped, checked_error_row = checked_error_row)
+  if wrap_async {
+    throw("function phases: flat bootstrap requires a core Wasm entry")
+  } else ()
+  prepared
 }
 
 export fn compile_source_wasi_only(source: String, entry_name: String, exports_stripped: Bool, checked_error_row: Bool) -> Bytes with Exception {

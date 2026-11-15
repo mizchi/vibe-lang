@@ -115,7 +115,7 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
   const work = await mkdtemp(join(tmpdir(), "vibe-lowering-")), started = performance.now();
   const base = { VIBE_LOWERING_INPUT: input, VIBE_LOWERING_ENTRY: entry,
     VIBE_LOWERING_DIRECTORY: work, VIBE_FUNCTION_JOBS: String(jobs), VIBE_PREOPEN_DIR: root, VIBE_IMPORT_ABI: "raw" };
-  if (phase === "functions") base.VIBE_RC = "1";
+  if (phase === "functions") base.VIBE_RC = process.env.VIBE_FUNCTION_FLAT_BOOTSTRAP === "1" ? "0" : "1";
   try {
     const privateOutput = join(work, "result.wasm");
     const service = join(work, "service.json");
