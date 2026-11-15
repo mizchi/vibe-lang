@@ -23,9 +23,11 @@ import @vibe/compiler/core {
 import @vibe/compiler/checker {
   CheckedProgram,
   check_program_with_env_typed_lowering_located_observation,
+  checker_bind_declaration_call_header,
   checker_call_header_defaults,
   checker_call_header_has_optional,
-  checker_call_header_names
+  checker_call_header_names,
+  checker_swap_positional_rows
 }
 
 import @vibe/compiler/checker/artifacts/program {
@@ -366,4 +368,24 @@ test "imported callable surfaces preserve builtin resolution authority" {
     "value"
   ], []))
   assert(!builtin_resolves_at(env = imported, name = name, ident_off = 10))
+}
+
+fn test_positional_header(_ name: String) -> Option[Array[String]] {
+  let expr = EFn([], [], [("first", None), ("second", None)], None, None, EInt(0))
+  let env = checker_bind_declaration_call_header(env = EnvEmpty, name = name, ty = header_type(), value = expr)
+  checker_call_header_names(env = env, name = name)
+}
+
+test "positional headers combine rows and restore the enclosing check" {
+  let name = "#positional_header_fixture"
+  let original = checker_swap_positional_rows([(name, [0]), (name, [1, 0, -1, 3])])
+  let outer = test_positional_header(name)
+  let nested = checker_swap_positional_rows([("#different_header_fixture", [1])])
+  let absent = test_positional_header(name)
+  let _ = checker_swap_positional_rows(nested)
+  let restored = test_positional_header(name)
+  let _ = checker_swap_positional_rows(original)
+  assert(outer == Some(["_ first", "_ second"]))
+  assert(absent == Some(["first", "second"]))
+  assert(restored == outer)
 }

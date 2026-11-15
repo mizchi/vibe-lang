@@ -34,6 +34,11 @@ import @vibe/core {
 /// placement, the label sites -- ever sees the marker.
 let positional_rows: Array[(String, Array[Int])] = Array::slice([("", [0])], start = 0, end = 0)
 
+// Match declarations once when publishing the rows, so binding a header
+// need not scan all the declarations in a merged self-build. Alias rows
+// remain in positional_rows for their existing consumers.
+let positional_slots: Array[MutMap[String, Array[Int]]] = []
+
 /// The `_` slots written in `stmts`, empty when none. #3837: the rows also
 /// name each alias a struct literal may be written through -- a `type` alias
 /// the file declares and a name it imports with `as` -- under a key no
@@ -199,10 +204,22 @@ export fn checker_record_alias_is_local(_ name: String) -> Bool {
 export fn checker_swap_positional_rows(_ rows: Array[(String, Array[Int])]) -> Array[(String, Array[Int])] {
   let saved = Array::slice(positional_rows, start = 0, end = Array::length(positional_rows))
   Array::truncate(positional_rows, length = 0)
+  Array::truncate(positional_slots, length = 0)
   Array::truncate(local_type_alias_names, length = 0)
   for row in rows {
     Array::push(positional_rows, value = row)
-    let (n, _) = row
+    let (n, slots) = row
+    if Array::length(slots) > 0 {
+      if Array::length(positional_slots) == 0 {
+        Array::push(positional_slots, value = MutMap::new_string())
+      }
+      let index = Array::get(positional_slots, at = 0)
+      let combined = match MutMap::get(index, k = n) {
+        Some(prior) => Array::concat(prior, slots),
+        None => slots
+      }
+      MutMap::set(index, k = n, v = combined)
+    }
     if String::starts_with(n, prefix = local_type_alias_row_prefix) {
       Array::push(local_type_alias_names, value = String::substring(n, start = String::length(local_type_alias_row_prefix), end = String::length(n)))
     }
@@ -225,25 +242,20 @@ export fn checker_header_name_is_positional(_ raw: String) -> Bool {
 }
 
 fn positional_header_names(name: String, raw: Array[String]) -> Array[String] {
-  if Array::length(positional_rows) == 0 {
-    raw
-  } else {
-    let names = Array::slice(raw, start = 0, end = Array::length(raw))
-    for row in positional_rows {
-      let (decl, slots) = row
-      if decl == name {
-        for slot in slots {
-          if slot >= 0 && slot < Array::length(names) && !checker_header_name_is_positional(Array::get(names, at = slot)) {
-            Array::set(names, at = slot, value = "_ " + Array::get(names, at = slot))
-          } else {
-            ()
-          }
+  if Array::length(positional_slots) == 0 {
+    return raw
+  }
+  match MutMap::get(Array::get(positional_slots, at = 0), k = name) {
+    Some(slots) => {
+      let names = Array::slice(raw, start = 0, end = Array::length(raw))
+      for slot in slots {
+        if slot >= 0 && slot < Array::length(names) && !checker_header_name_is_positional(Array::get(names, at = slot)) {
+          Array::set(names, at = slot, value = "_ " + Array::get(names, at = slot))
         }
-      } else {
-        ()
       }
-    }
-    names
+      names
+    },
+    None => raw
   }
 }
 
