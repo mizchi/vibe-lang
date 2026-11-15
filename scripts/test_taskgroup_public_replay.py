@@ -29,6 +29,9 @@ def check_direct_product_rejections(repo, project, compiler, images, env):
     work = Path(report["work"])
     try:
         directory = work / "checked-products"
+        shared_plan = env.get("VIBE_TASKGROUP_REUSE_PLAN") == "1"
+        receipt = "checked-taskgroup-plan-v1" if shared_plan else "checked-taskgroup-v1"
+        assert (directory / "accepted").read_text() == receipt
         product, = [path for path in directory.iterdir() if path.name != "accepted"]
         raw = product.read_bytes()
         output.unlink()
@@ -53,8 +56,23 @@ def check_direct_product_rejections(repo, project, compiler, images, env):
         product.write_bytes(raw + b"trailing bytes")
         rejects("unreadable TaskGroup checked product")
         product.write_bytes(raw)
+        if shared_plan:
+            manifest = work / "plan.txt"
+            snapshot = work / "plan.txt.0.src"
+            original_manifest = manifest.read_bytes()
+            original_snapshot = snapshot.read_bytes()
+            manifest.write_bytes(original_manifest + b"dep\t0\tmissing.vibe\n")
+            rejects("stale dependencies in TaskGroup module plan")
+            bad_rank = original_manifest.replace(b"module\t0\t0\t", b"module\t0\t1\t")
+            assert bad_rank != original_manifest
+            manifest.write_bytes(bad_rank)
+            rejects("stale rank in TaskGroup module plan")
+            manifest.write_bytes(original_manifest)
+            snapshot.write_bytes(original_snapshot + b"// changed snapshot\n")
+            rejects("stale source in TaskGroup module plan")
+            snapshot.write_bytes(original_snapshot)
         source.write_text(original_source.replace("42", "43"))
-        rejects("stale TaskGroup checked product")
+        rejects("stale source in TaskGroup module plan" if shared_plan else "stale TaskGroup checked product")
 
         # A prepared ledger is insufficient on its own. Revoke acceptance
         # and remove the existing replay entry so accidental publication is
@@ -77,13 +95,16 @@ def main():
     parser.add_argument("compiler", type=Path)
     parser.add_argument("artifacts", type=Path)
     parser.add_argument("--direct", action="store_true")
+    parser.add_argument("--shared-plan", action="store_true")
     args = parser.parse_args()
+    args.direct = args.direct or args.shared_plan
     repo = Path(__file__).resolve().parent.parent
     runner = repo / "runtime/viberun/target/release/viberun"
     env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
     env.update(VIBE_CLI_WASM=str(args.compiler.resolve()), VIBE_RUNNER=str(runner),
                VIBE_TASKGROUP_ARTIFACT_DIR=str(args.artifacts.resolve()), VIBE_LIB=str(repo / "lib"),
-               VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT="1" if args.direct else "0")
+               VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT="1" if args.direct else "0",
+               VIBE_TASKGROUP_REUSE_PLAN="1" if args.shared_plan else "0")
     with tempfile.TemporaryDirectory(prefix="vibe public replay ") as directory:
         project = Path(directory)
         (project / "left.vibe").write_text("export fn left() -> Int { 25 }\n")
@@ -178,6 +199,7 @@ def main():
         assert install.returncode == 0, (install.stdout, install.stderr)
         installed_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
         installed_env.update(VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT=env["VIBE_TASKGROUP_DIRECT"],
+                             VIBE_TASKGROUP_REUSE_PLAN=env["VIBE_TASKGROUP_REUSE_PLAN"],
                              VIBE_BUILD_CACHE_DIR=str(project / "installed-cache"))
         for temperature, expected in [("cold", 3), ("warm", 0)]:
             output = project / f"installed-{temperature}.wasm"

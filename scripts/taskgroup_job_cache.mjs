@@ -9,7 +9,7 @@ const outputs = ["outcome.txt", "env.out", "cache.out", "fingerprint.out"];
 const observation = new Set([
   "VIBE_TASKGROUP_TRACE_OUT", "VIBE_INCREMENTAL_TELEMETRY_OUT",
   "VIBE_CHECKER_WORKER_TRACE", "VIBE_CHECKER_WORKER_MEM",
-  "VIBE_TASKGROUP_KEEP_JOBS", "VIBE_TASKGROUP_JOB_CACHE",
+  "VIBE_TASKGROUP_KEEP_JOBS", "VIBE_TASKGROUP_JOB_CACHE", "VIBE_TASKGROUP_REUSE_PLAN",
   "VIBE_WASM_MEMORY_STATS", "VIBE_MEM", "VIBE_MEM_SAMPLE_MS",
 ]);
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");

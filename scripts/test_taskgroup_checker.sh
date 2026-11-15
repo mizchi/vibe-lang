@@ -24,4 +24,5 @@ done
 python3 scripts/test_taskgroup_build_launcher.py "$COMPILER" "$OUT"
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT"
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct
+python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --shared-plan
 echo "TaskGroup checker dogfood oracle passed; artifacts: $OUT"

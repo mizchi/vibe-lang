@@ -44,7 +44,9 @@ if [ "${VIBE_TASKGROUP_DIRECT:-0}" = 1 ]; then
   VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR="$products" VIBE_FS_COMPILE=1 VIBE_RUNNER_EXIT_WITH_RESULT=1 \
     bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main \
     "$COMPILER" "$ENTRY" "$OUTPUT" "$ENTRY_FUNCTION"
-  if [ -n "$products" ] && { [ ! -f "$products/accepted" ] || [ "$(cat "$products/accepted")" != checked-taskgroup-v1 ]; }; then
+  receipt=checked-taskgroup-v1
+  if [ "${VIBE_TASKGROUP_REUSE_PLAN:-0}" = 1 ]; then receipt=checked-taskgroup-plan-v1; fi
+  if [ -n "$products" ] && { [ ! -f "$products/accepted" ] || [ "$(cat "$products/accepted")" != "$receipt" ]; }; then
     echo "final compiler did not consume the TaskGroup checked products" >&2
     exit 1
   fi

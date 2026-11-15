@@ -75,7 +75,8 @@ async function stageCheckedProducts(directory, outcomes) {
 // captured during preparation, independent of the final compiler's environment.
 export async function commitDirectReplay(work) {
   const { cache, fresh } = JSON.parse(await readFile(join(work, "pending-replay.json"), "utf8"));
-  if (await readFile(join(work, "checked-products", "accepted"), "utf8") !== "checked-taskgroup-v1") {
+  const receipt = process.env.VIBE_TASKGROUP_REUSE_PLAN === "1" ? "checked-taskgroup-plan-v1" : "checked-taskgroup-v1";
+  if (await readFile(join(work, "checked-products", "accepted"), "utf8") !== receipt) {
     throw new Error("invalid TaskGroup checked-product receipt");
   }
   if (!Array.isArray(fresh) || !fresh.every(([key, dir]) => /^[a-f0-9]{64}$/.test(key) && /^wave-[0-9]+-job-[0-9]+$/.test(dir))) {

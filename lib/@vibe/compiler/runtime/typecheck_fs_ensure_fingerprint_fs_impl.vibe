@@ -1,3 +1,7 @@
+import @vibe/compiler/loader {
+  load_or_parse_module_header_fs_with_config
+}
+
 import @vibe/compiler/config {
   Config, target_cfg_capture
 }
@@ -10,7 +14,7 @@ import @vibe/checker/engine {
 }
 
 import @vibe/compiler/runtime/typecheck_walk {
-  ModuleWalk, ModuleWalkState, run_module_typecheck_walk
+  ModuleWalk, ModuleWalkState, run_module_typecheck_walk_ordered
 }
 
 // lib/@vibe/compiler/runtime/typecheck_fs.vibe — ensure fingerprint fs impl.
@@ -20,7 +24,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty
+  MutMap, array_empty
 }
 
 import @vibe/ast {
@@ -137,6 +141,10 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
   typecheck_fs_lookup_string_pair,
   typecheck_ident_run,
   typing_dependency_env_reuse_valid_witness_memo_reset
+}
+
+import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
+  load_planned_module_source_with_config
 }
 
 import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
@@ -331,6 +339,122 @@ fn scheduler_trace_publish(path: String, buf: StringBuilder) -> Unit with Fs {
   ()
 }
 
+// The saved plan provides the canonical order. The current source groups
+// and the loader's resolution/contract checks still authorize every edge.
+fn validate_taskgroup_module_plan(rdb: RippleDb, root: String, manifest: String, parse_count: Int, cfg: TargetCfg, checked_error_row: Bool) -> (Array[(String, Array[String])], Array[String], Array[Int], Int) with Env + Exception + Fs {
+  if !Fs::exists(manifest) {
+    throw("type_db: missing TaskGroup module plan")
+  } else ()
+  let lines = String::split(Fs::read_file(manifest), sep = "\n")
+  if Array::length(lines) == 0 || Array::get(lines, at = 0) != "version\t1" {
+    throw("type_db: unsupported TaskGroup module plan")
+  } else ()
+  let edges: Array[(String, Array[String])] = []
+  let order: Array[String] = []
+  let ranks: Array[Int] = []
+  let used_by_owner: Array[Bool] = []
+  let indices: MutMap[String, Int] = MutMap::new_string()
+  let mut line = 1
+  while line < Array::length(lines) {
+    let raw = Array::get(lines, at = line)
+    let row = String::split(raw, sep = "\t")
+    let count = Array::length(edges)
+    if raw == "" && line + 1 == Array::length(lines) {
+      ()
+    } else if Array::length(row) == 4 && Array::get(row, at = 0) == "module" && Array::get(row, at = 1) == __to_string(count) {
+      let owner = Array::get(row, at = 3)
+      if owner == "" || (MutMap::get(indices, k = owner) is Some(_)) {
+        throw("type_db: duplicate or empty module in TaskGroup module plan")
+      } else ()
+      let rank_text = Array::get(row, at = 2)
+      let rank = match Int::parse(rank_text) {
+        Some(value) => if value >= 0 && rank_text == __to_string(value) {
+          value
+        } else {
+          throw("type_db: invalid rank in TaskGroup module plan")
+        },
+        None => throw("type_db: invalid rank in TaskGroup module plan")
+      }
+      if count > 0 {
+        let prior_rank = Array::get(ranks, at = count - 1)
+        let prior_owner = Array::get(order, at = count - 1)
+        if rank < prior_rank || (rank == prior_rank && !str_lt(a = prior_owner, b = owner)) {
+          throw("type_db: noncanonical TaskGroup module order")
+        } else ()
+      } else ()
+      MutMap::set(indices, k = owner, v = count)
+      Array::push(edges, value = (owner, array_empty()))
+      Array::push(order, value = owner)
+      Array::push(ranks, value = rank)
+      Array::push(used_by_owner, value = false)
+    } else if count > 0 && Array::length(row) == 3 && Array::get(row, at = 0) == "dep" && Array::get(row, at = 1) == __to_string(count - 1) {
+      let (_, deps) = Array::get(edges, at = count - 1)
+      Array::push(deps, value = Array::get(row, at = 2))
+    } else {
+      throw("type_db: malformed TaskGroup module plan")
+    }
+    line = line + 1
+  }
+  let count = Array::length(edges)
+  if count == 0 || Array::get(order, at = count - 1) != root {
+    throw("type_db: root is not last in TaskGroup module plan")
+  } else ()
+  let mut pc = parse_count
+  let mut i = 0
+  while i < count {
+    let (owner, deps) = Array::get(edges, at = i)
+    let (_, source_opt) = load_planned_module_source_with_config(rdb = rdb, path = owner, cfg = cfg, checked_error_row = checked_error_row)
+    let source = match source_opt {
+      Some(text) => text,
+      None => throw("type_db: stale source in TaskGroup module plan for \{owner}")
+    }
+    let snapshot_path = "\{manifest}.\{__to_string(i)}.src"
+    if !Fs::exists(snapshot_path) || Fs::read_file(snapshot_path) != source {
+      throw("type_db: stale source in TaskGroup module plan for \{owner}")
+    } else ()
+    let (current, _, next_pc) = load_or_parse_module_header_fs_with_config(path = owner, source = source, parse_count = pc, cfg = cfg, checked_error_row = checked_error_row)
+    pc = next_pc
+    if Array::length(current) != Array::length(deps) {
+      throw("type_db: stale dependencies in TaskGroup module plan for \{owner}")
+    } else ()
+    let mut expected_rank = 0
+    let mut j = 0
+    while j < Array::length(deps) {
+      let dep = Array::get(deps, at = j)
+      if dep != Array::get(current, at = j) {
+        throw("type_db: stale dependencies in TaskGroup module plan for \{owner}")
+      } else ()
+      match MutMap::get(indices, k = dep) {
+        Some(index) => if index < i {
+          let bound = Array::get(ranks, at = index) + 1
+          if bound > expected_rank {
+            expected_rank = bound
+          } else ()
+          Array::set(used_by_owner, at = index, value = true)
+        } else {
+          throw("type_db: dependency out of order in TaskGroup module plan for \{owner}")
+        },
+        None => throw("type_db: dependency missing from TaskGroup module plan for \{owner}")
+      }
+      j = j + 1
+    }
+    if Array::get(ranks, at = i) != expected_rank {
+      throw("type_db: stale rank in TaskGroup module plan for \{owner}")
+    } else ()
+    i = i + 1
+  }
+  // With strictly backward edges and the root last, each earlier node must
+  // lead to the root. Any unused earlier node is a foreign closure member.
+  i = 0
+  while i + 1 < count {
+    if !Array::get(used_by_owner, at = i) {
+      throw("type_db: unreachable module in TaskGroup module plan")
+    } else ()
+    i = i + 1
+  }
+  (edges, order, ranks, pc)
+}
+
 /// The import-DAG walk, as the wave loop a coordinator dispatches from
 /// (#1239 step 4(D)).
 ///
@@ -376,7 +500,15 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
   typing_dependency_env_reuse_valid_witness_memo_reset()
   checked_module_cache_reset_in_namespace(namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row)
   compact_source_fingerprint_memo_reset()
-  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = path, cfg = cfg, checked_error_row = checked_error_row)
+  let shared_plan = direct_products != "" && Env::get("VIBE_TASKGROUP_REUSE_PLAN") == "1"
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags, order, ranks) = if shared_plan {
+    let (edges, saved_order, saved_ranks, pc) = validate_taskgroup_module_plan(rdb = rdb, root = path, manifest = "\{direct_products}/../plan.txt", parse_count = parse_count, cfg = cfg, checked_error_row = checked_error_row)
+    (typecheck_fs_empty_dep_fps(), edges, pc, array_empty(), saved_order, saved_ranks)
+  } else {
+    let (leaf_fps, edges, pc, diags) = plan_import_graph_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = path, cfg = cfg, checked_error_row = checked_error_row)
+    let (fresh_order, fresh_ranks) = plan_module_order(edges = edges, root = path)
+    (leaf_fps, edges, pc, diags, fresh_order, fresh_ranks)
+  }
   let trace_path = scheduler_trace_path()
   let tracing = String::length(trace_path) > 0
   let trace = StringBuilder::new()
@@ -388,7 +520,7 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
   }
   let result_state = [initial]
   let fingerprint = handle {
-    run_module_typecheck_walk(edges = plan_edges, planning_diagnostics = plan_diags, initial = Array::get(result_state, at = 0), root = path, collect_diagnostics = collect_module_diagnostics())
+    run_module_typecheck_walk_ordered(edges = plan_edges, order = order, ranks = ranks, planning_diagnostics = plan_diags, initial = Array::get(result_state, at = 0), root = path, collect_diagnostics = collect_module_diagnostics())
   } with { ModuleWalk::Planned(order, ranks, edges) => {
     incremental_typecheck_telemetry_add(index = 0, amount = Array::length(order))
     if tracing {
@@ -415,7 +547,12 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
     resume(error)
   } }
   if direct_products != "" {
-    Fs::write_file("\{direct_products}/accepted", contents = "checked-taskgroup-v1")
+    let receipt = if shared_plan {
+      "checked-taskgroup-plan-v1"
+    } else {
+      "checked-taskgroup-v1"
+    }
+    Fs::write_file("\{direct_products}/accepted", contents = receipt)
   } else ()
   let state = Array::get(result_state, at = 0)
   (fingerprint, state.rdb, state.env_cache, state.dep_sources, state.parse_count)
