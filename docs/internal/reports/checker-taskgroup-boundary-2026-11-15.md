@@ -25,6 +25,20 @@ The frontend has already exited when that compiler starts. Warm builds run no
 worker processes and still incur discovery, product lookup and republication
 before the final build.
 
+### Clock discrepancy
+
+The harness recorded elapsed time from `CLOCK_MONOTONIC` (`wall_s`) and
+`CLOCK_REALTIME` (`realtime_elapsed_s`) over the same interval. Several
+runs across all three series differ by about 2.8–3.0 s. For example, the
+initial split CLI warm comparison has medians of 17.32 → 16.55 s on the
+monotonic clock and 14.35 → 16.54 s on realtime, so the comparison reverses.
+The exact source of the disagreement is unverified. The tables retain
+the monotonic readings as the benchmark harness's elapsed samples and
+both readings remain in the raw data. Treat the wall-time comparisons as
+inconclusive pending a fresh run on agreeing elapsed-time clocks.
+Output hashes, checker counters, and the observed process-tree RSS peaks
+are separate observations.
+
 ## What limits scaling
 
 | Corpus | Cache | Discovery | Job preparation | Coordinator | Product reads | Publication | Frontend total |
