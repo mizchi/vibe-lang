@@ -143,3 +143,55 @@ VIBE_BUILD_CACHE_DIR="$taskgroup_cache" VIBE_TASKGROUP_JOB_CACHE=1 \
 
 cmp ordinary.wasm taskgroup.wasm
 ```
+
+## Direct checked-product handoff
+
+`VIBE_TASKGROUP_DIRECT=1` selects the direct route for `vibe build --jobs 4`
+and `scripts/build_taskgroup_project.sh`. The host stages one combined
+environment/lowering product per module in its private work directory.
+The final compiler reads each product at the corresponding step of its
+own import walk. It checks the current typing fingerprint and canonical
+encoding before hydrating the ordinary environment and lowering memos.
+Missing, malformed and stale products stop the build. Projects with
+diagnosed modules retain the established diagnostic route.
+
+Three alternating cold/warm pairs per workload used the same candidate
+stage2, checker and coordinator images in both lanes. Both lanes used
+four process workers and successful-product replay. Cache isolation,
+corpora, target RC1 and process-tree RSS sampling match the protocol
+above. The measured command is the filesystem build helper. The
+installed launcher was validated separately.
+
+| Corpus | Cache | Wall, published → direct | Aggregate peak RSS, published → direct |
+|---|---|---:|---:|
+| Compiler closure | Cold | 19.53 → 19.21 s (−1.6%) | 920 → 1,092 MiB (+18.7%) |
+| Compiler closure | Warm | 8.81 → 8.32 s (−5.5%) | 920 → 1,092 MiB (+18.7%) |
+| Split CLI | Cold | 35.48 → 34.91 s (−1.6%) | 1,768 → 2,033 MiB (+14.9%) |
+| Split CLI | Warm | 17.32 → 16.55 s (−4.5%) | 1,751 → 1,995 MiB (+13.9%) |
+
+The separate publisher invocation disappears. The final compiler's
+allocator frontier rises by 13 MiB for the compiler closure and 23 MiB
+for the split CLI, where it now validates canonical products. The
+Node frontend waits for the final compiler's acceptance receipt before
+caching fresh replay products. Its own RSS peak is 160–189 MiB for the
+compiler closure and 219–274 MiB for the split CLI, and the process
+remains live during final compilation. Those process peaks are separate
+observations from the aggregate peak. The direct route remains opt-in
+given its whole-build RSS cost.
+
+All 24 Wasm outputs matched byte-for-byte within each corpus. Final compiler
+telemetry recorded zero rechecks. Cold ran every worker job and warm
+replayed every product with zero workers. The candidate stage2/stage3
+fixpoint and the checkout and installed public replay tests passed for
+both routes, including direct rejection of missing, malformed and stale
+products.
+
+To reproduce, run the TaskGroup build command above with
+`VIBE_TASKGROUP_DIRECT=0` and `VIBE_TASKGROUP_DIRECT=1` in separate caches
+on the same images. Inspect `handoff` in `VIBE_TASKGROUP_TRACE_OUT` and the
+final compiler's reuse counters. Whole wall time includes final validation
+and replay writes. In the trace, the direct publication span measures
+staging and image verification, while the persistent publication span also
+includes the auxiliary compiler and cold replay writes. The
+[24 direct-comparison samples](../../../bench/perf/analysis/checker-taskgroup-direct-2026-11-15.json)
+retain hashes, counters, per-build wall times and peaks.
