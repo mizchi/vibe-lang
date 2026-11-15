@@ -32,10 +32,14 @@ The harness recorded elapsed time from `CLOCK_MONOTONIC` (`wall_s`) and
 runs across all three series differ by about 2.8–3.0 s. For example, the
 initial split CLI warm comparison has medians of 17.32 → 16.55 s on the
 monotonic clock and 14.35 → 16.54 s on realtime, so the comparison reverses.
-The exact source of the disagreement is unverified. The tables retain
-the monotonic readings as the benchmark harness's elapsed samples and
-both readings remain in the raw data. Treat the wall-time comparisons as
-inconclusive pending a fresh run on agreeing elapsed-time clocks.
+A later four-clock probe on the same WSL host observed two steps during
+which realtime moved backwards by 2.9257 s and 2.9255 s, respectively.
+Across those same sample intervals, `CLOCK_MONOTONIC` advanced by
+26.8 ms and 27.5 ms, while `CLOCK_MONOTONIC_RAW` advanced by 24.3 ms and
+25.0 ms. This reproduces the size and direction of the disagreement.
+The trigger for the realtime steps is unverified. Use the monotonic
+readings for elapsed time and retain both readings in the raw data.
+Differences under 5% remain inconclusive for rollout.
 Output hashes, checker counters, and the observed process-tree RSS peaks
 are separate observations.
 
