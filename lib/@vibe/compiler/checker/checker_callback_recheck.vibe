@@ -102,31 +102,27 @@ let callback_recheck_serial: Array[Int] = [0]
 /// closure literal whose unannotated parameter has a type there that carries
 /// an active region is checked again with those types. A callback this check
 /// cannot trace to its closure is refused with the edit at such a parameter.
-export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type], s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
+export fn lambda_arg_param_write_check_in_region(args: Array[Expr], param_tys: Array[Type], s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
   let args = call_arg_values(args)
-  if env_has_active_region(env) {
-    let mut ai = 0
-    while ai < Array::length(args) && ai < Array::length(param_tys) {
-      match subst_apply(s = s, ty = Array::get(param_tys, at = ai)) {
-        CtFn(ptys, _, _) => {
-          let known = for pt in ptys {
-            Some(subst_apply(s = s, ty = pt))
-          }
-          callback_recheck(arg = Array::get(args, at = ai), param_tys = known, outer = array_empty(), env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
-        },
-        _ => ()
-      }
-      ai = ai + 1
+  let mut ai = 0
+  while ai < Array::length(args) && ai < Array::length(param_tys) {
+    match subst_apply(s = s, ty = Array::get(param_tys, at = ai)) {
+      CtFn(ptys, _, _) => {
+        let known = for pt in ptys {
+          Some(subst_apply(s = s, ty = pt))
+        }
+        callback_recheck(arg = Array::get(args, at = ai), param_tys = known, outer = array_empty(), env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
+      },
+      _ => ()
     }
-  } else {
-    ()
+    ai = ai + 1
   }
 }
 
 /// #3360: the element-callback builtins (`Array::map`, `Array::fold`,
 /// `Array::filter`, ..) check an unannotated callback parameter against the
 /// element type without binding it, so its type variable stays open and
-/// `lambda_arg_param_write_check` cannot read it. Re-check with the element
+/// `lambda_arg_param_write_check_in_region` cannot read it. Re-check with the element
 /// type and the regions its storage may predate. A fold also seeds the
 /// accumulator, which precedes the element.
 export fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, init: Option[Expr], recv_ty: Type, fn_ty: Type, pidx: Int, s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {

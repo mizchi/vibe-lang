@@ -224,16 +224,16 @@ import ./checker_call_map.vibe {
 }
 
 import ./checker_callback_recheck.vibe {
-  lambda_arg_elem_write_check, lambda_arg_param_write_check
+  lambda_arg_elem_write_check, lambda_arg_param_write_check_in_region
 }
 
 import ./checker_lambda_expr.vibe {
   array_reader_second_key,
   bind_array_arg,
+  check_retaining_write_in_region,
   field_write_mut_check,
   open_formal_name_for_var,
   record_array_receiver,
-  retaining_write_region_check,
   run_body_param_cell,
   tab_call_ty,
   tail_named_record_mentions_region
@@ -281,7 +281,7 @@ import ./checker_region_retention_arms.vibe {
 }
 
 import ./checker_region_retention.vibe {
-  retention_call_region_check,
+  retention_check_named_call_in_region,
   retention_expr_callee_region_check,
   retention_named_run_body,
   retention_region_listed,
@@ -345,7 +345,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
         // #3537: a field write constrains its receiver's type arguments, so
         // the rest of this call is checked in the substitution it returns.
         let (s, c) = field_write_mut_check(name = name, callee_off = callee_off, args = args, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, ce = check_plain)
-        let region_args = if call_placement_is_pending(callee_resolution) && env_has_active_region(env) {
+        // Placement and region checks share this call's lexical environment.
+        let active_region = env_has_active_region(env)
+        let region_args = if active_region && call_placement_is_pending(callee_resolution) {
           match call_placement_argument_view(args = args, cell = callee_resolution) {
             Some(view) => view,
             None => args
@@ -358,13 +360,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
         // the ordinary call path at the end of this chain instead.
         let operation = resolve_builtin_callee(env = env, name = name, ident_off = callee_off, resolution = callee_resolution)
         resolved_callee_capture_record(offset = call_off, operation = operation)
-        // #3255: a builtin's retained arguments are asked of the operation the
-        // checker resolved, so a program's own function of its spelling is
-        // judged by its body, below, rather than as the builtin.
-        retaining_write_region_check(name = name, operation = operation, args = region_args, env = env, defs = defs, s = s, c = c, errors = errors, ce = check_plain)
-        // #3343: a region value handed to a function or closure that may
-        // keep it -- its body is re-checked under this call's regions.
-        retention_call_region_check(name = name, name_off = callee_off, call_key = callee_off, span_len = String::length(name), args = region_args, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
+        if active_region {
+          // #3255: use the resolved operation for a builtin's retained arguments.
+          check_retaining_write_in_region(name = name, operation = operation, args = region_args, env = env, defs = defs, s = s, c = c, errors = errors, ce = check_plain)
+          // #3343: re-check a callee that may keep a region value.
+          retention_check_named_call_in_region(name = name, name_off = callee_off, call_key = callee_off, span_len = String::length(name), args = region_args, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
+        } else ()
         let builtin_operation = if builtin_operation_arity(operation) == Array::length(args) {
           operation
         } else {
@@ -2174,7 +2175,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       let s3_unified = unify_call_args_with_source_placement(param_tys = call_param_tys, arg_tys = arg_tys, arg_exprs = typed_args, s = s2, errors = errors, label = name, off = callee_off, placement = checker_call_argument_positions(callee_resolution))
                       // #3360: a closure argument's writes of its own
                       // parameter, now that the call has fixed its type.
-                      lambda_arg_param_write_check(args = typed_args, param_tys = call_param_tys, s = s3_unified, env = env, defs = defs, c = c2, errors = errors, check_child = check_child)
+                      if active_region {
+                        lambda_arg_param_write_check_in_region(args = typed_args, param_tys = call_param_tys, s = s3_unified, env = env, defs = defs, c = c2, errors = errors, check_child = check_child)
+                      } else ()
                       // #3387: a parameter whose type names no row for an
                       // effect a function argument performs.
                       let s3_args = effect_inst_unnamed_args_check(env = env, args = typed_args, arg_tys = arg_tys, param_tys = call_param_tys, s = s3_unified, callee_name = name, defs = defs, errors = errors)
@@ -2396,7 +2399,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 _ => array_empty()
               }
               let all_args = prepend_expr(first = obj, rest = args)
-              let region_args = if has_real_fn_binding && call_placement_is_pending(callee_resolution) && env_has_active_region(env) {
+              let active_region = env_has_active_region(env)
+              let region_args = if active_region && has_real_fn_binding && call_placement_is_pending(callee_resolution) {
                 prepend_expr(first = obj, rest = match call_placement_argument_view(args = args, cell = callee_resolution) {
                   Some(view) => view,
                   None => args
@@ -2404,20 +2408,22 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               } else {
                 all_args
               }
-              // #3255: a program method of a builtin's spelling is judged by
-              // its body; without one, the spelling keeps the builtin's answer.
-              let method_operation = if has_real_fn_binding && resolved_builtin_operation_from_source(qualified) > 0 {
-                0 - 1
-              } else {
-                resolved_builtin_operation_from_source(qualified)
-              }
-              retaining_write_region_check(name = qualified, operation = method_operation, args = region_args, env = env, defs = defs, s = s2, c = c2, errors = errors, ce = check_plain)
-              // #3343: as for a call by name; a method that names no
-              // function (a function stored in a field) is checked below.
-              match env_lookup(env = env, name = qualified) {
-                Some(_) => retention_call_region_check(name = qualified, name_off = qcall_field_off, call_key = call_off, span_len = String::length(method), args = region_args, env = env, defs = defs, s = s2, c = c2, errors = errors, check_child = check_child),
-                None => ()
-              }
+              if active_region {
+                // #3255: a program method of a builtin's spelling is judged by
+                // its body; without one, the spelling keeps the builtin's answer.
+                let builtin_operation = resolved_builtin_operation_from_source(qualified)
+                let method_operation = if has_real_fn_binding && builtin_operation > 0 {
+                  0 - 1
+                } else {
+                  builtin_operation
+                }
+                check_retaining_write_in_region(name = qualified, operation = method_operation, args = region_args, env = env, defs = defs, s = s2, c = c2, errors = errors, ce = check_plain)
+                // #3343: a function stored in a field is checked below.
+                match env_lookup(env = env, name = qualified) {
+                  Some(_) => retention_check_named_call_in_region(name = qualified, name_off = qcall_field_off, call_key = call_off, span_len = String::length(method), args = region_args, env = env, defs = defs, s = s2, c = c2, errors = errors, check_child = check_child),
+                  None => ()
+                }
+              } else ()
               let (arg_tys, typed_all_args, s3, c3) = if has_real_fn_binding {
                 let receiver_s = if Array::length(method_param_tys) > 0 {
                   unify_call_args(param_tys = Array::slice(method_param_tys, start = 0, end = 1), arg_tys = [
