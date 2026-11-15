@@ -181,12 +181,13 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_interp_formal,
   effect_op_sig,
   effect_tparams,
-  env_has_active_region,
   generic_callback_instance,
   interp_name_is_shim,
   is_bytestream_named_type,
+  known_region_activity,
   note_local_generic_binding,
   preserve_generic_instantiation,
+  region_activity_in_env,
   reject_non_frozen_receiver,
   slice_receiver_is_invalid,
   slice_result_type,
@@ -301,7 +302,7 @@ import ./checker_throw_kind_of_type.vibe {
 }
 
 // Check call arguments and callee dispatch through the caller's recursive checker.
-export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), check_plain: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int), check_args: (Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Subst, Int)) -> (Type, Subst, Int) {
+export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, known_active_region: Option[Bool], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), check_scoped_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String, Option[Bool], Bool) -> (Type, Subst, Int), check_plain: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int), check_args: (Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Subst, Int)) -> (Type, Subst, Int) {
   checker_record_call_placement(expr = expr, env = env, errors = errors)
   let cell = match expr {
     ECall(_, _, _, cell) => cell,
@@ -346,7 +347,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
         // the rest of this call is checked in the substitution it returns.
         let (s, c) = field_write_mut_check(name = name, callee_off = callee_off, args = args, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, ce = check_plain)
         // Placement and region checks share this call's lexical environment.
-        let active_region = env_has_active_region(env)
+        let active_region = region_activity_in_env(env = env, known = known_active_region)
         let region_args = if active_region && call_placement_is_pending(callee_resolution) {
           match call_placement_argument_view(args = args, cell = callee_resolution) {
             Some(view) => view,
@@ -2136,7 +2137,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     Some(view) => view,
                     None => args
                   }
-                  let (arg_tys, s2, c2) = check_written_call_arguments(args = args, formal_args = typed_args, cell = callee_resolution, param_tys = inferred_param_tys, env = env, defs = defs, s = callee_row_scope_subst(env = env, callee_ty = ct, s = s1), c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, callee_inst = callee_inst, name = name, check_child = check_child)
+                  let (arg_tys, s2, c2) = check_written_call_arguments(args = args, formal_args = typed_args, cell = callee_resolution, param_tys = inferred_param_tys, env = env, defs = defs, s = callee_row_scope_subst(env = env, callee_ty = ct, s = s1), c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, callee_inst = callee_inst, name = name, known_active_region = known_region_activity(active_region), check_child = check_scoped_child)
                   // #2773: THE CALL SITE THE BODY EXEMPTION DEFERS TO.
                   //
                   // `check_interp_formal` stands down inside a top-level
@@ -2399,7 +2400,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 _ => array_empty()
               }
               let all_args = prepend_expr(first = obj, rest = args)
-              let active_region = env_has_active_region(env)
+              let active_region = region_activity_in_env(env = env, known = known_active_region)
               let region_args = if active_region && has_real_fn_binding && call_placement_is_pending(callee_resolution) {
                 prepend_expr(first = obj, rest = match call_placement_argument_view(args = args, cell = callee_resolution) {
                   Some(view) => view,
@@ -2441,7 +2442,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   Some(view) => view,
                   None => args
                 }
-                let (explicit_types, next_s, next_c) = check_written_call_arguments(args = args, formal_args = explicit_args, cell = callee_resolution, param_tys = explicit_params, env = env, defs = defs, s = callee_row_scope_subst(env = env, callee_ty = mt, s = receiver_s), c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane, callee_inst = method_inst, name = qualified, check_child = check_child)
+                let (explicit_types, next_s, next_c) = check_written_call_arguments(args = args, formal_args = explicit_args, cell = callee_resolution, param_tys = explicit_params, env = env, defs = defs, s = callee_row_scope_subst(env = env, callee_ty = mt, s = receiver_s), c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane, callee_inst = method_inst, name = qualified, known_active_region = known_region_activity(active_region), check_child = check_scoped_child)
                 let types = [obj_ty]
                 let expressions = [obj]
                 for ty in explicit_types {

@@ -160,7 +160,7 @@ import @vibe/compiler/checker/traits {
 }
 
 import ./checker_escape.vibe {
-  expr_free_in, mut_binding_escapes
+  esc_pat_binds, expr_free_in, mut_binding_escapes
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -219,11 +219,12 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   effect_fresh_targs,
   effect_op_sig,
   effect_tparams,
-  env_has_active_region,
+  known_region_activity,
   mark_return_provenance_written,
   note_generic_callback_instance,
   note_local_generic_binding,
   note_value_instantiation,
+  region_activity_in_env,
   string_lit_end,
   struct_fields_ground,
   struct_fields_ground_builtin_named
@@ -348,7 +349,7 @@ fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, ca
 /// forward reference). Semantics are identical to the recursive arms: each `let`
 /// binds its (generalized, or raw for `mut`) value type into the env seen by the
 /// rest of the spine, and the final non-spine expression's result is returned.
-fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), ce_discarded_root: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), discarded_tail: Bool) -> (Type, Subst, Int) {
+fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String, Option[Bool], Bool) -> (Type, Subst, Int), known_active_region: Option[Bool], discarded_tail: Bool) -> (Type, Subst, Int) {
   let mut cur = expr
   let mut cenv = env
   let mut s1 = s
@@ -359,7 +360,10 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   // markers this spine writes when it answered true), and a spine's lets
   // never open one -- a region body is checked in its own environment -- so
   // the region state is asked once here, not two chain walks per let.
-  let spine_region_active = env_has_active_region(env)
+  let spine_region_active = region_activity_in_env(env = env, known = known_active_region)
+  // Bindings of ordinary names preserve region activity. If a synthesized
+  // binder shadows the reserved marker, children look up their own fact.
+  let mut spine_region = known_region_activity(spine_region_active)
   let mut done = false
   let mut result = (CtUnit, s, c)
   while !done {
@@ -371,15 +375,11 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // as the tail of a `let` / sequence spine there (#3716's loop-contract
         // wrapper). Not in TypeEnv: an ambient sentinel leaks through
         // if/lambda/block children and would revive #1679.
-        let (_, ns, nc) = match left {
-          EForIn(_, _, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
-          ESeq(_, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
-          ELet(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
-          ELetRec(_, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
-          ELetMut(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
-          EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
-          _ => ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        let discard_left = match left {
+          EForIn(_, _, _, _, _)|ESeq(_, _)|ELet(_, _, _, _)|ELetRec(_, _, _)|ELetMut(_, _, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => true,
+          _ => false
         }
+        let (_, ns, nc) = ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane, spine_region, discard_left)
         s1 = ns
         c1 = nc
         // The right child is processed by this iterative loop, not by a
@@ -398,7 +398,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         } else {
           ()
         }
-        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane, spine_region, false)
         Array::truncate(spawn_value_let_rhs_cell, length = 0)
         attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
         // #938 value restriction: a builder is a MUTABLE container, so its
@@ -429,6 +429,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         note_local_generic_binding(val = val, bound = gen, env = cenv)
         let def_env = cenv
         cenv = checker_bind_call_header(env = cenv, name = name, ty = gen, value = val)
+        if name == "#active_region" {
+          spine_region = None
+        } else ()
         note_scalar_local(name = name, value = val, body = body, off = let_off, ty = vt, defs = defs, env = cenv, mutable = false, lane = lane)
         // #3548: the guard desugar binds the scrutinee to the match temp, and
         // the fall-through match it reads that temp in has no offset; keep
@@ -452,7 +455,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           _ => ()
         }
         // #4091: and with what its scope links it with, in any order.
-        cenv = region_content_let_mark(env = cenv, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = outer_regions, init = val, init_env = def_env, s = ns)
+        cenv = region_content_let_mark(env = cenv, known_active_region = spine_region, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = outer_regions, init = val, init_env = def_env, s = ns)
         // #3343: what a call of `name` reaches -- the closure literal, or the
         // callee an alias stands for -- so a call inside a region can check
         // the body for what it keeps.
@@ -472,7 +475,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       },
       ELetMut(name, val, body, let_off) => {
         let err_before = Array::length(errors)
-        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane, spine_region, false)
         attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
         record_local_let_type(let_off = let_off, ty = vt, lane = lane)
         // `loop` desugars to `let mut __loop_result = 0; while true { ...
@@ -493,10 +496,13 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           cenv = checker_bind_mut_call_header(env = cenv, name = name, ty = vt, value = val, escapes = escapes)
           c1 = nc
         }
+        if name == "#active_region" {
+          spine_region = None
+        } else ()
         note_scalar_local(name = name, value = val, body = body, off = let_off, ty = vt, defs = defs, env = cenv, mutable = true, lane = lane)
         // #4091: a `let mut` is an alias of what its value, or anything its
         // scope assigns or links to it, reads from before a region.
-        cenv = region_content_let_mark(env = cenv, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = region_outer_alias_regions(value = val, scope = mut_def_env, active = spine_region_active), init = val, init_env = mut_def_env, s = ns)
+        cenv = region_content_let_mark(env = cenv, known_active_region = spine_region, name = name, scope = body, ty = subst_apply(s = ns, ty = vt), known = region_outer_alias_regions(value = val, scope = mut_def_env, active = spine_region_active), init = val, init_env = mut_def_env, s = ns)
         // #3343 (Codex on #3359): what the binding may carry -- what it
         // starts with and what is written into it anywhere in its scope --
         // for a later walk of this body or write of the binding.
@@ -512,7 +518,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       ELetRec(name, val, body) => {
         let (tv, c1b) = fresh_var(c1)
         let err_before = Array::length(errors)
-        let (vt0, ns, nc) = ce(val, checker_bind_call_header(env = cenv, name = name, ty = tv, value = val), defs, s1, c1b, errors, tytab, capture, lane)
+        let (vt0, ns, nc) = ce(val, checker_bind_call_header(env = cenv, name = name, ty = tv, value = val), defs, s1, c1b, errors, tytab, capture, lane, None, false)
         attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
         // #4054: a value that names its own binder must not bind `tv` to a row naming `tv`.
         let s2 = match unify(a = tv, b = let_rec_without_self_capture(vt = vt0, binder = tv, s = ns), s = ns) {
@@ -538,6 +544,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         record_local_let_rec_type(value = val, body = body, ty = gen, lane = lane)
         note_local_generic_binding(val = val, bound = gen, env = cenv)
         cenv = checker_bind_call_header(env = cenv, name = name, ty = gen, value = val)
+        if name == "#active_region" {
+          spine_region = None
+        } else ()
         cenv = bind_function_dependency_contracts(env = cenv, name = name, value = val)
         cenv = retention_bind_let(env = cenv, name = name, val = val, ty = gen, is_rec = true)
         s1 = s2
@@ -553,7 +562,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           EForIn(_, _, _, _, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _) => true,
           _ => false
         }
-        result = check_expr_capture_impl(expr = cur, env = cenv, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = tail_discarded)
+        result = check_expr_capture_impl(expr = cur, env = cenv, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, known_active_region = spine_region, discarded_root = tail_discarded)
         done = true
       }
     }
@@ -731,7 +740,7 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
   }
 }
 
-fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool) -> (Type, Subst, Int) {
+fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, known_active_region: Option[Bool], discarded_root: Bool) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
@@ -803,7 +812,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       },
       None => if local_alias_member_redirect(env = env, name = name) is Some(target) {
         // #3889: `M::m` through a local `type M = L` is checked as `L::m`.
-        check_expr_capture_impl(expr = EIdent(target, ident_off), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root)
+        check_expr_capture_impl(expr = EIdent(target, ident_off), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, known_active_region = known_active_region, discarded_root = discarded_root)
       } else match lookup_builtin_in_env(env = env, name = railway_ident_lookup_name(name)) {
         Some(t) => if builtin_ident_is_value(name = railway_ident_lookup_name(name), t = t) {
           // A non-function builtin is a value: a nullary constructor (`None`)
@@ -883,12 +892,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
     },
-    ESeq(_, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
-    ELet(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
-    ELetRec(_, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
-    ELetMut(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
+    ESeq(_, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture_scoped, known_active_region = known_active_region, discarded_tail = discarded_root),
+    ELet(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture_scoped, known_active_region = known_active_region, discarded_tail = discarded_root),
+    ELetRec(_, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture_scoped, known_active_region = known_active_region, discarded_tail = discarded_root),
+    ELetMut(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture_scoped, known_active_region = known_active_region, discarded_tail = discarded_root),
     EIf(cond, then_e, else_e) => {
-      let (ct, s1, c1) = check_expr_capture(expr = cond, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (ct, s1, c1) = check_expr_capture_scoped(cond, env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
       let resolved_ct = subst_apply(s = s1, ty = ct)
       match resolved_ct {
         CtBool => (),
@@ -911,9 +920,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
       let header_fork = checker_call_header_snapshot()
-      let (tt0, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (tt0, s2, c2) = check_expr_capture_scoped(then_e, env, defs, s1, c1, errors, tytab, capture, lane, known_active_region, false)
       checker_call_header_rewind(header_fork)
-      let (et0, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (et0, s3, c3) = check_expr_capture_scoped(else_e, env, defs, s2, c2, errors, tytab, capture, lane, known_active_region, false)
       checker_call_header_merge(header_fork)
       let pending = if !has_deferred_checks() || arm_tail_all_return(then_e) || arm_tail_all_return(else_e) {
         None
@@ -931,10 +940,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
     },
-    ECall(_, _, _, _) => check_call_expr(expr = local_alias_call_expr(expr = expr, env = env), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root, check_child = check_expr_capture, check_plain = check_expr_nested, check_args = check_unmatched_call_args),
+    ECall(_, _, _, _) => check_call_expr(expr = local_alias_call_expr(expr = expr, env = env), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root, known_active_region = known_active_region, check_child = check_expr_capture, check_scoped_child = check_expr_capture_scoped, check_plain = check_expr_nested, check_args = check_unmatched_call_args),
     EBinOp(op, left, right, boff) => {
-      let (left_ty, s1, c1) = check_expr_capture(expr = left, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
-      let (right_ty, s2, c2) = check_expr_capture(expr = right, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (left_ty, s1, c1) = check_expr_capture_scoped(left, env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
+      let (right_ty, s2, c2) = check_expr_capture_scoped(right, env, defs, s1, c1, errors, tytab, capture, lane, known_active_region, false)
       // The DIAGNOSTIC anchor stays on an operand (the left reads as the
       // start of the offending expression, the right is the fallback for
       // `1 + x`) -- moving diagnostics to the #2435 operator offset is a
@@ -967,7 +976,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
     },
     EUnaryOp(op, operand) => {
-      let (operand_ty, s1, c1) = check_expr_capture(expr = operand, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (operand_ty, s1, c1) = check_expr_capture_scoped(operand, env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
       let resolved = subst_apply(s = s1, ty = operand_ty)
       let pending = match resolved {
         CtVar(id) => if (op == "-" || op == "~") && !checker_call_header_is_probe() && deferred_result_pending(id = id, s = s1) {
@@ -989,7 +998,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
     },
     EAssign(name, val, body, target_off) => {
-      let (vt, s1, c1) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (vt, s1, c1) = check_expr_capture_scoped(val, env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
       let assigned_ty = subst_apply(s = s1, ty = vt)
       // #3343: a value whose type may hide the region is asked by what it reads, too.
       let predates_region = binding_predates_active_region(name = name, env = env)
@@ -1018,13 +1027,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       checker_assign_call_header(env = env, name = name, value = val)
       if discarded_root {
-        check_expr_capture_discarded_root(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        check_expr_capture_scoped(body, env, defs, s1b, c1, errors, tytab, capture, lane, known_active_region, true)
       } else {
-        check_expr_capture(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        check_expr_capture_scoped(body, env, defs, s1b, c1, errors, tytab, capture, lane, known_active_region, false)
       }
     },
     EAssignOp(name, aop, val, body, target_off) => {
-      let (val_ty, s1, c1) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (val_ty, s1, c1) = check_expr_capture_scoped(val, env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
       let s1f = match env_lookup(env = env, name = name) {
         Some(target_ty) => {
           // #3543: a compound assignment on a `Float` (or of one) is typed as
@@ -1077,13 +1086,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
       if discarded_root {
-        check_expr_capture_discarded_root(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        check_expr_capture_scoped(body, env, defs, s1f, c1, errors, tytab, capture, lane, known_active_region, true)
       } else {
-        check_expr_capture(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        check_expr_capture_scoped(body, env, defs, s1f, c1, errors, tytab, capture, lane, known_active_region, false)
       }
     },
     EMatch(scrutinee, arms) => {
-      let (scr_ty, s1, c1) = check_expr_capture(expr = scrutinee, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (scr_ty, s1, c1) = check_expr_capture_scoped(scrutinee, env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
       let alen = Array::length(arms)
       if alen == 0 {
         // #809: a match with ZERO arms is only produced by the guard desugar
@@ -1118,6 +1127,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // the written operator instead of the synthetic match / `return None`.
         let rk = railway_kind_from_match(scrutinee = scrutinee, arms = arms)
         let rail_env = railway_origin_env(env = env, kind = rk)
+        let match_active = region_activity_in_env(env = env, known = known_active_region)
+        let match_region = known_region_activity(match_active)
         if rk != 0 {
           let zonked_scr = subst_apply(s = s1, ty = scr_ty)
           if type_is_concrete_non_option(zonked_scr) {
@@ -1195,7 +1206,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Some(t) => env_bind(env = arm_env, name = spawn_safe_marker(t), ty = CtUnit),
             None => arm_env
           }
-          let arm_env = region_content_pattern_mark(env = region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env), pat = pat, scope = body, s = si)
+          let arm_env = if match_active {
+            region_outer_alias_bind(env = arm_env, pat = pat, value = scrutinee, scope = env)
+          } else {
+            arm_env
+          }
+          let arm_region = if esc_pat_binds(pat = pat, name = "#active_region") {
+            None
+          } else {
+            match_region
+          }
+          let arm_env = region_content_pattern_mark(env = arm_env, known_active_region = arm_region, pat = pat, scope = body, s = si)
           // #3548: a pattern carries no offset, so what `check_pattern`
           // reports (a constructor bound with the wrong arity, ...) is
           // anchored at its arm -- the body, or the scrutinee when the body
@@ -1211,7 +1232,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             ()
           }
-          let (arm_ty, ns, nc) = check_expr_capture(expr = body, env = arm_env, defs = defs, s = si, c = ci, errors = errors, tytab = tytab, capture = capture, lane = lane)
+          let (arm_ty, ns, nc) = check_expr_capture_scoped(body, arm_env, defs, si, ci, errors, tytab, capture, lane, arm_region, false)
           checker_call_header_rewind(header_arms)
           si = ns
           ci = nc
@@ -1937,7 +1958,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       (hres, hs1, hc1)
     },
     EWhile(cond, body) => {
-      let (ct, s1, c1) = check_expr_capture(expr = cond, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (ct, s1, c1) = check_expr_capture_scoped(cond, env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
       let resolved_ct = subst_apply(s = s1, ty = ct)
       match resolved_ct {
         CtBool => (),
@@ -2604,7 +2625,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let tys = array_empty()
       let mut ti = 0
       while ti < ilen {
-        let (it, ns, nc) = check_expr_capture(expr = Array::get(items, at = ti), env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        let (it, ns, nc) = check_expr_capture_scoped(Array::get(items, at = ti), env, defs, s1, c1, errors, tytab, capture, lane, known_active_region, false)
         Array::push(tys, value = it)
         s1 = ns
         c1 = nc
@@ -2643,7 +2664,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // element adds 0.01% to the heap high-water mark (#3353).
         let mut ai = 0
         while ai < ilen {
-          let (it, ns, nc) = check_expr_capture(expr = Array::get(items, at = ai), env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+          let (it, ns, nc) = check_expr_capture_scoped(Array::get(items, at = ai), env, defs, s1, c1, errors, tytab, capture, lane, known_active_region, false)
           s1 = ns
           c1 = nc
           if ai == 0 {
@@ -2747,7 +2768,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     },
     ELabeledArg(_, _, la_val) => {
       let (known, value_env) = checker_labeled_argument_context(env)
-      let (value_ty, la_s, la_c) = check_expr_capture(expr = la_val, env = value_env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (value_ty, la_s, la_c) = check_expr_capture_scoped(la_val, value_env, defs, s, c, errors, tytab, capture, lane, known_active_region, false)
       (if known {
         value_ty
       } else {
@@ -2765,6 +2786,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
 /// The dynamic stack makes the rule apply uniformly to every existing
 /// recursive check without reconstructing provenance from source offsets.
 export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
+  check_expr_capture_scoped(expr, env, defs, s, c, errors, tytab, capture, lane, None, false)
+}
+
+/// Explicit scope knowledge follows only children whose region is preserved.
+fn check_expr_capture_scoped(_ expr: Expr, _ env: TypeEnv, _ defs: Array[TypeDef], _ s: Subst, _ c: Int, _ errors: Array[String], _ tytab: Array[(Int, Type)], _ capture: Option[TypedOccurrenceRoleLaneCapture], _ lane: String, _ known_active_region: Option[Bool], _ discarded_root: Bool) -> (Type, Subst, Int) {
   // Production calls carry None. Avoid enter/exit Option dispatches for every
   // recursive expression while preserving them exactly for opt-in capture.
   let barrier = checker_call_header_barrier(expr)
@@ -2774,38 +2800,10 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
     None
   }
   let result = match capture {
-    None => check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = lane, discarded_root = false),
+    None => check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = lane, known_active_region = known_active_region, discarded_root = discarded_root),
     Some(_) => {
       typed_occurrence_capture_enter_expression(capture = capture, expr = expr)
-      let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = false)
-      typed_occurrence_capture_record_direct_return(capture = capture, ty = result.0, lane = lane)
-      typed_occurrence_capture_exit_expression(capture)
-      result
-    }
-  }
-  if barrier {
-    checker_call_header_merge(header_scope)
-  } else {
-    ()
-  }
-  result
-}
-
-/// Check exactly this expression root as a discarded statement. Recursive
-/// children go back through `check_expr_capture`, so the flag cannot leak into
-/// a nested value position (#1679 review follow-up).
-fn check_expr_capture_discarded_root(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
-  let barrier = checker_call_header_barrier(expr)
-  let header_scope = if barrier {
-    checker_call_header_snapshot()
-  } else {
-    None
-  }
-  let result = match capture {
-    None => check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = lane, discarded_root = true),
-    Some(_) => {
-      typed_occurrence_capture_enter_expression(capture = capture, expr = expr)
-      let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = true)
+      let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, known_active_region = known_active_region, discarded_root = discarded_root)
       typed_occurrence_capture_record_direct_return(capture = capture, ty = result.0, lane = lane)
       typed_occurrence_capture_exit_expression(capture)
       result
@@ -2848,7 +2846,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
 fn check_expr_nested(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
   check_assignable_set_type_defs(defs)
   let saved_headers = checker_call_header_probe_begin()
-  let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = "Primary", discarded_root = false)
+  let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = "Primary", known_active_region = None, discarded_root = false)
   checker_call_header_probe_end(saved_headers)
   result
 }
