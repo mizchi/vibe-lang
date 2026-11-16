@@ -1938,14 +1938,20 @@ for ot_lane in bump rc shadow gc; do
     fi
   fi
 done
-# The companion fixture mixes a local path with a parameter path; it answered
-# 5000 on rc and shadow before (the local path), and its parameter path still
-# leaks, so only its answer is checked.
+# The companion fixture mixes a local view with an owned parameter.
+# Only the path that leaves the parameter unused must release its reference.
 for ot_lane in bump rc shadow gc; do
   gate_fs_compile_on "$ot_lane" "fixtures/rc_owned_local_tail_mixed_param_test.vibe" "$otdir/otm.wasm" main
   gate_require_artifact "$otdir/otm.wasm" "rc_owned_local_tail_mixed_param fixture did not compile on the $ot_lane lane (#4153)"
   gate_run otm_out last "$otdir/otm.wasm"
   gate_require_eq "$otm_out" "0" "rc_owned_local_tail_mixed_param got '$otm_out' on the $ot_lane lane (want 0). A parameter handed back next to a local read was released twice, or the local read was freed (#4153)."
+  if [ "$ot_lane" = rc ] || [ "$ot_lane" = shadow ]; then
+    otm_json="$(node scripts/measure_heap.mjs "$otdir/otm.wasm" main 2>/dev/null)"
+    otm_used="$(printf '%s' "$otm_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$otm_used" ] || [ "$otm_used" -ge 8000 ]; then
+      echo "[compiler-gate] FAIL: rc_owned_local_tail_mixed_param did not bound heap growth on $ot_lane ($otm_json)" >&2; exit 1
+    fi
+  fi
 done
 rm -rf "$otdir"
 echo "[compiler-gate] owned-local tail view guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ot_used B)"

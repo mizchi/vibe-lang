@@ -81,3 +81,17 @@ test "a parameter whose body may hand back a view of it gets no path drop" {
   assert(!String::contains(plan, needle = "pick xs path_drop"))
   assert(!String::contains(plan, needle = "pick xs consume_mark:"))
 }
+
+test "a parameter unused by the arm returning a local match payload gets a guarded drop" {
+  let src = "enum Slot {\n  Full(Array[Int]);\n  Empty\n}\nfn pick(_ i: Int, _ fallback: Array[Int]) -> Array[Int] {\n  let slot = if i > 0 { Full([i]) } else { Empty }\n  match slot {\n    Full(value) => value,\n    Empty => fallback\n  }\n}\nfn main() -> Int { Array::length(pick(1, [2])) }"
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick fallback path_drop 1"))
+  assert(String::contains(plan, needle = "pick fallback consume_mark:"))
+}
+
+test "a prefix read can still make a parameter live through an arm without its name" {
+  let src = "fn pick(_ c: Bool, _ xs: Array[Array[Int]]) -> Array[Int] {\n  let view = Array::get(xs, at = 0)\n  match c {\n    true => [Array::length([xs])],\n    false => view\n  }\n}\nfn main() -> Int { Array::length(pick(true, [[2]])) }"
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick xs path_drop"))
+  assert(!String::contains(plan, needle = "pick xs consume_mark:"))
+}
