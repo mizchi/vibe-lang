@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   Stmt,
   TypeExpr,
   bsearch_leftmost,
+  expr_any_node,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -378,8 +379,8 @@ fn pe_dup_upfront(ctx: PCtx, id: Int) -> Bool {
 export fn pe_split_release_ok(ctx: PCtx, id: Int) -> Bool {
   if pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) {
     if pe_flag_has(ctx = ctx, id = id, bit = pf_param) {
-      ctx.exit_ord == 0 && pe_name_unique(ctx = ctx, id = id) && !pe_tail_may_view(ctx = ctx, e = Array::get(ctx.decl_bodies, at = id), views = [
-      ])
+      ctx.exit_ord == 0 && pe_name_unique(ctx = ctx, id = id) && !pe_tail_may_view_for_param(ctx = ctx, e = Array::get(ctx.decl_bodies, at = id), views = [
+      ], param = Array::get(ctx.decl_names, at = id))
     } else {
       true
     }
@@ -885,6 +886,14 @@ fn pe_field_read_is_immediate(ctx: PCtx, obj: String, field: String) -> Bool {
 /// answers yes; an owned result (arithmetic, a constructor, an owned call, a
 /// literal) answers no.
 export fn pe_tail_may_view(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
+  pe_tail_may_view_for_param(ctx = ctx, e = e, views = views, param = "")
+}
+
+// When the common prefix and an arm never read the parameter, that arm
+// cannot borrow from the reference the guarded epilogue would release.
+// Keep the ordinary view check when a prefix might establish an alias, or
+// the body crosses a mutable binding, sequence, or handler.
+fn pe_tail_may_view_for_param(ctx: PCtx, e: Expr, views: Array[String], param: String) -> Bool {
   match e {
     EIdent(x, _) => array_contains_str_pctx(arr = views, s = x),
     // #2509 / #2827: a read of a field declared `Int`, `Bool` or `Unit` is an
@@ -899,10 +908,14 @@ export fn pe_tail_may_view(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
     } else {
       is_borrow_ret_builtin(f) || is_borrow_ret_fname(ctx = ctx, fname = f) || bsearch_leftmost(sorted = ctx.view_ret_user, name = f) >= 0 || array_contains_str_pctx(arr = views, s = f)
     },
-    EIf(_, t, el) => pe_tail_may_view(ctx = ctx, e = t, views = views) || pe_tail_may_view(ctx = ctx, e = el, views = views),
-    EMatch(s, arms) => pe_tail_arms_may_view(ctx = ctx, s = s, arms = arms, views = views),
+    EIf(c, t, el) => {
+      let unused = pe_param_after_expr(e = c, param = param)
+      pe_tail_branch_may_view(ctx = ctx, e = t, views = views, unused_param = unused) ||
+      pe_tail_branch_may_view(ctx = ctx, e = el, views = views, unused_param = unused)
+    },
+    EMatch(s, arms) => pe_tail_arms_may_view(ctx = ctx, s = s, arms = arms, views = views, unused_param = pe_param_after_expr(e = s, param = param)),
     EHandle(b, arms) => pe_tail_may_view(ctx = ctx, e = b, views = views) || pe_tail_arms_may_view(ctx = ctx, s = EUnit, arms = arms, views = views),
-    ELet(n, v, b, _) => pe_tail_under_binder(ctx = ctx, n = n, v = v, b = b, views = views),
+    ELet(n, v, b, _) => pe_tail_under_binder(ctx = ctx, n = n, v = v, b = b, views = views, param = pe_param_after_expr(e = v, param = param)),
     ELetMut(n, v, b, _) => pe_tail_under_binder(ctx = ctx, n = n, v = v, b = b, views = views),
     ELetRec(n, v, b) => pe_tail_under_binder(ctx = ctx, n = n, v = v, b = b, views = views),
     ESeq(_, b) => pe_tail_may_view(ctx = ctx, e = b, views = views),
@@ -912,21 +925,45 @@ export fn pe_tail_may_view(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
   }
 }
 
-fn pe_tail_under_binder(ctx: PCtx, n: String, v: Expr, b: Expr, views: Array[String]) -> Bool {
+fn pe_param_after_expr(e: Expr, param: String) -> String {
+  if param != "" && pe_expr_reads_param(e = e, param = param) {
+    ""
+  } else {
+    param
+  }
+}
+
+fn pe_tail_branch_may_view(ctx: PCtx, e: Expr, views: Array[String], unused_param: String) -> Bool {
+  pe_tail_may_view(ctx = ctx, e = e, views = views) &&
+  (unused_param == "" || pe_expr_reads_param(e = e, param = unused_param))
+}
+
+fn pe_expr_reads_param(e: Expr, param: String) -> Bool {
+  expr_any_node(expr = e, pred = (node) -> match node {
+    EIdent(name, _) => name == param,
+    EAssign(name, _, _, _) => name == param,
+    EAssignOp(name, _, _, _, _) => name == param,
+    // The children walk does not expose the expressions still in a string.
+    EStringInterp(_) => true,
+    _ => false
+  })
+}
+
+fn pe_tail_under_binder(ctx: PCtx, n: String, v: Expr, b: Expr, views: Array[String], param: String = "") -> Bool {
   let mark = Array::length(views)
   if pe_tail_may_view(ctx = ctx, e = v, views = views) {
     Array::push(views, value = n)
   } else {
     ()
   }
-  let r = pe_tail_may_view(ctx = ctx, e = b, views = views)
+  let r = pe_tail_may_view_for_param(ctx = ctx, e = b, views = views, param = param)
   Array::truncate(views, length = mark)
   r
 }
 
 // A payload is a view into its scrutinee: when the scrutinee may itself be
 // one, or is a name (an owner the arm reads into), its pattern names may be.
-fn pe_tail_arms_may_view(ctx: PCtx, s: Expr, arms: Array[(Pat, Expr)], views: Array[String]) -> Bool {
+fn pe_tail_arms_may_view(ctx: PCtx, s: Expr, arms: Array[(Pat, Expr)], views: Array[String], unused_param: String = "") -> Bool {
   let names_view = match s {
     EIdent(_, _) => true,
     _ => pe_tail_may_view(ctx = ctx, e = s, views = views)
@@ -941,7 +978,7 @@ fn pe_tail_arms_may_view(ctx: PCtx, s: Expr, arms: Array[(Pat, Expr)], views: Ar
     } else {
       ()
     }
-    found = pe_tail_may_view(ctx = ctx, e = ab, views = views)
+    found = pe_tail_branch_may_view(ctx = ctx, e = ab, views = views, unused_param = unused_param)
     Array::truncate(views, length = mark)
     i = i + 1
   }
