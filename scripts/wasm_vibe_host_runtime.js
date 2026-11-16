@@ -541,7 +541,7 @@ function decodeTaggedString(instance, tagged) {
   return new TextDecoder().decode(mem.subarray(start, end));
 }
 
-function decodeSelfhostPackedString(instance, packed) {
+function readSelfhostPackedStringBytes(instance, packed) {
   if (typeof packed !== "bigint") {
     throw new Error(`expected selfhost packed string bigint, got ${typeof packed}`);
   }
@@ -555,7 +555,27 @@ function decodeSelfhostPackedString(instance, packed) {
   if (start < 0 || len < 0 || end < start || end > mem.length) {
     throw new Error(`selfhost string range out of bounds: ${start}..${end}`);
   }
-  return new TextDecoder().decode(mem.subarray(start, end));
+  return mem.subarray(start, end);
+}
+
+function decodeSelfhostPackedString(instance, packed) {
+  return new TextDecoder().decode(readSelfhostPackedStringBytes(instance, packed));
+}
+
+const taskGroupSha256Prefix = Buffer.from("\0vibe:taskgroup:sha256:", "ascii");
+
+function taskGroupSha256Request(instance, value) {
+  if (!hostUsesRawAbi() || typeof value !== "bigint") return undefined;
+  const bytes = readSelfhostPackedStringBytes(instance, value);
+  if (bytes.length < taskGroupSha256Prefix.length) return undefined;
+  for (let i = 0; i < taskGroupSha256Prefix.length; i++) {
+    if (bytes[i] !== taskGroupSha256Prefix[i]) return undefined;
+  }
+  const payload = bytes.subarray(taskGroupSha256Prefix.length);
+  // A separate request advertises the protocol before any source is sent.
+  if (payload.length === 1 && payload[0] === 63) return "1";
+  if (payload.length === 0 || payload[0] !== 0) return undefined;
+  return crypto.createHash("sha256").update(payload.subarray(1)).digest("hex");
 }
 
 function decodeSelfhostPackedBytes(instance, packed) {
@@ -2687,6 +2707,7 @@ function writeProfileRequest(req, elapsedUs) {
     rejectPolicyWasiModuleImports,
     requestGuestExit,
     tcpWorkerCall,
+    taskGroupSha256Request,
     tryDecodeExceptionString,
     unimplementedAsyncImportStub,
     unimplementedImportStub,

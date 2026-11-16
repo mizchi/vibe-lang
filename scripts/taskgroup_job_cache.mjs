@@ -30,12 +30,17 @@ export class TaskGroupJobCache {
     Object.assign(this, { root, images, hashes, context });
   }
 
-  inputKey(inputs) {
+  inputKey(inputs, interfaceReplay = false) {
     // Match the original prepared-file order: manifest, source, then lexical
     // dependency filenames. The numeric occurrence remains part of each name.
-    const ordered = [...inputs.slice(0, 2), ...inputs.slice(2).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)];
+    const [[manifestName, manifest], source, ...dependencies] = inputs;
+    const job = interfaceReplay
+      ? manifest.replace(/^(dep\t[^\t\n]+)\t[^\n]+$/gm, "$1")
+      : manifest;
+    const ordered = [[manifestName, job], source, ...dependencies.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)];
     const hash = createHash("sha256");
     hash.update(this.context);
+    if (interfaceReplay) hash.update("interface-replay-digests-v2\0");
     for (const [name, contents] of ordered) {
       // Length framing distinguishes missing/empty files and field boundaries.
       hash.update(JSON.stringify([name, Buffer.byteLength(contents, "utf8")]));

@@ -2,7 +2,7 @@ import @vibe/cache {
   compact_string_fingerprint, normalize_persistent_cache_text
 }
 import @vibe/core {
-  array_empty
+  array_empty, sha256
 }
 import @vibe/compiler/core {
   BindingOrigin,
@@ -1372,6 +1372,24 @@ export fn encode_checked_module_product(env: TypeEnv, lowering: Option[(Array[In
     None => cache_push(out = out, text = "lowering\tmissing\n")
   }
   cache_text_finish(out)
+}
+
+/// Extract the v10 environment prefix of an already validated canonical v11
+/// product. Both versions use the same length-framed environment segment.
+export fn checked_module_product_environment_text(_ text: String) -> String with Exception {
+  let version = "version\t11\n"
+  let header = version + "env\t"
+  let (length, start) = parse_count_header(text = text, pos = String::length(header), terminator = ':')
+  let end = start + length
+  if !String::starts_with(text, prefix = header) || end < start || end >= String::length(text) || String::char_code_at(text, at = end) != '\n' {
+    throw("invalid checked module product environment segment")
+  } else {
+    "version\t10\n" + text[String::length(version): end + 1]
+  }
+}
+
+export fn checked_module_product_environment_digest(_ text: String) -> String with Exception {
+  sha256(checked_module_product_environment_text(text))
 }
 
 /// Reject an entire v11 product when its environment or lowering is malformed.

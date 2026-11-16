@@ -31,6 +31,7 @@ def check_direct_product_rejections(repo, project, compiler, images, env):
         directory = work / "checked-products"
         product, = [path for path in directory.iterdir() if path.name != "accepted"]
         raw = product.read_bytes()
+        expected_wasm = output.read_bytes()
         output.unlink()
         # The raw adapter's output is separate from the public launcher.
         command = [
@@ -38,21 +39,29 @@ def check_direct_product_rejections(repo, project, compiler, images, env):
             str(compiler), source.name, str(output), "main",
         ]
         check_env = {**common, "VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR": str(directory),
-                     "VIBE_FS_COMPILE": "1", "VIBE_IMPORT_ABI": "raw", "VIBE_RUNNER_EXIT_WITH_RESULT": "1"}
+                     "VIBE_FS_COMPILE": "1", "VIBE_IMPORT_ABI": "raw", "VIBE_RUNNER_EXIT_WITH_RESULT": "1",
+                     "VIBE_TASKGROUP_INTERFACE_REPLAY": "1"}
 
-        def rejects(expected):
+        def rejects(expected, extra=None):
             diagnostic = output.with_suffix(".wasm.diag")
             diagnostic.unlink(missing_ok=True)
-            result = subprocess.run(command, cwd=project, env=check_env, text=True, capture_output=True, timeout=120)
+            result = subprocess.run(command, cwd=project, env={**check_env, **(extra or {})}, text=True, capture_output=True, timeout=120)
             assert result.returncode != 0 and not output.exists(), (result.stdout, result.stderr)
             combined = result.stdout + result.stderr + (diagnostic.read_text() if diagnostic.exists() else "")
             assert expected in combined, combined
+
+        for options in ({}, {"VIBE_TASKGROUP_HOST_SHA256": "0"}):
+            result = subprocess.run(command, cwd=project, env={**check_env, **options}, text=True, capture_output=True, timeout=120)
+            assert result.returncode == 0 and output.read_bytes() == expected_wasm, (result.stdout, result.stderr)
+            output.unlink()
 
         product.unlink()
         rejects("missing TaskGroup checked product")
         product.write_bytes(raw + b"trailing bytes")
         rejects("unreadable TaskGroup checked product")
         product.write_bytes(raw)
+        rejects("stale TaskGroup checked product", {"VIBE_CHECK_ERROR_ROW": "0"})
+        rejects("stale TaskGroup checked product", {"VIBE_CFG": "dev"})
         source.write_text(original_source.replace("42", "43"))
         rejects("stale TaskGroup checked product")
 
@@ -121,9 +130,15 @@ def main():
         (project / "right.vibe").write_text(changed)
         edited, edited_report = build("edited")
         assert edited != cold
-        assert edited_report["executed"] == 2 and edited_report["reused"] == 1, edited_report
+        expected_checks = 1 if args.direct else 2
+        assert edited_report["executed"] == expected_checks and edited_report["reused"] == 3 - expected_checks, edited_report
         control, control_report = build("control", {"VIBE_TASKGROUP_JOB_CACHE": "0"})
         assert edited == control and control_report["executed"] == 3, control_report
+        if args.direct:
+            (project / "right.vibe").write_text("export fn right() -> Bool { true }\n")
+            _, public_edit = build("changed-interface", expected=1)
+            assert public_edit["executed"] == 2 and public_edit["diagnosed"] == 1, public_edit
+            (project / "right.vibe").write_text(changed)
         for label, expected in [("cfg-cold", 3), ("cfg-warm", 0)]:
             _, report = build(label, {"VIBE_CFG": "dev"})
             assert report["executed"] == expected, report

@@ -30,6 +30,7 @@ export VIBE_LIB="${VIBE_LIB:-$ROOT_DIR/lib}" VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 export VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}"
 cd "$PROJECT_ROOT"
 if [ "${VIBE_TASKGROUP_DIRECT:-0}" = 1 ]; then
+  export VIBE_TASKGROUP_INTERFACE_REPLAY="${VIBE_TASKGROUP_INTERFACE_REPLAY:-1}"
   work="$(mktemp -d "${TMPDIR:-/tmp}/vibe-taskgroup-direct.XXXXXX")"
   if [ "${VIBE_TASKGROUP_KEEP_JOBS:-0}" != 1 ]; then
     trap 'rm -r -- "$work"' EXIT

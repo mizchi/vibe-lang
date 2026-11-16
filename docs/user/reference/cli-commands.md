@@ -95,6 +95,11 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   enables experimental reuse of successful worker results. Source, dependency
   environments, compiler/worker images and execution environment must match;
   changes trigger fresh checks, and diagnosed modules are checked again.
+  Add `VIBE_TASKGROUP_DIRECT=1` to pass checked products directly to the
+  final compiler. With job caching enabled, body-only changes can reuse
+  dependents whose imported public environments still match.
+  The Node runner uses host SHA-256 during direct product verification.
+  Set `VIBE_TASKGROUP_HOST_SHA256=0` to use the compiler's SHA-256 instead.
   A checkout can instead experiment with CPU function generation using
   `VIBE_UNSTABLE=1 VIBE_TASKGROUP_FUNCTIONS=1 vibe build --jobs 4 ...` after
   `bash scripts/build_taskgroup_functions.sh <compiler.wasm>`. This keeps
