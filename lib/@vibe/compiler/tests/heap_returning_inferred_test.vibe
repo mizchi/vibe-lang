@@ -1,6 +1,9 @@
 import @vibe/parser {
   lex, parse_program
 }
+import @vibe/compiler/core {
+  Expr, Stmt
+}
 import @vibe/compiler/perceus {
   compute_heap_returning
 }
@@ -110,4 +113,25 @@ test "duplicate definitions keep the union and append a forwarded result once" {
   inspect(Array::length(names), "2")
   inspect(Array::get(names, at = 0), "same")
   inspect(Array::get(names, at = 1), "caller")
+}
+
+test "compound borrowing calls move into the scope of statement roots" {
+  let call = ECall(EIdent("Array::length", 7), [
+    ELet("xs", EArray([EInt(1)]), EIdent("xs", 21), 12)
+  ], 7, [])
+  let stmts: Array[Stmt] = [
+    STest("t", call),
+    SBench("b", call),
+    SExample("e", call),
+    SExpr(call)
+  ]
+  let _ = cl_own_return_stmts(stmts)
+  for stmt in stmts {
+    let scoped = match stmt {
+      STest("t", ELet("xs", _, _, _))|SBench("b", ELet("xs", _, _, _))|
+      SExample("e", ELet("xs", _, _, _))|SExpr(ELet("xs", _, _, _)) => true,
+      _ => false
+    }
+    assert(scoped)
+  }
 }

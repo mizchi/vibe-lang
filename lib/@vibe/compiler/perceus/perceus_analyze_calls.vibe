@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/perceus/perceus.vibe — analyze calls.
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, md_borrow_mask_of, md_consume_count
+  collect_free_vars, md_borrow_mask_of, md_collect_shadow_names, md_consume_count
 }
 
 import @vibe/core {
@@ -511,6 +511,50 @@ fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> 
   bret_tail_walk(known = known, body = body, top = top, memo = MutMap::new_string())
 }
 
+// #4164: an arm may return a bare payload of a scrutinee that leaves
+// scope. The immutable wrapper spine identifies the owner; checking each
+// arm's own pattern also handles identical names in sibling patterns.
+fn bret_owned_match_payload(top: Expr, body: Expr, spine_names: Array[String], spine_vals: Array[Expr], excluded: Array[String], ctors: MutSet[String]) -> Bool {
+  match top {
+    EMatch(EIdent(owner, _), arms) => {
+      if array_contains_str_pctx(arr = excluded, s = owner) {
+        return false
+      } else ()
+      let mut slot = 0
+      while slot < Array::length(spine_names) && Array::get(spine_names, at = slot) != owner {
+        slot = slot + 1
+      }
+      if slot == Array::length(spine_names) {
+        return false
+      } else ()
+      for arm in arms {
+        match arm.1 {
+          EIdent(payload, _) => if bret_pat_binds(p = arm.0, name = payload) {
+            let shadows: Array[String] = []
+            let _ = md_collect_shadow_names(e = body, out = shadows)
+            return bret_fresh_match_source(e = Array::get(spine_vals, at = slot), ctors = ctors, shadows = shadows)
+          } else (),
+          _ => ()
+        }
+      }
+      false
+    },
+    _ => false
+  }
+}
+
+fn bret_fresh_match_source(e: Expr, ctors: MutSet[String], shadows: Array[String]) -> Bool {
+  match bret_peel_ascription(e) {
+    EArray(_) => true,
+    ETuple(_) => true,
+    ERecord(_, _, _) => true,
+    EIf(_, t, f) => bret_fresh_match_source(e = t, ctors = ctors, shadows = shadows) && bret_fresh_match_source(e = f, ctors = ctors, shadows = shadows),
+    ECall(EIdent(callee, _), _, _, _) => MutSet::has(ctors, x = callee) && !array_contains_str_pctx(arr = shadows, s = callee),
+    EIdent(callee, _) => MutSet::has(ctors, x = callee) && !array_contains_str_pctx(arr = shadows, s = callee),
+    _ => false
+  }
+}
+
 fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[String, Int]) -> Bool {
   match top {
     ELet(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
@@ -569,7 +613,7 @@ fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[Str
 ///
 /// One implementation serves both the whole-program pass and the per-module
 /// lane, so `tail_is_borrow_ret_safe` is not re-stated anywhere.
-fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String]) -> Bool {
+fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String], ctors: MutSet[String]) -> Bool {
   let mut changed = false
   let mut i = 0
   while i < Array::length(stmts) {
@@ -601,7 +645,7 @@ fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String
               let sp_vals: Array[Expr] = []
               let sp_excluded: Array[String] = []
               let _ = collect_spine_let_vals(e0 = body, names = sp_names, vals = sp_vals, excluded = sp_excluded)
-              if tail_is_borrow_ret_safe(known = known_set, e0 = top, spine_names = sp_names, spine_vals = sp_vals, spine_excluded = sp_excluded) && !bret_tail_reads_owned_local(known = known_set, body = body, top = top) {
+              if tail_is_borrow_ret_safe(known = known_set, e0 = top, spine_names = sp_names, spine_vals = sp_vals, spine_excluded = sp_excluded) && !bret_owned_match_payload(top = top, body = value, spine_names = sp_names, spine_vals = sp_vals, excluded = sp_excluded, ctors = ctors) && !bret_tail_reads_owned_local(known = known_set, body = body, top = top) {
                 Array::push(known, value = name)
                 MutSet::add(known_set, x = name)
                 changed = true
@@ -684,9 +728,13 @@ export fn compute_borrow_returning_names(_ stmts: Array[Stmt]) -> Array[String] 
     }
     seed_i = seed_i + 1
   }
+  let ctors = MutSet::new_string()
+  for ctor in collect_ctor_names(stmts) {
+    MutSet::add(ctors, x = ctor)
+  }
   let mut changed = true
   while changed {
-    changed = bret_round(stmts = stmts, known = known, known_set = known_set)
+    changed = bret_round(stmts = stmts, known = known, known_set = known_set, ctors = ctors)
   }
   known
 }
@@ -1258,12 +1306,18 @@ export fn borrow_ret_link_parts(parts: Array[Array[Stmt]], shadow_mask: Int) -> 
     }
     seed_i = seed_i + 1
   }
+  let ctors = MutSet::new_string()
+  for part in parts {
+    for ctor in collect_ctor_names(part) {
+      MutSet::add(ctors, x = ctor)
+    }
+  }
   let mut changed = true
   while changed {
     changed = false
     let mut pi = 0
     while pi < Array::length(parts) {
-      if bret_round(stmts = Array::get(parts, at = pi), known = known, known_set = known_set) {
+      if bret_round(stmts = Array::get(parts, at = pi), known = known, known_set = known_set, ctors = ctors) {
         changed = true
       } else {
         ()

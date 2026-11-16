@@ -22,7 +22,8 @@
 //
 // Each probe allocates between taking a result and reading it, so a value
 // that was freed is reused before it is read. `main` returns 0 on every
-// lane; the gate bounds its heap on the rc lane, which catches the leak.
+// lane; the gate bounds its heap on the RC lane. It also checks bare match
+// payloads (#4164) and scoped borrowing calls (#4167).
 struct Pair {
   left: Array[Int];
   right: Array[Int]
@@ -145,6 +146,65 @@ fn second_of_first(_ xs: Array[Array[Array[Int]]]) -> Array[Int] {
   Array::get(w, at = 1)
 }
 
+enum OwnedPayload {
+  Even(Array[Int]);
+  Odd(Array[Int])
+}
+
+fn bare_owned_payload(_ i: Int) -> Array[Int] {
+  let owned = if i % 2 == 0 {
+    Even(mka(i))
+  } else {
+    Odd(mka(i + 1))
+  }
+  match owned {
+    Even(value) => value,
+    Odd(value) => value
+  }
+}
+
+fn bare_borrowed_payload(_ slot: OwnedPayload) -> Array[Int] {
+  match slot {
+    Even(value) => value,
+    Odd(value) => value
+  }
+}
+
+fn borrow_if_argument(_ i: Int) -> Array[Int] {
+  let values = [mka(i), mka(i + 2)]
+  first(if i % 2 == 0 {
+    values
+  } else {
+    let alternative = [mka(i + 1)]
+    alternative
+  })
+}
+
+fn borrow_block_argument(_ i: Int) -> Array[Int] {
+  first({
+    let values = [mka(i)]
+    values
+  })
+}
+
+fn borrow_block_view(_ i: Int) -> Int {
+  Array::length({
+    let values = [mka(i)]
+    Array::get(values, at = 0)
+  })
+}
+
+fn compound_borrow_probe(_ i: Int) -> Int {
+  let a = bare_owned_payload(i)
+  let b = borrow_if_argument(i)
+  let c = borrow_block_argument(i)
+  let fresh = mka(i + 5)
+  let k = i % 2
+  (Array::get(a, at = 0) - i - k) + (Array::get(b, at = 0) - i - k) +
+  (Array::get(c, at = 0) - i) +
+  borrow_block_view(i) - Array::length(fresh)
+}
+
 fn probe(_ i: Int) -> Int {
   let a = branch_tail(i)
   let b = direct_tail(i)
@@ -171,7 +231,7 @@ fn main() -> Int {
   let mut acc = 0
   let mut i = 0
   while i < 2000 {
-    acc = acc + probe(i)
+    acc = acc + probe(i) + compound_borrow_probe(i)
     i = i + 1
   }
   acc
@@ -181,4 +241,12 @@ test "a result that reads into a binding of the function is owned (#4153)" {
   inspect(probe(4), content = "0")
   inspect(probe(5), content = "0")
   inspect(main(), content = "0")
+}
+
+test "bare match payloads and compound borrowed arguments survive scope exit (#4164, #4167)" {
+  inspect(compound_borrow_probe(4), content = "0")
+  inspect(compound_borrow_probe(5), content = "0")
+  let owner = Even(mka(42))
+  let payload = bare_borrowed_payload(owner)
+  inspect(Array::get(payload, at = 0), content = "42")
 }
