@@ -1,3 +1,7 @@
+import @vibe/compiler/lowering/effects/evidence {
+  edp_iso_map
+}
+
 import @vibe/compiler/codegen/common_base {
   frame_prepare_cookie
 }
@@ -15,6 +19,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  expr_any_node,
   expr_child_at,
   expr_children_pop,
   expr_children_push,
@@ -60,6 +65,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
+  md_collect_shadow_names,
   md_shadow_zeroed_bmasks,
   md_view_consume_count_pre
 }
@@ -283,6 +289,51 @@ fn strip_param_label_marker(_ n: String) -> String {
   }
 }
 
+fn cl_compound_borrow_call(e: Expr, borrowers: Array[String]) -> Bool {
+  match e {
+    ECall(EIdent(callee, _), args, _, _) => if Array::length(args) == 1 &&
+    (callee == "Array::length" || callee == "__len" || bsearch_leftmost(sorted = borrowers, name = callee) >= 0) {
+      match Array::get(args, at = 0) {
+        EIf(_, _, _) => true,
+        ELet(_, _, _, _) => true,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+// #4167: run the call in the scope holding the borrowed input. The ordinary
+// planner can release that scope's owners and retain an escaping view. An
+// immutable let and if arms preserve the argument evaluation order. A
+// handler or loop keeps its original boundary.
+fn cl_call_in_arg_scope(callee: Expr, arg: Expr, off: Int, resolution: Array[Int]) -> Expr {
+  match arg {
+    ELet(n, value, tail, bind_off) => ELet(n, value, cl_call_in_arg_scope(callee = callee, arg = tail, off = off, resolution = resolution), bind_off),
+    EIf(c, t, f) => EIf(c, cl_call_in_arg_scope(callee = callee, arg = t, off = off, resolution = resolution), cl_call_in_arg_scope(callee = callee, arg = f, off = off, resolution = resolution)),
+    _ => ECall(callee, [arg], off, resolution)
+  }
+}
+
+fn cl_scope_borrow_calls(e: Expr, borrowers: Array[String], shadows: Array[String]) -> Expr {
+  let node = edp_iso_map(expr = e, f = (child) -> cl_scope_borrow_calls(e = child, borrowers = borrowers, shadows = shadows))
+  if !cl_compound_borrow_call(e = node, borrowers = borrowers) {
+    return node
+  } else ()
+  match node {
+    ECall(EIdent(callee, callee_off), args, off, resolution) => {
+      if array_contains_str(arr = shadows, s = callee) {
+        node
+      } else {
+        cl_call_in_arg_scope(callee = EIdent(callee, callee_off), arg = Array::get(args, at = 0), off = off, resolution = resolution)
+      }
+    },
+    _ => node
+  }
+}
+
 /// Normalize mixed fresh/view results to an owning return contract, including
 /// direct-only functions: their results can be stored in an owning aggregate.
 /// Named callbacks use the same contract as anonymous callbacks. Pure borrowed
@@ -312,7 +363,26 @@ export fn cl_own_return_stmts(_ stmts: Array[Stmt]) -> Array[String] {
     }
     vi = vi + 1
   }
-  let borrowed = sorted_names_of(compute_borrow_returning_names(stmts))
+  let initial_borrowers = sorted_names_of(compute_borrow_returning_names(stmts))
+  let mut scoped_calls = false
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, at = si) {
+      SLet(ex, is_rec, name, ty, value) => if expr_any_node(expr = value, pred = (e) -> cl_compound_borrow_call(e = e, borrowers = initial_borrowers)) {
+        let shadows: Array[String] = []
+        let _ = md_collect_shadow_names(e = value, out = shadows)
+        Array::set(stmts, at = si, value = SLet(ex, is_rec, name, ty, cl_scope_borrow_calls(e = value, borrowers = initial_borrowers, shadows = shadows)))
+        scoped_calls = true
+      } else (),
+      _ => ()
+    }
+    si = si + 1
+  }
+  let borrowed = if scoped_calls {
+    sorted_names_of(compute_borrow_returning_names(stmts))
+  } else {
+    initial_borrowers
+  }
   let mixed = array_empty()
   for name in compute_may_return_view_fns(stmts) {
     if bsearch_leftmost(sorted = borrowed, name = name) < 0 {
