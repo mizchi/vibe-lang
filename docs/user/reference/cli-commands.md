@@ -100,6 +100,11 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   dependents whose imported public environments still match.
   The Node runner uses host SHA-256 during direct product verification.
   Set `VIBE_TASKGROUP_HOST_SHA256=0` to use the compiler's SHA-256 instead.
+  To try completion-driven checker dispatch, set `VIBE_TASKGROUP_DIRECT=1`,
+  `VIBE_CHECKER_WORKER_BACKEND=thread`, `VIBE_CHECKER_COORDINATOR=session`,
+  and `VIBE_CHECKER_SCHEDULE=ready` with `vibe build --jobs 4`. This runs
+  independent batches in one coordinator session and starts consumers as
+  their dependencies finish. The default checker backend uses processes.
   A checkout can instead experiment with CPU function generation using
   `VIBE_UNSTABLE=1 VIBE_TASKGROUP_FUNCTIONS=1 vibe build --jobs 4 ...` after
   `bash scripts/build_taskgroup_functions.sh <compiler.wasm>`. This keeps

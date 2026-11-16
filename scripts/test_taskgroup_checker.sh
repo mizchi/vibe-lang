@@ -16,6 +16,8 @@ RUNNER="$ROOT_DIR/runtime/viberun/target/release/viberun"
 python3 scripts/checker_taskgroup_worker_test.py --compiler "$COMPILER" --worker "$OUT/worker.wasm" --runner "$RUNNER"
 python3 scripts/checker_taskgroup_batch_test.py --compiler "$COMPILER" --worker "$OUT/worker.wasm" \
   --runner "$RUNNER" --coordinator "$OUT/coordinator.component.wasm"
+python3 scripts/checker_taskgroup_batch_test.py --backend thread --compiler "$COMPILER" --worker "$OUT/worker.wasm" \
+  --runner "$RUNNER" --coordinator "$OUT/coordinator.component.wasm"
 for replay in 0 1; do
   VIBE_PARALLEL_BACKEND=taskgroup VIBE_TASKGROUP_ARTIFACT_DIR="$OUT" \
     VIBE_TASKGROUP_JOB_CACHE="$replay" \
@@ -25,4 +27,7 @@ python3 scripts/test_taskgroup_build_launcher.py "$COMPILER" "$OUT"
 node --test scripts/wasm_vibe_host_runner_taskgroup_sha256.test.cjs
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT"
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct
+python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct --checker-backend thread
+python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct --checker-backend thread --checker-coordinator session
+python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct --checker-backend thread --checker-coordinator session --checker-schedule ready
 echo "TaskGroup checker dogfood oracle passed; artifacts: $OUT"

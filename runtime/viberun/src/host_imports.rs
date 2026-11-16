@@ -789,7 +789,10 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "env-get",
         |mut caller: Caller<'_, HostState>, name: i64| -> Result<i64> {
             let name = vibe_read_packed_str(&mut caller, name)?;
-            let val = std::env::var(&name).unwrap_or_default();
+            let val = match &caller.data().guest_env {
+                Some(env) => env.get(&name).cloned().unwrap_or_default(),
+                None => std::env::var(&name).unwrap_or_default(),
+            };
             vibe_alloc_packed_str(&mut caller, &val)
         },
     )?;

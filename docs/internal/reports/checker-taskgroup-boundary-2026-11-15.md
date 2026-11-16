@@ -238,3 +238,162 @@ within 8–29 MiB of the published route, with the remaining canonical
 product validation in the final compiler. The
 [12 follow-up samples](../../../bench/perf/analysis/checker-taskgroup-direct-lifetime-2026-11-15.json)
 include the sampled phase boundaries and the older comparison medians.
+
+## Native checker threads with the existing schedule
+
+`VIBE_CHECKER_WORKER_BACKEND=thread` selects the experimental native thread
+transport. The coordinator loads the compiled checker module once per
+dependency wave. Each worker batch owns a fresh Wasmtime Store, Instance,
+heap and snapshot of the worker environment. The existing four-slot limit,
+16 jobs per batch, input files, product validation and wave order apply to
+both transports. The launcher still starts one coordinator process for
+each wave with a miss.
+
+Medians of three alternating cold/warm pairs per corpus and transport,
+with the same fixed-point compiler, runner and checked-product handoff in
+both lanes. Each pair has its own Vibe cache. Both transports used the
+same native code cache after priming it with an untimed smoke run.
+Collection used the process-tree sampling protocol above.
+
+| Corpus | Cache | Wall, process → thread | Aggregate peak RSS, process → thread |
+|---|---|---:|---:|
+| Compiler closure | Cold | 19.35 → 20.13 s (+4.1%) | 940 → 936 MiB |
+| Compiler closure | Warm | 8.35 → 8.35 s | 928 → 940 MiB |
+| Split CLI | Cold | 35.04 → 36.42 s (+4.0%) | 1,787 → 1,792 MiB |
+| Split CLI | Warm | 16.71 → 16.71 s | 1,780 → 1,778 MiB |
+
+Cold coordinator time rose from 7.62 to 8.41 s for the compiler and from
+11.90 to 13.35 s for the CLI. Both monotonic clocks give the same cold
+direction and relative change. Warm replay started zero worker batches.
+Cold used the same module schedule in both lanes, with 97 waves and 241
+batches for the compiler and 126 waves and 351 batches for the CLI. All
+24 outputs match byte-for-byte within each corpus, with zero rechecks by
+the final compiler. The last CLI pair was repeated after repository gate
+planning overlapped the original run.
+
+The WIT tests match serial products and check bounded batches, CFG
+isolation and failed-batch cancellation and joining. The two-worker
+case spent 1.82 CPU seconds across batches with about 1 second of common
+overlap. The four-worker case spent 3.88 CPU seconds with about
+1.05 seconds of common overlap. Each worker ran on a distinct OS thread
+within one process.
+
+The cold comparisons show no speedup with the current wave schedule.
+The coordinator still pays for startup at every wave, still waits for
+the whole wave to finish, and still instantiates fresh workers per batch.
+The timing here measures their combined cost. To measure persistent
+coordinator reuse, keep the current schedule while loading the checker
+module once for the build. That supplies the comparison for dispatching
+each dependent as soon as its own prerequisites finish.
+
+To reproduce, use the TaskGroup build command above with
+`VIBE_TASKGROUP_DIRECT=1`. Alternate `VIBE_CHECKER_WORKER_BACKEND=process`
+and `VIBE_CHECKER_WORKER_BACKEND=thread` with separate cold/warm cache
+directories and a common warm `VIBE_NATIVE_CACHE_DIR`. The
+[24 native-thread comparison samples](../../../bench/perf/analysis/checker-taskgroup-native-threads-2026-11-15.json)
+record the artifact hashes, checker counters and coordinator time by wave.
+
+## Reusing the checker coordinator for the build
+
+`VIBE_CHECKER_COORDINATOR=session` uses one coordinator process for a
+build with checker misses. Set `VIBE_CHECKER_WORKER_BACKEND=thread` to
+select the threaded checker. The process starts on the first miss wave
+and loads both the coordinator component and the checker module once.
+Each request gets fresh wave queues and a coordinator Store. Each
+worker batch still gets its own Store and guest heap. The frontend
+closes the coordinator and waits for exit before publishing checked
+products or launching the final compiler.
+
+Both lanes use four native worker slots, a 16-job batch limit, direct
+checked-product handoff and the same wave schedule. They use the same
+runner and images, a fresh Vibe cache for each of three alternating
+cold/warm pairs per workload, and an already exercised native code
+cache. The measurement covers the complete filesystem build, including
+coordinator shutdown. RSS sums the process tree every 20 ms.
+
+| Corpus | Cache | Wall, wave → session | Aggregate peak RSS, wave → session |
+|---|---|---:|---:|
+| Compiler closure | Cold | 20.50 → 16.44 s (−19.8%) | 942 → 948 MiB |
+| Compiler closure | Warm | 8.47 → 8.51 s (+0.5%) | 915 → 947 MiB |
+| Split CLI | Cold | 36.46 → 31.21 s (−14.4%) | 1,791 → 1,788 MiB |
+| Split CLI | Warm | 16.66 → 16.63 s (−0.1%) | 1,784 → 1,772 MiB |
+
+Cold coordinator time, including session shutdown, fell from 8.67 to
+4.74 s for the compiler and from 13.65 to 8.37 s for the CLI. Both
+monotonic clocks give the same relative changes. Cold coordinator starts
+fell from 97 to 1 for the compiler and from 126 to 1 for the CLI, with
+the same 241 and 351 worker batches. In all six cold session runs,
+process samples show the coordinator exiting before the final compiler
+started.
+
+Compiler warm peak RSS was 32 MiB higher in the session lane. The sampled
+final compiler process accounts for the observed difference. Its Wasm
+heap frontier is identical across all six warm runs, and both lanes skip
+coordinator startup. The cause of the final process RSS variation remains
+unverified.
+
+The warm replay path starts no workers or coordinator. The 24 outputs
+match byte-for-byte within each workload and the final compiler performs
+zero rechecks. The WIT oracle checks consecutive waves in the same
+process, fresh wave inputs, cancellation of a failed wave's sibling
+and rejection of subsequent requests after the failure. The public
+launcher tests cover both the checkout and installed toolchain,
+including cache replay and diagnostics.
+
+To reproduce, use the TaskGroup build command above with
+`VIBE_TASKGROUP_DIRECT=1 VIBE_CHECKER_WORKER_BACKEND=thread`. Alternate
+`VIBE_CHECKER_COORDINATOR=wave` and `VIBE_CHECKER_COORDINATOR=session`
+with separate Vibe caches and a common primed `VIBE_NATIVE_CACHE_DIR`.
+The [24 coordinator comparison samples](../../../bench/perf/analysis/checker-taskgroup-coordinator-session-2026-11-15.json)
+record the artifact hashes, process counts, timings and peak RSS.
+
+## Dispatch as dependencies finish
+
+`VIBE_CHECKER_SCHEDULE=ready` selects completion-driven dispatch with
+`VIBE_CHECKER_COORDINATOR=session VIBE_CHECKER_WORKER_BACKEND=thread`.
+The frontend indexes each module's remaining dependencies and consumers.
+A checked product is eligible to unblock consumers after the worker
+batch has joined and the frontend validates the product. Replay hits
+also unblock their consumers. A diagnosed dependency blocks its
+transitive consumers while independent checks can finish. The launcher
+still publishes the final products in canonical module order.
+
+One Vibe TaskGroup owns the session's slot loops. Up to four native worker
+batches, each with at most 16 modules and its own Store, can be active.
+Slots accept the next bounded batch while other slots continue checking.
+The frontend closes input and waits for the coordinator before final
+compilation. The WIT oracle keeps a real slow batch active during a
+worker trap and checks that the slow batch leaves no committed outcome.
+A launcher control starts a consumer of a fast module while an independent
+slow module is still running and compares its final Wasm to wave dispatch.
+
+Both lanes use the same compiler, worker, coordinator and native runner
+with four slots and direct checked-product handoff. Three alternating
+cold/warm pairs per workload use isolated Vibe caches and a common
+primed native code cache. Batch shapes can change as modules become ready.
+The scheduler interval includes job preparation, worker waits, product
+reads and session shutdown. Individual batch durations can overlap.
+
+| Corpus | Cache | Wall, waves → ready | Aggregate peak RSS, waves → ready |
+|---|---|---:|---:|
+| Compiler closure | Cold | 16.43 → 14.70 s (−10.5%) | 938 → 928 MiB |
+| Compiler closure | Warm | 8.36 → 8.29 s (−0.7%) | 929 → 936 MiB |
+| Split CLI | Cold | 31.40 → 26.48 s (−15.7%) | 1,778 → 1,789 MiB |
+| Split CLI | Warm | 16.89 → 16.55 s (−2.0%) | 1,794 → 1,780 MiB |
+
+Both monotonic clocks show the same cold changes. The cold dispatch
+interval fell from 6.69 to 4.99 s for the compiler and from 12.15 to
+7.39 s for the split CLI, with less than 1% change in total child CPU
+time in both workloads. Ready dispatch used 236–243 batches for the
+compiler and 361–367 for the CLI. The wave control used 241 and 351.
+Both started one coordinator per cold build and zero on warm replay.
+All 24 outputs matched within each workload, with zero final compiler
+rechecks. Aggregate peak RSS moved by no more than 11 MiB on cold runs
+when comparing the lane medians.
+
+To reproduce, run the TaskGroup build command above with
+`VIBE_TASKGROUP_DIRECT=1 VIBE_CHECKER_WORKER_BACKEND=thread VIBE_CHECKER_COORDINATOR=session`.
+Alternate `VIBE_CHECKER_SCHEDULE=waves` and `VIBE_CHECKER_SCHEDULE=ready` with
+separate cold/warm cache directories. The
+[24 ready-dispatch comparison samples](../../../bench/perf/analysis/checker-taskgroup-ready-dispatch-2026-11-15.json)
+contain runner and image digests, execution counters, wall times and RSS.

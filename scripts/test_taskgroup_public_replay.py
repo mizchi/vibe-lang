@@ -81,18 +81,72 @@ def check_direct_product_rejections(repo, project, compiler, images, env):
         shutil.rmtree(work)
 
 
+def check_ready_overlap(repo, parent, env):
+    project = parent / "ready-overlap"
+    project.mkdir()
+    (project / "fast.vibe").write_text("export fn fast() -> Int { 20 }\n")
+    (project / "middle.vibe").write_text(
+        "import ./fast.vibe { fast }\nexport fn middle() -> Int { fast() + 2 }\n"
+    )
+    padding = "".join(f"fn f{i}(x: Int) -> Int {{ x + {i} }}\n" for i in range(4500))
+    (project / "slow.vibe").write_text(padding + "export fn slow() -> Int { 20 }\n")
+    (project / "main.vibe").write_text(
+        "import ./middle.vibe { middle }\nimport ./slow.vibe { slow }\n"
+        "export fn main() -> Int { middle() + slow() }\n"
+    )
+    for label, mode, slots in (("waves", "waves", "2"), ("ready", "ready", "2"), ("serial", "ready", "1")):
+        trace = project / f"{label}.json"
+        result = subprocess.run(
+            ["bash", str(repo / "runtime/vibe"), "build", "main.vibe", "--jobs", slots, "-o", f"{label}.wasm"],
+            cwd=project, env={**env, "VIBE_CHECKER_SCHEDULE": mode,
+                              "VIBE_BUILD_CACHE_DIR": str(project / f"{label}-cache"),
+                              "VIBE_TASKGROUP_TRACE_OUT": str(trace)},
+            text=True, capture_output=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+    expected = (project / "waves.wasm").read_bytes()
+    assert (project / "ready.wasm").read_bytes() == (project / "serial.wasm").read_bytes() == expected
+    ready = json.loads((project / "ready.json").read_text())
+    assert ready["schedule"] == "ready" and ready["executed"] == 4, ready
+    completed = {Path(row["dispatched"][0]).name: row["events"] for row in ready["waves"]}
+    when = lambda name, event: next(row["at_us"] for row in completed[name] if row["event"] == event)
+    assert when("fast.vibe", "finished") <= when("middle.vibe", "started"), completed
+    assert when("slow.vibe", "started") < when("middle.vibe", "started") < when("slow.vibe", "finished"), completed
+    print("ready dispatch starts a newly eligible consumer while an independent slow module is running")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("compiler", type=Path)
     parser.add_argument("artifacts", type=Path)
     parser.add_argument("--direct", action="store_true")
+    parser.add_argument("--checker-backend", choices=["process", "thread"], default="process")
+    parser.add_argument("--checker-coordinator", choices=["wave", "session"], default="wave")
+    parser.add_argument("--checker-schedule", choices=["waves", "ready"], default="waves")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
     runner = repo / "runtime/viberun/target/release/viberun"
     env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
     env.update(VIBE_CLI_WASM=str(args.compiler.resolve()), VIBE_RUNNER=str(runner),
                VIBE_TASKGROUP_ARTIFACT_DIR=str(args.artifacts.resolve()), VIBE_LIB=str(repo / "lib"),
-               VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT="1" if args.direct else "0")
+               VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT="1" if args.direct else "0",
+               VIBE_CHECKER_WORKER_BACKEND=args.checker_backend, VIBE_CHECKER_COORDINATOR=args.checker_coordinator,
+               VIBE_CHECKER_SCHEDULE=args.checker_schedule)
+
+    def verify_coordinator(report, *, cold):
+        assert report["coordinator"] == args.checker_coordinator, report
+        assert report["schedule"] == args.checker_schedule, report
+        waves = [[event for event in wave["events"] if event["event"] == "finished"]
+                 for wave in report["waves"] if wave["executed"]]
+        workers = [event for wave in waves for event in wave]
+        assert bool(workers) == cold, report
+        assert all(("thread" in event) == (args.checker_backend == "thread") for event in workers), report
+        if args.checker_coordinator == "session":
+            assert ("coordinator_shutdown_ms" in report["timing"]) == cold, report
+            if cold:
+                assert len(waves) >= 2 and all(waves), report
+                assert len({event["pid"] for event in workers}) == 1, report
+
     with tempfile.TemporaryDirectory(prefix="vibe public replay ") as directory:
         project = Path(directory)
         (project / "left.vibe").write_text("export fn left() -> Int { 25 }\n")
@@ -119,11 +173,10 @@ def main():
 
         cold, cold_report = build("cold")
         assert cold_report["checked"] == cold_report["warmed"] == 3
-        assert any(e["event"] == "finished" for w in cold_report["waves"] for e in w["events"])
+        verify_coordinator(cold_report, cold=True)
         warm, warm_report = build("warm")
         assert warm == cold, "warm public build changed Wasm bytes"
-        assert not any(e["event"] == "finished" for w in warm_report["waves"] for e in w["events"]), \
-            "warm public build still starts CPU workers"
+        verify_coordinator(warm_report, cold=False)
         assert warm_report["executed"] == 0 and warm_report["reused"] == 3, warm_report
         changed = "export fn right() -> Int { 18 }\n"
         assert changed != (project / "right.vibe").read_text(), "source mutation did not land"
@@ -193,6 +246,9 @@ def main():
         assert install.returncode == 0, (install.stdout, install.stderr)
         installed_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
         installed_env.update(VIBE_TASKGROUP_JOB_CACHE="1", VIBE_TASKGROUP_DIRECT=env["VIBE_TASKGROUP_DIRECT"],
+                             VIBE_CHECKER_WORKER_BACKEND=args.checker_backend,
+                             VIBE_CHECKER_COORDINATOR=args.checker_coordinator,
+                             VIBE_CHECKER_SCHEDULE=args.checker_schedule,
                              VIBE_BUILD_CACHE_DIR=str(project / "installed-cache"))
         for temperature, expected in [("cold", 3), ("warm", 0)]:
             output = project / f"installed-{temperature}.wasm"
@@ -207,6 +263,7 @@ def main():
             report = json.loads(trace.read_text())
             assert report["executed"] == expected and report["reused"] == 3 - expected, report
             assert report["handoff"] == ("direct" if args.direct else "published"), report
+            verify_coordinator(report, cold=expected > 0)
 
         if args.direct:
             check_direct_product_rejections(repo, project, args.compiler.resolve(), args.artifacts.resolve(), env)
@@ -217,6 +274,8 @@ def main():
         repeated, report = build("diagnosed-again", expected=1)
         assert first == repeated and report["executed"] == report["diagnosed"] == 1, report
         assert report["reused"] == report["blocked"] == 1, report
+        if args.checker_schedule == "ready":
+            check_ready_overlap(repo, project, env)
         print("public replay: cold/warm, body edits, context, empty overrides, corruption, producer changes and diagnostics pass")
 
 
