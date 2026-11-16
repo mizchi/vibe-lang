@@ -14,11 +14,16 @@ import @vibe/compiler/query {
 
 //# Helpers
 
-fn program(_ called: Bool) -> String {
+fn program(_ called: Bool, compound: Bool = true) -> String {
   let call = if called {
     "pick_let(i) + pick_if(i)"
   } else {
     "pick_let(i)"
+  }
+  let reachable_body = if compound {
+    "  let v = [mka(i), mka(i + 2)]\n  Array::length(first(if i > 0 { v } else { v }))"
+  } else {
+    "  Array::length(first([mka(i)]))"
   }
   let lines = [
     "fn mka(_ i: Int) -> Array[Int] {",
@@ -30,12 +35,7 @@ fn program(_ called: Bool) -> String {
     "}",
     "",
     "fn pick_if(_ i: Int) -> Int {",
-    "  let v = [mka(i), mka(i + 2)]",
-    "  Array::length(first(if i > 0 {",
-    "    v",
-    "  } else {",
-    "    v",
-    "  }))",
+    reachable_body,
     "}",
     "",
     "fn pick_let(_ i: Int) -> Int {",
@@ -71,11 +71,19 @@ fn first_line(_ report: String) -> String {
 //# Tests
 
 test "an uncalled caller does not change the borrow masks the build uses" {
-  inspect(first_line(rc_classify_source(program(false), checked_error_row = true)), content = "first borrow_ret,borrow_param,view_ret")
-  inspect(rc_plan_source(source = program(false), fn_filter = "pick_let", checked_error_row = true), content = "pick_let v drop 1")
+  let source = program(false, compound = false)
+  inspect(first_line(rc_classify_source(source, checked_error_row = true)), content = "first borrow_ret,borrow_param,view_ret")
+  inspect(rc_plan_source(source = source, fn_filter = "pick_let", checked_error_row = true), content = "pick_let v drop 1")
 }
 
-test "a reachable caller still does" {
-  inspect(first_line(rc_classify_source(program(true), checked_error_row = true)), content = "first borrow_ret,view_ret")
-  inspect(rc_plan_source(source = program(true), fn_filter = "pick_let", checked_error_row = true), content = "")
+test "a scoped compound argument lets a reachable caller borrow" {
+  inspect(first_line(rc_classify_source(program(true), checked_error_row = true)), content = "first borrow_ret,borrow_param,view_ret")
+  inspect(rc_plan_source(source = program(true), fn_filter = "pick_let", checked_error_row = true), content = "pick_let v drop 1")
+  inspect(rc_plan_source(source = program(true), fn_filter = "pick_if", checked_error_row = true), content = "pick_if v drop 1")
+}
+
+test "a reachable fresh literal still requires the owning parameter ABI" {
+  let source = program(true, compound = false)
+  inspect(first_line(rc_classify_source(source, checked_error_row = true)), content = "first borrow_ret,view_ret")
+  inspect(rc_plan_source(source = source, fn_filter = "pick_let", checked_error_row = true), content = "")
 }

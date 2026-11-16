@@ -334,6 +334,34 @@ fn cl_scope_borrow_calls(e: Expr, borrowers: Array[String], shadows: Array[Strin
   }
 }
 
+// Visit each expression-bearing statement before tests and benchmarks are
+// lowered to functions. Preserve the original statement and its metadata
+// when none of its calls need the argument-scope rewrite.
+fn cl_scope_borrow_stmt(stmt: Stmt, borrowers: Array[String]) -> Option[Stmt] {
+  let root = match stmt {
+    SLet(_, _, _, _, e) => e,
+    STest(_, e) => e,
+    SBench(_, e) => e,
+    SExample(_, e) => e,
+    SExpr(e) => e,
+    _ => return None
+  }
+  if !expr_any_node(expr = root, pred = (e) -> cl_compound_borrow_call(e = e, borrowers = borrowers)) {
+    return None
+  } else ()
+  let shadows: Array[String] = []
+  let _ = md_collect_shadow_names(e = root, out = shadows)
+  let body = cl_scope_borrow_calls(e = root, borrowers = borrowers, shadows = shadows)
+  match stmt {
+    SLet(ex, is_rec, name, ty, _) => Some(SLet(ex, is_rec, name, ty, body)),
+    STest(name, _) => Some(STest(name, body)),
+    SBench(name, _) => Some(SBench(name, body)),
+    SExample(name, _) => Some(SExample(name, body)),
+    SExpr(_) => Some(SExpr(body)),
+    _ => None
+  }
+}
+
 /// Normalize mixed fresh/view results to an owning return contract, including
 /// direct-only functions: their results can be stored in an owning aggregate.
 /// Named callbacks use the same contract as anonymous callbacks. Pure borrowed
@@ -367,14 +395,13 @@ export fn cl_own_return_stmts(_ stmts: Array[Stmt]) -> Array[String] {
   let mut scoped_calls = false
   let mut si = 0
   while si < Array::length(stmts) {
-    match Array::get(stmts, at = si) {
-      SLet(ex, is_rec, name, ty, value) => if expr_any_node(expr = value, pred = (e) -> cl_compound_borrow_call(e = e, borrowers = initial_borrowers)) {
-        let shadows: Array[String] = []
-        let _ = md_collect_shadow_names(e = value, out = shadows)
-        Array::set(stmts, at = si, value = SLet(ex, is_rec, name, ty, cl_scope_borrow_calls(e = value, borrowers = initial_borrowers, shadows = shadows)))
+    let stmt = Array::get(stmts, at = si)
+    match cl_scope_borrow_stmt(stmt = stmt, borrowers = initial_borrowers) {
+      Some(rewritten) => {
+        Array::set(stmts, at = si, value = rewritten)
         scoped_calls = true
-      } else (),
-      _ => ()
+      },
+      None => ()
     }
     si = si + 1
   }
