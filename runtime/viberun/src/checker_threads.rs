@@ -280,7 +280,12 @@ impl Drop for ThreadBatch {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
             self.cancelled.store(true, Ordering::Release);
-            self.engine.increment_epoch();
+            // An in-flight epoch callback can extend the deadline after
+            // the first increment. Retry until the thread observes cancellation.
+            while !handle.is_finished() {
+                self.engine.increment_epoch();
+                thread::sleep(Duration::from_millis(1));
+            }
             let _ = handle.join();
         }
     }
