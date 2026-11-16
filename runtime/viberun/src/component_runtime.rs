@@ -231,13 +231,34 @@ pub(super) fn http_get_blocking(url: &str) -> Result<(i32, Vec<u8>)> {
     Ok((status, bytes))
 }
 
-pub(super) fn run_async_component(path: &str) -> Result<i32> {
-    use wasmtime::component::{Accessor, Component, Linker as ComponentLinker};
+pub(super) fn async_component_engine() -> Result<Engine> {
+    let mut cfg = engine_config();
+    cfg.wasm_component_model(true);
+    cfg.wasm_component_model_async(true);
+    cfg.wasm_component_model_async_stackful(true);
+    cfg.concurrency_support(true);
+    Engine::new(&cfg)
+}
 
-    let delay_ms: u64 = std::env::var("VIBE_ASYNC_GET_DELAY_MS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(ASYNC_COMPONENT_GET_DELAY_MS);
+pub(super) fn invoke_async_component(
+    rt: &tokio::runtime::Runtime,
+    engine: &Engine,
+    linker: &wasmtime::component::Linker<StoreLimits>,
+    component: &wasmtime::component::Component,
+) -> Result<u32> {
+    rt.block_on(async {
+        let mut store = Store::new(engine, store_mem_limits());
+        store.limiter(|s| s);
+        let instance = linker.instantiate_async(&mut store, component).await?;
+        let run = instance.get_typed_func::<(), (u32,)>(&mut store, "run")?;
+        let (value,) = store
+            .run_concurrent(async move |accessor| run.call_concurrent(accessor, ()).await)
+            .await??;
+        Ok(value)
+    })
+}
+
+pub(super) fn async_delay_scale() -> impl Fn(u64) -> u64 + Copy + Send + Sync + 'static {
     // Percentage applied to every suspend below. `get-after`'s delays come
     // from the GUEST (baked into the probe components), so unlike
     // VIBE_ASYNC_GET_DELAY_MS there is otherwise no way to scale them from
@@ -254,20 +275,57 @@ pub(super) fn run_async_component(path: &str) -> Result<i32> {
     // is created), which several probes deliberately reject with an
     // `unreachable`. Scaling must not silently turn a blocking call into an
     // eager one.
-    let scale = move |ms: u64| -> u64 {
+    move |ms: u64| -> u64 {
         if ms == 0 {
             0
         } else {
             std::cmp::max(1, ms.saturating_mul(delay_scale_pct) / 100)
         }
-    };
+    }
+}
 
-    let mut cfg = engine_config();
-    cfg.wasm_component_model(true);
-    cfg.wasm_component_model_async(true);
-    cfg.wasm_component_model_async_stackful(true);
-    cfg.concurrency_support(true);
-    let engine = Engine::new(&cfg)?;
+pub(super) fn link_component_sleep(
+    linker: &mut wasmtime::component::Linker<StoreLimits>,
+    scale: impl Fn(u64) -> u64 + Copy + Send + Sync + 'static,
+) -> Result<()> {
+    use wasmtime::component::Accessor;
+
+    // #1342: the timer behind a REAL program's `sleep(ms)`. Same shape as
+    // `get-after` -- an async func, so the wait folds into the guest's
+    // [async-lower] call and the adapter parks on the resulting subtask --
+    // but a separate name because this one appears in the WIT of components
+    // people actually build, where `get-after` would say nothing about what
+    // the import is for. Genuinely async (a tokio timer, never a blocking
+    // thread sleep): a blocking one would make the component's other
+    // in-flight host operations stop with it, which is the very thing
+    // `with Async` promises not to do.
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "sleep-for",
+            move |_acc: &Accessor<StoreLimits>, (ms,): (u32,)| {
+                Box::pin(async move {
+                    let slept = scale(ms as u64);
+                    if slept > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(slept)).await;
+                    }
+                    Ok((ms,))
+                })
+            },
+        )
+        .map_err(|e| format_err!("link sleep-for: {e}"))
+}
+
+pub(super) fn run_async_component(path: &str) -> Result<i32> {
+    use wasmtime::component::{Accessor, Component, Linker as ComponentLinker};
+
+    let delay_ms: u64 = std::env::var("VIBE_ASYNC_GET_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(ASYNC_COMPONENT_GET_DELAY_MS);
+    let scale = async_delay_scale();
+
+    let engine = async_component_engine()?;
 
     let bytes = fs::read(path).map_err(|e| format_err!("read {path}: {e}"))?;
     let component = Component::from_binary(&engine, &bytes)
@@ -315,30 +373,7 @@ pub(super) fn run_async_component(path: &str) -> Result<i32> {
             },
         )
         .map_err(|e| format_err!("link get-after: {e}"))?;
-    // #1342: the timer behind a REAL program's `sleep(ms)`. Same shape as
-    // `get-after` -- an async func, so the wait folds into the guest's
-    // [async-lower] call and the adapter parks on the resulting subtask --
-    // but a separate name because this one appears in the WIT of components
-    // people actually build, where `get-after` would say nothing about what
-    // the import is for. Genuinely async (a tokio timer, never a blocking
-    // thread sleep): a blocking one would make the component's other
-    // in-flight host operations stop with it, which is the very thing
-    // `with Async` promises not to do.
-    linker
-        .root()
-        .func_wrap_concurrent(
-            "sleep-for",
-            move |_acc: &Accessor<StoreLimits>, (ms,): (u32,)| {
-                Box::pin(async move {
-                    let slept = scale(ms as u64);
-                    if slept > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(slept)).await;
-                    }
-                    Ok((ms,))
-                })
-            },
-        )
-        .map_err(|e| format_err!("link sleep-for: {e}"))?;
+    link_component_sleep(&mut linker, scale)?;
     // ADR-0089 D2 / step 4 (#1218): a host-supplied `future<u32>` VALUE --
     // `get-future: func() -> future<u32>`. Unlike `get-async` (an async func
     // whose wait folds into the [async-lower] call itself), this returns an
@@ -712,16 +747,7 @@ pub(super) fn run_async_component(path: &str) -> Result<i32> {
         .build()
         .map_err(|e| format_err!("tokio runtime: {e}"))?;
 
-    let result: u32 = rt.block_on(async {
-        let mut store = Store::new(&engine, store_mem_limits());
-        store.limiter(|s| s);
-        let instance = linker.instantiate_async(&mut store, &component).await?;
-        let run = instance.get_typed_func::<(), (u32,)>(&mut store, "run")?;
-        let (value,) = store
-            .run_concurrent(async move |accessor| run.call_concurrent(accessor, ()).await)
-            .await??;
-        Ok::<u32, wasmtime::Error>(value)
-    })?;
+    let result = invoke_async_component(&rt, &engine, &linker, &component)?;
 
     println!("{result}");
     Ok(0)

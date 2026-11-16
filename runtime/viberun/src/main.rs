@@ -31,6 +31,7 @@ use wasmtime::{
     ValType,
 };
 
+mod checker_threads;
 mod checker_workers;
 mod commands;
 mod function_phases;
@@ -166,6 +167,7 @@ struct HostFsScope {
 struct HostState {
     last_error: Option<String>,
     args: Arc<Vec<String>>,
+    guest_env: Option<Arc<std::collections::HashMap<String, String>>>,
     print_buf: Vec<u16>,
     pending_bytes: Option<Arc<Vec<u8>>>,
     pending_strings: Option<Arc<Vec<String>>>,
@@ -372,6 +374,7 @@ impl HostState {
         Self {
             last_error: None,
             args: Arc::new(args),
+            guest_env: None,
             print_buf: Vec::new(),
             pending_bytes: None,
             pending_strings: None,
@@ -2278,6 +2281,37 @@ fn real_main() {
                 std::process::exit(1);
             }
         }
+    }
+    if args
+        .first()
+        .is_some_and(|flag| flag == "--checker-ready-session")
+    {
+        let [_, component, worker, slots] = args.as_slice() else {
+            eprintln!("usage: viberun --checker-ready-session <coordinator.component.wasm> <worker.wasm> <slots>");
+            std::process::exit(2);
+        };
+        let result = slots
+            .parse::<usize>()
+            .map_err(|error| wasmtime::format_err!("{error}"))
+            .and_then(|slots| checker_workers::run_ready_session(component, worker, slots));
+        if let Err(error) = result {
+            eprintln!("viberun: checker ready session: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|flag| flag == "--checker-session") {
+        let [_, component, worker] = args.as_slice() else {
+            eprintln!(
+                "usage: viberun --checker-session <coordinator.component.wasm> <worker.wasm>"
+            );
+            std::process::exit(2);
+        };
+        if let Err(error) = checker_workers::run_session(component, worker) {
+            eprintln!("viberun: checker session: {error:#}");
+            std::process::exit(1);
+        }
+        return;
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
