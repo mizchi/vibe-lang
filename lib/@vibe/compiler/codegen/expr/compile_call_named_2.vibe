@@ -103,6 +103,7 @@ import ./compile_call_cc_ladder_names.vibe {
   cc_hof_release_walking,
   cc_hof_retain_arg,
   cc_hof_unique_test,
+  cc_is_owned_temp,
   cc_map_alloc_rc,
   cc_map_emit_key_eq,
   cc_map_emit_unique_test,
@@ -654,12 +655,28 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     nl
   }
   else if fname == "StringBuilder::freeze" {
-    let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
+    let builder = Array::get(args, at = 0)
+    let release_temp = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && cc_is_owned_temp(e = builder, ctx = ctx)
+    let nl = ce(buf, builder, local_names, next_local, ctx, ld)
+    // The join copies the text. An owned temporary can be dropped as soon
+    // as the join returns, without touching the string on the stack.
+    if release_temp {
+      while Array::length(local_names) <= nl {
+        Array::push(local_names, value = "")
+      }
+      emit_local_tee(buf = buf, idx = nl)
+    } else ()
     let empty_idx = str_table_index_of(st = ctx.str_table, s = "")
     emit_str_ref_slot(buf = buf, ctx = ctx, slot = empty_idx)
     let (join_idx, _, _) = resolve_func(ft = ctx.func_table, name = "String::join")
     emit_call(buf = buf, func_idx = join_idx)
-    nl
+    if release_temp {
+      emit_local_get(buf = buf, idx = nl)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+      nl + 1
+    } else {
+      nl
+    }
   }
   else if fname == "__slice" {
     let (ss_idx, _, _) = resolve_func(ft = ctx.func_table, name = "String::substring")
