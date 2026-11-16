@@ -140,13 +140,15 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
 }
 
 import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
+  TaskGroupInterfaceReplay,
   locate_type_error,
   locate_type_error_lines,
   plan_deps_of,
   plan_import_graph_fs,
   plan_import_graph_fs_with_config,
   step_module_fs_using_interfaces,
-  step_module_fs_using_interfaces_with_config
+  step_module_fs_using_interfaces_with_config,
+  taskgroup_interface_replay_for_walk
 }
 
 import ./typecheck_fs_interface_decl_lines.vibe {
@@ -371,6 +373,7 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
   if direct_products != "" && checked_module_cache_mode() != "off" {
     throw("TaskGroup direct checked products require VIBE_CHECKED_MODULE_CACHE=off")
   } else ()
+  let replay = taskgroup_interface_replay_for_walk(directory = direct_products, checked_error_row = checked_error_row)
   let interfaces = dependency_interface_set_new()
   module_typed_lowering_memo_reset()
   typing_dependency_env_reuse_valid_witness_memo_reset()
@@ -395,7 +398,7 @@ export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array
       scheduler_trace_planned(buf = trace, order = order, ranks = ranks, plan_edges = edges)
     } else ()
     resume(())
-  }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer_with_config(leaf_fps = plan_leaf_fps, edges = plan_edges, fps = fps, state = current, path = module_path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
+  }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer_with_config(leaf_fps = plan_leaf_fps, edges = plan_edges, fps = fps, state = current, path = module_path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row, replay = replay)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
     fs_walk_published(path = module_path, fp = fp, state = next, previous_parse_count = previous_parse_count, interfaces = interfaces)
     if tracing {
       scheduler_trace_published(buf = trace, path = module_path, fp = fp, env_cache = next.env_cache)
@@ -428,9 +431,9 @@ fn fs_walk_step_answer(leaf_fps: Array[(String, String)], edges: Array[(String, 
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn fs_walk_step_answer_with_config(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
+fn fs_walk_step_answer_with_config(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool, replay: Option[TaskGroupInterfaceReplay] = None) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
   handle {
-    let (fp, rdb, env_cache, dep_sources, parse_count) = step_module_fs_using_interfaces_with_config(plan_leaf_fps = leaf_fps, plan_edges = edges, fps = fps, rdb = state.rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = state.parse_count, path = path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
+    let (fp, rdb, env_cache, dep_sources, parse_count) = step_module_fs_using_interfaces_with_config(plan_leaf_fps = leaf_fps, plan_edges = edges, fps = fps, rdb = state.rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = state.parse_count, path = path, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row, replay = replay)
     (fp, ModuleWalkState::{ rdb, env_cache, dep_sources, parse_count }, None)
   } with { Exception::Throw(message) => (String::concat("diagnosed:", path), state, Some(message)) }
 }

@@ -52,11 +52,36 @@ function runCoordinator(nativeRunner, component, manifest, cwd) {
   });
 }
 
+function sha256(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function checkedEnvironmentDigest(digests, outcomes, path) {
+  if (!digests.has(path)) {
+    const env = outcomes.get(path)?.artifact?.env;
+    if (typeof env !== "string" || !env.length) throw new Error(`missing checked environment for ${path}`);
+    digests.set(path, sha256(env));
+  }
+  return digests.get(path);
+}
+
+function checkerJobCacheKey(cache, inputs, module, outcomes, interfaceDigests) {
+  if (!cache) return null;
+  if (!interfaceDigests) return cache.inputKey(inputs);
+  const paths = module.dependencyOccurrences ?? module.dependencies;
+  const dependencies = paths.map((path, index) =>
+    [`dep${index}.env`, checkedEnvironmentDigest(interfaceDigests, outcomes, path)]);
+  return cache.inputKey([...inputs.slice(0, 2), ...dependencies], true);
+}
+
 // The final compiler validates canonical encoding and binds each product to
 // the fingerprint from its own walk. Check that the worker's two views agree
 // before handing over the combined product, as in persistent publication.
-async function stageCheckedProducts(directory, outcomes) {
+async function stageCheckedProducts(directory, outcomes, modules, interfaceDigests) {
   await mkdir(directory);
+  const typingContext = interfaceDigests
+    ? `${process.env.VIBE_CHECK_ERROR_ROW === "0" ? "legacy" : "checked"}\t${sha256(process.env.VIBE_CFG ?? "")}`
+    : "";
   for (const { artifact } of outcomes.values()) {
     const { module, env, cacheProduct, fingerprint } = artifact;
     const envHeader = "version\t10\n";
@@ -64,8 +89,18 @@ async function stageCheckedProducts(directory, outcomes) {
     if (!env.startsWith(envHeader) || !cacheProduct.startsWith(productHeader + env.slice(envHeader.length))) {
       throw new Error(`TaskGroup checked product disagrees with its environment: ${module}`);
     }
-    const file = createHash("sha256").update(module, "utf8").digest("hex");
-    await writeFile(join(directory, file), cacheProduct, { encoding: "utf8", flag: "wx" });
+    const file = sha256(module);
+    let product = cacheProduct;
+    if (interfaceDigests) {
+      const { source, dependencies, dependencyOccurrences } = modules.get(module);
+      const rows = [`checked-worker-interface-cache\t1\t${typingContext}\t${sha256(source)}`];
+      for (const dep of dependencyOccurrences ?? dependencies) {
+        rows.push(`dep\t${sha256(dep)}\t${checkedEnvironmentDigest(interfaceDigests, outcomes, dep)}`);
+      }
+      const payload = cacheProduct.slice(cacheProduct.indexOf("\n") + 1);
+      product = rows.join("\n") + "\n\n" + payload;
+    }
+    await writeFile(join(directory, file), product, { encoding: "utf8", flag: "wx" });
   }
   return outcomes.size;
 }
@@ -92,6 +127,9 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
   projectRoot = resolve(projectRoot);
   compilerWasm = resolve(compilerWasm); runnerPath = resolve(runnerPath);
   workerWasm = resolve(workerWasm); coordinatorWasm = resolve(coordinatorWasm); nativeRunner = resolve(nativeRunner);
+  const interfaceReplay = process.env.VIBE_TASKGROUP_INTERFACE_REPLAY === "1";
+  if (interfaceReplay && !directWork) throw new Error("interface replay requires direct checked-product handoff");
+  const interfaceDigests = interfaceReplay ? new Map() : null;
   const start = performance.now();
   const timing = {};
   const cache = process.env.VIBE_TASKGROUP_JOB_CACHE === "1" ? await TaskGroupJobCache.create(projectRoot,
@@ -132,7 +170,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
         const dir = join(work, `wave-${waves.length}-job-${index}`);
         const inputs = moduleJobInputs(modules.get(id), modules.get(id).dependencies.map((dep) => ({ id: dep, outcome: outcomes.get(dep) })));
         directories.set(id, dir);
-        const key = cache ? cache.inputKey(inputs) : null;
+        const key = checkerJobCacheKey(cache, inputs, modules.get(id), outcomes, interfaceDigests);
         keys.set(id, key);
         const product = cache ? await cache.lookup(key, modules.get(id)) : null;
         if (product) { cached.set(id, product); reused++; }
@@ -175,7 +213,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
     // completely checked graphs have the products required by the direct walk.
     const directory = directWork && counts.checked === moduleCount ? join(work, "checked-products") : "";
     const warmed = directory
-      ? await stageCheckedProducts(directory, canonical)
+      ? await stageCheckedProducts(directory, canonical, modules, interfaceDigests)
       : await publishCheckedOutcomes(runnerPath, compilerWasm, projectRoot, canonical, nativeCompiler);
     // Published products have already been validated by a compiler.
     if (!directory && cache) for (const [key, dir] of fresh) await cache.store(key, dir);
@@ -191,7 +229,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
     timing.read_ms = waves.reduce((sum, wave) => sum + wave.read_ms, 0);
     timing.total_ms = performance.now() - start;
     const report = { modules: moduleCount, ...counts, executed, reused, warmed, timing, waves,
-      handoff: directory ? "direct" : "published", ...(keepWork ? { work } : {}) };
+      handoff: directory ? "direct" : "published", interface_replay: interfaceReplay, ...(keepWork ? { work } : {}) };
     if (process.env.VIBE_TASKGROUP_TRACE_OUT) await writeFile(process.env.VIBE_TASKGROUP_TRACE_OUT, JSON.stringify(report));
     return report;
   } finally {

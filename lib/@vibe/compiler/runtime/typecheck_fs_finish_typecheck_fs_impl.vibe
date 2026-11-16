@@ -43,7 +43,11 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty, sha256
+  array_empty, sha256, struct MutMap
+}
+
+import @vibe/checker/transport/env {
+  checked_module_product_environment_text
 }
 
 import @vibe/ast {
@@ -1076,13 +1080,12 @@ fn commit_leaf_fingerprint_fs_with_config(rdb: RippleDb, env_cache: Array[(Strin
 /// A private TaskGroup handoff carries the same complete worker product as
 /// publication. Key by module path because distinct owners may have identical
 /// typing fingerprints. Accept only the product for the current walk's inputs.
-fn load_taskgroup_checked_product(directory: String, path: String, fingerprint: String) -> (TypeEnv, Array[Int], Array[Int], Array[String]) with Exception + Fs {
+fn load_taskgroup_checked_product(directory: String, path: String, header: String, replay: Option[TaskGroupInterfaceReplay]) -> (TypeEnv, Array[Int], Array[Int], Array[String], String) with Env + Exception + Fs {
   let product_path = "\{directory}/\{sha256(path)}"
   if !Fs::exists(product_path) {
     throw("type_db: missing TaskGroup checked product for \{path}")
   } else ()
   let product = Fs::read_file(product_path)
-  let header = "checked-worker-cache\t1\t\{fingerprint}\n"
   if !String::starts_with(product, prefix = header) {
     throw("type_db: stale TaskGroup checked product for \{path}")
   } else ()
@@ -1093,12 +1096,90 @@ fn load_taskgroup_checked_product(directory: String, path: String, fingerprint: 
         if persistent_module_cache_text(env = record.env, lowering = record.lowering) != text {
           throw("type_db: non-canonical TaskGroup checked product for \{path}")
         } else ()
-        (record.env, offsets, eq_offs, eq_keys)
+        let digest = match replay {
+          Some(walk) => taskgroup_content_sha256(text = checked_module_product_environment_text(text), host = walk.host_sha256),
+          None => ""
+        }
+        (record.env, offsets, eq_offs, eq_keys, digest)
       },
       None => throw("type_db: TaskGroup checked product has no lowering for \{path}")
     },
     None => throw("type_db: unreadable TaskGroup checked product for \{path}")
   }
+}
+
+/// The walk publishes a dependency header row after validating each module.
+export struct TaskGroupInterfaceReplay {
+  header_prefix: String;
+  rows: MutMap[String, String];
+  host_sha256: Bool
+}
+
+// Prototype transport through the existing raw runner ABI. The NUL prefix
+// cannot name a process environment variable. Only send a request after the
+// runner has advertised support during this checked-product walk.
+let taskgroup_sha256_prefix: String = String::concat(String::from_byte(0), "vibe:taskgroup:sha256:")
+let taskgroup_sha256_contents_prefix: String = String::concat(taskgroup_sha256_prefix, String::from_byte(0))
+
+fn taskgroup_content_sha256(text: String, host: Bool) -> String with Env {
+  if host {
+    let digest = Env::get(String::concat(taskgroup_sha256_contents_prefix, text))
+    if String::length(digest) == 64 {
+      return digest
+    } else ()
+  } else ()
+  sha256(text)
+}
+
+fn taskgroup_interface_header_prefix(_ checked_error_row: Bool) -> String with Env {
+  let exception_mode = if checked_error_row {
+    "checked"
+  } else {
+    "legacy"
+  }
+  let cfg = sha256(Env::get("VIBE_CFG"))
+  "checked-worker-interface-cache\t1\t\{exception_mode}\t\{cfg}\t"
+}
+
+export fn taskgroup_interface_replay_for_walk(directory: String, checked_error_row: Bool) -> Option[TaskGroupInterfaceReplay] with Env {
+  if directory != "" && Env::get("VIBE_TASKGROUP_INTERFACE_REPLAY") == "1" {
+    Some(TaskGroupInterfaceReplay::{
+      header_prefix: taskgroup_interface_header_prefix(checked_error_row),
+      rows: MutMap::new_string(),
+      host_sha256: Env::get("VIBE_TASKGROUP_HOST_SHA256") != "0" && Env::get(String::concat(taskgroup_sha256_prefix, "?")) == "1"
+    })
+  } else {
+    None
+  }
+}
+
+fn taskgroup_dependency_row(path: String, digest: String) -> String {
+  "dep\t\{sha256(path)}\t\{digest}\n"
+}
+
+/// Validate the owner's source and each imported environment in occurrence
+/// order. Link invalidation still uses the ordinary build fingerprint.
+fn taskgroup_interface_product_header(source: String, deps: Array[String], env_cache: Array[(String, TypeEnv)], checked_error_row: Bool, replay: Option[TaskGroupInterfaceReplay]) -> String with Env + Exception {
+  let (prefix, host) = match replay {
+    Some(walk) => (walk.header_prefix, walk.host_sha256),
+    None => (taskgroup_interface_header_prefix(checked_error_row), false)
+  }
+  let mut header = prefix + taskgroup_content_sha256(text = source, host = host) + "\n"
+  for dep in deps {
+    let row = match replay {
+      Some(walk) => MutMap::get(walk.rows, k = dep),
+      // Individual step callers can supply an environment without a walk.
+      None => match typecheck_fs_lookup_env_cache(cache = env_cache, path = dep) {
+        Some(env) => Some(taskgroup_dependency_row(path = dep, digest = sha256(persistent_type_env_cache_text(env)))),
+        None => None
+      }
+    }
+    match row {
+      Some(text) => header = header + text,
+      None => throw("type_db: missing TaskGroup dependency interface for \{dep}")
+    }
+  }
+  header + "\n"
 }
 
 /// One module's step, once its dependency list is known and every dependency
@@ -1110,7 +1191,7 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool, replay: Option[TaskGroupInterfaceReplay] = None) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   write_persistent_dep_list_if_missing_in_namespace(path = path, source = source, deps = deps, namespace = target_cfg_namespace(cfg))
   let dlen = Array::length(deps)
   let dep_fps = typecheck_fs_empty_dep_fps()
@@ -1129,7 +1210,12 @@ fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, 
   let fingerprint = typecheck_fs_build_fingerprint_with_config(path = path, source = source, dep_fps = dep_fps, semantics_seed = typing_semantics_seed(checked_error_row = checked_error_row), cfg = cfg)
   let direct_products = Env::get("VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR")
   if direct_products != "" {
-    let (env, offsets, eq_offs, eq_keys) = load_taskgroup_checked_product(directory = direct_products, path = path, fingerprint = fingerprint)
+    let header = if Env::get("VIBE_TASKGROUP_INTERFACE_REPLAY") == "1" {
+      taskgroup_interface_product_header(source = source, deps = deps, env_cache = env_cache, checked_error_row = checked_error_row, replay = replay)
+    } else {
+      "checked-worker-cache\t1\t\{fingerprint}\n"
+    }
+    let (env, offsets, eq_offs, eq_keys, digest) = load_taskgroup_checked_product(directory = direct_products, path = path, header = header, replay = replay)
     module_typed_lowering_memo_put(path = path, fingerprint = fingerprint, offsets = offsets, eq_offs = eq_offs, eq_keys = eq_keys)
     module_typed_lowering_bind_source_with_config(path = path, fingerprint = fingerprint, source = source, cfg = cfg, checked_error_row = checked_error_row)
     if incremental_interface_trace_enabled() {
@@ -1137,6 +1223,10 @@ fn commit_with_deps_fs_with_config(fps: Array[(String, String)], rdb: RippleDb, 
     } else ()
     incremental_typecheck_telemetry_add(index = 7, amount = 1)
     let next_db = ripple_record_eval(db = rdb, path = path, fingerprint = fingerprint, deps = deps)
+    match replay {
+      Some(walk) => MutMap::set(walk.rows, k = path, v = taskgroup_dependency_row(path = path, digest = digest)),
+      None => ()
+    }
     let next_env_cache = typecheck_fs_upsert_env_cache(cache = env_cache, path = path, env = env)
     return (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
   } else ()
@@ -1171,7 +1261,7 @@ fn step_module_fs_impl(plan_leaf_fps: Array[(String, String)], plan_edges: Array
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: Option[DependencyInterfaceSet], cfg: TargetCfg, checked_error_row: Bool, replay: Option[TaskGroupInterfaceReplay] = None) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   let (rdb_loaded, loaded_source) = load_planned_module_source_with_config(rdb = rdb, path = path, cfg = cfg, checked_error_row = checked_error_row)
   match loaded_source {
     None => (String::concat("missing:", path), rdb_loaded, env_cache, dep_source_cache, parse_count),
@@ -1185,7 +1275,7 @@ fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_
             throw(String::concat("type_db: module missing from the import plan: ", path))
           }
         }
-        return commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
+        return commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, source = source, deps = deps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row, replay = replay)
       }
       match typecheck_fs_lookup_string_pair(pairs = plan_leaf_fps, key = path) {
         Some(leaf_fingerprint) =>
@@ -1193,13 +1283,13 @@ fn step_module_fs_impl_with_config(plan_leaf_fps: Array[(String, String)], plan_
         None =>
         match plan_deps_of(plan_edges = plan_edges, path = path) {
           Some(planned_deps) =>
-          commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = planned_deps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row),
+          commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = planned_deps, interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row, replay = replay),
           // Types stubs interned only as someone else's dep have no plan
           // edge: plan_import_graph_fs skipped them because they were not
           // in the ripple db. They are leaves (type-family defs only).
           None =>
           if is_vpkg_types_stub_path(path) {
-            commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = empty_stack(), interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row)
+            commit_with_deps_fs_with_config(fps = fps, rdb = rdb_loaded, env_cache = env_cache, dep_source_cache = typecheck_fs_upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count = parse_count, path = path, source = source, deps = empty_stack(), interfaces = interfaces, cfg = cfg, checked_error_row = checked_error_row, replay = replay)
           } else {
             throw(String::concat("type_db: module missing from the import plan: ", path))
           }
@@ -1218,8 +1308,8 @@ export fn step_module_fs_using_interfaces(plan_leaf_fps: Array[(String, String)]
 }
 
 /// Use this invocation's target flags for parsing and cache identity.
-export fn step_module_fs_using_interfaces_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  step_module_fs_impl_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = Some(interfaces), cfg = cfg, checked_error_row = checked_error_row)
+export fn step_module_fs_using_interfaces_with_config(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg, checked_error_row: Bool, replay: Option[TaskGroupInterfaceReplay] = None) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  step_module_fs_impl_with_config(plan_leaf_fps = plan_leaf_fps, plan_edges = plan_edges, fps = fps, rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, interfaces = Some(interfaces), cfg = cfg, checked_error_row = checked_error_row, replay = replay)
 }
 
 /// Preserve the runtime's public input type at the engine boundary. Dependency

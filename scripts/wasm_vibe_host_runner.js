@@ -59,6 +59,7 @@ const {
   readline,
   rejectPolicyWasiModuleImports,
   requestGuestExit,
+  taskGroupSha256Request,
   tcpWorkerCall,
   tryDecodeExceptionString,
   unimplementedAsyncImportStub,
@@ -136,6 +137,8 @@ async function main() {
   }
 
   const debugImports = process.env.VIBE_DEBUG_IMPORTS === "1";
+  const taskGroupHostSha256 = process.env.VIBE_TASKGROUP_HOST_SHA256 !== "0"
+    && Boolean(process.env.VIBE_TASKGROUP_CHECKED_PRODUCTS_DIR);
   const fallbackModule = new Proxy(
     {},
     {
@@ -864,6 +867,10 @@ async function main() {
         return encodeHostString(instanceRef, value);
       },
       ["env-get"](nameTagged) {
+        if (taskGroupHostSha256) {
+          const digest = taskGroupSha256Request(instanceRef, nameTagged);
+          if (digest !== undefined) return encodeHostString(instanceRef, digest);
+        }
         const name = decodeStringArg(instanceRef, nameTagged);
         maybeEmitEnvMemoryMark(name);
         const val = process.env[name] || "";
@@ -974,6 +981,10 @@ async function main() {
       return encodeHostString(instanceRef, val);
     },
     Get(nameTagged) {
+      if (taskGroupHostSha256) {
+        const digest = taskGroupSha256Request(instanceRef, nameTagged);
+        if (digest !== undefined) return encodeHostString(instanceRef, digest);
+      }
       const name = decodeStringArg(instanceRef, nameTagged);
       maybeEmitEnvMemoryMark(name);
       const val = process.env[name] ?? "";

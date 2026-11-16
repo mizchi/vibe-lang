@@ -22,6 +22,7 @@ for replay in 0 1; do
     bash scripts/test_parallel_frontend_warm.sh "$COMPILER"
 done
 python3 scripts/test_taskgroup_build_launcher.py "$COMPILER" "$OUT"
+node --test scripts/wasm_vibe_host_runner_taskgroup_sha256.test.cjs
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT"
 python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT" --direct
 echo "TaskGroup checker dogfood oracle passed; artifacts: $OUT"
