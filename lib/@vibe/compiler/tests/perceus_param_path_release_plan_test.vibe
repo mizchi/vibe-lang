@@ -28,6 +28,13 @@ let prelude = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet own: (Node)
 
 let epilogue = "\nlet run: (Bool) -> Node = (c) -> pick(Pair(Leaf(1), Leaf(2)), c)\nlet main: () -> Int = () -> {\n  match run(true) {\n    _ => 0\n  }\n}"
 
+test "an unannotated owned parameter gets a reference for every forwarding use" {
+  let src = "fn take(_ xs: Array[Int]) -> Int { let owner = [xs]; Array::get(Array::get(owner, at = 0), at = 0) }\nlet callback = (xs) -> take(xs) + take(xs) + take(xs)\nfn main() -> Int { callback([1]) }"
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "callback xs dup 2"))
+  inspect(rc_validate_source(source = src, fn_filter = "callback", checked_error_row = false), content = "")
+}
+
 test "a parameter consumed in one if-branch only gets a guarded drop and a mark" {
   let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
   let plan = plan_of(src)
