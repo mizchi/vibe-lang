@@ -1440,15 +1440,14 @@ fn rv_new_state(x: String, slot: Bool, params: Array[(String, Option[TypeExpr])]
 /// marked occurrences the path ran). A path that left the scope by an early exit releases
 /// its consuming occurrences and the exit's row instead of the scope-end
 /// drops: the count, or for a counted `-k` row `k` less the marked
-/// occurrences the path ran -- codegen releases that one only for a `let` whose scope
-/// end is guarded on a path flag (`rc_exit_release`), so not for a
-/// parameter (`param`) or a binding with no path drop. A borrowed parameter
+/// occurrences the path ran. Codegen requires the release flag that guards
+/// the scope end (`rc_exit_release`). A borrowed parameter
 /// releases one fewer than its row says, as codegen gives it. A loop-result slot holds what its store gave it, with
 /// its dup budget applied again at that store (compile_expr_tail's EAssign
 /// lowering), and a path that stored nothing holds the `0` placeholder,
 /// whose releases are no-ops, so only the paths that stored are checked. At
 /// most one line per kind, with the first witness.
-fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, param: Bool, plan: Array[PerceusAction], drop_from: Int, out: Array[String]) -> Unit {
+fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, plan: Array[PerceusAction], drop_from: Int, out: Array[String]) -> Unit {
   let x = st.x
   let mut dups = 0
   let mut drop = 0
@@ -1510,7 +1509,7 @@ fn rv_check(fname: String, st: RvState, init: Int, borrowed: Bool, param: Bool, 
     // reference and every dup. Without a path drop codegen has no flag and
     // releases nothing there, and neither does a parameter's exit.
     let exit_release = if o.xg {
-      if !param && path_drop > 0 && o.xr > o.marked {
+      if path_drop > 0 && o.xr > o.marked {
         o.xr - o.marked
       } else {
         0
@@ -1594,7 +1593,7 @@ fn rv_check_slot(fname: String, x: String, params: Array[(String, Option[TypeExp
     if why != "" {
       Array::push(out, value = rv_line(fname = fname, x = x, path = "-", msg = "not checked: " + why))
     } else {
-      rv_check(fname = fname, st = st, init = 0, borrowed = false, param = false, plan = plan, drop_from = 0, out = out)
+      rv_check(fname = fname, st = st, init = 0, borrowed = false, plan = plan, drop_from = 0, out = out)
     }
   }
 }
@@ -1795,7 +1794,7 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         } else {
           1
         }
-        rv_check(fname = fname, st = st, init = init, borrowed = borrowed, param = true, plan = plan, drop_from = param_drop_start, out = out)
+        rv_check(fname = fname, st = st, init = init, borrowed = borrowed, plan = plan, drop_from = param_drop_start, out = out)
       }
     }
     pi = pi + 1
@@ -1893,7 +1892,7 @@ export fn perceus_validate_fn(fname: String, params: Array[(String, Option[TypeE
         } else {
           1
         }
-        rv_check(fname = fname, st = st, init = init, borrowed = false, param = false, plan = plan, drop_from = 0, out = out)
+        rv_check(fname = fname, st = st, init = init, borrowed = false, plan = plan, drop_from = 0, out = out)
       }
     }
     di = di + 1
