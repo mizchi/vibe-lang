@@ -2019,6 +2019,29 @@ done
 rm -rf "$ssdir"
 echo "[compiler-gate] slice source release guard ok (20000 on bump/rc/shadow/gc, rc heap_used=$ss_used B)"
 
+# 40f0y. #4172: both spellings borrow a named builder, and the inline join
+#        releases an owned temporary. The returned strings still grow the
+#        bump heap. This fixture measured 5,279,996 B before and 160,160 B
+#        after in both RC modes over 20,000 iterations.
+echo "[compiler-gate] 40f0y/40 StringBuilder releases the builder array after its last use (#4172)"
+gate_workdir sbdir "_build/_gate_rc_string_builder_release"
+for sb_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$sb_lane" "fixtures/rc_string_builder_release_test.vibe" "$sbdir/sb.wasm" main
+  gate_require_artifact "$sbdir/sb.wasm" "rc_string_builder_release did not compile on $sb_lane (#4172)"
+  gate_run sb_out last "$sbdir/sb.wasm"
+  gate_require_eq "$sb_out" "0" "rc_string_builder_release changed its result on $sb_lane (#4172)"
+  if [ "$sb_lane" = rc ] || [ "$sb_lane" = shadow ]; then
+    sb_json="$(node scripts/measure_heap.mjs "$sbdir/sb.wasm" main)"
+    sb_used="$(printf '%s' "$sb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sb_used" ] || [ "$sb_used" -ge 250000 ]; then
+      echo "[compiler-gate] FAIL: rc_string_builder_release exceeded its heap bound on $sb_lane ($sb_json)" >&2
+      exit 1
+    fi
+  fi
+done
+rm -rf "$sbdir"
+echo "[compiler-gate] StringBuilder release guard ok (bump/rc/shadow/gc)"
+
 # 40f0w. #4161: a match's catch-all binder (`leaf => ..`) aliases its
 #        scrutinee and holds no reference of its own. The arm took exactly one
 #        for it (#2126), so a body that consumed it twice -- `big(leaf) &&
