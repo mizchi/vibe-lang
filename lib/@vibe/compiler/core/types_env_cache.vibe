@@ -22,6 +22,7 @@ import ./sorted_index.vibe {
 
 import ./env_name_index.vibe {
   EnvNameIndex,
+  env_name_index_active_region_row,
   env_name_index_at,
   env_name_index_find,
   env_name_index_has_tail_names,
@@ -1164,6 +1165,52 @@ let no_env_type: Option[Type] = None
 
 export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
   env_lookup_project(env = env, name = name, missing = no_env_type, project = env_lookup_type_value)
+}
+
+fn env_region_binding_is_active(_ binding: EnvValueBinding) -> Bool {
+  match binding.origin {
+    BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => false,
+    _ => binding.ty is CtNamed(_, _)
+  }
+}
+
+/// Read the reserved region marker with the same shadowing and miss rules
+/// as env_lookup. Cached indexes remember its row, including the synthetic
+/// inactive marker, so this query needs neither a hash probe nor an Option.
+export fn env_active_region_present(_ env: TypeEnv) -> Bool {
+  let mut cur = env
+  while true {
+    match cur {
+      EnvEmpty => return false,
+      EnvBind(name, binding, rest) => {
+        if String::equals(name, "#active_region") {
+          return env_region_binding_is_active(binding)
+        }
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => cur = rest,
+      EnvTraitImpl(_, _, rest) => cur = rest,
+      EnvShowWrappers(_, _, rest) => cur = rest,
+      EnvMutCell(_, _, rest) => cur = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => cur = rest,
+      EnvTypeDefs(_, _, rest) => cur = rest,
+      EnvFlat(_) => return match env_lookup(env = cur, name = "#active_region") {
+        Some(CtNamed(_, _)) => true,
+        _ => false
+      },
+      EnvCached(index, bindings, rest) => {
+        let row = env_name_index_active_region_row(index)
+        if row >= 0 {
+          return env_region_binding_is_active(Array::get(bindings, at = row))
+        }
+        if env_name_index_miss_is_final(index = index, name = "#active_region") {
+          return false
+        }
+        cur = rest
+      }
+    }
+  }
+  false
 }
 
 /// Whether `name` is present only to publish an aliased re-export. This is

@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   collect_tvars,
+  env_active_region_present,
   env_bind,
   env_bind_all,
   env_bind_mut,
@@ -266,6 +267,43 @@ test "a region accelerator recaches through env_cache (real entry shape)" {
     Some(t) => type_to_string(t),
     None => "absent"
   }, "Int")
+}
+
+test "active region lookup agrees with lexical and cached name lookup" {
+  let region_ty = CtNamed("#region_r", array_empty())
+  let active = env_bind(env = EnvEmpty, name = "#active_region", ty = region_ty)
+  let inactive = env_bind(env = active, name = "#active_region", ty = CtUnit)
+  let hidden = env_value_binding_with_origin(ty = region_ty, origin = BindingOriginReExportSurface("/dep", "r"))
+  let snapshot = env_cache_read_snapshot(env_bind(env = EnvEmpty, name = "x", ty = CtInt))
+  let cases: Array[(TypeEnv, Bool)] = [
+    (EnvEmpty, false),
+    (env_cache(env_bind(env = EnvEmpty, name = "x", ty = CtInt)), false),
+    (env_bind_mut(env = active, name = "ordinary", ty = CtInt, escapes = false), true),
+    (inactive, false),
+    (env_cache(active), true),
+    (env_cache(inactive), false),
+    (env_cached(names = ["x"], bindings = [env_value_binding(CtInt)], rest = active), true),
+    (env_cached(names = ["#active_region", "#active_region"], bindings = [
+      hidden,
+      env_value_binding(region_ty)
+    ], rest = active), false),
+    (EnvFlat([("#active_region", env_value_binding(region_ty))]), true),
+    (EnvFlat([
+      ("#active_region", hidden),
+      ("#active_region", env_value_binding(region_ty))
+    ]), false),
+    (snapshot, false),
+    (env_bind(env = snapshot, name = "#active_region", ty = region_ty), true)
+  ]
+  for case in cases {
+    let (env, expected) = case
+    let ordinary = match env_lookup(env = env, name = "#active_region") {
+      Some(CtNamed(_, _)) => true,
+      _ => false
+    }
+    assert(ordinary == expected)
+    assert(env_active_region_present(env) == expected)
+  }
 }
 
 test "env_bind shadowing a cached name wins env_lookup (#1583)" {
