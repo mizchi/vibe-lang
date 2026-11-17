@@ -17,7 +17,7 @@ import ./checker_lambda_result.vibe {
 }
 
 import ./checker_retaining_write.vibe {
-  retaining_write_argument_mask, retaining_write_call_mask
+  retaining_write_argument_mask, retaining_write_call_mask_in_region
 }
 
 import @vibe/compiler/checker/annotations {
@@ -88,7 +88,7 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/checker/builtin_sigs {
-  builtin_call_arm, lookup_builtin
+  builtin_call_arm, builtin_resolves_at, lookup_builtin
 }
 
 import @vibe/core {
@@ -149,7 +149,6 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_assignable,
   check_assignable_set_end,
   direct_result_enum_payload_param_indices,
-  env_has_active_region,
   interp_is_shim_body,
   return_provenance_was_written,
   row_variable_labels,
@@ -311,10 +310,10 @@ fn unresolved_field_write_message(_ field: String) -> String {
 /// perturbs the main type/subst flow — it only type-checks `obj` to learn its
 /// struct name, looks up that struct's `mut` field set, and pushes a single
 /// diagnostic to the real `errors` when the written field is not `mut`.
-export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Subst, Int) {
+export fn field_write_mut_check(name: String, callee_off: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Subst, Int) {
   let mut out_s = s
   let mut out_c = c
-  if name == "__set_field" && Array::length(args) == 3 {
+  if name == "__set_field" && Array::length(args) == 3 && builtin_resolves_at(env = env, name = name, ident_off = callee_off) {
     // review-lint: allow-by-name-call-arm -- a `mut` check on the field-write sugar `obj.f = x`, which reaches here spelled `__set_field`; it types nothing, so it is not one of the #3179 call arms
     match Array::get(args, at = 1) {
       EString(field, _) => {
@@ -431,16 +430,12 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
 
 /// Mutable container operations are assignments with a non-syntactic target.
 /// Check every stored argument against the same region lifetime rule as
-/// `EAssign`; skip the duplicate type walk entirely outside a region.
+/// `EAssign`. The caller has already established an active region.
 /// `operation` is the checker's answer for the callee (see
 /// `retaining_write_argument_mask`).
-export fn retaining_write_region_check(name: String, operation: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
-  // #2386: the name test is a compare ladder; the region test is a chain
-  // lookup. Asking the ladder first keeps the lookup off every call site
-  // whose callee retains nothing -- nearly all of them -- and the check
-  // itself does nothing for those either way.
-  let retained = retaining_write_call_mask(env = env, name = name, operation = operation)
-  if Array::length(args) > 0 && retained != 0 && env_has_active_region(env) {
+export fn check_retaining_write_in_region(name: String, operation: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+  let retained = retaining_write_call_mask_in_region(env = env, name = name, operation = operation)
+  if Array::length(args) > 0 && retained != 0 {
     let target = Array::get(args, at = 0)
     let reaches_outer = region_result_part_reaches_outer(target = target, env = env)
     let mut value_index = 1

@@ -174,6 +174,7 @@ fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type
 fn resolve_type_expr_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type
 
 // --- checker_escape.vibe (#1262 / ADR-0100 (1))
+fn esc_pat_binds(pat: Pat, name: String) -> Bool
 fn mut_binding_escapes(body: Expr, name: String) -> Bool
 fn expr_free_in(expr: Expr, name: String) -> Bool
 fn diag_report_into(errors: Array[String], msg: String) -> Unit
@@ -588,6 +589,8 @@ fn mark_return_provenance_written(_ id: Int) -> Unit
 fn return_provenance_was_written(tytab: Array[(Int, Type)], id: Int) -> Bool
 fn direct_result_enum_payload_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef]) -> Array[Int]
 fn env_has_active_region(_ env: TypeEnv) -> Bool
+fn region_activity_in_env(env: TypeEnv, known: Option[Bool]) -> Bool
+fn known_region_activity(_ active: Bool) -> Option[Bool]
 fn slice_result_type(_ receiver: Type) -> Type
 fn slice_receiver_is_invalid(receiver: Type, receiver_had_error: Bool) -> Bool
 fn reject_non_frozen_receiver(recv: Type, name: String, callee_off: Int, errors: Array[String]) -> Unit
@@ -750,12 +753,12 @@ fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type, want_
 fn assignment_effect_inst_check(env: TypeEnv, name: String, value: Expr, value_ty: Type, var_ty: Type, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Subst
 fn effect_inst_call_check(env: TypeEnv, binding: Option[Type], callee_ty: Type, callee_name: String, off: Int, s: Subst, errors: Array[String]) -> Subst
 fn strip_effect_inst_labels(t: Type, s: Subst, defs: Array[TypeDef]) -> Type
-fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Subst, Int)
-fn retaining_write_region_check(name: String, operation: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit
+fn field_write_mut_check(name: String, callee_off: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Subst, Int)
+fn check_retaining_write_in_region(name: String, operation: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit
 fn retaining_write_argument_mask(source_name: String, operation: Int) -> Int
-fn retaining_write_call_mask(env: TypeEnv, name: String, operation: Int) -> Int
+fn retaining_write_call_mask_in_region(env: TypeEnv, name: String, operation: Int) -> Int
 fn retaining_write_alias_operation(env: TypeEnv, name: String) -> Int
-fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type], s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
+fn lambda_arg_param_write_check_in_region(args: Array[Expr], param_tys: Array[Type], s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
 fn lambda_arg_elem_write_check(arg: Expr, recv: Expr, init: Option[Expr], recv_ty: Type, fn_ty: Type, pidx: Int, s: Subst, env: TypeEnv, defs: Array[TypeDef], c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
 fn tail_region_closed_ground_fn(_ expr: Expr) -> Bool
 fn tail_formal_args(args: Array[Expr], cell: Array[Int], index: Int) -> Array[Expr]
@@ -800,8 +803,8 @@ fn region_outer_alias_regions(value: Expr, scope: TypeEnv, active: Bool) -> Arra
 fn region_outer_alias_mark(env: TypeEnv, name: String, regions: Array[String]) -> TypeEnv
 fn region_outer_alias_bind(env: TypeEnv, pat: Pat, value: Expr, scope: TypeEnv) -> TypeEnv
 fn region_for_binder_bind(env: TypeEnv, name: String, iterable: Expr, iter_ty: Type, scope: TypeEnv, defs: Array[TypeDef]) -> TypeEnv
-fn region_content_let_mark(env: TypeEnv, name: String, scope: Expr, ty: Type, known: Array[String], init: Expr, init_env: TypeEnv, s: Subst) -> TypeEnv
-fn region_content_pattern_mark(env: TypeEnv, pat: Pat, scope: Expr, s: Subst) -> TypeEnv
+fn region_content_let_mark(env: TypeEnv, known_active_region: Option[Bool], name: String, scope: Expr, ty: Type, known: Array[String], init: Expr, init_env: TypeEnv, s: Subst) -> TypeEnv
+fn region_content_pattern_mark(env: TypeEnv, known_active_region: Option[Bool], pat: Pat, scope: Expr, s: Subst) -> TypeEnv
 fn region_content_outer_regions(name: String, scope: Expr, env: TypeEnv, s: Subst) -> (Array[String], Array[String])
 fn retention_param_base(_ raw_name: String) -> String
 fn retention_type_may_hide_region(_ t: Type) -> Bool
@@ -814,7 +817,7 @@ fn retention_bind_carry(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr,
 fn retention_note_let_mut(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr, scope: Expr, ty: Type, defs: Array[TypeDef], s: Subst, let_off: Int) -> TypeEnv
 fn retention_bind_param_carry(env: TypeEnv, name: String, regions: Array[String]) -> TypeEnv
 fn retention_bind_let(env: TypeEnv, name: String, val: Expr, ty: Type, is_rec: Bool) -> TypeEnv
-fn retention_call_region_check(name: String, name_off: Int, call_key: Int, span_len: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
+fn retention_check_named_call_in_region(name: String, name_off: Int, call_key: Int, span_len: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
 fn retention_expr_callee_region_check(callee: Expr, label: String, marker_off: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit
 fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_ty: Type, group_ty: Type, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Bool)
 fn retention_named_run_body_message(body_name: String, kind: Int) -> String
@@ -847,7 +850,7 @@ fn dot_call_qualified_name(env: TypeEnv, defs: Array[TypeDef], type_prefix: Stri
 fn dot_call_field_companion_refusal(env: TypeEnv, defs: Array[TypeDef], type_prefix: String, method: String) -> Option[String]
 fn checker_record_alias_is_local(_ name: String) -> Bool
 fn checker_record_alias_target(_ name: String) -> Option[String]
-fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), check_plain: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int), check_args: (Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Subst, Int)) -> (Type, Subst, Int)
+fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, known_active_region: Option[Bool], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), check_scoped_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String, Option[Bool], Bool) -> (Type, Subst, Int), check_plain: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int), check_args: (Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Subst, Int)) -> (Type, Subst, Int)
 fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int)
 
 // Shared implementation helpers from checker_stmt.vibe.
@@ -1059,7 +1062,7 @@ fn seed_array_callback_elem(arg: Expr, recv_ty: Type, s: Subst) -> Unit
 fn seed_struct_field_lambda(defs: Array[TypeDef], struct_name: String, field: String, value: Expr, s: Subst) -> Unit
 fn record_row_free_callback(arg: Expr, expected: Type, actual: Type, s: Subst, capture: Option[TypedOccurrenceRoleLaneCapture], indexed_callee_row: Option[String]) -> Unit
 fn abi_effect_row(_ row: Option[String]) -> String
-fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Expr], cell: Array[Int], param_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, callee_inst: Option[(Type, Type)], name: String, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Array[Type], Subst, Int)
+fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Expr], cell: Array[Int], param_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, callee_inst: Option[(Type, Type)], name: String, known_active_region: Option[Bool], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String, Option[Bool], Bool) -> (Type, Subst, Int)) -> (Array[Type], Subst, Int)
 
 fn checker_parameter_defaults(_ value: Expr) -> Option[Array[Bool]]
 fn checker_call_header_defaults(env: TypeEnv, name: String) -> Option[Array[Bool]]

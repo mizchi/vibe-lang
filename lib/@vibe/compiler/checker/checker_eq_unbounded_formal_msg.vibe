@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   TypeExpr,
   compiler_owned_type_arity,
   effect_type_param_names,
+  env_active_region_present,
   env_bind,
   env_lookup,
   env_type_defs,
@@ -1029,17 +1030,25 @@ export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: 
 }
 
 export fn env_has_active_region(_ env: TypeEnv) -> Bool {
-  // Only the real region skolem (a CtNamed bound by the `region` checker path)
-  // counts as active. env_cache seeds every acceleration index with a negative
-  // CtUnit-typed `#active_region` entry so this common query answers from
-  // the index instead of walking the whole chain on a miss; that marker (and
-  // any other non-CtNamed value) means NO active region.
-  match env_lookup(env = env, name = "#active_region") {
-    Some(ty) => match ty {
-      CtNamed(_, _) => true,
-      _ => false
-    },
-    None => false
+  env_active_region_present(env)
+}
+
+let known_region_active: Option[Bool] = Some(true)
+let known_region_inactive: Option[Bool] = Some(false)
+
+/// Use a fact only when the caller has preserved the region of this scope.
+export fn region_activity_in_env(env: TypeEnv, known: Option[Bool]) -> Bool {
+  match known {
+    Some(active) => active,
+    None => env_has_active_region(env)
+  }
+}
+
+export fn known_region_activity(_ active: Bool) -> Option[Bool] {
+  if active {
+    known_region_active
+  } else {
+    known_region_inactive
   }
 }
 
