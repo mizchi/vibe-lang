@@ -525,16 +525,29 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             let flag = Array::get(info, at = i * 3 + 2)
             // #1980: a counted row's release, done by the path flag's count
             // below rather than by `count`.
+            let mut counted_flag = 0 - 1
             let mut counted = 0
             let conditional_rec = exit_result.0 >= 0 && ek == 6 && !rc_exit_name_shared(names = names, info = info, lo = lo, i = i) && find_local_slot(names = local_names, name = n) == local && rc_exit_conditional_rec_transfer(e = exit_result.1, name = n, local_names = local_names, ctx = ctx)
+            // The planner emits a counted row for an owned parameter at
+            // a plain return only when the function's result is immediate.
+            // Even an indirect operand cannot return a view in that case.
+            let scalar_param_row = if !operand_ok && ek == 1 && kind == 0 {
+              rc_exit_plan_count(ctx = ctx, ord = ord, n = n)
+            } else {
+              0
+            }
             let count = if conditional_rec {
               1
-            } else if !operand_ok || ek >= 100 || array_contains_str(arr = keep, s = n) || rc_exit_name_shared(names = names, info = info, lo = lo, i = i) || find_local_slot(names = local_names, name = n) != local {
+            } else if (!operand_ok && scalar_param_row >= 0) || ek >= 100 || array_contains_str(arr = keep, s = n) || rc_exit_name_shared(names = names, info = info, lo = lo, i = i) || find_local_slot(names = local_names, name = n) != local {
               0
             } else if ek == 4 || ek == 5 {
               1
             } else {
-              let planned = rc_exit_plan_count(ctx = ctx, ord = ord, n = n)
+              let planned = if operand_ok {
+                rc_exit_plan_count(ctx = ctx, ord = ord, n = n)
+              } else {
+                scalar_param_row
+              }
               if planned < 0 {
                 // A counted row (`-k`): release `k` less the consume marks
                 // the path ran, and only under the path flag its scope-end
@@ -544,10 +557,18 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
                 // did not consume it; #1980 a merged binding's is its
                 // initial reference and every dup.
                 if ek == 0 && flag >= 0 && rc_exit_is_path_flag(ctx = ctx, flag = flag) {
+                  counted_flag = flag
                   counted = 0 - planned
-                } else {
-                  ()
-                }
+                } else if ek == 1 && kind == 0 {
+                  // An owned parameter's epilogue flag is registered after
+                  // its exit-stack entry. The enclosing slot check above
+                  // ensures this is still the parameter, even with shadows.
+                  let row = find_local_slot(names = ctx.rc_path_flag_names, name = n)
+                  if row >= 0 {
+                    counted_flag = Array::get(ctx.rc_path_flag_locals, at = row)
+                    counted = 0 - planned
+                  } else ()
+                } else ()
                 0
               } else if ek == 2 {
                 planned - 1
@@ -596,7 +617,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
               ()
             }
             if counted > 0 {
-              emit_rc_path_drop(buf = buf, flag = flag, local_idx = local, count = counted, drop_fn_idx = ctx.rc_drop_func_idx)
+              emit_rc_path_drop(buf = buf, flag = counted_flag, local_idx = local, count = counted, drop_fn_idx = ctx.rc_drop_func_idx)
             } else {
               ()
             }

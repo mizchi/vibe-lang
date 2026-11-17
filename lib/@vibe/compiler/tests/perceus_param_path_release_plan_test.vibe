@@ -6,12 +6,16 @@
 // now takes the #2389 pair a plain `let` takes -- `path_drop` plus a
 // `consume_mark` per spending occurrence -- and codegen releases it in the
 // function epilogue under the flag those marks set. The shapes the epilogue
-// cannot guard stay silent: an early exit (released from a table that reads
-// no path flag), a consume inside a loop (codegen's own per-site rules), an
+// cannot guard stay silent: an exit that might return a view, a consume
+// inside a loop (codegen's own per-site rules), an
 // unmarkable occurrence and a body that may hand back a view of it.
 
 import @vibe/compiler/query {
-  rc_plan_source
+  rc_plan_source, rc_validate_source, rc_validate_source_edited
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction, pa_is_exit_drop
 }
 
 //# Functions
@@ -45,9 +49,7 @@ test "a parameter consumed on every branch is not a split" {
   assert(!String::contains(plan, needle = "pick t consume_mark:"))
 }
 
-test "a split parameter of a body with an exit gets no path drop" {
-  // Codegen releases a parameter at an exit from a table that reads no path
-  // flag, so a path that ran the mark would release it there again.
+test "a split parameter of a heap-result function with an exit gets no path drop" {
   let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    return own(t)\n  } else {\n    ()\n  }\n  Leaf(0)\n}", epilogue))
   let plan = plan_of(src)
   assert(!String::contains(plan, needle = "pick t path_drop"))
@@ -94,4 +96,30 @@ test "a prefix read can still make a parameter live through an arm without its n
   let plan = plan_of(src)
   assert(!String::contains(plan, needle = "pick xs path_drop"))
   assert(!String::contains(plan, needle = "pick xs consume_mark:"))
+}
+
+test "a scalar return releases a split parameter under the epilogue flag" {
+  let src = "struct Box { xs: Array[Int] }\nfn sink(_ xs: Array[Int]) -> Int {\n  let box = Box::{ xs: xs }\n  Array::length(box.xs)\n}\nfn pick(_ xs: Array[Int], _ take: Bool, _ stop: Bool) -> Int {\n  let result = if take { sink(xs) } else { 0 }\n  if stop { return result }\n  result\n}\nfn main() -> Int { pick([1, 2], true, false) }"
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick xs path_drop 1"))
+  assert(String::contains(plan, needle = "pick xs consume_mark:"))
+  assert(String::contains(plan, needle = "pick xs exit_drop:0:-1 1"))
+  inspect(rc_validate_source(source = src, fn_filter = "pick", checked_error_row = false), content = "")
+  let leaked = rc_validate_source_edited(source = src, fn_filter = "pick", edit = (_f: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
+    let out: Array[PerceusAction] = []
+    for action in plan {
+      if !pa_is_exit_drop(action) || action.name != "xs" {
+        Array::push(out, value = action)
+      } else ()
+    }
+    out
+  }, checked_error_row = false)
+  assert(String::contains(leaked, needle = "owned value not consumed"))
+}
+
+test "a return inside a loop keeps the conservative split-parameter plan" {
+  let src = "struct Box { xs: Array[Int] }\nfn sink(_ xs: Array[Int]) -> Int {\n  let box = Box::{ xs: xs }\n  Array::length(box.xs)\n}\nfn pick(_ xs: Array[Int], _ take: Bool, _ stop: Bool) -> Int {\n  let result = if take { sink(xs) } else { 0 }\n  let mut i = 0\n  while i < 2 {\n    if stop { return result }\n    i = i + 1\n  }\n  result\n}\nfn main() -> Int { pick([1, 2], true, false) }"
+  let plan = plan_of(src)
+  assert(!String::contains(plan, needle = "pick xs path_drop"))
+  assert(!String::contains(plan, needle = "pick xs exit_drop:0:-1"))
 }

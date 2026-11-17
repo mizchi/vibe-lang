@@ -314,12 +314,58 @@ fn kept_exit_between(ks: Array[Array[Int]], i: Int) -> Int {
   a + b + Array::get(v, at = 1) - (i + 1)
 }
 
+// The parameter has no entry dup: the sink moves its initial reference.
+// Exercise both return paths after it was moved and after it was skipped.
+fn param_split_return(_ v: Array[Int], _ i: Int, _ take: Bool, _ early: Bool) -> Int {
+  let result = if take {
+    sink(v) - i
+  } else {
+    0
+  }
+  if early {
+    return result
+  }
+  result
+}
+
+// Calling a local callback obscures the operand's representation in
+// codegen. The function signature still establishes an immediate result.
+fn param_split_callback(_ v: Array[Int], _ i: Int, _ cb: (Int) -> Int) -> Int {
+  let result = if i % 2 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  if i % 3 == 0 {
+    return {
+      let value = cb(result)
+      value
+    }
+  }
+  result
+}
+
+fn exit_identity(_ x: Int) -> Int {
+  x
+}
+
+fn exit_shifted_identity(_ x: Int) -> Int {
+  (x + 1) - 1
+}
+
 fn main() -> Int {
   let mut acc = 0
   let mut i = 0
   while i < 20000 {
     acc = acc + let_guard(i) + param_guard(mka(i), i) + loop_continue(i) + exit_arm(i)
     acc = acc + let_exit_after(i) + exit_in_arm(i) + exit_between(i) + exit_reads(i) + exit_break(i)
+    acc = acc + param_split_return(mka(i), i, i % 2 == 0, i % 3 == 0)
+    let callback = if i % 5 == 0 {
+      exit_identity
+    } else {
+      exit_shifted_identity
+    }
+    acc = acc + param_split_callback(mka(i), i, callback)
     i = i + 1
   }
   let ks: Array[Array[Int]] = []

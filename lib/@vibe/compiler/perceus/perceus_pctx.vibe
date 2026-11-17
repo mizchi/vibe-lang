@@ -233,6 +233,7 @@ export struct PCtx {
   // enclosing `let` names, innermost last; and each exit's candidate rows
   // (aligned), resolved into `PaExitDrop` once the dup budget is known.
   mut exit_ord: Int;
+  mut param_split_exit_blocked: Bool;
   mut handle_floor: Int;
   mut return_floor: Int;
   mut let_stack: Array[String];
@@ -364,23 +365,21 @@ fn pe_dup_upfront(ctx: PCtx, id: Int) -> Bool {
   pe_flag_has(ctx = ctx, id = id, bit = pf_let) || pe_flag_has(ctx = ctx, id = id, bit = pf_param)
 }
 
-/// #2389 / #2827: may a split binding `id` take its guarded path drop? A
-/// plain `let` may whenever no marked occurrence was lost. A parameter's drop
-/// is the function epilogue's (`linked_compile_function_bodies`,
-/// `compile_lambda`), so it qualifies only where that epilogue is the one
-/// release on every path: no early exit (codegen releases a parameter at an
-/// exit from a table that reads no path flag), no other binding of its name
-/// (codegen's path-drop rows are name-keyed), and a body that cannot hand
-/// back a view into it (the guarded drop does not retain an escaping
-/// interior read). A function declared to return an Int, a Bool or Unit
-/// cannot: the planner records no body for its parameters to ask about
-/// (`build_perceus_plan_in_ctx`), so `ctx.n` on one path no longer keeps
-/// another path's consume from taking the guarded drop.
+/// #2389 / #2827: a split binding may get a guarded release when every
+/// occurrence spending its initial reference can set the flag. Parameters
+/// also need an unambiguous name and a result that cannot borrow from the
+/// argument. With exits, limit this to immediate-result functions whose
+/// exits are plain returns outside loops. The return can then use the same
+/// flag as the epilogue for a parameter whose remaining count reached zero.
 export fn pe_split_release_ok(ctx: PCtx, id: Int) -> Bool {
   if pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) {
     if pe_flag_has(ctx = ctx, id = id, bit = pf_param) {
-      ctx.exit_ord == 0 && pe_name_unique(ctx = ctx, id = id) && !pe_tail_may_view_for_param(ctx = ctx, e = Array::get(ctx.decl_bodies, at = id), views = [
-      ], param = Array::get(ctx.decl_names, at = id))
+      // The planner stores EUnit as the result spine of an immediate-result
+      // function. A literal Unit body cannot contain a split.
+      let body = Array::get(ctx.decl_bodies, at = id)
+      (ctx.exit_ord == 0 || (!ctx.param_split_exit_blocked && body is EUnit)) &&
+      pe_name_unique(ctx = ctx, id = id) &&
+      !pe_tail_may_view_for_param(ctx = ctx, e = body, views = [], param = Array::get(ctx.decl_names, at = id))
     } else {
       true
     }
@@ -1349,6 +1348,9 @@ export fn pe_throw_payload(scope: PScope, callee: Expr, args: Array[Expr]) -> Op
 export fn pe_exit(ctx: PCtx, scope: PScope, kind: Int, floor: Int, operand: Expr) -> Unit {
   let ord = ctx.exit_ord
   ctx.exit_ord = ord + 1
+  if kind != 0 || ctx.loop_floor != 0 {
+    ctx.param_split_exit_blocked = true
+  } else ()
   let nl = Array::length(ctx.let_stack)
   let inner = if nl > 0 {
     Array::get(ctx.let_stack, at = nl - 1)

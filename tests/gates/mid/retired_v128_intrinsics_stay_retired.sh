@@ -519,11 +519,10 @@ echo "[compiler-gate] RC parameter-branch, field-arm and truncate-tally guard ok
 # for a parameter, any exit in the body -- so `if bad { return d }` ahead of
 # `if c { sink(v) }` kept the consume's dup on every call that took neither
 # (pe_dsplit_ok). An exit row reads the merged budget and releases what the
-# path that consumed the most still holds; a parameter's exit release reads
-# no path flag, and a `let`'s exit before every consume runs no mark. A
-# `let`'s exit after a consume merges too when only consume marks consumed
-# it on the way: the path flag counts them, and the exit's counted row
-# releases the initial reference and every dup less that count. The fixture
+# path that consumed the most still holds. A guarded release can also count
+# marks at an exit, so it drops the references that the path did not spend.
+# For a split parameter, an ordinary return from a scalar-result function
+# uses the same flag as the epilogue. The fixture
 # measured 4,905,100 B at N=20000 before the first change; with the
 # exit-after shapes added it measured 5,752,276 B before the counted exit row
 # and 2,620 B after. The bound is 4,000. Its controls keep the consumed
@@ -539,23 +538,14 @@ for bx_mode in 1 shadow; do
     "fixtures/rc_branch_dup_exit_leak_test.vibe" "$bxdir/rc_$bx_mode.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$bxdir/rc_$bx_mode.wasm" "rc_branch_dup_exit fixture did not compile under VIBE_RC=$bx_mode"
 done
-bx_shadow_json="$(node scripts/measure_heap.mjs "$bxdir/rc_shadow.wasm" main 2>&1 || true)"
-bx_shadow_result="$(printf '%s' "$bx_shadow_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
-if [ "$bx_shadow_result" != "0" ]; then
-  echo "[compiler-gate] FAIL: rc_branch_dup_exit under VIBE_RC=shadow did not return 0 (an exit or a path drop released a value a path still held): $bx_shadow_json" >&2; exit 1
-fi
-bx_json="$(node scripts/measure_heap.mjs "$bxdir/rc_1.wasm" main 2>/dev/null)"
-bx_used="$(printf '%s' "$bx_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-bx_result="$(printf '%s' "$bx_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
-if [ -z "$bx_used" ]; then
-  echo "[compiler-gate] FAIL: could not measure rc_branch_dup_exit heap ($bx_json)" >&2; exit 1
-fi
-if [ "$bx_result" != "0" ]; then
-  echo "[compiler-gate] FAIL: rc_branch_dup_exit wrong result $bx_result (want 0)" >&2; exit 1
-fi
-if [ "$bx_used" -ge 4000 ]; then
-  echo "[compiler-gate] FAIL: rc_branch_dup_exit heap_used=$bx_used >= 4000 (an early exit declines a branch-dup merge, so the consume's dup is held on the paths that skip it; measured 4905100 at N=20000 when every exit did, and 5752276 when an exit after a consume did)" >&2; exit 1
-fi
+for bx_mode in 1 shadow; do
+  bx_json="$(node scripts/measure_heap.mjs "$bxdir/rc_$bx_mode.wasm" main)"
+  bx_used="$(printf '%s' "$bx_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+  bx_result="$(printf '%s' "$bx_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+  if [ "$bx_result" != "0" ] || [ -z "$bx_used" ] || [ "$bx_used" -ge 4000 ]; then
+    echo "[compiler-gate] FAIL: rc_branch_dup_exit under VIBE_RC=$bx_mode exceeded its heap bound or changed the result ($bx_json)" >&2; exit 1
+  fi
+done
 rm -rf "$bxdir"
 echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
 
