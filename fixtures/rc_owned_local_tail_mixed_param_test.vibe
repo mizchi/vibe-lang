@@ -2,7 +2,7 @@
 // hands back a parameter the caller keeps using. The local path never reads
 // that parameter, so the callee must release the unused argument
 // there. The parameter path moves the reference into the result instead.
-// Both probes read the result and the caller's parameter after allocating
+// The probes read the result and the caller's parameter after allocating
 // another array. The gate also bounds the heap on RC and shadow.
 fn mka(_ i: Int) -> Array[Int] {
   [i, i + 1, i + 2]
@@ -34,10 +34,28 @@ fn mixed_param_match(_ p: Array[Int], _ i: Int) -> Array[Int] {
   }
 }
 
+struct Outer {
+  items: Array[Array[Int]]
+}
+
+fn consume_outer(_ xs: Array[Array[Int]]) -> Int {
+  let held = Outer::{ items: xs }
+  Array::get(Array::get(held.items, at = 0), at = 0)
+}
+
+fn retained_param_view(_ xs: Array[Array[Int]], _ take: Bool) -> Array[Int] {
+  if take {
+    [consume_outer(xs)]
+  } else {
+    Array::get(xs, at = 0)
+  }
+}
+
 fn probe(_ i: Int) -> Int {
   let p = mka(i + 4)
   let x = mixed_param_tail(p, i)
   let y = mixed_param_match(p, i)
+  let z = retained_param_view([mka(i)], i % 2 == 0)
   let fresh = [mka(i + 7), mka(i + 9), mka(i + 11)]
   // Even calls return local payloads. Odd calls return the parameter twice.
   let k = if i % 2 == 0 {
@@ -47,7 +65,7 @@ fn probe(_ i: Int) -> Int {
   }
   (Array::get(x, at = 0) - i - 2 - k) +
   (Array::get(y, at = 0) - i - 2 * k) +
-  (Array::get(p, at = 0) - i - 4) + Array::length(fresh) - 3
+  (Array::get(p, at = 0) - i - 4) + (Array::get(z, at = 0) - i) + Array::length(fresh) - 3
 }
 
 fn main() -> Int {

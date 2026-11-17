@@ -659,8 +659,33 @@ export fn pe_dsplit_ok(ctx: PCtx, id: Int) -> Bool {
 /// occurrence of its own ever stands down -- releasing a reference it still
 /// holds. Only a name exactly one binding of the plan has qualifies.
 export fn pe_dsplit_marks_ok(ctx: PCtx, id: Int) -> Bool {
-  pe_flag_has(ctx = ctx, id = id, bit = pf_dsplit) && pe_dsplit_ok(ctx = ctx, id = id) && pe_name_unique(ctx = ctx, id = id) && !pe_tail_may_view(ctx = ctx, e = Array::get(ctx.decl_bodies, at = id), views = [
-  ])
+  if !pe_flag_has(ctx = ctx, id = id, bit = pf_dsplit) || !pe_dsplit_ok(ctx = ctx, id = id) || !pe_name_unique(ctx = ctx, id = id) {
+    return false
+  } else ()
+  let body = Array::get(ctx.decl_bodies, at = id)
+  let views: Array[String] = []
+  !pe_tail_may_view(ctx = ctx, e = body, views = views) ||
+  (pe_flag_has(ctx = ctx, id = id, bit = pf_param) && ctx.exit_ord == 0 && pe_retained_builtin_result(ctx = ctx, e = body, views = views))
+}
+
+// The owning-return marker around a direct builtin view retains its result
+// in codegen before the function epilogue. A local binding of the same name
+// makes the callee indirect, so its result still needs the ordinary check.
+// Limit the proof to direct conditional result arms. The existing view
+// walk handles other shapes with the usual binder and alias rules.
+fn pe_retained_builtin_result(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
+  match e {
+    EIf(_, yes, no) => pe_retained_builtin_result(ctx = ctx, e = yes, views = views) && pe_retained_builtin_result(ctx = ctx, e = no, views = views),
+    ECall(EIdent("__lambda_return_owned", off), args, _, _) => if off < 0 && Array::length(args) == 1 {
+      match Array::get(args, at = 0) {
+        ECall(EIdent(f, _), _, _, _) => is_borrow_ret_builtin(f) && !array_contains_str_pctx(arr = ctx.decl_names, s = f),
+        _ => !pe_tail_may_view(ctx = ctx, e = e, views = views)
+      }
+    } else {
+      !pe_tail_may_view(ctx = ctx, e = e, views = views)
+    },
+    _ => !pe_tail_may_view(ctx = ctx, e = e, views = views)
+  }
 }
 
 export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
