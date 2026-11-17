@@ -154,3 +154,14 @@ test "removing a retained-view return's exit release is rejected" {
   }, checked_error_row = false)
   assert(String::contains(leaked, needle = "owned value not consumed"))
 }
+
+test "an explicitly returned match payload keeps the tail payload's conservative plan" {
+  let prefix = "enum Slot { Full(Array[Int]); Empty }\nstruct Holder { slot: Slot }\nfn owned(_ slot: Slot) -> Array[Int] {\n  let held = Holder::{ slot: slot }\n  match held.slot { Full(value) => [Array::get(value, 0)], Empty => [0] }\n}\nfn pick(_ slot: Slot, _ take: Bool) -> Array[Int] {\n  if take { return owned(slot) }\n  match slot { Full(value) => "
+  let suffix = ", Empty => [0] }\n}\nfn main() -> Int { Array::get(pick(Full([3]), false), 0) - 3 }"
+  for result in ["value", "return value"] {
+    let src = prefix + result + suffix
+    let plan = plan_of(src)
+    assert(!String::contains(plan, needle = "pick slot path_drop"))
+    assert(!String::contains(plan, needle = "pick slot consume_mark:"))
+  }
+}

@@ -556,6 +556,38 @@ fn bret_fresh_match_source(e: Expr, ctors: MutSet[String], shadows: Array[String
   }
 }
 
+// Only identifier aliases move the whole parameter. A projection or a
+// borrowed call names an interior view and retains the ordinary root proof.
+fn bret_parameter_transfer(known: MutSet[String], body: Expr, name: String, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let seen: Array[String] = []
+  let mut current = name
+  while !array_contains_str_pctx(arr = seen, s = current) {
+    for param in params {
+      let raw = param.0
+      let len = String::length(raw)
+      let normalized = if len > 0 && String::char_code_at(raw, at = len - 1) == '?' {
+        raw[0: len - 1]
+      } else {
+        raw
+      }
+      if normalized == current {
+        return true
+      }
+    }
+    Array::push(seen, value = current)
+    let binding = BretBinder::{ count: 0, kind: bk_unknown, view: EUnit }
+    bret_find_binder(e = body, name = current, known = known, st = binding)
+    if binding.count != 1 {
+      return false
+    }
+    match binding.view {
+      EIdent(source, _) => current = source,
+      _ => return false
+    }
+  }
+  false
+}
+
 fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[String, Int], early_params: Array[(String, Option[TypeExpr])], early_return: Bool) -> Bool {
   match top {
     ELet(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo, early_params = early_params, early_return = early_return),
@@ -582,10 +614,8 @@ fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[Str
     // spine binding is already declined by `tail_is_borrow_ret_safe`. An explicit
     // return must also account for transferred parameters and branch-local owners.
     EIdent(name, _) => if early_return {
-      for param in early_params {
-        if param.0 == name {
-          return true
-        }
+      if bret_parameter_transfer(known = known, body = body, name = name, params = early_params) {
+        return true
       }
       bret_resolve_root(known = known, body = body, name = name, memo = memo) != bk_view
     } else {

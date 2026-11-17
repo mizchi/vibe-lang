@@ -556,7 +556,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // (Admitting it before #4141 freed `LinkedBodyInputs.struct_names`
     // early: the leak this releases was what balanced the emission layout's
     // unretained copy of that array.)
-    let path_value_ok = if pd_candidate && is_edot(value_sd) {
+    // A direct alias classified as owned above moves (or duplicates) the
+    // source reference into this binding. It needs the same guarded release
+    // when only an early-return branch spends it. Borrow-bound aliases have
+    // no reference of their own and remain excluded.
+    let path_value_ok = if pd_candidate && is_eident(value_sd) && !alias_borrow_like && !array_contains_str(arr = ctx.loop_borrowed_names, s = get_eident_name(value_sd)) {
+      true
+    } else if pd_candidate && is_edot(value_sd) {
       true
     } else if pd_candidate {
       let pd_self = Array::get(local_names, at = local_idx)

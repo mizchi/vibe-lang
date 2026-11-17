@@ -689,6 +689,25 @@ fn pe_retained_builtin_result(ctx: PCtx, e: Expr, views: Array[String], tail: Bo
       Array::truncate(views, length = mark)
       value_ok && body_ok
     },
+    EMatch(source, arms) => {
+      if (tail && pe_tail_may_view(ctx = ctx, e = e, views = views)) || !pe_retained_builtin_result(ctx = ctx, e = source, views = views, tail = false) {
+        return false
+      } else ()
+      let source_view = source is EIdent(_, _) || pe_tail_may_view(ctx = ctx, e = source, views = views)
+      for arm in arms {
+        let mark = Array::length(views)
+        if source_view {
+          let _ = pat_names(pat = arm.0, out = views)
+        } else ()
+        let safe = pe_retained_builtin_result(ctx = ctx, e = arm.1, views = views, tail = tail)
+        Array::truncate(views, length = mark)
+        if !safe {
+          return false
+        }
+      }
+      true
+    },
+    EHandle(_, _) => false,
     ELetMut(_, _, _, _) => false,
     ELetRec(_, _, _) => false,
     _ => {
@@ -952,6 +971,7 @@ export fn pe_tail_may_view(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
 fn pe_tail_may_view_for_param(ctx: PCtx, e: Expr, views: Array[String], param: String) -> Bool {
   match e {
     EIdent(x, _) => array_contains_str_pctx(arr = views, s = x),
+    EReturn(value) => pe_tail_may_view_for_param(ctx = ctx, e = value, views = views, param = param),
     // #2509 / #2827: a read of a field declared `Int`, `Bool` or `Unit` is an
     // immediate, never a pointer into the object, so it is no view. Known
     // only for a parameter whose declared type names the struct and whose
