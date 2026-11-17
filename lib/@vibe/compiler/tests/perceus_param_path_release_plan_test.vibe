@@ -49,11 +49,12 @@ test "a parameter consumed on every branch is not a split" {
   assert(!String::contains(plan, needle = "pick t consume_mark:"))
 }
 
-test "a split parameter of a heap-result function with an exit gets no path drop" {
+test "a split parameter is released when all heap-result paths own their result" {
   let src = String::concat(prelude, String::concat("let pick: (Node, Bool) -> Node = (t, c) -> {\n  if c {\n    return own(t)\n  } else {\n    ()\n  }\n  Leaf(0)\n}", epilogue))
   let plan = plan_of(src)
-  assert(!String::contains(plan, needle = "pick t path_drop"))
-  assert(!String::contains(plan, needle = "pick t consume_mark:"))
+  assert(String::contains(plan, needle = "pick t path_drop 1"))
+  assert(String::contains(plan, needle = "pick t consume_mark:"))
+  inspect(rc_validate_source(source = src, fn_filter = "pick", checked_error_row = false), content = "")
 }
 
 test "a parameter consumed inside a loop gets no path drop" {
@@ -122,4 +123,35 @@ test "a return inside a loop keeps the conservative split-parameter plan" {
   let plan = plan_of(src)
   assert(!String::contains(plan, needle = "pick xs path_drop"))
   assert(!String::contains(plan, needle = "pick xs exit_drop:0:-1"))
+}
+
+test "owned return normalization releases split parameters on both return orders" {
+  let prefix = "struct Holder { xs: Array[Array[Int]] }\nfn owned(_ xs: Array[Array[Int]]) -> Array[Int] {\n  let held = Holder::{ xs: xs }\n  [Array::get(Array::get(held.xs, 0), 0)]\n}\nfn pick(_ xs: Array[Array[Int]], _ take: Bool) -> Array[Int] {\n"
+  let suffix = "\n}\nfn main() -> Int { Array::get(pick([[3]], false), 0) - 3 }"
+  let bodies = [
+    "  if take { return owned(xs) }\n  Array::get(xs, 0)",
+    "  if take { return Array::get(xs, 0) }\n  owned(xs)"
+  ]
+  for body in bodies {
+    let src = prefix + body + suffix
+    let plan = plan_of(src)
+    assert(String::contains(plan, needle = "pick xs exit_drop:0:"))
+    inspect(rc_validate_source(source = src, fn_filter = "pick", checked_error_row = false), content = "")
+  }
+}
+
+test "removing a retained-view return's exit release is rejected" {
+  let src = "struct Holder { xs: Array[Array[Int]] }\nfn owned(_ xs: Array[Array[Int]]) -> Array[Int] {\n  let held = Holder::{ xs: xs }\n  [Array::get(Array::get(held.xs, 0), 0)]\n}\nfn pick(_ xs: Array[Array[Int]], _ take: Bool) -> Array[Int] {\n  if take { return Array::get(xs, 0) }\n  owned(xs)\n}\nfn main() -> Int { Array::get(pick([[3]], true), 0) - 3 }"
+  let plan = plan_of(src)
+  assert(String::contains(plan, needle = "pick xs exit_drop:0:2 1"))
+  let leaked = rc_validate_source_edited(source = src, fn_filter = "pick", edit = (_f: String, plan: Array[PerceusAction]) -> Array[PerceusAction] {
+    let out: Array[PerceusAction] = []
+    for action in plan {
+      if !pa_is_exit_drop(action) || action.name != "xs" {
+        Array::push(out, value = action)
+      } else ()
+    }
+    out
+  }, checked_error_row = false)
+  assert(String::contains(leaked, needle = "owned value not consumed"))
 }
