@@ -166,6 +166,28 @@ gate_require_artifact() {
   fi
 }
 
+# gate_require_heap_below <wasm> <expected-result> <exclusive-limit> <label>
+# Measure main on an already compiled RC or shadow fixture.
+gate_require_heap_below() {
+  local wasm="$1" expected="$2" limit="$3" label="$4"
+  local json result used
+  if ! json="$(node scripts/measure_heap.mjs "$wasm" main 2>&1)"; then
+    printf '[compiler-gate] FAIL: %s could not measure heap growth\n%s\n' "$label" "$json" >&2
+    exit 1
+  fi
+  result="$(printf '%s' "$json" | sed -n 's/.*"result":\(-\{0,1\}[0-9][0-9]*\),.*/\1/p')"
+  used="$(printf '%s' "$json" | sed -n 's/.*"heap_used":\([0-9][0-9]*\)}$/\1/p')"
+  if [ "$result" != "$expected" ] || [ -z "$used" ]; then
+    printf '[compiler-gate] FAIL: %s expected result=%s and a heap measurement (%s)\n' "$label" "$expected" "$json" >&2
+    exit 1
+  fi
+  if [ "$used" -ge "$limit" ]; then
+    printf '[compiler-gate] FAIL: %s heap growth %s B >= %s B\n' "$label" "$used" "$limit" >&2
+    exit 1
+  fi
+  printf '[compiler-gate] %s heap growth %s B < %s B\n' "$label" "$used" "$limit"
+}
+
 # gate_require_refused <out> <message>
 #
 # FAIL the lane with <message> if <out> is a non-empty file: the compile was

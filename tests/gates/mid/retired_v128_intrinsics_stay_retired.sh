@@ -537,17 +537,10 @@ for bx_mode in 1 shadow; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/rc_branch_dup_exit_leak_test.vibe" "$bxdir/rc_$bx_mode.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$bxdir/rc_$bx_mode.wasm" "rc_branch_dup_exit fixture did not compile under VIBE_RC=$bx_mode"
-done
-for bx_mode in 1 shadow; do
-  bx_json="$(node scripts/measure_heap.mjs "$bxdir/rc_$bx_mode.wasm" main)"
-  bx_used="$(printf '%s' "$bx_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-  bx_result="$(printf '%s' "$bx_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
-  if [ "$bx_result" != "0" ] || [ -z "$bx_used" ] || [ "$bx_used" -ge 4000 ]; then
-    echo "[compiler-gate] FAIL: rc_branch_dup_exit under VIBE_RC=$bx_mode exceeded its heap bound or changed the result ($bx_json)" >&2; exit 1
-  fi
+  gate_require_heap_below "$bxdir/rc_$bx_mode.wasm" 0 4000 "rc_branch_dup_exit (VIBE_RC=$bx_mode)"
 done
 rm -rf "$bxdir"
-echo "[compiler-gate] RC branch-dup early-exit guard ok (heap_used=$bx_used B at N=20000)"
+echo "[compiler-gate] RC branch-dup early-exit guard ok"
 
 # 40e9. #1980: a path drop releases every dup the path still holds.
 # pe_dup_merge's guarded path drop released one reference, so `if c {
@@ -568,19 +561,12 @@ for sb_lane in bump rc shadow gc; do
   gate_require_artifact "$sbdir/sb.wasm" "rc_branch_dup_short_by_two fixture did not compile on the $sb_lane lane (#1980)"
   gate_run sb_out last "$sbdir/sb.wasm"
   gate_require_eq "$sb_out" "0" "rc_branch_dup_short_by_two got '$sb_out' on the $sb_lane lane (want 0). A trap means a path drop released a value a path still held (#1980)."
-  if [ "$sb_lane" = rc ]; then
-    sb_json="$(node scripts/measure_heap.mjs "$sbdir/sb.wasm" main 2>/dev/null)"
-    sb_used="$(printf '%s' "$sb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-    if [ -z "$sb_used" ]; then
-      echo "[compiler-gate] FAIL: could not measure rc_branch_dup_short_by_two heap ($sb_json)" >&2; exit 1
-    fi
-    if [ "$sb_used" -ge 4000 ]; then
-      echo "[compiler-gate] FAIL: rc_branch_dup_short_by_two heap_used=$sb_used >= 4000 (a branch-dup path drop releases fewer references than the path holds; measured 6162004 at N=20000 when it released one, and 586716-1466628 per shape when it released M - S on an unmarked path)" >&2; exit 1
-    fi
+  if [ "$sb_lane" = rc ] || [ "$sb_lane" = shadow ]; then
+    gate_require_heap_below "$sbdir/sb.wasm" 0 4000 "rc_branch_dup_short_by_two ($sb_lane)"
   fi
 done
 rm -rf "$sbdir"
-echo "[compiler-gate] RC branch-dup short-by-two guard ok (0 on bump/rc/shadow/gc, rc heap_used=$sb_used B at N=20000)"
+echo "[compiler-gate] RC branch-dup short-by-two guard ok (0 on bump/rc/shadow/gc)"
 
 # 40e10. #1980: a pattern binder consumed on one branch releases the dup the
 # path did not spend. A match payload binder takes one reference per consume
@@ -601,19 +587,12 @@ for pq_lane in bump rc shadow gc; do
   gate_require_artifact "$pqdir/pq.wasm" "rc_pattern_binder_dup_leak fixture did not compile on the $pq_lane lane (#1980)"
   gate_run pq_out last "$pqdir/pq.wasm"
   gate_require_eq "$pq_out" "0" "rc_pattern_binder_dup_leak got '$pq_out' on the $pq_lane lane (want 0). A trap means an arm-end release freed a value a path still held (#1980)."
-  if [ "$pq_lane" = rc ]; then
-    pq_json="$(node scripts/measure_heap.mjs "$pqdir/pq.wasm" main 2>/dev/null)"
-    pq_used="$(printf '%s' "$pq_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-    if [ -z "$pq_used" ]; then
-      echo "[compiler-gate] FAIL: could not measure rc_pattern_binder_dup_leak heap ($pq_json)" >&2; exit 1
-    fi
-    if [ "$pq_used" -ge 8000 ]; then
-      echo "[compiler-gate] FAIL: rc_pattern_binder_dup_leak heap_used=$pq_used >= 8000 (a pattern binder keeps the dup of a consume its path skipped; measured 6461724 at N=20000 when it did)" >&2; exit 1
-    fi
+  if [ "$pq_lane" = rc ] || [ "$pq_lane" = shadow ]; then
+    gate_require_heap_below "$pqdir/pq.wasm" 0 8000 "rc_pattern_binder_dup_leak ($pq_lane)"
   fi
 done
 rm -rf "$pqdir"
-echo "[compiler-gate] RC pattern-binder branch-dup guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pq_used B at N=20000)"
+echo "[compiler-gate] RC pattern-binder branch-dup guard ok (0 on bump/rc/shadow/gc)"
 
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
@@ -1887,19 +1866,12 @@ for pj_lane in bump rc shadow gc; do
   gate_require_artifact "$pjdir/pj.wasm" "rc_projection_let_path_drop fixture did not compile on the $pj_lane lane (#1980)"
   gate_run pj_out last "$pjdir/pj.wasm"
   gate_require_eq "$pj_out" "0" "rc_projection_let_path_drop got '$pj_out' on the $pj_lane lane (want 0). A trap means a projection let's path drop released a value a path still held (#1980)."
-  if [ "$pj_lane" = rc ]; then
-    pj_json="$(node scripts/measure_heap.mjs "$pjdir/pj.wasm" main 2>/dev/null)"
-    pj_used="$(printf '%s' "$pj_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-    if [ -z "$pj_used" ]; then
-      echo "[compiler-gate] FAIL: could not measure rc_projection_let_path_drop heap ($pj_json)" >&2; exit 1
-    fi
-    if [ "$pj_used" -ge 8000 ]; then
-      echo "[compiler-gate] FAIL: rc_projection_let_path_drop heap_used=$pj_used >= 8000 (#1980: a projection let keeps the reference of a consume its path skipped; measured 3522728 at N=20000 when it did)" >&2; exit 1
-    fi
+  if [ "$pj_lane" = rc ] || [ "$pj_lane" = shadow ]; then
+    gate_require_heap_below "$pjdir/pj.wasm" 0 8000 "rc_projection_let_path_drop ($pj_lane)"
   fi
 done
 rm -rf "$pjdir"
-echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc, rc heap_used=$pj_used B at N=20000)"
+echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc)"
 
 # 40f0t. #4153 / #1980: a function whose result paths read into a binding of
 #        its own -- a `let` of a fresh value, a match binder of one, a view of
@@ -1908,8 +1880,8 @@ echo "[compiler-gate] projection-let path drop guard ok (0 on bump/rc/shadow/gc,
 #        scope-end drop freed the value the branch returned (the answer was
 #        72000 here, not 0, on rc and shadow, which do not trap on it), and a
 #        direct projection tail leaked the reference its `let` retained, 88 B
-#        a call. The answer is checked on bump, rc, shadow and gc; the rc heap
-#        bound catches the leak (176,844 B before, 1,460 B after).
+#        a call. The answer is checked on bump, RC, shadow and GC. The heap
+#        bound on RC and shadow catches the leak (176,844 B before, 1,460 B after).
 echo "[compiler-gate] 40f0t/40 a result that reads into a binding of the function is owned, not borrowed (#4153)"
 gate_workdir otdir "_build/_gate_rc_owned_local_tail_view"
 for ot_lane in bump rc shadow gc; do
@@ -1917,15 +1889,8 @@ for ot_lane in bump rc shadow gc; do
   gate_require_artifact "$otdir/ot.wasm" "rc_owned_local_tail_view fixture did not compile on the $ot_lane lane (#4153)"
   gate_run ot_out last "$otdir/ot.wasm"
   gate_require_eq "$ot_out" "0" "rc_owned_local_tail_view got '$ot_out' on the $ot_lane lane (want 0). A non-zero answer means a function handed back a value its own scope-end drop freed (#4153)."
-  if [ "$ot_lane" = rc ]; then
-    ot_json="$(node scripts/measure_heap.mjs "$otdir/ot.wasm" main 2>/dev/null)"
-    ot_used="$(printf '%s' "$ot_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-    if [ -z "$ot_used" ]; then
-      echo "[compiler-gate] FAIL: could not measure rc_owned_local_tail_view heap ($ot_json)" >&2; exit 1
-    fi
-    if [ "$ot_used" -ge 8000 ]; then
-      echo "[compiler-gate] FAIL: rc_owned_local_tail_view heap_used=$ot_used >= 8000 (#4153: a caller does not release a result that reads into a binding of the callee)" >&2; exit 1
-    fi
+  if [ "$ot_lane" = rc ] || [ "$ot_lane" = shadow ]; then
+    gate_require_heap_below "$otdir/ot.wasm" 0 8000 "rc_owned_local_tail_view ($ot_lane)"
   fi
 done
 # The companion fixture mixes a local view with an owned parameter.
@@ -1936,15 +1901,11 @@ for ot_lane in bump rc shadow gc; do
   gate_run otm_out last "$otdir/otm.wasm"
   gate_require_eq "$otm_out" "0" "rc_owned_local_tail_mixed_param got '$otm_out' on the $ot_lane lane (want 0). A parameter handed back next to a local read was released twice, or the local read was freed (#4153)."
   if [ "$ot_lane" = rc ] || [ "$ot_lane" = shadow ]; then
-    otm_json="$(node scripts/measure_heap.mjs "$otdir/otm.wasm" main 2>/dev/null)"
-    otm_used="$(printf '%s' "$otm_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-    if [ -z "$otm_used" ] || [ "$otm_used" -ge 8000 ]; then
-      echo "[compiler-gate] FAIL: rc_owned_local_tail_mixed_param did not bound heap growth on $ot_lane ($otm_json)" >&2; exit 1
-    fi
+    gate_require_heap_below "$otdir/otm.wasm" 0 8000 "rc_owned_local_tail_mixed_param ($ot_lane)"
   fi
 done
 rm -rf "$otdir"
-echo "[compiler-gate] owned-local tail view guard ok (0 on bump/rc/shadow/gc, rc heap_used=$ot_used B)"
+echo "[compiler-gate] owned-local tail view guard ok (0 on bump/rc/shadow/gc)"
 # 40f0x. #2827: a `let` bound to a slice (`Array::slice`, `xs[a:b]`) and
 #        consumed on some paths only is released on the others. A slice is a
 #        fresh copy on every lane, but the `let` lowering admitted a path drop
@@ -2021,12 +1982,7 @@ for sb_lane in bump rc shadow gc; do
   gate_run sb_out last "$sbdir/sb.wasm"
   gate_require_eq "$sb_out" "0" "rc_string_builder_release changed its result on $sb_lane (#4172)"
   if [ "$sb_lane" = rc ] || [ "$sb_lane" = shadow ]; then
-    sb_json="$(node scripts/measure_heap.mjs "$sbdir/sb.wasm" main)"
-    sb_used="$(printf '%s' "$sb_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
-    if [ -z "$sb_used" ] || [ "$sb_used" -ge 250000 ]; then
-      echo "[compiler-gate] FAIL: rc_string_builder_release exceeded its heap bound on $sb_lane ($sb_json)" >&2
-      exit 1
-    fi
+    gate_require_heap_below "$sbdir/sb.wasm" 0 250000 "rc_string_builder_release ($sb_lane)"
   fi
 done
 rm -rf "$sbdir"
