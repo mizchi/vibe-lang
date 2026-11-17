@@ -215,6 +215,31 @@ else
   ok "gate_require_artifact fails an empty artifact"
 fi
 
+# --- gate_require_heap_below -------------------------------------------------
+
+# A passing result at exactly the limit still fails the gate.
+heap_probe() (
+  local probe_used="$1"
+  node() {
+    [ "$*" = "scripts/measure_heap.mjs probe.wasm main" ] || return 2
+    printf '{"result":0,"heap_before":0,"heap_after":%s,"heap_used":%s}\n' "$probe_used" "$probe_used"
+  }
+  gate_require_heap_below probe.wasm 0 8000 "heap probe (shadow)"
+)
+if heap_probe 7999 >"$WORK/heap.out" 2>&1 \
+  && grep -qF 'heap probe (shadow) heap growth 7999 B < 8000 B' "$WORK/heap.out"; then
+  ok "gate_require_heap_below accepts growth below the limit"
+else
+  bad "gate_require_heap_below rejected growth below the limit: $(cat "$WORK/heap.out")"
+fi
+if heap_probe 8000 >"$WORK/heap.out" 2>&1; then
+  bad "gate_require_heap_below accepted growth at the limit"
+elif grep -qF 'FAIL: heap probe (shadow) heap growth 8000 B >= 8000 B' "$WORK/heap.out"; then
+  ok "gate_require_heap_below rejects growth at the limit"
+else
+  bad "gate_require_heap_below failed without the boundary diagnostic: $(cat "$WORK/heap.out")"
+fi
+
 # --- gate_fs_compile (#3671) -------------------------------------------------
 #
 # 8. a compile that fails leaves NO artifact behind, even when an earlier run

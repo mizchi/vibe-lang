@@ -144,3 +144,19 @@ test "an unpinned plan ignores the field table a pinned plan installed" {
   ], result_immediate = false)
   inspect(path_drop_count(unpinned), content = "0")
 }
+
+test "a direct builtin view retained at a conditional return can release the parameter dup" {
+  let src = "struct Holder { items: Array[Array[Int]] }\nfn consume(_ xs: Array[Array[Int]]) -> Int {\n  let held = Holder::{ items: xs }\n  Array::length(held.items)\n}\nfn pick(_ xs: Array[Array[Int]], _ take: Bool) -> Array[Int] {\n  if take { [consume(xs)] } else { Array::get(xs, at = 0) }\n}\nfn main() -> Int { Array::length(pick([[1]], false)) }"
+  let plan = rc_plan_source(source = src, fn_filter = "pick", checked_error_row = false)
+  assert(String::contains(plan, needle = "pick xs dup 1"))
+  assert(String::contains(plan, needle = "pick xs path_drop 1"))
+  inspect(rc_validate_source(source = src, fn_filter = "pick", checked_error_row = false), content = "")
+}
+
+test "a marked owned call in the other arm allows a conditional view to release the parameter dup" {
+  let src = "struct Holder { items: Array[Array[Int]] }\nfn consume(_ xs: Array[Array[Int]]) -> Int {\n  let held = Holder::{ items: xs }\n  Array::length(held.items)\n}\nfn owned(_ xs: Array[Array[Int]]) -> Array[Int] { [consume(xs)] }\nfn pick(_ xs: Array[Array[Int]], _ take: Bool) -> Array[Int] {\n  if take { owned(xs) } else { Array::get(xs, at = 0) }\n}\nfn main() -> Int { Array::length(pick([[1]], false)) }"
+  let plan = rc_plan_source(source = src, fn_filter = "pick", checked_error_row = false)
+  assert(String::contains(plan, needle = "pick xs dup 1"))
+  assert(String::contains(plan, needle = "pick xs path_drop 1"))
+  inspect(rc_validate_source(source = src, fn_filter = "pick", checked_error_row = false), content = "")
+}
