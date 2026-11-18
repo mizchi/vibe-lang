@@ -12,6 +12,14 @@ import ./entry.vibe {
   run_cli_main_with_args
 }
 
+import @vibe/compiler/cache {
+  persistent_cache_cfg_csv, set_persistent_cache_cfg_flags
+}
+
+import @vibe/parser {
+  cfg_ambient_flags_snapshot, set_cfg_ambient_flags
+}
+
 import @vibe/cli/support {
   command_component_compile_mode, command_component_entry, format_check_report
 }
@@ -151,6 +159,43 @@ fn run_dispatch_for_test(_ args: Array[String]) -> Int with Exception + Fs + Env
   handle {
     selfhost_cli_dispatch_args(args, checked_error_row = false)
   } with { Profiler::NowUs => resume(0) }
+}
+
+fn assert_cli_caller_target(_ flags: Array[String]) -> Unit {
+  let (current, _) = cfg_ambient_flags_snapshot()
+  assert_eq(current, flags)
+  assert_eq(persistent_cache_cfg_csv(), "independent-cache-target")
+}
+
+test "nested CLI checks select the inner target and preserve both caller settings on exit and throw" {
+  let (saved_parser, _) = cfg_ambient_flags_snapshot()
+  let saved_cache = persistent_cache_cfg_csv()
+  let inner = Env::get("VIBE_CFG")
+  let mut outer = "nested_cli_outer"
+  while String::contains(inner, needle = outer) {
+    outer = String::concat(outer, "_")
+  }
+  let flags = [outer, "literal,comma", ""]
+  let path = "/tmp/vibe_nested_cli_target.vibe"
+  let broken = "/tmp/vibe_nested_cli_target_broken.vibe"
+  Fs::write_file(path, contents = "#cfg(\{outer})\nfn wrong() -> Int { \"wrong\" }\nfn main() -> Int { 0 }\n")
+  Fs::write_file(broken, contents = "fn main() -> Int { \"wrong\" }\n")
+  set_cfg_ambient_flags(flags)
+  set_persistent_cache_cfg_flags("independent-cache-target")
+  assert_eq(run_cli_main_with_args(["check", path], checked_error_row = false), 0)
+  assert_cli_caller_target(flags)
+  assert_eq(run_cli_main_with_args(["check", broken], checked_error_row = false), 1)
+  assert_cli_caller_target(flags)
+  assert_eq(run_dispatch_for_test(["check", path]), 0)
+  assert_cli_caller_target(flags)
+  let thrown = handle {
+    let _ = run_dispatch_for_test(["check"])
+    "OK"
+  } with { Exception::Throw(message) => message }
+  assert(String::starts_with(thrown, prefix = "usage: vibe check "))
+  assert_cli_caller_target(flags)
+  set_cfg_ambient_flags(saved_parser)
+  set_persistent_cache_cfg_flags(saved_cache)
 }
 
 fn run_compile_lite_with_fake_profiler(_ args: Array[String]) -> Int with Exception + Fs + Env {
