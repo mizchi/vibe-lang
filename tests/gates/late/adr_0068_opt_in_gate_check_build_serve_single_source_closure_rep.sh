@@ -1295,7 +1295,7 @@ if grep -q 'VIBE_UNSTABLE=1' "$lspudir/optin.bin" 2>/dev/null; then
 fi
 # The same Wasm instance runs an opted-in server, then an independent
 # diagnostics invocation. Only the server was granted the opt-in.
-gate_fs_compile_on bump fixtures/lsp_invocation_policy.vibe "$lspudir/policy.wasm" main
+gate_fs_compile_on bump fixtures/lsp_invocation_policy_test.vibe "$lspudir/policy.wasm" main
 gate_require_artifact "$lspudir/policy.wasm" "LSP invocation policy fixture did not compile"
 exit_msg='{"jsonrpc":"2.0","method":"exit"}'
 VIBE_STDIN_BYTES="$(printf 'Content-Length: %s\r\n\r\n%s' "${#exit_msg}" "$exit_msg")" \
