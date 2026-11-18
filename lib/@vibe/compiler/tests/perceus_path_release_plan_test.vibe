@@ -74,18 +74,25 @@ test "an alias transfer is recorded too" {
   assert(String::contains(plan, needle = "run t consume_mark:"))
 }
 
-test "a branch that reads through the binding is not a split" {
-  // The ordinary scope-end drop retains a projected result before releasing
-  // its owner (`scope_tail_proj_root`), and that helper does not look through
-  // an `if` -- so a guarded drop on a branch whose tail is an interior read of
-  // the binding would free the pointer it is handing back. It cannot arise:
-  // the COUNTING pass counts such an occurrence even though the emit pass
-  // spends no owning use on it, so the merge's minimum never reaches zero.
-  // This pins that, since it is the premise the safety rests on.
-  let src = String::concat(prelude, String::concat("let hold: (Array[Node]) -> Int = (xs) -> Array::length([\n  xs\n])\nlet run: (Bool) -> Node = (c) -> {\n  let t = [\n    Pair(Leaf(3), Leaf(4))\n  ]\n  if c {\n    Leaf(hold(t))\n  } else {\n    Array::get(t, 0)\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true) {\n    _ => 0\n  }\n}"))
-  let plan = plan_of(src)
-  assert(!String::contains(plan, needle = "run t path_drop"))
+fn local_view_plan(_ borrowed_arm: String) -> String with Exception {
+  let src = prelude + "let hold: (Array[Node]) -> Int = (xs) -> Array::length([\n  xs\n])\nlet run: (Bool) -> Node = (c) -> {\n  let t = [\n    Pair(Leaf(3), Leaf(4))\n  ]\n  if c {\n    Leaf(hold(t))\n  } else {\n    " + borrowed_arm + "\n  }\n}" + epilogue
+  plan_of(src)
+}
+
+test "a retained branch result lets a local owner release its unused dup" {
+  // The borrow-returning call holds the element before the guarded drop
+  // releases the array. The consuming arm spends its dup through the mark.
+  let plan = local_view_plan("Array::get(t, 0)")
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  assert(run_t_marks(plan) == 1)
   assert(String::contains(plan, needle = "run t drop 1"))
+}
+
+test "a view returned through an alias keeps the local owner's unproven dup" {
+  let plan = local_view_plan("let element = Array::get(t, 0); element")
+  assert(String::contains(plan, needle = "run t dup 1"))
+  assert(!String::contains(plan, needle = "run t path_drop"))
+  assert(!String::contains(plan, needle = "run t consume_mark:"))
 }
 
 test "the codegen's name-keying is safe because normalization uniquifies" {
