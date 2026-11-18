@@ -24,6 +24,8 @@ import @vibe/compiler/core {
   dir_of_path,
   is_builtin_iterator_serialized_boundary_path,
   is_owned_head_source_location_fs,
+  loader_physical_text,
+  loader_prepended_prefix_bytes,
   merged_offset_space_add,
   merged_offset_space_reset,
   path_to_module_name,
@@ -56,7 +58,7 @@ import @vibe/compiler/normalize {
 }
 
 import @vibe/compiler/loader {
-  parse_program_located_shared_with_config
+  ingest_source_text_fs_with_config, parse_program_located_shared_with_config
 }
 
 import @vibe/compiler/config {
@@ -92,25 +94,13 @@ fn read_program(_ path: String) -> Array[Stmt] with Exception + Fs {
   parse_program(lex(source))
 }
 
-/// #3625: the ENTRY of a linked lane, read the same way but parsed located,
-/// with the text it was parsed from. It is the only file this lane compiles
-/// (each dependency is a separate linked module), so its own offsets are the
-/// merged space, and they are recorded as such for a refusal's `line:col`.
-fn read_entry_program_located(_ path: String, cfg: TargetCfg) -> (Array[Stmt], String) with Exception + Fs {
-  let source = Fs::read_file(path)
-  let stmts = parse_program_located_shared_with_config(path = path, source = source, cfg = cfg)
-  merged_offset_space_reset()
-  merged_offset_space_add(path = path, source = source, base = 0)
-  (stmts, source)
-}
-
 /// #3625: what the import-resolving check answered for the entry `path`, if
 /// it checked exactly `source` -- the text this lane parsed -- in this
 /// process: the module's typed-lowering table (Double/`Float` value offsets,
 /// String binop anchors, Int/Bool render arguments) and its typed-`==`
 /// channel rows (render, receiver and `Float` arithmetic rows among them).
 /// Both are in the entry's own offset space, the space
-/// `read_entry_program_located` parses into. `None` when either is missing.
+/// the linked entry is parsed into. `None` when either is missing.
 ///
 /// The lane's own `check_program` cannot supply them: it binds every
 /// imported name to an unknown type, so a `Float` or `Double` an imported
@@ -342,7 +332,7 @@ fn collect_linked_dep_artifacts(dep_paths: Array[String], wanted_names: Array[Ar
 /// so a caller that already has its OWN entry_stmts (e.g. cli_support.vibe's
 /// check_linked_file, which needs a RECOVERING parse for diagnostics — see its
 /// doc comment) can reuse the dep-resolution logic without re-parsing the
-/// entry file via this module's non-recovering `read_entry_program_located`.
+/// entry file via this module's non-recovering parser.
 export fn collect_linked_dep_inputs_for_stmts(entry_path: String, entry_stmts: Array[Stmt]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with Exception + Fs {
   let (dep_paths, dep_wanted_names) = collect_direct_dep_paths(entry_stmts = entry_stmts, entry_dir = dir_of_path(entry_path))
   collect_linked_dep_artifacts(dep_paths = dep_paths, wanted_names = dep_wanted_names)
@@ -357,24 +347,49 @@ export fn collect_linked_compile_inputs(_ entry_path: String) -> (Array[Stmt], A
 /// what the import-resolving check answered for exactly that text
 /// (`linked_entry_checked_rows`), for `desugar_linked_entry` and
 /// `compile_linked_entry_module`.
-export fn collect_linked_compile_inputs_with_rows(_ entry_path: String, checked_entry: Option[(String, Bool)] = None) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)], Option[(Array[Int], Array[Int], Array[String])]) with Exception + Fs {
+export fn collect_linked_compile_inputs_with_rows(_ entry_path: String) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)], Option[(Array[Int], Array[Int], Array[String])]) with Exception + Fs {
+  linked_inputs_for_entry(entry_path = entry_path, entry_source = Fs::read_file(entry_path), cfg = target_cfg_ambient(), checked_error_row = None)
+}
+
+/// The checker binds rows to the loader's ingested text, including any
+/// directory-shared prefix. Authenticate the complete text before consuming
+/// its rows or emitting bytes.
+export fn collect_checked_linked_inputs(entry_path: String, checked_source: String, checked_error_row: Bool) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)], Option[(Array[Int], Array[Int], Array[String])]) with Env + Exception + Fs {
   let cfg = target_cfg_ambient()
-  let (entry_stmts, entry_source) = read_entry_program_located(entry_path, cfg = cfg)
+  let physical = Fs::read_file(entry_path)
+  let current = ingest_source_text_fs_with_config(path = entry_path, raw = physical, cfg = cfg, checked_error_row = checked_error_row)
+  if current != checked_source {
+    throw("linked debug entry changed after checking: " + entry_path)
+  } else {
+    let policy = Some(checked_error_row)
+    linked_inputs_for_entry(entry_path = entry_path, entry_source = checked_source, cfg = cfg, checked_error_row = policy)
+  }
+}
+
+fn linked_inputs_for_entry(entry_path: String, entry_source: String, cfg: TargetCfg, checked_error_row: Option[Bool]) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)], Option[(Array[Int], Array[Int], Array[String])]) with Exception + Fs {
+  let entry_stmts = parse_program_located_shared_with_config(path = entry_path, source = entry_source, cfg = cfg)
+  merged_offset_space_reset()
+  merged_offset_space_add(path = entry_path, source = entry_source, base = 0)
   // #2808: this lane uses its OWN collector, so it needs its own call -- the
   // hook in `collect_parsed_sources_recursive` never runs here. It validates
   // the entry it just read; each dep is validated in
   // `collect_linked_dep_artifacts`, where that file's statements are parsed.
   validate_source_file_exports(path = entry_path, stmts = entry_stmts)
   validate_source_file_owned_heads(path = entry_path, ships_owned_heads = linked_file_ships_owned_heads(entry_path), stmts = entry_stmts)
-  let (resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_dep_inputs_for_stmts(entry_path = entry_path, entry_stmts = entry_stmts)
-  let checked = match checked_entry {
+  // The debug linker emits this file's explicit link edges. A loader prefix
+  // is package scope, not another set of standalone Wasm library artifacts.
+  // Only link discovery reads the unprefixed view: every offset-bearing pass
+  // operates on entry_stmts, in the exact source space the checker used.
+  let link_stmts = if checked_error_row != None && loader_prepended_prefix_bytes(entry_source) > 0 {
+    let local_source = loader_physical_text(entry_source)
+    parse_program_located_shared_with_config(path = entry_path, source = local_source, cfg = cfg)
+  } else {
+    entry_stmts
+  }
+  let (resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_dep_inputs_for_stmts(entry_path = entry_path, entry_stmts = link_stmts)
+  let checked = match checked_error_row {
     None => linked_entry_checked_rows(path = entry_path, source = entry_source),
-    Some((checked_source, policy)) => {
-      if entry_source != checked_source {
-        throw("linked debug entry changed after checking: " + entry_path)
-      } else {
-        ()
-      }
+    Some(policy) => {
       // A warm verdict can skip the merge that populated the shared AST's
       // call cells. Rebuild only this entry's cells in its local offset space.
       call_cells_reset(entry_stmts)

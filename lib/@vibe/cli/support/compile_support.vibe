@@ -55,6 +55,7 @@ import @vibe/compiler/loader {
 // its own name, so the two call sites that used `empty_stmt_array()` now
 // call `array_empty()` directly instead.
 import @vibe/compiler/entry/source_compile/wasi_only {
+  collect_checked_linked_inputs,
   collect_linked_compile_inputs_with_rows,
   compile_file_wasi_library,
   compile_linked_entry_module,
@@ -666,11 +667,10 @@ export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: 
 }
 
 export fn build_linked_debug_entry(input_path: String, entry_name: String, checked_error_row: Bool, checked_entry_source_text: Option[String] = None) -> (Bytes, Array[(String, String)]) with Env + Exception + Fs {
-  let checked_entry = match checked_entry_source_text {
-    Some(text) => Some((text, checked_error_row)),
-    None => None
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = match checked_entry_source_text {
+    Some(text) => collect_checked_linked_inputs(entry_path = input_path, checked_source = text, checked_error_row = checked_error_row),
+    None => collect_linked_compile_inputs_with_rows(input_path)
   }
-  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(input_path, checked_entry = checked_entry)
   let main_stmts = array_empty()
   append_stmt_array(dst = main_stmts, src = resolved_type_stmts)
   append_non_import_stmts(dst = main_stmts, src = entry_stmts)
@@ -1305,7 +1305,7 @@ fn owner_locating_source(path: String, source: String, checked_error_row: Bool) 
   }
 }
 
-fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Option[String] with Env + Exception + Fs {
+fn checked_entry_snapshot(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] {
   let mut found: Option[String] = None
   let mut count = 0
   let mut gi = 0
@@ -1325,30 +1325,34 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
     gi = gi + 1
   }
   if count == 1 {
-    match found {
-      Some(source) => if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
-        // The loader prepends inherited `.vpkg` imports or replaces a contract
-        // with its generated facade before checking.
-        // Warning locations must refer to the physical file. Re-ingest the
-        // current bytes and require the complete synthetic snapshot to match;
-        // a suffix comparison would accept a file whose leading bytes changed.
-        if Fs::exists(input_path) {
-          let physical = cache_read_source_fs(input_path)
-          if source == ingest_source_text_fs(path = input_path, raw = physical, checked_error_row = checked_error_row) {
-            Some(physical)
-          } else {
-            None
-          }
+    found
+  } else {
+    None
+  }
+}
+
+fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])], checked_error_row: Bool) -> Option[String] with Env + Exception + Fs {
+  match checked_entry_snapshot(input_path = input_path, source_groups = source_groups) {
+    Some(source) => if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
+      // The loader prepends inherited `.vpkg` imports or replaces a contract
+      // with its generated facade before checking.
+      // Warning locations must refer to the physical file. Re-ingest the
+      // current bytes and require the complete synthetic snapshot to match;
+      // a suffix comparison would accept a file whose leading bytes changed.
+      if Fs::exists(input_path) {
+        let physical = cache_read_source_fs(input_path)
+        if source == ingest_source_text_fs(path = input_path, raw = physical, checked_error_row = checked_error_row) {
+          Some(physical)
         } else {
           None
         }
       } else {
-        Some(source)
-      },
-      None => None
-    }
-  } else {
-    None
+        None
+      }
+    } else {
+      Some(source)
+    },
+    None => None
   }
 }
 
@@ -1799,7 +1803,7 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
   // (`refuse_changed_checked_sources`): the bytes written are the bytes checked.
   let groups = check_linked_file_source_groups(input_path, checked_error_row = checked_error_row)
   let checked = checked_source_tokens(groups)
-  let entry_source = checked_entry_source(input_path = input_path, source_groups = groups, checked_error_row = checked_error_row)
+  let entry_source = checked_entry_snapshot(input_path = input_path, source_groups = groups)
   if entry_source == None {
     throw("linked debug entry does not match its checked source: " + input_path)
   } else {
