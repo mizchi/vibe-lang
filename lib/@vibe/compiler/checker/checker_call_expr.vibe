@@ -1,3 +1,7 @@
+import ./checker_label_policy.vibe {
+  LabelCheck
+}
+
 import ./checker_expr_capture_helpers.vibe {
   dot_call_field_companion_refusal, dot_call_qualified_name
 }
@@ -2014,7 +2018,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // reports `unknown name` from the normal path below.
               let method_form = checker_bare_call_is_method_retry(env = env, name = name, argc = Array::length(args))
               let recv_method = if method_form {
-                let (a0_ty, sa, ca) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+                let receiver = Array::get(args, at = 0)
+                let (a0_ty, sa, ca) = check_child(checker_call_argument_value(receiver), env, defs, s, c, errors, tytab, capture, lane)
                 let recv_ty = subst_apply(s = sa, ty = a0_ty)
                 let qual = String::concat(type_name_prefix(recv_ty), String::concat("::", name))
                 let has_qual = match env_lookup(env = env, name = qual) {
@@ -2053,7 +2058,20 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 if !has_qual && user_recv {
                   retention_expr_callee_region_check(callee = EIdent(name, callee_off), label = name, marker_off = callee_off, args = region_args, env = env, defs = defs, s = s, c = c, errors = errors, check_child = check_child)
                 }
-                if has_qual || user_recv {
+                if receiver is ELabeledArg(_, _, _) {
+                  // The written receiver has a label of its own. Check it with
+                  // the full signature, including its name, position and type.
+                  if has_qual {
+                    Some(check_child(ECall(EIdent(qual, callee_off), args, call_off, callee_resolution), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite"))
+                  } else {
+                    None
+                  }
+                } else if has_qual || user_recv {
+                  // Keep the written argument list before the synthetic dot call
+                  // can record the same source offset without its receiver.
+                  if labels is CollectLabelSites(_, _) {
+                    checker_resolved_call_labels(labels = labels, env = env, name = qual, ident_offset = callee_off, ident_len = String::length(name), offset = call_off, args = args, method_call = false, errors = errors)
+                  }
                   let retried = check_child(ECall(EDot(Array::get(args, at = 0), name, callee_off, callee_off), Array::slice(args, start = 1, end = Array::length(args)), call_off, callee_resolution), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite")
                   checker_finish_method_retry_placement(labels = labels, cell = callee_resolution, env = env, qualified = qual, ident_offset = callee_off, args = args, errors = errors)
                   Some(retried)

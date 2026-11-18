@@ -199,6 +199,7 @@ import ./checker_stmt_program_type_defs_observation_impl.vibe {
   irc_sorted_unique,
   method_receiver_rows_from_capture,
   new_call_observation,
+  reset_call_observation,
   reset_double_call_capture,
   string_binop_offsets_from_capture
 }
@@ -892,7 +893,7 @@ fn union_double_render_arg_offsets(checked: CheckedProgram, call_results: Array[
 /// program is identical to what check_program_result /
 /// check_program_with_projected_import_env_result produce today.
 export fn check_program_with_projected_import_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
-  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(repair_labels = false, stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
+  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(repair_capture = None, stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
   (checked, offsets, eq_offsets, eq_keys)
 }
 
@@ -903,16 +904,15 @@ export fn check_program_with_projected_import_env_typed_lowering_located_observa
 /// with the projected entry above; only that flag differs, because a lane that
 /// changed it would be checking a different program in order to observe one.
 export fn check_program_with_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
-  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(repair_labels = false, stmts = stmts, initial_env = initial_env, imports_already_projected = false, checked_error_row = checked_error_row)
+  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(repair_capture = None, stmts = stmts, initial_env = initial_env, imports_already_projected = false, checked_error_row = checked_error_row)
   (checked, offsets, eq_offsets, eq_keys)
 }
 
-fn typed_lowering_located_observation_impl(repair_labels: Bool, stmts: Array[Stmt], initial_env: TypeEnv, imports_already_projected: Bool, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
+fn typed_lowering_located_observation_impl(repair_capture: Option[TypedOccurrenceRoleLaneCapture], stmts: Array[Stmt], initial_env: TypeEnv, imports_already_projected: Bool, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
   resolved_callee_capture_reset()
-  let capture = if repair_labels {
-    new_call_observation(labels = RepairLabelDependency, lowering_enabled = true)
-  } else {
-    reset_double_call_capture()
+  let capture = match repair_capture {
+    Some(owned) => reset_call_observation(owned),
+    None => reset_double_call_capture()
   }
   let checked = check_program_with_env_type_defs_observation_impl(stmts = stmts, initial_env = initial_env, capture = None, role_lane_capture = Some(capture), imports_already_projected = imports_already_projected, checked_error_row = checked_error_row).checked_program
   let placements = call_placement_checked_rows()
@@ -1921,8 +1921,8 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv, check
 
 /// Label availability is independent of scalar/render observation. Return the
 /// call-owned channel explicitly, including when that observation declines.
-export fn check_program_with_projected_import_env_lowering_placements(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool, repair_labels: Bool = false) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
-  typed_lowering_located_observation_impl(repair_labels = repair_labels, stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
+export fn check_program_with_projected_import_env_lowering_placements(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool, repair_capture: Option[TypedOccurrenceRoleLaneCapture] = None) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
+  typed_lowering_located_observation_impl(repair_capture = repair_capture, stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
 }
 
 /// Collect repairable calls in this source alone, returning rows only after a successful check.

@@ -6,7 +6,7 @@ import @vibe/compiler/core {
 // checker resolves, and leaves alone the calls ADR-0120 keeps positional.
 
 import @vibe/compiler/checker {
-  check_projected_label_sites
+  check_program, check_projected_label_sites
 }
 
 import @vibe/compiler/refactor {
@@ -149,4 +149,15 @@ test "a method resolved after its callback argument keeps the entry's label coll
   let result = run(source = source, policy = add_labels_positional_none)
   assert_eq(result.source, header + "fn main() -> Int { Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.add(k = 10)) }\n")
   assert_eq(result.labels, 1)
+}
+
+test "bare method retry labels the written receiver and the following arguments" {
+  let header = "struct Meter { n: Int }\nfn Meter::value(self: Meter) -> Int { self.n }\nfn Meter::shift(self: Meter, by: Int) -> Int { self.n - by }\n"
+  let body = "fn main() -> Int { let m = Meter::{ n: 10 }; value(m) - shift(m, 3) }\n"
+  let expected = header + "fn main() -> Int { let m = Meter::{ n: 10 }; value(self = m) - shift(self = m, by = 3) }\n"
+  let result = run(source = header + body, policy = add_labels_positional_none)
+  assert_eq(result.source, expected)
+  let (tokens, starts, _) = lex_with_offsets(result.source)
+  let _ = check_program(parse_program_located(tokens = tokens, starts = starts, source = result.source), checked_error_row = false)
+  assert_eq(result.labels, 3)
 }

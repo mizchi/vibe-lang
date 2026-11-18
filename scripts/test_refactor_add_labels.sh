@@ -49,6 +49,28 @@ invoke refactor add-labels --write "$rel/main.vibe" > "$work/again.out"
 cmp "$rel/main.vibe" "$work/written.vibe"
 grep -q '^add-labels: 0 labels in 0 calls;' "$work/again.out"
 
+# A bare receiver-method call must still resolve after its receiver gains a label.
+cat > "$rel/retry.vibe" <<'VIBE'
+struct Meter { n: Int }
+fn Meter::value(self: Meter) -> Int { self.n }
+fn Meter::shift(self: Meter, by: Int) -> Int { self.n - by }
+export fn main() -> Int {
+  let m = Meter::{ n: 10 }
+  value(m) - shift(m, 3)
+}
+VIBE
+invoke refactor add-labels --positional=none --write "$rel/retry.vibe" > "$work/retry.out"
+grep -Fq 'value(self = m) - shift(self = m, by = 3)' "$rel/retry.vibe"
+invoke compile "$rel/retry.vibe" -o "$rel/retry.wasm" --entry main > "$work/retry-compile.out"
+VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/retry.wasm" > "$work/retry-value.out"
+grep -qx '3' "$work/retry-value.out"
+sed 's/value(self = m)/value(typo = m)/' "$rel/retry.vibe" > "$rel/retry-wrong.vibe"
+if invoke check "$rel/retry-wrong.vibe" > "$work/retry-wrong.out" 2>&1; then
+  echo 'add-labels: a bare method call accepted the wrong receiver label' >&2
+  exit 1
+fi
+grep -Fq 'unknown labeled argument `typo`' "$work/retry-wrong.out"
+
 # A file that does not check is named, left alone, and fails the run.
 printf 'export fn main() -> Int {\n  let s: String = 1\n  0\n}\n' > "$rel/broken.vibe"
 cp "$rel/broken.vibe" "$work/broken.before"
