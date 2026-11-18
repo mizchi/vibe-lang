@@ -1,3 +1,7 @@
+import ./checker_label_policy.vibe {
+  LabelCheck
+}
+
 // ADR-0120 Phase 2a (#3679): the call sites a label codemod may edit.
 //
 // While the capture is on, the checker records each call it resolves to a
@@ -6,8 +10,7 @@
 // arguments bind to (a method call's receiver already removed), and which
 // written arguments carry a label. The codemod applies its slot policy to
 // these rows; nothing here decides which slots get a label. The capture is
-// off unless a codemod asks for it, so ordinary checking pays one array read
-// per call.
+// off unless a codemod asks for it, and belongs to that invocation.
 
 import ./checker_call_header.vibe {
   checker_builtin_call_name, checker_call_header_is_declaration, checker_call_header_names, checker_header_name_is_positional
@@ -50,34 +53,6 @@ export let label_site_imported: Int = 2
 // `LabelSite` is defined in the package contract (index.vpkg), its single
 // definition site.
 
-let label_sites_active: Array[Bool] = [false]
-let required_labels_suspended: Array[Bool] = [false]
-
-/// The label codemod types a program in order to label it, so the labels it
-/// is about to write are not errors while it does (ADR-0120 Phase 4). On for
-/// the codemod's query only, the import walk included.
-export fn checker_required_labels_suspend(_ on: Bool) -> Unit {
-  Array::set(required_labels_suspended, at = 0, value = on)
-}
-let label_sites: Array[LabelSite] = []
-let label_site_offsets: Array[MutMap[Int, Bool]] = [MutMap::new_int()]
-
-/// Start recording, forgetting any earlier capture.
-export fn label_sites_begin() -> Unit {
-  Array::truncate(label_sites, length = 0)
-  Array::set(label_site_offsets, at = 0, value = MutMap::new_int())
-  Array::set(label_sites_active, at = 0, value = true)
-}
-
-/// Stop recording and hand back what was recorded, in the order the checker
-/// first reached each call.
-export fn label_sites_end() -> Array[LabelSite] {
-  Array::set(label_sites_active, at = 0, value = false)
-  for site in label_sites {
-    site
-  }
-}
-
 fn label_site_imported_origin(env: TypeEnv, name: String) -> Bool {
   match env_lookup_binding(env = env, name = name) {
     Some(binding) => match binding.origin {
@@ -93,8 +68,8 @@ fn label_site_imported_origin(env: TypeEnv, name: String) -> Bool {
 /// value (no declaration header) is not recorded: ADR-0120 keeps those
 /// positional. A call reached twice (a re-entered qualified call, a body
 /// checked again) keeps its first record.
-export fn checker_note_label_site(env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool) -> Unit {
-  if !Array::get(label_sites_active, at = 0) || checker_call_header_is_probe() || offset < 0 || MutMap::has(Array::get(label_site_offsets, at = 0), k = offset) {
+fn checker_note_label_site(sites: Array[LabelSite], offsets: MutMap[Int, Bool], env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool) -> Unit {
+  if checker_call_header_is_probe() || offset < 0 || MutMap::has(offsets, k = offset) {
     ()
   } else {
     let bname = checker_builtin_call_name(env = env, name = name)
@@ -123,14 +98,14 @@ export fn checker_note_label_site(env: TypeEnv, name: String, ident_offset: Int,
     }
     match found {
       Some((kind, names)) => {
-        MutMap::set(Array::get(label_site_offsets, at = 0), k = offset, v = true)
+        MutMap::set(offsets, k = offset, v = true)
         let labeled = for arg in args {
           match arg {
             ELabeledArg(_, _, _) => true,
             _ => false
           }
         }
-        Array::push(label_sites, value = LabelSite::{
+        Array::push(sites, value = LabelSite::{
           offset: offset,
           callee: name,
           kind: kind,
@@ -192,8 +167,8 @@ fn args_have_positional(_ args: Array[Expr]) -> Bool {
 /// in written order.
 /// `ident_len` is the length of the token at `ident_offset` -- the written
 /// method name of `p.bump(..)`, not the resolved `P::bump` (Codex on #3881).
-export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, ident_len: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
-  if Array::get(required_labels_suspended, at = 0) || offset < 0 || ident_offset < 0 || !args_have_positional(args) || checker_call_header_is_probe() {
+fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, ident_len: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
+  if offset < 0 || ident_offset < 0 || !args_have_positional(args) || checker_call_header_is_probe() {
     ()
   } else {
     match required_builtin_labels(env = env, name = name, ident_offset = ident_offset) {
@@ -207,6 +182,15 @@ export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset
         ()
       }
     }
+  }
+}
+
+/// Apply the label contract for this invocation at the selected declaration.
+export fn checker_resolved_call_labels(labels: LabelCheck, env: TypeEnv, name: String, ident_offset: Int, ident_len: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
+  match labels {
+    RequireLabels => checker_check_required_labels(env = env, name = name, ident_offset = ident_offset, ident_len = ident_len, offset = offset, args = args, method_call = method_call, errors = errors),
+    RepairLabelDependency => (),
+    CollectLabelSites(sites, offsets) => checker_note_label_site(sites = sites, offsets = offsets, env = env, name = name, ident_offset = ident_offset, offset = offset, args = args, method_call = method_call)
   }
 }
 

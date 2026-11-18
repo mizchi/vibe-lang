@@ -1,3 +1,7 @@
+import ./checker_label_policy.vibe {
+  LabelCheck, strict_label_check
+}
+
 import ./checker_deferred_method_call.vibe {
   resolve_deferred_checks
 }
@@ -194,6 +198,7 @@ import ./checker_stmt_program_type_defs_observation_impl.vibe {
   irc_show_shim_names_with_env,
   irc_sorted_unique,
   method_receiver_rows_from_capture,
+  new_call_observation,
   reset_double_call_capture,
   string_binop_offsets_from_capture
 }
@@ -887,7 +892,7 @@ fn union_double_render_arg_offsets(checked: CheckedProgram, call_results: Array[
 /// program is identical to what check_program_result /
 /// check_program_with_projected_import_env_result produce today.
 export fn check_program_with_projected_import_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
-  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
+  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(repair_labels = false, stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
   (checked, offsets, eq_offsets, eq_keys)
 }
 
@@ -898,13 +903,17 @@ export fn check_program_with_projected_import_env_typed_lowering_located_observa
 /// with the projected entry above; only that flag differs, because a lane that
 /// changed it would be checking a different program in order to observe one.
 export fn check_program_with_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
-  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(stmts = stmts, initial_env = initial_env, imports_already_projected = false, checked_error_row = checked_error_row)
+  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(repair_labels = false, stmts = stmts, initial_env = initial_env, imports_already_projected = false, checked_error_row = checked_error_row)
   (checked, offsets, eq_offsets, eq_keys)
 }
 
-fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, imports_already_projected: Bool, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
+fn typed_lowering_located_observation_impl(repair_labels: Bool, stmts: Array[Stmt], initial_env: TypeEnv, imports_already_projected: Bool, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
   resolved_callee_capture_reset()
-  let capture = reset_double_call_capture()
+  let capture = if repair_labels {
+    new_call_observation(labels = RepairLabelDependency, lowering_enabled = true)
+  } else {
+    reset_double_call_capture()
+  }
   let checked = check_program_with_env_type_defs_observation_impl(stmts = stmts, initial_env = initial_env, capture = None, role_lane_capture = Some(capture), imports_already_projected = imports_already_projected, checked_error_row = checked_error_row).checked_program
   let placements = call_placement_checked_rows()
   match double_call_result_offsets_from_capture(checked = checked, capture = capture) {
@@ -1547,6 +1556,8 @@ export fn check_program_with_env_statement_root_type_observation(stmts: Array[St
 export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    labels: strict_label_check,
+    lowering_enabled: false,
     entries_flags: array_empty(),
     binop_offsets: array_empty(),
     binop_kinds: array_empty(),
@@ -1571,6 +1582,8 @@ export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: A
 export fn check_program_with_env_typed_occurrence_expression_path_observation(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    labels: strict_label_check,
+    lowering_enabled: false,
     entries_flags: array_empty(),
     binop_offsets: array_empty(),
     binop_kinds: array_empty(),
@@ -1908,6 +1921,14 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv, check
 
 /// Label availability is independent of scalar/render observation. Return the
 /// call-owned channel explicitly, including when that observation declines.
-export fn check_program_with_projected_import_env_lowering_placements(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
-  typed_lowering_located_observation_impl(stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
+export fn check_program_with_projected_import_env_lowering_placements(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool, repair_labels: Bool = false) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
+  typed_lowering_located_observation_impl(repair_labels = repair_labels, stmts = stmts, initial_env = initial_env, imports_already_projected = true, checked_error_row = checked_error_row)
+}
+
+/// Collect repairable calls in this source alone, returning rows only after a successful check.
+export fn check_projected_label_sites(stmts: Array[Stmt], initial_env: TypeEnv, checked_error_row: Bool) -> Array[LabelSite] with Exception {
+  let sites: Array[LabelSite] = []
+  let capture = new_call_observation(labels = CollectLabelSites(sites, MutMap::new_int()), lowering_enabled = false)
+  let _ = check_program_with_env_type_defs_observation_impl(stmts = stmts, initial_env = initial_env, capture = None, role_lane_capture = Some(capture), imports_already_projected = true, checked_error_row = checked_error_row)
+  sites
 }

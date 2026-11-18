@@ -1,8 +1,12 @@
+import @vibe/compiler/core {
+  TypeEnv
+}
+
 // ADR-0120 Phase 2a (#3679): `vibe refactor add-labels` inserts the labels the
 // checker resolves, and leaves alone the calls ADR-0120 keeps positional.
 
 import @vibe/compiler/checker {
-  check_program, checker_required_labels_suspend, label_sites_begin, label_sites_end
+  check_projected_label_sites
 }
 
 import @vibe/compiler/refactor {
@@ -22,11 +26,7 @@ fn run(source: String, policy: Int) -> AddLabelsResult with Exception {
   let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   // The codemod types the program it labels with the required-label check
   // suspended (ADR-0120 Phase 4); so does this test.
-  checker_required_labels_suspend(true)
-  label_sites_begin()
-  let _ = check_program(stmts, checked_error_row = false)
-  let sites = label_sites_end()
-  checker_required_labels_suspend(false)
+  let sites = check_projected_label_sites(stmts = stmts, initial_env = EnvEmpty, checked_error_row = false)
   add_labels(path = "t.vibe", source = source, offset_delta = 0, sites = sites, policy = policy)
 }
 
@@ -138,11 +138,15 @@ test "a leading require head is read as the loader reads it and kept" {
   let source = head + sub_decl() + "fn main() -> Int {\n  sub(10, 3)\n}\n"
   let (_, blanked) = extract_require_pins(source)
   let (tokens, starts, _) = lex_with_offsets(blanked)
-  checker_required_labels_suspend(true)
-  label_sites_begin()
-  let _ = check_program(parse_program_located(tokens = tokens, starts = starts, source = blanked), checked_error_row = false)
-  let sites = label_sites_end()
-  checker_required_labels_suspend(false)
+  let sites = check_projected_label_sites(stmts = parse_program_located(tokens = tokens, starts = starts, source = blanked), initial_env = EnvEmpty, checked_error_row = false)
   let result = add_labels(path = "t.vibe", source = source, offset_delta = 0, sites = sites, policy = add_labels_positional_none)
   inspect(result.source == head + sub_decl() + "fn main() -> Int {\n  sub(x = 10, y = 3)\n}\n", content = "true")
+}
+
+test "a method resolved after its callback argument keeps the entry's label collection" {
+  let header = "struct Counter { n: Int }\nfn Counter::add(_ c: Counter, k: Int) -> Int { c.n + k }\n"
+  let source = header + "fn main() -> Int { Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.add(10)) }\n"
+  let result = run(source = source, policy = add_labels_positional_none)
+  assert_eq(result.source, header + "fn main() -> Int { Array::fold([Counter::{ n: 1 }], init = 0, f = (acc, c) -> acc + c.add(k = 10)) }\n")
+  assert_eq(result.labels, 1)
 }

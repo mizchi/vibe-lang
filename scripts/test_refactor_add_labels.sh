@@ -66,7 +66,8 @@ mkdir -p "$rel/cached"
 printf 'export fn twice(n: Int) -> Int {\n  n * 2\n}\n\nexport fn quad(n: Int) -> Int {\n  twice(twice(n))\n}\n' > "$rel/cached/dep.vibe"
 printf 'import ./dep.vibe { quad }\n\nexport fn main() -> Int {\n  quad(n = 1)\n}\n' > "$rel/cached/main.vibe"
 export VIBE_BUILD_CACHE_DIR="$work/build-cache"
-invoke refactor add-labels "$rel/cached/main.vibe" > "$work/cached.out" 2>&1 || true
+invoke refactor add-labels "$rel/cached/main.vibe" > "$work/cached.out" 2>&1
+grep -q '^add-labels: 0 labels in 0 calls;' "$work/cached.out"
 if invoke check "$rel/cached/main.vibe" > "$work/cached-check.out" 2>&1; then
   echo 'add-labels: a check after the codemod passed a dependency missing labels' >&2
   cat "$work/cached-check.out" >&2
