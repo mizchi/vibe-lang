@@ -4,7 +4,11 @@
 // and the recheck every edit must pass before it is reported or written.
 
 import ./label_sites_fs.vibe {
-  query_label_sites_fs, query_label_sites_recheck_fs
+  query_label_sites_fs, query_label_sites_fs_with_config, query_label_sites_recheck_fs, query_label_sites_recheck_fs_with_config
+}
+
+import @vibe/compiler/config {
+  target_cfg_from_csv
 }
 
 //# Tests
@@ -84,4 +88,23 @@ test "a replacement can remove a missing import and reports its own broken impor
   let broken = query_label_sites_recheck_fs(path = path, source = source, edited = "// moved\n\nimport ./new_missing.vibe { new }\nfn main() -> Int { new() }\n", checked_error_row = false)
   inspect(String::starts_with(broken, prefix = "line 3:8: cannot resolve import './new_missing.vibe'"), content = "true")
   inspect(Fs::read_file(path), content = source)
+}
+
+test "add-labels selects and rechecks the same target even after another target refuses the edit" {
+  let dir = "_build/label_query_cfg"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibe"
+  let source = "fn score(left: Int, right: Int) -> Int { left + right }\n#cfg(alpha)\nfn run() -> Int { score(19, 23) }\n#cfg(not(alpha))\nfn run() -> Int { 0 }\n"
+  Fs::write_file(path, contents = source)
+  let outer = target_cfg_from_csv("alpha")
+  let inner = target_cfg_from_csv("beta")
+  let files = query_label_sites_fs_with_config([path], cfg = outer, checked_error_row = false)
+  let answer = Array::get(files, at = 0)
+  inspect(answer.error, content = "")
+  inspect(Array::length(answer.sites), content = "1")
+  inspect(Array::get(answer.sites, at = 0).callee, content = "score")
+  let edit = "fn score(left: Int, right: Int) -> Int { left + right }\n#cfg(alpha)\nfn run() -> Int { score(left = 19, right = 23) }\n#cfg(not(alpha))\nfn run() -> Int { missing_beta() }\n"
+  let refused = query_label_sites_recheck_fs_with_config(path = path, source = source, edited = edit, cfg = inner, checked_error_row = false)
+  assert(String::contains(refused, needle = "missing_beta"))
+  inspect(query_label_sites_recheck_fs_with_config(path = path, source = source, edited = edit, cfg = outer, checked_error_row = false), content = "")
 }

@@ -1,11 +1,11 @@
 import ./project_context.vibe {
-  query_project_context_fs, query_project_state_new
+  query_project_context_fs, query_project_context_fs_with_config, query_project_state_new
 }
 import @vibe/compiler/core {
   env_lookup, loader_physical_text, type_to_string
 }
 import @vibe/compiler/config {
-  target_cfg_ambient
+  target_cfg_ambient, target_cfg_from_csv
 }
 import @vibe/compiler/loader {
   collect_source_groups_fs_with_entry_source
@@ -291,4 +291,26 @@ test "the current-source collector refuses a directory as its entry" {
     ""
   } with { Exception::Throw(message) => message }
   assert(query_error == error)
+}
+
+test "project queries project the captured import and preserve it across a different target" {
+  let dir = "_build/query_project_context_captured_target"
+  Fs::mkdir_p(dir)
+  Fs::write_file(dir + "/alpha.vibe", contents = "export fn value() -> Int { 19 }\n")
+  Fs::write_file(dir + "/beta.vibe", contents = "export fn value() -> String { \"beta\" }\n")
+  let source = "#cfg(alpha)\nimport ./alpha.vibe { value as chosen }\n#cfg(not(alpha))\nimport ./beta.vibe { value as chosen }\nfn main() -> Unit { () }\n"
+  let path = dir + "/entry.vibe"
+  Fs::write_file(path, contents = source)
+  let alpha = target_cfg_from_csv("alpha")
+  let beta = target_cfg_from_csv("beta")
+  let first = query_project_context_fs_with_config(path = path, source = source, replacement = None, state = query_project_state_new(), cfg = alpha, checked_error_row = false)
+  inspect(imported_type(context = first, name = "chosen"), content = "() -> Int")
+  let middle = query_project_context_fs_with_config(path = path, source = source, replacement = None, state = first.state, cfg = beta, checked_error_row = false)
+  inspect(imported_type(context = middle, name = "chosen"), content = "() -> String")
+  assert(middle.entry_fingerprint != first.entry_fingerprint)
+  let resumed = query_project_context_fs_with_config(path = path, source = source, replacement = None, state = middle.state, cfg = alpha, checked_error_row = false)
+  inspect(imported_type(context = resumed, name = "chosen"), content = "() -> Int")
+  assert_eq(resumed.entry_fingerprint, first.entry_fingerprint)
+  let disk = query_project_context_fs_with_config(path = path, source = source, replacement = None, state = query_project_state_new(), cfg = alpha, checked_error_row = false)
+  inspect(imported_type(context = disk, name = "chosen"), content = "() -> Int")
 }

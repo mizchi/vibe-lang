@@ -369,6 +369,21 @@ requests, alternating explicit policies, and a paused outer compile resumed
 after nested checked requests. `invocation_config_error_row_cache_test.vibe`
 covers retained DBs, lowering inputs, and hover tables across a policy change.
 
+## Target configuration for label queries
+
+The add-labels command captures the target configuration once and passes it to
+both site collection and edit validation. Each query derives its
+`labels-suspended` cache namespace from the captured flags. Project preparation
+uses that configuration for dependency walking, disk hydration and import
+projection. The final entry parse uses the same flags. Retained project state
+keeps source inputs and discards typing results when its namespace or checked
+Exception-row policy changes.
+
+The checker's missing-label suspension, site collector and compatibility cache
+scope still use process state. An independently configured query can select its
+target; overlapping codemods still need invocation-owned checker policy and
+capture.
+
 ## Parser syntax for compiler-printed modules
 
 Old bootstrap compilers printed synthesized comparators with `__Vfp_` type
