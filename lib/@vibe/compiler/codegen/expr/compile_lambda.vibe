@@ -37,6 +37,7 @@ import @vibe/core {
 import @vibe/compiler/perceus {
   build_perceus_plan_pinned,
   compute_borrow_returning_names,
+  fn_result_is_immediate,
   pa_is_alias_dup,
   pa_is_consume_mark,
   pa_is_drop,
@@ -416,19 +417,23 @@ export fn cl_own_return_stmts(_ stmts: Array[Stmt]) -> Array[String] {
   let mut fi = 0
   while fi < Array::length(stmts) {
     match Array::get(stmts, at = fi) {
-      SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, body)) => {
-        // A non-identifier argument disqualifies this position from the
-        // borrowed ABI at every call, even calls with a named argument.
-        let promote = match MutMap::get(owned_positions, k = n) {
-          Some(mask) => bsearch_leftmost(sorted = scoped_borrowers, name = n) >= 0 && cl_view_of_owned_param(body = body, params = ps, mask = mask),
-          None => false
-        }
-        if promote {
-          Array::push(owned, value = n)
-          Array::set(stmts, at = fi, value = SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
-        } else {
-          MutSet::add(fn_names, x = n)
-        }
+      SLet(ex, is_rec, n, ty, value) => match value {
+        EFn(tps, bounds, ps, ret, eff, body) => {
+          // A non-identifier argument disqualifies this position from the
+          // borrowed ABI at every call, even calls with a named argument.
+          // A declared immediate result carries no reference to transfer.
+          let promote = match MutMap::get(owned_positions, k = n) {
+            Some(mask) => bsearch_leftmost(sorted = scoped_borrowers, name = n) >= 0 && !fn_result_is_immediate(sig = ty, value = value) && cl_view_of_owned_param(body = body, params = ps, mask = mask),
+            None => false
+          }
+          if promote {
+            Array::push(owned, value = n)
+            Array::set(stmts, at = fi, value = SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
+          } else {
+            MutSet::add(fn_names, x = n)
+          }
+        },
+        _ => ()
       },
       _ => ()
     }
