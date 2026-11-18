@@ -31,12 +31,13 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty, struct MutSet
+  array_empty, struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/perceus {
   build_perceus_plan_pinned,
   compute_borrow_returning_names,
+  fn_result_is_immediate,
   pa_is_alias_dup,
   pa_is_consume_mark,
   pa_is_drop,
@@ -55,11 +56,13 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  ca_walk_stmts_valued,
+  bmask_has,
+  bp_fold_nonident,
   collect_free_vars,
   collect_free_vars_indexed,
   collect_free_vars_indexed_self,
   collect_strings_stmts,
+  compute_borrow_disqualifiers,
   compute_may_return_view_fns,
   emit_closure_call_tail,
   emit_closure_resolve,
@@ -67,7 +70,8 @@ import @vibe/compiler/codegen/common_analysis {
   is_mut_captured_in,
   md_collect_shadow_names,
   md_shadow_zeroed_bmasks,
-  md_view_consume_count_pre
+  md_view_consume_count_pre,
+  scope_tail_proj_root
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -362,35 +366,28 @@ fn cl_scope_borrow_stmt(stmt: Stmt, borrowers: Array[String]) -> Option[Stmt] {
   }
 }
 
+// The epilogue retains a projected result before dropping the parameter
+// that owns it. Use the same projection root to identify that contract.
+fn cl_view_of_owned_param(body: Expr, params: Array[(String, Option[TypeExpr])], mask: Int) -> Bool {
+  let root = scope_tail_proj_root(body)
+  if root == "" {
+    return false
+  }
+  let mut i = 0
+  while i < Array::length(params) {
+    if bmask_has(mask = mask, i = i) && strip_param_label_marker(Array::get(params, at = i).0) == root {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 /// Normalize mixed fresh/view results to an owning return contract, including
 /// direct-only functions: their results can be stored in an owning aggregate.
 /// Named callbacks use the same contract as anonymous callbacks. Pure borrowed
-/// accessors keep their existing ABI unless they are used as callbacks.
+/// accessors can lend a result from a parameter that the caller still owns.
 export fn cl_own_return_stmts(_ stmts: Array[Stmt]) -> Array[String] {
-  let valued = array_empty()
-  let _ = ca_walk_stmts_valued(stmts = stmts, out = valued)
-  // `valued` is every value-position identifier in the program, once each;
-  // the only question asked of it is whether a top-level function's name is
-  // among them. Sorting it for a binary search cost ~9 MB of the self-compile
-  // heap; a set of those names, marked while scanning once, answers the same.
-  let fn_names = MutSet::new_string()
-  let mut fi = 0
-  while fi < Array::length(stmts) {
-    match Array::get(stmts, at = fi) {
-      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => MutSet::add(fn_names, x = n),
-      _ => ()
-    }
-    fi = fi + 1
-  }
-  let valued_fns = MutSet::new_string()
-  let mut vi = 0
-  while vi < Array::length(valued) {
-    let vn = Array::get(valued, at = vi)
-    if MutSet::has(fn_names, x = vn) {
-      MutSet::add(valued_fns, x = vn)
-    }
-    vi = vi + 1
-  }
   let initial_borrowers = sorted_names_of(compute_borrow_returning_names(stmts))
   let mut scoped_calls = false
   let mut si = 0
@@ -405,19 +402,65 @@ export fn cl_own_return_stmts(_ stmts: Array[Stmt]) -> Array[String] {
     }
     si = si + 1
   }
-  let borrowed = if scoped_calls {
+  let scoped_borrowers = if scoped_calls {
     sorted_names_of(compute_borrow_returning_names(stmts))
   } else {
     initial_borrowers
   }
+  let valued = array_empty()
+  let nonident_names: Array[String] = []
+  let nonident_positions: Array[Int] = []
+  compute_borrow_disqualifiers(stmts = stmts, out_valued = valued, out_nonident_fns = nonident_names, out_nonident_pos = nonident_positions)
+  let owned_positions = bp_fold_nonident(nonident_fns = nonident_names, nonident_pos = nonident_positions)
+  let owned: Array[String] = []
+  let fn_names = MutSet::new_string()
+  let mut fi = 0
+  while fi < Array::length(stmts) {
+    match Array::get(stmts, at = fi) {
+      SLet(ex, is_rec, n, ty, value) => match value {
+        EFn(tps, bounds, ps, ret, eff, body) => {
+          // A non-identifier argument disqualifies this position from the
+          // borrowed ABI at every call, even calls with a named argument.
+          // A declared immediate result carries no reference to transfer.
+          let promote = match MutMap::get(owned_positions, k = n) {
+            Some(mask) => bsearch_leftmost(sorted = scoped_borrowers, name = n) >= 0 && !fn_result_is_immediate(sig = ty, value = value) && cl_view_of_owned_param(body = body, params = ps, mask = mask),
+            None => false
+          }
+          if promote {
+            Array::push(owned, value = n)
+            Array::set(stmts, at = fi, value = SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
+          } else {
+            MutSet::add(fn_names, x = n)
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    fi = fi + 1
+  }
+  let valued_fns = MutSet::new_string()
+  let mut vi = 0
+  while vi < Array::length(valued) {
+    let vn = Array::get(valued, at = vi)
+    if MutSet::has(fn_names, x = vn) {
+      MutSet::add(valued_fns, x = vn)
+    }
+    vi = vi + 1
+  }
+  // A wrapper that also has a borrowed branch can now have a mixed return.
+  let borrowed = if Array::length(owned) > 0 {
+    sorted_names_of(compute_borrow_returning_names(stmts))
+  } else {
+    scoped_borrowers
+  }
   let mixed = array_empty()
   for name in compute_may_return_view_fns(stmts) {
-    if bsearch_leftmost(sorted = borrowed, name = name) < 0 {
+    if MutSet::has(fn_names, x = name) && bsearch_leftmost(sorted = borrowed, name = name) < 0 {
       Array::push(mixed, value = name)
     }
   }
   let candidates = sorted_names_of(mixed)
-  let owned = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
