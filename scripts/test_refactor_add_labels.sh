@@ -61,7 +61,21 @@ export fn main() -> Int {
 VIBE
 invoke refactor add-labels --positional=none --write "$rel/retry.vibe" > "$work/retry.out"
 grep -Fq 'value(self = m) - shift(self = m, by = 3)' "$rel/retry.vibe"
+# Follow a qualified value alias through to its function under each allocator.
+cat > "$rel/alias.vibe" <<'VIBE'
+struct Meter { n: Int }
+fn impl_value(_ m: Meter) -> Int { m.n }
+let alias_value = impl_value
+let Meter::value = alias_value
+export fn main() -> Int {
+  let m = Meter::{ n: 21 }
+  m.value() + value(m)
+}
+VIBE
 for rc in 0 1 shadow; do
+  VIBE_RC="$rc" invoke compile "$rel/alias.vibe" -o "$rel/alias-$rc.wasm" --entry main > "$work/alias-$rc-compile.out"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/alias-$rc.wasm" > "$work/alias-$rc-value.out"
+  grep -qx '42' "$work/alias-$rc-value.out"
   VIBE_RC="$rc" invoke compile "$rel/retry.vibe" -o "$rel/retry-$rc.wasm" --entry main > "$work/retry-$rc-compile.out"
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/retry-$rc.wasm" > "$work/retry-$rc-value.out"
   grep -qx '3' "$work/retry-$rc-value.out"

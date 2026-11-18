@@ -1,7 +1,7 @@
 // Function returns.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, sort_perm_by_names
+  Expr, Stmt, TypeExpr, collect_top_level_fn_alias_renames, sort_perm_by_names
 }
 
 import @vibe/core {
@@ -14,6 +14,10 @@ import ./binding_shape_inference.vibe {
 
 import ./binding_shape_queries.vibe {
   shape_is_composite
+}
+
+import ./callable_names.vibe {
+  receiver_alias_key
 }
 
 import ./equality_shape_queries.vibe {
@@ -62,6 +66,7 @@ fn collect_fn_eq_return_shape(out: Array[(String, String)], fname: String, tpara
 
 export fn collect_fn_returns(_ stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
+  let mut has_method_alias = false
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, at = i) {
@@ -81,6 +86,9 @@ export fn collect_fn_returns(_ stmts: Array[Stmt]) -> Array[(String, String)] {
           collect_fn_return_marker(out = out, fname = fname, tparams = tparams, fparams = fparams, ret = ret, fbody = fbody)
           collect_fn_impl_return_key(out = out, fname = fname, tparams = tparams, ret = ret)
           collect_fn_eq_return_shape(out = out, fname = fname, tparams = tparams, ret = ret, fbody = fbody)
+        },
+        EIdent(_, _) => if !has_method_alias {
+          has_method_alias = String::index_of(fname, needle = "::") >= 0
         },
         _ => ()
       },
@@ -153,6 +161,16 @@ export fn collect_fn_returns(_ stmts: Array[Stmt]) -> Array[(String, String)] {
       _ => ()
     }
     i = i + 1
+  }
+  // The alias rewrite runs after method lowering. Consult the same resolved
+  // function targets here so a receiver call can introduce a qualified alias.
+  if has_method_alias {
+    for binding in collect_top_level_fn_alias_renames(stmts) {
+      let (alias, target) = binding
+      if String::index_of(alias, needle = "::") >= 0 {
+        Array::push(out, value = (receiver_alias_key(alias), target))
+      }
+    }
   }
   // #1341: struct FIELD type heads ride along under the reserved
   // `Struct.field` key (struct_field_type_key). Must be pushed BEFORE the
