@@ -215,3 +215,10 @@ test "an unsaved callback escape is published on open and cleared after annotati
   let imported = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri, text = opaque), docs = edited)
   assert_eq(errors(lsp_published_diagnostics(uri = uri, docs = imported, checked_error_row = false)), 0)
 }
+
+test "a qualified receiver's callback row survives source-buffer diagnostics" {
+  let decls = "effect Async { Suspend(Int) -> Int }\nstruct Runner { n: Int }\nstruct Other { n: Int }\nfn susp(x: Int) -> Int with Async { perform Async::Suspend(x) }\n"
+  let methods = "fn Runner::run(self: Runner, f: (x: Int) -> Int with Async) -> Int { handle { f(1) + self.n } with { Async::Suspend(t) => resume(t + 41) } }\nfn Other::run(self: Other, f: (x: Int) -> Int) -> Int { f(1) + self.n }\n"
+  let entry = "fn outer() -> Int { let runner = Runner::{ n: 0 }; runner.run(f = susp) }\nlet _start = () -> Int { outer() }\n"
+  assert_eq(errors(publish_open(uri = "untitled:methods.vibe", text = decls + methods + entry)), 0)
+}
