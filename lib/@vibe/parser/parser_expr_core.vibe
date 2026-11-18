@@ -9,11 +9,11 @@ import @vibe/ast {
 }
 
 import ./parser_base.vibe {
-  _no_tb, _no_tp, empty_exprs, expect_tk, is_expr_end_token, is_non_pipe_infix, parse_pattern_with_binder_context, peek
+  PrintedModuleSyntax, _no_tb, _no_tp, empty_exprs, expect_tk, is_expr_end_token, is_non_pipe_infix, parse_pattern_with_binder_context, peek
 }
 
 import ./parser_expr_primary.vibe {
-  parse_primary_with_binder_context
+  parse_primary_in_source
 }
 
 import ./token.vibe {
@@ -968,14 +968,14 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
   }
 }
 
-fn parse_prefix(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+fn parse_prefix(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
   let (expr, next) = match peek(tokens = tokens, pos = pos) {
     TMinus => {
-      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context)
+      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
       (EUnaryOp("-", e), next)
     },
     TNot => {
-      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context)
+      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
       (EUnaryOp("!", e), next)
     },
     // #2344 slice C: `~x` is bit-not. The token already existed as the LABELED
@@ -984,11 +984,11 @@ fn parse_prefix(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur:
     // expression-start position it was `unexpected token: ~`, so the prefix
     // slot is free.
     TTilde => {
-      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context)
+      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
       (EUnaryOp("~", e), next)
     },
     _ => {
-      let (e, next) = parse_primary_with_binder_context(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
+      let (e, next) = parse_primary_in_source(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
       parse_postfix(tokens = tokens, starts = starts, first = pos, pos = next, expr = e, parse_recur = parse_recur, context = context)
     }
   }
@@ -1028,7 +1028,7 @@ fn is_is_token(_ tok: Token) -> Bool {
   }
 }
 
-fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool, consume_is: Bool, is_top_atom: Bool, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool, consume_is: Bool, is_top_atom: Bool, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
   let left = source_wrap_expr(expr = left, first = expr_start, next = next, context = context)
   let tok = peek(tokens = tokens, pos = next)
   if consume_is && !cmp_locked && 3 >= min_prec && is_is_token(tok) && is_top_atom {
@@ -1048,7 +1048,7 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
     // still fold into an enclosing `&&`/`||`/`|>` at a looser tier.
     let (pat, pn) = parse_pattern_with_binder_context(tokens = tokens, pos = next + 1, context = context)
     let combined = EMatch(left, [(pat, EBool(true)), (PWild, EBool(false))])
-    parse_infix_loop(tokens = tokens, starts = starts, left = combined, next = pn, min_prec = min_prec, expr_start = expr_start, cmp_locked = true, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context)
+    parse_infix_loop(tokens = tokens, starts = starts, left = combined, next = pn, min_prec = min_prec, expr_start = expr_start, cmp_locked = true, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
   } else {
     let prec = binop_prec(tok)
     let should_stop = if prec < min_prec {
@@ -1083,8 +1083,8 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
           throw("cannot mix '|>' with other infix operators without explicit parentheses")
         }
       }
-      let (right0, right_next0) = parse_prefix(tokens = tokens, starts = starts, pos = next + 1, parse_recur = parse_recur, context = context)
-      let (right, rn) = parse_infix_loop(tokens = tokens, starts = starts, left = right0, next = right_next0, min_prec = prec + 1, expr_start = next + 1, cmp_locked = false, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context)
+      let (right0, right_next0) = parse_prefix(tokens = tokens, starts = starts, pos = next + 1, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
+      let (right, rn) = parse_infix_loop(tokens = tokens, starts = starts, left = right0, next = right_next0, min_prec = prec + 1, expr_start = next + 1, cmp_locked = false, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
       if is_pipe {
         if has_non_pipe_infix_top(tokens = tokens, start = next + 1, end = rn) {
           throw("cannot mix '|>' with other infix operators without explicit parentheses")
@@ -1102,7 +1102,7 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
       } else {
         cmp_locked
       }
-      parse_infix_loop(tokens = tokens, starts = starts, left = combined, next = rn, min_prec = min_prec, expr_start = expr_start, cmp_locked = next_cmp_locked, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context)
+      parse_infix_loop(tokens = tokens, starts = starts, left = combined, next = rn, min_prec = min_prec, expr_start = expr_start, cmp_locked = next_cmp_locked, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
     }
   }
 }
@@ -1129,8 +1129,12 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
 /// documented precedence, while `if x is Some(v) { use(v) }` still binds
 /// `v` in the then-branch exactly as before.
 export fn parse_infix_no_is_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (left0, next0) = parse_prefix(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
-  parse_infix_loop(tokens = tokens, starts = starts, left = left0, next = next0, min_prec = min_prec, expr_start = expr_start, cmp_locked = false, consume_is = true, is_top_atom = true, parse_recur = parse_recur, context = context)
+  parse_infix_no_is_in_source(tokens = tokens, starts = starts, pos = pos, min_prec = min_prec, expr_start = expr_start, parse_recur = parse_recur, context = context, printed_formals = None)
+}
+
+export fn parse_infix_no_is_in_source(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
+  let (left0, next0) = parse_prefix(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
+  parse_infix_loop(tokens = tokens, starts = starts, left = left0, next = next0, min_prec = min_prec, expr_start = expr_start, cmp_locked = false, consume_is = true, is_top_atom = true, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
 }
 
 export fn parse_infix_no_is(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
@@ -1145,8 +1149,12 @@ export fn parse_infix_no_is(tokens: Array[Token], starts: Array[Int], pos: Int, 
 /// an if-condition there is no special pattern-binding form, so even a bare
 /// `x is Some(v)` folds straight to a Bool `EMatch` with no binding.
 export fn parse_infix_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (left0, next0) = parse_prefix(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
-  parse_infix_loop(tokens = tokens, starts = starts, left = left0, next = next0, min_prec = min_prec, expr_start = expr_start, cmp_locked = false, consume_is = true, is_top_atom = false, parse_recur = parse_recur, context = context)
+  parse_infix_in_source(tokens = tokens, starts = starts, pos = pos, min_prec = min_prec, expr_start = expr_start, parse_recur = parse_recur, context = context, printed_formals = None)
+}
+
+export fn parse_infix_in_source(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
+  let (left0, next0) = parse_prefix(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
+  parse_infix_loop(tokens = tokens, starts = starts, left = left0, next = next0, min_prec = min_prec, expr_start = expr_start, cmp_locked = false, consume_is = true, is_top_atom = false, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
 }
 
 export fn parse_infix(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {

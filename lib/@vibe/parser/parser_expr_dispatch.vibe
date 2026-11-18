@@ -29,6 +29,7 @@ import ./loop_contract.vibe {
 }
 
 import ./parser_base.vibe {
+  PrintedModuleSyntax,
   _no_tb,
   _no_tp,
   binder_name_error,
@@ -37,11 +38,11 @@ import ./parser_base.vibe {
   empty_arms,
   empty_exprs,
   expect_tk,
-  parse_enum_stmt_with_binder_context,
+  parse_enum_stmt_in_source,
   parse_pattern_with_binder_context,
-  parse_struct_stmt_with_binder_context,
+  parse_struct_stmt_in_source,
   parse_type_impl,
-  parse_type_param_kind,
+  parse_type_param_kind_in_source,
   pattern_ref_mark,
   peek,
   skip_semi,
@@ -49,7 +50,7 @@ import ./parser_base.vibe {
 }
 
 import ./parser_expr_core.vibe {
-  parse_infix_no_is_with_binder_context
+  parse_infix_no_is_in_source
 }
 
 import ./token.vibe {
@@ -176,7 +177,7 @@ fn dispatch_tp_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], In
 /// #789: parse a `[T, U: Bound]` binder (`[` already consumed; first name token at
 /// `pos`). Private copy of parser_base.parse_method_type_params. Returns
 /// (type-param names, per-param bounds, next-after-`]`).
-fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let names = ArrayBuilder::new()
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -189,7 +190,7 @@ fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, cont
       },
       TIdent(name) => {
         binder_capture_source(context = context, name = name, first_token = p, last_token = p)
-        let (param_key, after_kind) = parse_type_param_kind(tokens = tokens, pos = p + 1, name = name)
+        let (param_key, after_kind) = parse_type_param_kind_in_source(tokens = tokens, pos = p + 1, name = name, printed_formals = printed_formals)
         ArrayBuilder::push(names, value = param_key)
         p = after_kind
         match peek(tokens = tokens, pos = p) {
@@ -223,10 +224,10 @@ fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, cont
 /// leading `[` gave `expected type but got [`). `pos` is the first annotation
 /// token (just after `:`). Returns (type-param names, per-param bounds, type,
 /// next position).
-fn parse_local_let_annotation_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with Exception {
+fn parse_local_let_annotation_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with Exception {
   match peek(tokens = tokens, pos = pos) {
     TLBracket => {
-      let (tps, tbs, after_binder) = dispatch_type_params_with_binder_context(tokens = tokens, pos = pos + 1, context = context)
+      let (tps, tbs, after_binder) = dispatch_type_params_with_binder_context(tokens = tokens, pos = pos + 1, context = context, printed_formals = printed_formals)
       let (ty, next) = parse_type_impl(tokens = tokens, pos = after_binder, mode = 0)
       (tps, tbs, ty, next)
     },
@@ -1464,11 +1465,11 @@ fn expr_always_exits_guard(_ e: Expr) -> Bool {
 /// pattern's bindings scope over the REST of the block, and the else arm
 /// becomes the fallthrough. Scrutinee is evaluated exactly once (it is bound
 /// into the match's discriminant position, not re-parsed per arm).
-fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Pat, Expr, Expr, Array[SourceBinder], Int) with Exception {
+fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Pat, Expr, Expr, Array[SourceBinder], Int) with Exception {
   // Parse the scrutinee with the no-is variant, exactly as `if` does (mode
   // 21): otherwise a trailing `is pattern` collapses into a Bool match instead
   // of landing in the guard's pattern slot.
-  let (scrut, sn) = parse_infix_no_is_with_binder_context(tokens = tokens, starts = starts, pos = pos, min_prec = 0, expr_start = pos, parse_recur = parse_recur, context = context)
+  let (scrut, sn) = parse_infix_no_is_in_source(tokens = tokens, starts = starts, pos = pos, min_prec = 0, expr_start = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
   let after_is = match peek(tokens = tokens, pos = sn) {
     TIs => sn + 1,
     TIdent(kw) => if kw == "is" {
@@ -1553,7 +1554,7 @@ fn let_refuted_arm(pat: Pat, pat_off: Int) -> Expr {
   ECall(builtin_ref("__let_refuted"), [EString(print_pat(pat), pat_off)], -1, [])
 }
 
-fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
   let steps = ArrayBuilder::new()
   let mut p = pos
   let mut end_pos = pos
@@ -1584,7 +1585,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
       // type visible to the whole file and collide across functions, which is a
       // language decision, not a parser fix (noted on #1525).
       TEnum => {
-        let (enum_stmt, _) = parse_enum_stmt_with_binder_context(tokens = tokens, pos = p + 1, exported = false, context = context)
+        let (enum_stmt, _) = parse_enum_stmt_in_source(tokens = tokens, pos = p + 1, exported = false, context = context, printed_formals = printed_formals)
         let ename = match enum_stmt {
           SEnum(_, n, _, _, _) => n,
           _ => "the enum"
@@ -1592,7 +1593,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
         throw("a block-local `enum` declaration is not supported -- move `\{ename}` to the top level and refer to it from here. Inside a block it had no constructors at all: `match` against them matched nothing (silently taking the `_` arm, or trapping without one). #1525 at #\{p}")
       },
       TStruct => {
-        let (_, struct_end) = parse_struct_stmt_with_binder_context(tokens = tokens, pos = p + 1, exported = false, context = context)
+        let (_, struct_end) = parse_struct_stmt_in_source(tokens = tokens, pos = p + 1, exported = false, context = context, printed_formals = printed_formals)
         p = struct_end
       },
       TLet => {
@@ -1606,7 +1607,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               // the plain local let below.
               let (rtps, rtbs, rec_ann, eq_pos_r) = match peek(tokens = tokens, pos = next + 2) {
                 TColon => {
-                  let (tps, tbs, rty, tp) = parse_local_let_annotation_with_binder_context(tokens = tokens, pos = next + 3, context = context)
+                  let (tps, tbs, rty, tp) = parse_local_let_annotation_with_binder_context(tokens = tokens, pos = next + 3, context = context, printed_formals = printed_formals)
                   (tps, tbs, Some(rty), tp)
                 },
                 _ => {
@@ -1757,7 +1758,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   // local generic `let f: [T](T) -> T = ..` parses like top-level.
                   let (ltps, ltbs, ann_type, eq_pos) = match after_name {
                     TColon => {
-                      let (tps, tbs, the_type, tp) = parse_local_let_annotation_with_binder_context(tokens = tokens, pos = next + 2, context = context)
+                      let (tps, tbs, the_type, tp) = parse_local_let_annotation_with_binder_context(tokens = tokens, pos = next + 2, context = context, printed_formals = printed_formals)
                       (tps, tbs, Some(the_type), tp)
                     },
                     _ => {
@@ -1823,7 +1824,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
       // same shape the retired let-else used, now with a divergence
       // requirement on the else arm that makes the binding unconditional.
       TGuard => {
-        let (gpat, gscrut, galt, galt_rows, gnext) = parse_guard_stmt(tokens = tokens, starts = starts, pos = p + 1, parse_recur = parse_recur, context = context)
+        let (gpat, gscrut, galt, galt_rows, gnext) = parse_guard_stmt(tokens = tokens, starts = starts, pos = p + 1, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
         ArrayBuilder::push(steps, value = StepPatternElse(gpat, gscrut, galt, galt_rows))
         // A guard is a statement, so consume the separator the lexer's ASI
         // inserts after the else block's `}` — without this, the next
@@ -1959,12 +1960,16 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
 // that position is an ordinary binding name again.
 
 export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  parse_impl_dispatch_in_source(tokens = tokens, starts = starts, pos = pos, mode = mode, parse_recur = parse_recur, context = context, printed_formals = None)
+}
+
+export fn parse_impl_dispatch_in_source(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
   if mode == 20 {
-    parse_impl_block(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
+    parse_impl_block(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
   } else if mode == 21 {
     // Parse cond with the no-is variant so a trailing `is pattern` belongs
     // to the if-cond pattern slot rather than collapsing into a Bool match.
-    let (cond, cn) = parse_infix_no_is_with_binder_context(tokens = tokens, starts = starts, pos = pos, min_prec = 0, expr_start = pos, parse_recur = parse_recur, context = context)
+    let (cond, cn) = parse_infix_no_is_in_source(tokens = tokens, starts = starts, pos = pos, min_prec = 0, expr_start = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
     let mut is_mode = false
     let mut is_pat_val = PWild
     let mut brace_pos = cn

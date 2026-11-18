@@ -13,6 +13,7 @@ import ./lexer.vibe {
 }
 
 import ./parser_base.vibe {
+  PrintedModuleSyntax,
   _no_tb,
   _no_tp,
   allows_outside_entry_error,
@@ -49,7 +50,7 @@ import ./parser_base.vibe {
   parse_type,
   parse_type_alias_stmt,
   parse_type_impl,
-  parse_type_param_kind,
+  parse_type_param_kind_in_source,
   parse_type_with_source_context,
   peek,
   peek_is_allows,
@@ -66,11 +67,11 @@ import ./fn_contract.vibe {
 }
 
 import ./parser_expr_core.vibe {
-  parse_infix_with_binder_context
+  parse_infix_in_source
 }
 
 import ./parser_expr_dispatch.vibe {
-  parse_impl_dispatch_with_binder_context
+  parse_impl_dispatch_in_source
 }
 
 import ./token.vibe {
@@ -95,11 +96,15 @@ import ./parser_binder_context.vibe {
 //# Functions
 
 export fn parse_impl_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  parse_impl_in_source(tokens = tokens, starts = starts, pos = pos, mode = mode, context = context, printed_formals = None)
+}
+
+export fn parse_impl_in_source(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
   let rec parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception = (rtoks, rpos, rmode, recur_context) -> {
     if rmode >= 0 && rmode <= 10 {
-      parse_infix_with_binder_context(tokens = rtoks, starts = starts, pos = rpos, min_prec = rmode, expr_start = rpos, parse_recur = parse_recur, context = recur_context)
+      parse_infix_in_source(tokens = rtoks, starts = starts, pos = rpos, min_prec = rmode, expr_start = rpos, parse_recur = parse_recur, context = recur_context, printed_formals = printed_formals)
     } else {
-      let (expr, next) = parse_impl_dispatch_with_binder_context(tokens = rtoks, starts = starts, pos = rpos, mode = rmode, parse_recur = parse_recur, context = recur_context)
+      let (expr, next) = parse_impl_dispatch_in_source(tokens = rtoks, starts = starts, pos = rpos, mode = rmode, parse_recur = parse_recur, context = recur_context, printed_formals = printed_formals)
       let opens_block = rmode == 20 && rpos > 0 && match peek(tokens = rtoks, pos = rpos - 1) {
         TLBrace => true,
         _ => false
@@ -180,7 +185,7 @@ fn parse_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Array[String
   (ArrayBuilder::freeze(b), p)
 }
 
-fn parse_let_type_params(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn parse_let_type_params(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let names = ArrayBuilder::new()
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -192,7 +197,7 @@ fn parse_let_type_params(tokens: Array[Token], pos: Int, context: Option[ParserB
       },
       TIdent(name) => {
         binder_capture_source(context = context, name = name, first_token = p, last_token = p)
-        let (param_key, after_kind) = parse_type_param_kind(tokens = tokens, pos = p + 1, name = name)
+        let (param_key, after_kind) = parse_type_param_kind_in_source(tokens = tokens, pos = p + 1, name = name, printed_formals = printed_formals)
         ArrayBuilder::push(names, value = param_key)
         p = after_kind
         match peek(tokens = tokens, pos = p) {
@@ -220,10 +225,10 @@ fn parse_let_type_params(tokens: Array[Token], pos: Int, context: Option[ParserB
   (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
 }
 
-fn parse_let_annotation(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with Exception {
+fn parse_let_annotation(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with Exception {
   match peek(tokens = tokens, pos = pos) {
     TLBracket => {
-      let (type_params, type_bounds, after_params) = parse_let_type_params(tokens = tokens, pos = pos + 1, context = context)
+      let (type_params, type_bounds, after_params) = parse_let_type_params(tokens = tokens, pos = pos + 1, context = context, printed_formals = printed_formals)
       let (ty, next) = parse_type_impl(tokens = tokens, pos = after_params, mode = 0)
       (type_params, type_bounds, ty, next)
     },
@@ -434,14 +439,14 @@ fn skip_generic_value_start(tokens: Array[Token], pos: Int) -> Int {
 /// when one is present, returning its type params/bounds plus the position of
 /// the value that follows. When there is no generic header (e.g. an array
 /// literal `[1, 2]`), returns empty params and `pos` unchanged.
-fn parse_value_bracket_header(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn parse_value_bracket_header(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let skipped = skip_generic_value_start(tokens = tokens, pos = pos)
   if skipped == pos {
     (_no_tp(), _no_tb(), pos)
   } else {
     match peek(tokens = tokens, pos = pos) {
       TLBracket => {
-        let (tps, tbs, _after) = parse_let_type_params(tokens = tokens, pos = pos + 1, context = context)
+        let (tps, tbs, _after) = parse_let_type_params(tokens = tokens, pos = pos + 1, context = context, printed_formals = printed_formals)
         (tps, tbs, skipped)
       },
       _ => (_no_tp(), _no_tb(), skipped)
@@ -683,23 +688,27 @@ fn record_let_lambda_positional(name: String, value: Expr, at: Int) -> Unit with
 }
 
 export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  parse_let_stmt_in_source(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context, printed_formals = None)
+}
+
+export fn parse_let_stmt_in_source(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Stmt, Int) with Exception {
   match peek(tokens = tokens, pos = pos) {
     TRec => {
       let (name, name_next) = parse_binding_name_with_binder_context(tokens = tokens, pos = pos + 1, context = context)
       let annotation_mark = binder_capture_mark(context)
       let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens = tokens, pos = name_next) {
         TColon => {
-          let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context)
+          let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context, printed_formals = printed_formals)
           (tparams, tbounds, Some(ty), tp)
         },
         _ => (_no_tp(), _no_tb(), None, name_next)
       }
       let ep = expect_tk(tokens = tokens, pos = eq_pos, expected = "=")
       let value_header_mark = binder_capture_mark(context)
-      let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens = tokens, pos = ep, context = context)
+      let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens = tokens, pos = ep, context = context, printed_formals = printed_formals)
       // `let rec f = (_ x: Int) -> ..` is also how the printer writes a `fn`.
       arm_lambda_positional()
-      let val_pair = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = val_start_r, mode = 0, context = context)
+      let val_pair = parse_impl_in_source(tokens = tokens, starts = starts, pos = val_start_r, mode = 0, context = context, printed_formals = printed_formals)
       record_let_lambda_positional(name = name, value = val_pair.0, at = val_start_r)
       let (val_with_tp, retained_header_mark, retained_header_count) = apply_value_bracket_type_params(tps = bracket_tps, tbs = bracket_tbs, val = val_pair.0, header_mark = value_header_mark, context = context)
       let (final_ty_opt, val) = apply_generic_let_annotation(type_params = type_params, type_bounds = type_bounds, ann = ty_opt, val = val_with_tp, annotation_mark = annotation_mark, retained_value_header_mark = retained_header_mark, retained_value_header_count = retained_header_count, context = context)
@@ -717,7 +726,7 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
           _ => (None, pos + 2)
         }
         let ep = expect_tk(tokens = tokens, pos = eq_pos, expected = "=")
-        let val_pair = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context)
+        let val_pair = parse_impl_in_source(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context, printed_formals = printed_formals)
         let val = val_pair.0
         let val_next = val_pair.1
         (SLetMut(name, ty_opt, val), val_next)
@@ -739,7 +748,7 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
       require_irrefutable_top_level_pat(pat)
       let pattern_rows = binder_capture_take_from(context = context, mark = pattern_mark)
       let ep = expect_tk(tokens = tokens, pos = reject_pattern_let_annotation(tokens = tokens, pos = after_pat), expected = "=")
-      let val_pair = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context)
+      let val_pair = parse_impl_in_source(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context, printed_formals = printed_formals)
       binder_capture_insert_synthetic_at(context = context, mark = pattern_mark, name = "__dst")
       binder_capture_append(context = context, rows = remapped_top_pattern_rows(pat = pat, rows = pattern_rows))
       (top_level_pattern_let(exported = exported, pat = pat, val = val_pair.0, context = context), val_pair.1)
@@ -774,7 +783,7 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
         require_irrefutable_top_level_pat(ppat)
         let pattern_rows = binder_capture_take_from(context = context, mark = pattern_mark)
         let pep = expect_tk(tokens = tokens, pos = reject_pattern_let_annotation(tokens = tokens, pos = after_ppat), expected = "=")
-        let pval_pair = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = pep, mode = 0, context = context)
+        let pval_pair = parse_impl_in_source(tokens = tokens, starts = starts, pos = pep, mode = 0, context = context, printed_formals = printed_formals)
         binder_capture_insert_synthetic_at(context = context, mark = pattern_mark, name = "__dst")
         binder_capture_append(context = context, rows = remapped_top_pattern_rows(pat = ppat, rows = pattern_rows))
         let marked = if is_top_level_record_destr {
@@ -803,18 +812,18 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
         let annotation_mark = binder_capture_mark(context)
         let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens = tokens, pos = name_next) {
           TColon => {
-            let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context)
+            let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context, printed_formals = printed_formals)
             (tparams, tbounds, Some(ty), tp)
           },
           _ => (_no_tp(), _no_tb(), None, name_next)
         }
         let ep = expect_tk(tokens = tokens, pos = eq_pos, expected = "=")
         let value_header_mark = binder_capture_mark(context)
-        let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens = tokens, pos = ep, context = context)
+        let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens = tokens, pos = ep, context = context, printed_formals = printed_formals)
         // ADR-0120 D3 (#3681): `let f = (_ x: Int) -> ..` declares `f` the
         // way `fn f(_ x: Int)` does; see `arm_lambda_positional`.
         arm_lambda_positional()
-        let val_pair = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = val_start, mode = 0, context = context)
+        let val_pair = parse_impl_in_source(tokens = tokens, starts = starts, pos = val_start, mode = 0, context = context, printed_formals = printed_formals)
         record_let_lambda_positional(name = name, value = val_pair.0, at = val_start)
         let (val_with_tp, retained_header_mark, retained_header_count) = apply_value_bracket_type_params(tps = bracket_tps, tbs = bracket_tbs, val = val_pair.0, header_mark = value_header_mark, context = context)
         let (final_ty_opt, val) = apply_generic_let_annotation(type_params = type_params, type_bounds = type_bounds, ann = ty_opt, val = val_with_tp, annotation_mark = annotation_mark, retained_value_header_mark = retained_header_mark, retained_value_header_count = retained_header_count, context = context)
@@ -864,7 +873,7 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
 /// the parameter -- its name stays `xs` -- and its index is returned in the
 /// fourth slot, for the declaration to record. A lone `_` is still the
 /// wildcard parameter.
-fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int, Array[Int]) with Exception {
+fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int, Array[Int]) with Exception {
   let params: Array[(String, Option[TypeExpr])] = []
   let defaults: Array[(String, TypeExpr, Expr)] = []
   // Shared and empty until a `_` is written: nearly every declaration has
@@ -900,7 +909,7 @@ fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], p
               Some(other) => other,
               None => throw("parameter '\{base}' has a default but no type")
             }
-            let (dflt, dn) = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = pn + 1, mode = 0, context = context)
+            let (dflt, dn) = parse_impl_in_source(tokens = tokens, starts = starts, pos = pn + 1, mode = 0, context = context, printed_formals = printed_formals)
             Array::push(defaults, value = (base, declared, dflt))
             Array::push(default_spans, value = (Array::length(params) - 1, pn + 1, dn))
             dn
@@ -1050,11 +1059,11 @@ fn fn_param_defaults_wrap(body: Expr, defaults: Array[(String, TypeExpr, Expr)])
   out
 }
 
-fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int) with Exception {
+fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])], printed_formals: Option[PrintedModuleSyntax]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int) with Exception {
   let (name, name_next) = parse_fn_name(tokens = tokens, pos = pos, context = context)
-  let (tps, tbs, after_gen) = parse_value_bracket_header(tokens = tokens, pos = name_next, context = context)
+  let (tps, tbs, after_gen) = parse_value_bracket_header(tokens = tokens, pos = name_next, context = context, printed_formals = printed_formals)
   let lp = expect_tk(tokens = tokens, pos = after_gen, expected = "(")
-  let (params, param_defaults, after_params, positional) = parse_fn_param_list_with_defaults(tokens = tokens, starts = starts, pos = lp, context = context)
+  let (params, param_defaults, after_params, positional) = parse_fn_param_list_with_defaults(tokens = tokens, starts = starts, pos = lp, context = context, printed_formals = printed_formals)
   if Array::length(positional) > 0 {
     record_positional_params(name = name, slots = positional)
   } else {
@@ -1123,7 +1132,7 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[In
             // call's offset, and a clause parsed without them gave every call
             // in it offset -1, so `requires: Array::get(xs, at = 0) >= 0`
             // was refused ("missing or invalid checker argument placement").
-            let (cond, cnext) = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = cp, mode = 0, context = context)
+            let (cond, cnext) = parse_impl_in_source(tokens = tokens, starts = starts, pos = cp, mode = 0, context = context, printed_formals = printed_formals)
             let cond_rows = binder_capture_take_from(context = context, mark = cond_mark)
             if kind == "requires" {
               Array::push(reqs, value = cond)
@@ -1180,7 +1189,7 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[In
 
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
   let no_starts: Array[Int] = []
-  let (head, sig, contracts, defaults, next) = parse_fn_signature_with_binder_context(tokens = tokens, starts = no_starts, pos = pos, context = None, contract_rows = None)
+  let (head, sig, contracts, defaults, next) = parse_fn_signature_with_binder_context(tokens = tokens, starts = no_starts, pos = pos, context = None, contract_rows = None, printed_formals = None)
   // #3120: a bodyless declaration (a `.vpkg` contract) has no body to run a
   // default in; the implementation owns it.
   if Array::length(defaults) > 0 {
@@ -1215,7 +1224,7 @@ export fn parse_contract_fn_signature(tokens: Array[Token], pos: Int) -> ((Strin
 /// (EFn([], [], [], Some(TyName("Unit")), eff_opt, body)), so lower_fn_decl_stmt,
 /// checker, codegen, and the printer round-trip (which prints the annotated
 /// `fn main() -> Unit` spelling — same meaning) are all untouched.
-fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Stmt, Int) with Exception {
   binder_capture_source(context = context, name = "main", first_token = pos, last_token = pos)
   // pos points at the `main` identifier; the caller verified the next token
   // is `{` (body), `allows` (the entry's grant, then body) or `with`, which
@@ -1231,11 +1240,15 @@ fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, export
     }
   }
   let br = expect_tk(tokens = tokens, pos = body_start, expected = "{")
-  let (body, end) = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context)
+  let (body, end) = parse_impl_in_source(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context, printed_formals = printed_formals)
   (SFnDecl(exported, "main", EFn(_no_tp(), _no_tb(), empty_params(), Some(TyName("Unit")), eff_opt, body), empty_exprs(), empty_exprs()), end)
 }
 
 export fn parse_fn_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  parse_fn_stmt_in_source(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context, printed_formals = None)
+}
+
+export fn parse_fn_stmt_in_source(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Stmt, Int) with Exception {
   // ADR-0069 Phase 1: dispatch the `fn main {` / `fn main allows <row> {`
   // special form before the general signature parse (which requires `(`).
   // `fn main with <row> {` is routed the same way so its refusal names the
@@ -1255,9 +1268,9 @@ export fn parse_fn_stmt_with_binder_context(tokens: Array[Token], starts: Array[
     _ => false
   }
   if is_main_special {
-    parse_fn_main_stmt(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context)
+    parse_fn_main_stmt(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context, printed_formals = printed_formals)
   } else {
-    parse_fn_stmt_general(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context)
+    parse_fn_stmt_general(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context, printed_formals = printed_formals)
   }
 }
 
@@ -1367,12 +1380,12 @@ fn wat_line_start(tokens: Array[Token], pos: Int) -> Int {
   }
 }
 
-fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Stmt, Int) with Exception {
   let contract_rows = match context {
     Some(_) => Some((ArrayBuilder::new(), ArrayBuilder::new())),
     None => None
   }
-  let (head, sig, contracts, param_defaults, where_next) = parse_fn_signature_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context, contract_rows = contract_rows)
+  let (head, sig, contracts, param_defaults, where_next) = parse_fn_signature_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context, contract_rows = contract_rows, printed_formals = printed_formals)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts
@@ -1391,7 +1404,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
   } else {
     let br = expect_tk(tokens = tokens, pos = where_next, expected = "{")
     let body_mark = binder_capture_mark(context)
-    let (parsed_body, end) = parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context)
+    let (parsed_body, end) = parse_impl_in_source(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context, printed_formals = printed_formals)
     let body = fn_param_defaults_wrap(body = parsed_body, defaults = param_defaults)
     match contract_rows {
       Some((req_out, ens_out)) => {

@@ -17,6 +17,7 @@ import ./loop_contract.vibe {
 }
 
 import ./parser_base.vibe {
+  PrintedModuleSyntax,
   _no_tb,
   _no_tp,
   collect_effect_names,
@@ -28,7 +29,7 @@ import ./parser_base.vibe {
   parse_param_list,
   parse_param_list_with_binder_context,
   parse_type_impl,
-  parse_type_param_kind,
+  parse_type_param_kind_in_source,
   parse_type_tentatively,
   parse_type_with_source_context,
   peek,
@@ -1354,7 +1355,7 @@ fn parse_generic_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Arra
 /// Parse an expression-position `[T: Bound, U]` header. This intentionally
 /// stays private to the primary-expression parser: unlike declaration headers,
 /// it is not part of the public parser contract.
-fn parse_generic_fn_type_params_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn parse_generic_fn_type_params_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let names = ArrayBuilder::new()
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -1368,7 +1369,7 @@ fn parse_generic_fn_type_params_with_binder_context(tokens: Array[Token], pos: I
         // Only the depth-one identifier is a binder. Capture its exact token
         // before advancing into trait-bound references, value params, or body.
         binder_capture_source(context = context, name = name, first_token = p, last_token = p)
-        let (param_key, after_kind) = parse_type_param_kind(tokens = tokens, pos = p + 1, name = name)
+        let (param_key, after_kind) = parse_type_param_kind_in_source(tokens = tokens, pos = p + 1, name = name, printed_formals = printed_formals)
         ArrayBuilder::push(names, value = param_key)
         p = after_kind
         match peek(tokens = tokens, pos = p) {
@@ -1396,8 +1397,8 @@ fn parse_generic_fn_type_params_with_binder_context(tokens: Array[Token], pos: I
   (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
 }
 
-fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (type_params, type_bounds, after_header) = parse_generic_fn_type_params_with_binder_context(tokens = tokens, pos = pos + 1, context = context)
+fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
+  let (type_params, type_bounds, after_header) = parse_generic_fn_type_params_with_binder_context(tokens = tokens, pos = pos + 1, context = context, printed_formals = printed_formals)
   let params_pos = expect_tk(tokens = tokens, pos = after_header, expected = "(")
   let (params, after_params) = parse_param_list_with_binder_context(tokens = tokens, pos = params_pos, context = context)
   match peek(tokens = tokens, pos = after_params) {
@@ -1455,9 +1456,9 @@ fn is_generic_fn_start(tokens: Array[Token], pos: Int) -> Bool {
   }
 }
 
-fn parse_bracket_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+fn parse_bracket_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
   if is_generic_fn_start(tokens = tokens, pos = pos) {
-    parse_generic_fn_primary(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
+    parse_generic_fn_primary(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals)
   } else {
     parse_array_primary(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
   }
@@ -1761,6 +1762,10 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
 }
 
 export fn parse_primary_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  parse_primary_in_source(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context, printed_formals = None)
+}
+
+export fn parse_primary_in_source(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext], printed_formals: Option[PrintedModuleSyntax]) -> (Expr, Int) with Exception {
   let (expr, next) = match peek(tokens = tokens, pos = pos) {
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
@@ -1774,7 +1779,7 @@ export fn parse_primary_with_binder_context(tokens: Array[Token], starts: Array[
     TStringInterp(parts, offs) => (build_interp_expr(parts = parts, offsets = offs, outer_starts = starts, parse_recur = parse_recur, context = context), pos + 1),
     TIdent(name) => parse_ident_primary(tokens = tokens, starts = starts, pos = pos, name = name, parse_recur = parse_recur, context = context),
     TLParen => parse_paren_primary(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context),
-    TLBracket => parse_bracket_primary(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context),
+    TLBracket => parse_bracket_primary(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context, printed_formals = printed_formals),
     _ => parse_control_primary(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
   }
   (source_wrap_expr(expr = expr, first = pos, next = next, context = context), next)
