@@ -51,8 +51,7 @@ import ./compile_lambda.vibe {
 ///
 /// - every path consumes as many as the count (`mpr_walk`'s minimum), so
 ///   there is nothing to release;
-/// - a counted occurrence has no source offset, or sits in a lambda body
-///   (compiled in a context of its own, where no mark can run);
+/// - a counted occurrence has no source offset;
 /// - the body binds the name again, or the name is a plan path-drop, a
 ///   consume-mark, a live flag or a reuse scrutinee name: marks and drop
 ///   rows are keyed by name, so another binding of it could take this
@@ -90,7 +89,7 @@ export fn mpr_compile_arm(buf: Bytes, pat: Pat, body: Expr, names_mark: Int, loc
       }
       if n > 0 {
         let offs: Array[Int] = []
-        let mn = mpr_walk(e = body, name = nm, bmasks = md_bmasks, ctx = ctx, offs = offs, in_fn = false)
+        let mn = mpr_walk(e = body, name = nm, bmasks = md_bmasks, ctx = ctx, offs = offs)
         if mn < n && !array_contains_int_mpr(arr = offs, v = 0 - 1) {
           if !shadows_done {
             let _ = md_collect_shadow_names(e = body, out = shadows)
@@ -186,7 +185,7 @@ export fn mpr_catch_consumes(body: Expr, name: String, count: Int, bmasks: Array
   ], ctx = ctx) {
     return offs
   }
-  let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = false)
+  let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
   if Array::length(offs) < count || array_contains_int_mpr(arr = offs, v = -1) {
     return []
   }
@@ -254,17 +253,16 @@ fn mpr_min(a: Int, b: Int) -> Int {
 }
 
 /// The occurrences of `name` that `md_view_consume_count_pre_store` counts,
-/// pushed to `offs` by source offset (-1 for one that cannot be marked: no
-/// offset, or inside a lambda body), and the fewest of them any path through
+/// pushed to `offs` by source offset (-1 for a missing offset), and the fewest of them any path through
 /// `e` runs. The walk is that count's, case for case; only the combination
 /// differs -- alternatives take the MINIMUM, and a loop body or a handler
 /// arm, which may run no time at all, adds nothing to it. The minimum only
 /// decides whether the arm needs a release; under-estimating it costs a
 /// flag, never a reference.
-fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int]) -> Int {
   match e {
     EIdent(n, off) => if n == name && !mpr_store_dup(ctx = ctx, name = n, off = off) {
-      if in_fn || off < 0 {
+      if off < 0 {
         Array::push(offs, value = 0 - 1)
       } else {
         Array::push(offs, value = off)
@@ -273,28 +271,28 @@ fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Ar
     } else {
       0
     },
-    ETuple(items) => mpr_walk_all(items = items, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    EArray(items) => mpr_walk_all(items = items, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    ERecord(_, fields, _) => mpr_walk_fields(fields = fields, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    EMap(fields) => mpr_walk_fields(fields = fields, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ETuple(items) => mpr_walk_all(items = items, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    EArray(items) => mpr_walk_all(items = items, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    ERecord(_, fields, _) => mpr_walk_fields(fields = fields, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    EMap(fields) => mpr_walk_fields(fields = fields, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
     EIf(c, t, el) => {
-      let a = mpr_walk(e = c, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
-      let b = mpr_walk(e = t, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
-      a + mpr_min(a = b, b = mpr_walk(e = el, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn))
+      let a = mpr_walk(e = c, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
+      let b = mpr_walk(e = t, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
+      a + mpr_min(a = b, b = mpr_walk(e = el, name = name, bmasks = bmasks, ctx = ctx, offs = offs))
     },
-    ELet(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    ELetRec(_, v, b) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    ELetMut(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    EAssign(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    EAssignOp(_, _, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    ESeq(a, b) => mpr_walk2(a = a, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ELet(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    ELetRec(_, v, b) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    ELetMut(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    EAssign(_, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    EAssignOp(_, _, v, b, _) => mpr_walk2(a = v, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    ESeq(a, b) => mpr_walk2(a = a, b = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
     EMatch(s, arms) => {
-      let scr = mpr_walk_scrutinee(s = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let scr = mpr_walk_scrutinee(s = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
       let mut mn = 0 - 1
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, at = i)
-        let c = mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        let c = mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
         if mn < 0 || c < mn {
           mn = c
         } else {
@@ -309,34 +307,34 @@ fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Ar
       }
     },
     EHandle(s, arms) => {
-      let scr = mpr_walk_scrutinee(s = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let scr = mpr_walk_scrutinee(s = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, at = i)
-        let _ = mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        let _ = mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
         i = i + 1
       }
       scr
     },
     EWhile(c, b) => {
-      let a = mpr_walk(e = c, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
-      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let a = mpr_walk(e = c, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
+      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
       a
     },
     ELoop(params, b) => {
-      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
       let mut acc = 0
       let mut i = 0
       while i < Array::length(params) {
         let (_, v) = Array::get(params, at = i)
-        acc = acc + mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        acc = acc + mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
         i = i + 1
       }
       acc
     },
     EForIn(_, _, it, b, _) => {
-      let a = mpr_walk(e = it, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
-      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let a = mpr_walk(e = it, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
+      let _ = mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
       a
     },
     ECall(callee, args, _, _) => {
@@ -346,7 +344,7 @@ fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Ar
       }
       let mut acc = match callee {
         EIdent(_, _) => 0,
-        _ => mpr_walk(e = callee, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+        _ => mpr_walk(e = callee, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
       }
       let mut ri = 0
       while ri < Array::length(args) {
@@ -354,18 +352,18 @@ fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Ar
         acc = acc + (if bmask_has(mask = bmask, i = ri) {
           match a {
             EIdent(_, _) => 0,
-            _ => mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+            _ => mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
           }
         } else {
-          mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+          mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
         })
         ri = ri + 1
       }
       acc
     },
     EBinOp(op, l, r, _) => {
-      let left = mpr_walk_operand(e_in = l, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
-      let right = mpr_walk_operand(e_in = r, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      let left = mpr_walk_operand(e_in = l, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
+      let right = mpr_walk_operand(e_in = r, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
       // The right side still needs consume marks, but may never run.
       if op == "&&" || op == "||" {
         left
@@ -373,67 +371,64 @@ fn mpr_walk(e: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Ar
         left + right
       }
     },
-    EUnaryOp(_, x) => mpr_walk_operand(e_in = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    EFn(_, _, _, _, _, body) => {
-      let _ = mpr_walk(e = body, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = true)
-      0
-    },
+    EUnaryOp(_, x) => mpr_walk_operand(e_in = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    EFn(_, _, _, _, _, _) => 0,
     EDot(x, _, _, _) => match x {
       EIdent(_, _) => 0,
-      _ => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+      _ => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
     },
-    ELabeledArg(_, _, v) => mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    EReturn(x) => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    ELabeledArg(_, _, v) => mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    EReturn(x) => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
     EBreak(opt) => match opt {
-      Some(v) => mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+      Some(v) => mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
       None => 0
     },
-    EContinue(args) => mpr_walk_all(items = args, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
-    ESpread(x) => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn),
+    EContinue(args) => mpr_walk_all(items = args, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
+    ESpread(x) => mpr_walk(e = x, name = name, bmasks = bmasks, ctx = ctx, offs = offs),
     _ => 0
   }
 }
 
-fn mpr_walk2(a: Expr, b: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
-  let x = mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
-  x + mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+fn mpr_walk2(a: Expr, b: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int]) -> Int {
+  let x = mpr_walk(e = a, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
+  x + mpr_walk(e = b, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
 }
 
-fn mpr_walk_all(items: Array[Expr], name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+fn mpr_walk_all(items: Array[Expr], name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int]) -> Int {
   let mut acc = 0
   let mut i = 0
   while i < Array::length(items) {
-    acc = acc + mpr_walk(e = Array::get(items, at = i), name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+    acc = acc + mpr_walk(e = Array::get(items, at = i), name = name, bmasks = bmasks, ctx = ctx, offs = offs)
     i = i + 1
   }
   acc
 }
 
-fn mpr_walk_fields(fields: Array[(String, Expr)], name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+fn mpr_walk_fields(fields: Array[(String, Expr)], name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int]) -> Int {
   let mut acc = 0
   let mut i = 0
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, at = i)
-    acc = acc + mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+    acc = acc + mpr_walk(e = v, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
     i = i + 1
   }
   acc
 }
 
 /// A bare `match name` / `handle` body ident is read, not consumed.
-fn mpr_walk_scrutinee(s: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+fn mpr_walk_scrutinee(s: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int]) -> Int {
   match s {
     EIdent(_, _) => 0,
-    _ => mpr_walk(e = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+    _ => mpr_walk(e = s, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
   }
 }
 
 /// An operator reads a bare name in place.
-fn mpr_walk_operand(e_in: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int], in_fn: Bool) -> Int {
+fn mpr_walk_operand(e_in: Expr, name: String, bmasks: Array[Int], ctx: CompileCtx, offs: Array[Int]) -> Int {
   let e = float_operand_unmarked(e_in)
   match e {
     EIdent(_, _) => 0,
-    _ => mpr_walk(e = e, name = name, bmasks = bmasks, ctx = ctx, offs = offs, in_fn = in_fn)
+    _ => mpr_walk(e = e, name = name, bmasks = bmasks, ctx = ctx, offs = offs)
   }
 }
 

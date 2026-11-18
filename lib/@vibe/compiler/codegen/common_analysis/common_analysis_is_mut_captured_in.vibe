@@ -875,7 +875,13 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
     // borrow too (`pc_operand_count`).
     EBinOp(_, l, r, _) => md_cc_operand_store(e_in = l, name = name, bfns = bfns, bmasks = bmasks, store_names = store_names, store_offs = store_offs, view = view) + md_cc_operand_store(e_in = r, name = name, bfns = bfns, bmasks = bmasks, store_names = store_names, store_offs = store_offs, view = view),
     EUnaryOp(_, x) => md_cc_operand_store(e_in = x, name = name, bfns = bfns, bmasks = bmasks, store_names = store_names, store_offs = store_offs, view = view),
-    EFn(_, _, _, _, _, body) => md_cc_go_store(e = body, name = name, bfns = bfns, bmasks = bmasks, store_names = store_names, store_offs = store_offs, view = view),
+    EFn(_, _, _, _, _, body) => if view {
+      // The closure owns its capture, and its prologue retains it for each
+      // consuming use in the body. The enclosing view pays for neither.
+      0
+    } else {
+      md_cc_go_store(e = body, name = name, bfns = bfns, bmasks = bmasks, store_names = store_names, store_offs = store_offs, view = false)
+    },
     // A projection off a VIEW (`view`, see md_view_consume_count_pre) reads
     // the field in place and releases nothing, as the Perceus plan counts it
     // (pc_emit's EDot arm). The owning count keeps calling it a consume.
