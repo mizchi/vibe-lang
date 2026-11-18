@@ -540,6 +540,16 @@ fn cl_own_return_fields(fields: Array[(String, Expr)], needed: Array[String]) ->
   out
 }
 
+/// Does the rest of this block only pass the immutable binding to its result?
+/// Any intervening computation or additional use keeps the binding in scope.
+fn cl_only_returns_name(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    ELet(next, EIdent(src, _), body, _) => src == name && cl_only_returns_name(e = body, name = next),
+    _ => false
+  }
+}
+
 fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
   // An early return is a result path even inside a non-tail initializer,
   // condition or argument. Leave the common return-free subtrees shared.
@@ -596,6 +606,14 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
         EHandle(cl_own_return_into(e = body, needed = needed, tail = tail), out)
       },
       ELet(n, v, b, off) => {
+        // A call or field returned through aliases has exactly the same
+        // owner as the direct return. Put the owning marker on its producer
+        // before planning so path releases see the same retain codegen emits.
+        if tail && (v is ECall(_, _, _, _) || v is EDot(_, _, _, _)) && cl_only_returns_name(e = b, name = n) {
+          return cl_own_return_into(e = v, needed = needed, tail = true)
+        } else {
+          ()
+        }
         let body = cl_own_return_into(e = b, needed = needed, tail = tail)
         let value = if array_contains_str(arr = needed, s = n) {
           cl_own_binding_value(e = v, needed = needed)
