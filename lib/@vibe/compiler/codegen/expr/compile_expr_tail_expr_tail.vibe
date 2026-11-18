@@ -270,6 +270,19 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // heap binding as owned) release the reference the plan left with `p`.
     let value_sd = let_retain_store_dup_tails(value = value, local_names = local_names, ctx = ctx)
     let value_rw = retain_wrap_let_value(value = value_sd, name = name, local_names = local_names, ctx = ctx)
+    // Resolve a directly called local while the initializer's scope is live.
+    // Compiling its arguments may reuse slots or introduce another binding.
+    let callback_result_owned = if ctx.enable_rc && Array::length(ctx.rc_path_drop_names) > 0 {
+      match value_rw {
+        ECall(EIdent(callee, _), _, _, _) => {
+          let slot = find_local_slot(names = local_names, name = callee)
+          slot >= 0 && seq_local_call_owns_result(ctx = ctx, slot = slot)
+        },
+        _ => false
+      }
+    } else {
+      false
+    }
     let nl = compile_expr(buf, value_rw, local_names, next_local + 1, ctx, ld)
     let seq_owned_return = seq_lambda_returns_owned(value = value, local_names = local_names, ctx = ctx)
     Array::set(local_names, at = local_idx, value = name)
@@ -561,7 +574,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // when only an early-return branch spends it. Borrow-bound aliases have
     // no reference of their own and remain excluded.
     // The shadow mask above must not hide a borrowed source in `let x = x`.
-    let path_value_ok = if pd_candidate && is_eident(value_sd) && !alias_borrow_like && !array_contains_str(arr = ctx.loop_borrowed_names, s = get_eident_name(value_sd)) && (get_eident_name(value_sd) != name || Array::length(lb_shadow_slots) == 0) {
+    let path_value_ok = if pd_candidate && callback_result_owned {
+      true
+    } else if pd_candidate && is_eident(value_sd) && !alias_borrow_like && !array_contains_str(arr = ctx.loop_borrowed_names, s = get_eident_name(value_sd)) && (get_eident_name(value_sd) != name || Array::length(lb_shadow_slots) == 0) {
       true
     } else if pd_candidate && is_edot(value_sd) {
       true

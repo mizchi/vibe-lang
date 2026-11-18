@@ -1941,18 +1941,17 @@ done
 rm -rf "$sldir"
 echo "[compiler-gate] slice path release guard ok (14000 on bump/rc/shadow/gc, rc heap_used=$sl_used B vs control $sl_ctl B)"
 
-# 40f0z. A partially consumed comprehension must give back its fresh
-# result array. The fixture also reads the original shared elements after
-# both a normal completion and an early break.
-echo "[compiler-gate] 40f0z/40 release partially consumed comprehensions (#2827)"
-gate_workdir compdir "_build/_gate_rc_comprehension_path_drop"
+# 40f0z. A skipped consume must release the result of a comprehension or a
+# local callback with an owning return. Re-read shared elements after churn.
+echo "[compiler-gate] 40f0z/40 release partially consumed comprehension and callback results (#2827)"
+gate_workdir compdir "_build/_gate_rc_local_result_path_drop"
 for comp_lane in bump rc shadow gc; do
-  gate_fs_compile_on "$comp_lane" "fixtures/rc_comprehension_path_drop_test.vibe" "$compdir/result.wasm" main
-  gate_require_artifact "$compdir/result.wasm" "comprehension path-drop fixture failed to compile on $comp_lane"
+  gate_fs_compile_on "$comp_lane" "fixtures/rc_local_result_path_drop_test.vibe" "$compdir/result.wasm" main
+  gate_require_artifact "$compdir/result.wasm" "local result path-drop fixture failed to compile on $comp_lane"
   gate_run comp_out last "$compdir/result.wasm"
-  gate_require_eq "$comp_out" "0" "comprehension path-drop fixture returned $comp_out on $comp_lane"
+  gate_require_eq "$comp_out" "0" "local result path-drop fixture returned $comp_out on $comp_lane"
   if [ "$comp_lane" = rc ] || [ "$comp_lane" = shadow ]; then
-    gate_require_heap_below "$compdir/result.wasm" 0 8000 "comprehension path drop ($comp_lane)"
+    gate_require_heap_below "$compdir/result.wasm" 0 8000 "local result path drop ($comp_lane)"
   fi
 done
 rm -rf "$compdir"
