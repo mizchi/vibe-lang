@@ -5,6 +5,10 @@ import @vibe/compiler/config {
   TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
 }
 
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_callback_escape_diagnostics
+}
+
 import @vibe/checker/engine {
   DependencyInterfaceSet
 }
@@ -1368,9 +1372,15 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
         // rows, and the pass reads them: an untyped shadowing `let` is
         // rendered through its own type, as the build renders it, not
         // through the outer binding's.
-        match check_program_double_call_result_located_observation(stmts, checked_error_row = checked_error_row) {
-          Some((_checked, _floats, eq_offs, eq_keys)) => expand_interp_stmts_with_rows(stmts = stmts, typed_eq_offsets = eq_offs, typed_eq_keys = eq_keys),
-          None => expand_interp_stmts(stmts)
+        let (callback_offsets, callback_keys) = match check_program_double_call_result_located_observation(stmts, checked_error_row = checked_error_row) {
+          Some((_checked, _floats, eq_offs, eq_keys)) => {
+            expand_interp_stmts_with_rows(stmts = stmts, typed_eq_offsets = eq_offs, typed_eq_keys = eq_keys)
+            (eq_offs, eq_keys)
+          },
+          None => {
+            expand_interp_stmts(stmts)
+            ([], [])
+          }
         }
         // #946(4): the type checker never touches inline-wasm bodies (they're
         // opaque `%wasm(...)` marker calls until codegen extracts them — see
@@ -1424,6 +1434,9 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
             while ri < Array::length(return_warns) {
               Array::push(extra, value = locate_type_error(source = source, msg = String::concat("warning: ", Array::get(return_warns, at = ri))))
               ri = ri + 1
+            }
+            for msg in evidence_callback_escape_diagnostics(stmts = stmts, offsets = callback_offsets, keys = callback_keys) {
+              Array::push(extra, value = locate_type_error(source = source, msg = msg))
             }
             extra
           }

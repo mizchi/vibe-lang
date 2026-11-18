@@ -586,7 +586,24 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
 }
 
 export fn evidence_dict_pass_with_callback_rows(stmts: Array[Stmt], roots: Array[String], offsets: Array[Int], keys: Array[String]) -> Array[String] {
+  evidence_plan_and_apply(stmts = stmts, roots = roots, offsets = offsets, keys = keys, escapes_only = false)
+}
+
+/// Source-buffer diagnostics own this AST after checking and warning collection.
+/// Eligibility may eta-expand adapters on it. Only a proven callback escape is
+/// an error here: an isolated buffer cannot decide whole-program eligibility.
+export fn evidence_callback_escape_diagnostics(stmts: Array[Stmt], offsets: Array[Int], keys: Array[String]) -> Array[String] {
+  evidence_plan_and_apply(stmts = stmts, roots = [], offsets = offsets, keys = keys, escapes_only = true)
+}
+
+fn evidence_plan_and_apply(stmts: Array[Stmt], roots: Array[String], offsets: Array[Int], keys: Array[String], escapes_only: Bool) -> Array[String] {
   let errs = empty_str_array()
+  let has_effect_defs = Array::length(edp_collect_effect_defs(stmts)) > 0
+  if escapes_only && !has_effect_defs {
+    return errs
+  } else {
+    ()
+  }
   // #3176: a call spelled like an audited pure builtin reaches the program's
   // own function when the program declares one; judge it by that row.
   idp_note_program_decls(stmts)
@@ -599,7 +616,7 @@ export fn evidence_dict_pass_with_callback_rows(stmts: Array[Stmt], roots: Array
   // one. Otherwise vacuity can erase its handler, or migration can omit the
   // callback's dictionary because the global spelling was classified inert.
   let user_edpsh = empty_str_array()
-  let edp_renamed = if Array::length(edp_collect_effect_defs(stmts)) > 0 {
+  let edp_renamed = if has_effect_defs {
     edp_alpha_rename_shadowed(stmts = stmts, fn_defs = edp_collect_fn_defs(stmts), user_prefixed = user_edpsh)
   } else {
     false
@@ -614,8 +631,13 @@ export fn evidence_dict_pass_with_callback_rows(stmts: Array[Stmt], roots: Array
   // pipelines have already split in `suspend_cps_pass`; this is a no-op then,
   // and the facts say so without a walk of the program (#4040).
   let set_statements = edp_handler_set_statements_among(stmts = stmts, multi_arm = Some(edp_mf_multi_arm_handles(statement_facts)))
-  for e in evidence_split_handler_sets_in(stmts = stmts, statements = set_statements, binders = None) {
-    Array::push(errs, value = e)
+  let set_errors = evidence_split_handler_sets_in(stmts = stmts, statements = set_statements, binders = None)
+  if !escapes_only {
+    for e in set_errors {
+      Array::push(errs, value = e)
+    }
+  } else {
+    ()
   }
   // The split replaced its statements through edp_mf_set_stmt.
   edp_mf_refresh(facts = statement_facts, stmts = stmts)
@@ -772,11 +794,20 @@ export fn evidence_dict_pass_with_callback_rows(stmts: Array[Stmt], roots: Array
   // Reachability from the statement facts (#4040): every write since the
   // last refresh went through edp_mf_set_stmt or appended.
   edp_mf_refresh(facts = statement_facts, stmts = stmts)
-  let keep = dce_keep_flags_from_refs(stmts = stmts, entry_names = roots, refs = edp_mf_dce_refs(statement_facts))
+  let keep = if escapes_only {
+    []
+  } else {
+    dce_keep_flags_from_refs(stmts = stmts, entry_names = roots, refs = edp_mf_dce_refs(statement_facts))
+  }
   // #3540: an arm's own effects are migrated before the arm is spliced.
   let plan_binders: Array[MutSet[String]] = []
   let plan_base: Array[Array[String]] = []
-  let planned_raw = edp_plan_migrations(stmts = stmts, effect_defs = effect_defs, fn_defs = fn_defs, keep = keep, errs = errs, row_labels = fn_row_labels, out_binders = plan_binders, out_base = plan_base, facts = statement_facts)
+  let planned_raw = edp_plan_migrations(escapes_only = escapes_only, stmts = stmts, effect_defs = effect_defs, fn_defs = fn_defs, keep = keep, errs = errs, row_labels = fn_row_labels, out_binders = plan_binders, out_base = plan_base, facts = statement_facts)
+  if escapes_only {
+    return errs
+  } else {
+    ()
+  }
   let plans = edp_order_plans_for_arm_performs(stmts = stmts, plans = planned_raw, fn_defs = fn_defs, row_labels = fn_row_labels, errs = errs, known_binders = plan_binders)
   // #3424: a function value at such a parameter that the stamp could not
   // give the row is called with a dict it has no parameter for -- when the
@@ -1764,7 +1795,7 @@ fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: Str
 /// only if planning computed it. The only write planning makes is the eta
 /// rebuild, after which both are recomputed, so they describe the program
 /// the caller is about to order and migrate.
-fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]], out_binders: Array[MutSet[String]], out_base: Array[Array[String]], facts: Array[EdpStmtFacts]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_plan_migrations(escapes_only: Bool, stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]], out_binders: Array[MutSet[String]], out_base: Array[Array[String]], facts: Array[EdpStmtFacts]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts = stmts, es_names = es_names, es_members_list = es_members_list)
@@ -1912,6 +1943,12 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       }
       if escaped != "" {
         Array::push(errs, value = String::concat(String::concat(String::concat("function `", escaped), String::concat("` carries effect ", ename)), String::concat(String::concat(" and is passed as a VALUE into a slot whose type does not carry that row, so the handler passed along cannot reach the call through it -- annotate the receiving parameter (and any binding it flows through) with `with ", ename), "`, or call the function directly instead of passing it")))
+      } else {
+        ()
+      }
+      if escapes_only {
+        ei = ei + 1
+        continue
       } else {
         ()
       }

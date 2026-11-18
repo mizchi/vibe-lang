@@ -83,6 +83,16 @@ probe clean 0
 printf 'let a: Int = "not an int"\n' > "$WORK/mismatch.vibe"
 probe mismatch 1
 
+# #4160: use the build gate's exact input, including removal of the
+# top-level invocation. Otherwise that first error masks the callback escape.
+sed '/^_start()$/d' fixtures/err_effect_needing_value_escape.vibe > "$WORK/callback_escape.vibe"
+probe callback_escape 1
+python3 - "$WORK/callback_escape.fs.json" <<'PYTHON' || bad "callback_escape: expected the build's row-free slot diagnostic"
+import json, sys
+errors = [row["message"] for row in json.load(open(sys.argv[1])) if row["severity"] == 1]
+assert len(errors) == 1 and "function `susp` carries effect Async and is passed as a VALUE into a slot whose type does not carry that row" in errors[0], errors
+PYTHON
+
 # #3226: an assignment target with no binding is an unknown name, with the
 # target's real source position in both lanes. An existing immutable binding
 # still gets the separate `let mut` edit.
