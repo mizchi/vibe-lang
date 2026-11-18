@@ -197,3 +197,28 @@ test "#4013: an edit that fixes the error publishes none, and hovers reuse the w
   inspect(Json::is_null(hover), content = "false")
   inspect(lsp_hover_fs_walks() - walks, content = "1")
 }
+
+test "an unsaved callback escape is published on open and cleared after annotating the slot" {
+  let uri = "untitled:callback.vibe"
+  let declarations = "effect Async { Suspend(Int) -> Int }\nfn susp(x: Int) -> Int with Async { perform Async::Suspend(x) }\n"
+  let entry = "let _start = () -> Int { handle { outer() } with { Async::Suspend(t) => resume(t + 41) } }\n"
+  let bad = declarations + "fn apply1(f: (x: Int) -> Int) -> Int { f(1) }\nfn outer() -> Int { apply1(f = susp) }\n" + entry
+  let docs = lsp_notify(method = "textDocument/didOpen", params = open_params(uri = uri, text = bad), docs = Map::new())
+  let diags = lsp_published_diagnostics(uri = uri, docs = docs, checked_error_row = false)
+  assert_eq(errors(diags), 1)
+  assert(String::contains(rows(diags), needle = "function `susp` carries effect Async and is passed as a VALUE"))
+  let fixed = declarations + "fn apply1(f: (x: Int) -> Int with Async) -> Int with Async { f(1) }\nfn outer() -> Int with Async { apply1(f = susp) }\n" + entry
+  let edited = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri, text = fixed), docs = docs)
+  assert_eq(errors(lsp_published_diagnostics(uri = uri, docs = edited, checked_error_row = false)), 0)
+  // The effect is live, but the imported parameter's row is unavailable.
+  let opaque = "import ./external.vibe { apply1 }\n" + declarations + "fn outer() -> Int { apply1(f = susp) }\nlet _start = () -> Int { handle { outer() + susp(x = 1) } with { Async::Suspend(t) => resume(t + 41) } }\n"
+  let imported = lsp_notify(method = "textDocument/didChange", params = change_params(uri = uri, text = opaque), docs = edited)
+  assert_eq(errors(lsp_published_diagnostics(uri = uri, docs = imported, checked_error_row = false)), 0)
+}
+
+test "a qualified receiver's callback row survives source-buffer diagnostics" {
+  let decls = "effect Async { Suspend(Int) -> Int }\nstruct Runner { n: Int }\nstruct Other { n: Int }\nfn susp(x: Int) -> Int with Async { perform Async::Suspend(x) }\n"
+  let methods = "fn Runner::run(self: Runner, f: (x: Int) -> Int with Async) -> Int { handle { f(1) + self.n } with { Async::Suspend(t) => resume(t + 41) } }\nfn Other::run(self: Other, f: (x: Int) -> Int) -> Int { f(1) + self.n }\n"
+  let entry = "fn outer() -> Int { let runner = Runner::{ n: 0 }; runner.run(f = susp) }\nlet _start = () -> Int { outer() }\n"
+  assert_eq(errors(publish_open(uri = "untitled:methods.vibe", text = decls + methods + entry)), 0)
+}

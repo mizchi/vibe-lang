@@ -24,7 +24,7 @@ import ./evidence_ecall_arg_idents_expr.vibe {
 /// checker side then rejects handing that value to a row-free `(x) -> y`
 /// parameter. Per 追記34 V2, an un-migratable shape is a hard error, never a
 /// silent fallback -- the alternative is a runtime trap.
-fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape(e: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   match e {
     ECall(callee, args, _, _) => {
       let callee_nm = match callee {
@@ -32,7 +32,7 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         _ => ""
       }
       let mut hit = if callee_nm == "" {
-        edp_needing_escape(e = callee, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        edp_needing_escape(e = callee, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       } else {
         ""
       }
@@ -65,8 +65,8 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
           // branch by branch, so a store in one branch of a conditional
           // argument does not reach the other branch's read.
           let before_arg = edp_escape_snapshot()
-          hit = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
-          if hit == "" && !(callee_nm != "" && edp_arg_slot_accepts_needing(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm, pos = i, ename = ename, es_names = es_names, es_members_list = es_members_list)) {
+          hit = edp_needing_escape(e = a, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
+          if hit == "" && !accepts_slot(callee_nm, i) {
             let after_arg = edp_escape_snapshot()
             edp_escape_restore(before_arg)
             hit = match a {
@@ -75,13 +75,13 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
             }
             edp_escape_restore(after_arg)
           }
-        } else if callee_nm != "" && edp_arg_slot_accepts_needing(stmts = stmts, fn_defs = fn_defs, callee_nm = callee_nm, pos = i, ename = ename, es_names = es_names, es_members_list = es_members_list) {
+        } else if accepts_slot(callee_nm, i) {
           // The slot takes the value; a call nested inside it is still
           // checked (`keep(pair = (xs, apply(f = ..)))`).
           match a {
             EIdent(_, _) => (),
             _ => {
-              hit = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+              hit = edp_needing_escape(e = a, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
             }
           }
         } else {
@@ -100,13 +100,13 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       for param in params {
         Array::push(edp_escape_tainted, value = (param.0, "", None))
       }
-      let hit = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      let hit = edp_needing_escape(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       edp_escape_untaint(mark)
       hit
     },
-    EHandle(b, arms) => edp_needing_escape_handle(body = b, arms = arms, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    EHandle(b, arms) => edp_needing_escape_handle(body = b, arms = arms, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
     EIf(c, t, el) => {
-      let first = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      let first = edp_needing_escape(e = c, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       if first != "" {
         first
       } else {
@@ -115,22 +115,22 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
         // were before the `if`; after it either may have run, so a binding
         // either branch tainted stays tainted.
         let before = edp_escape_snapshot()
-        let in_then = edp_needing_escape(e = t, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        let in_then = edp_needing_escape(e = t, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
         let after_then = edp_escape_snapshot()
         edp_escape_restore(before)
         if in_then != "" {
           in_then
         } else {
-          let in_else = edp_needing_escape(e = el, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+          let in_else = edp_needing_escape(e = el, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
           edp_escape_join(after_then)
           in_else
         }
       }
     },
-    EMatch(s, arms) => edp_needing_escape_or(a = edp_needing_escape(e = s, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape_match_arms(scrutinee = s, arms = arms, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
-    EWhile(c, b) => edp_needing_escape_loop(parts = [c, b], needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    EMatch(s, arms) => edp_needing_escape_or(a = edp_needing_escape(e = s, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot), b = edp_needing_escape_match_arms(scrutinee = s, arms = arms, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)),
+    EWhile(c, b) => edp_needing_escape_loop(parts = [c, b], needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
     EForIn(n, index, it, b, _) => {
-      let first = edp_needing_escape(e = it, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      let first = edp_needing_escape(e = it, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       if first != "" {
         first
       } else {
@@ -161,7 +161,7 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
           let iter_root = edp_data_root(e = it, needing = needing, stmts = stmts, fn_defs = fn_defs)
           let _ = edp_escape_set_limit(outer)
           Array::set(edp_escape_tainted, at = mark, value = (n, iter_root, None))
-          hit = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+          hit = edp_needing_escape(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
           let now = Array::get(edp_escape_tainted, at = mark)
           let (_, nroot, _) = now
           let outer2 = edp_escape_set_limit(mark)
@@ -175,23 +175,23 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       }
     },
     ELoop(pairs, b) => {
-      let first = edp_needing_escape_pairs(pairs = pairs, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      let first = edp_needing_escape_pairs(pairs = pairs, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       if first != "" {
         first
       } else {
-        edp_needing_escape_param_loop(pairs = pairs, body = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        edp_needing_escape_param_loop(pairs = pairs, body = b, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       }
     },
     ELet(n, v, b, _) => {
       let before = edp_escape_snapshot()
       let root = edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs)
       edp_escape_restore(before)
-      let first = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      let first = edp_needing_escape(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       if first != "" {
         first
       } else {
         let mark = edp_escape_taint(name = n, root = root, init = Some(v))
-        let hit = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        let hit = edp_needing_escape(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
         edp_escape_untaint(mark)
         hit
       }
@@ -200,25 +200,25 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
       let before = edp_escape_snapshot()
       let root = edp_data_root(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs)
       edp_escape_restore(before)
-      let first = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      let first = edp_needing_escape(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       if first != "" {
         first
       } else {
         let mark = edp_escape_taint(name = n, root = root, init = Some(v))
-        let hit = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        let hit = edp_needing_escape(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
         edp_escape_untaint(mark)
         hit
       }
     },
-    ELetRec(_, v, b) => edp_needing_escape_or(a = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
-    ESeq(a, b) => edp_needing_escape_or(a = edp_needing_escape(e = a, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = b, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
-    EBinOp(_, l, r, _) => edp_needing_escape_or(a = edp_needing_escape(e = l, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = r, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
-    EUnaryOp(_, x) => edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    ELetRec(_, v, b) => edp_needing_escape_or(a = edp_needing_escape(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot), b = edp_needing_escape(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)),
+    ESeq(a, b) => edp_needing_escape_or(a = edp_needing_escape(e = a, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot), b = edp_needing_escape(e = b, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)),
+    EBinOp(_, l, r, _) => edp_needing_escape_or(a = edp_needing_escape(e = l, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot), b = edp_needing_escape(e = r, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)),
+    EUnaryOp(_, x) => edp_needing_escape(e = x, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
     EAssign(n, v, c, _) => {
       let before = edp_escape_snapshot()
       let root = edp_data_root_items(items = [v], needing = needing, stmts = stmts, fn_defs = fn_defs)
       edp_escape_restore(before)
-      let first = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      let first = edp_needing_escape(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       if first != "" {
         first
       } else {
@@ -235,25 +235,25 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
           }
         }
         let mark = edp_escape_taint(name = n, root = root, init = Some(v))
-        let hit = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        let hit = edp_needing_escape(e = c, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
         edp_escape_untaint(mark)
         hit
       }
     },
-    EAssignOp(_, _, v, c, _) => edp_needing_escape_or(a = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list), b = edp_needing_escape(e = c, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)),
-    EDot(o, _, _, _) => edp_needing_escape(e = o, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    ELabeledArg(_, _, v) => edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    EReturn(x) => edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    EAssignOp(_, _, v, c, _) => edp_needing_escape_or(a = edp_needing_escape(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot), b = edp_needing_escape(e = c, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)),
+    EDot(o, _, _, _) => edp_needing_escape(e = o, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
+    ELabeledArg(_, _, v) => edp_needing_escape(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
+    EReturn(x) => edp_needing_escape(e = x, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
     EBreak(opt) => match opt {
-      Some(x) => edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+      Some(x) => edp_needing_escape(e = x, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
       None => ""
     },
-    EContinue(args) => edp_needing_escape_exprs(es = args, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    ETuple(items) => edp_needing_escape_exprs(es = items, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    EArray(items) => edp_needing_escape_exprs(es = items, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    ERecord(_, fields, _) => edp_needing_escape_pairs(pairs = fields, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    EMap(fields) => edp_needing_escape_pairs(pairs = fields, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
-    ESpread(x) => edp_needing_escape(e = x, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list),
+    EContinue(args) => edp_needing_escape_exprs(es = args, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
+    ETuple(items) => edp_needing_escape_exprs(es = items, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
+    EArray(items) => edp_needing_escape_exprs(es = items, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
+    ERecord(_, fields, _) => edp_needing_escape_pairs(pairs = fields, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
+    EMap(fields) => edp_needing_escape_pairs(pairs = fields, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
+    ESpread(x) => edp_needing_escape(e = x, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot),
     _ => ""
   }
 }
@@ -618,7 +618,7 @@ fn edp_builtin_result_is_scalar(_ op: String) -> Bool {
 
 /// `match` arms: each binder a pattern introduces is tainted with the needing
 /// function the part of the scrutinee it binds holds (`edp_pat_taint`).
-fn edp_needing_escape_match_arms(scrutinee: Expr, arms: Array[(Pat, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape_match_arms(scrutinee: Expr, arms: Array[(Pat, Expr)], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   let mut hit = ""
   let mut i = 0
   // Arms are exclusive: each is walked from the bindings as they were before
@@ -630,7 +630,7 @@ fn edp_needing_escape_match_arms(scrutinee: Expr, arms: Array[(Pat, Expr)], need
     edp_escape_restore(before)
     let mark = Array::length(edp_escape_tainted)
     edp_pat_taint_flush(p = p, e = scrutinee, needing = needing, stmts = stmts, fn_defs = fn_defs)
-    hit = edp_needing_escape(e = ex, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    hit = edp_needing_escape(e = ex, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
     edp_escape_untaint(mark)
     Array::push(outs, value = edp_escape_snapshot())
     i = i + 1
@@ -643,7 +643,7 @@ fn edp_needing_escape_match_arms(scrutinee: Expr, arms: Array[(Pat, Expr)], need
 /// pass did not: a store late in the body reaches a read early in the next
 /// iteration. Each further pass taints at least one more binding, so the
 /// stack's length bounds the walk.
-fn edp_needing_escape_loop(parts: Array[Expr], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape_loop(parts: Array[Expr], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   let mut hit = ""
   let mut again = true
   let mut rounds = 0
@@ -652,7 +652,7 @@ fn edp_needing_escape_loop(parts: Array[Expr], needing: Array[String], ename: St
     let before = edp_escape_tainted_count()
     for part in parts {
       if hit == "" {
-        hit = edp_needing_escape(e = part, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        hit = edp_needing_escape(e = part, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       }
     }
     again = edp_escape_tainted_count() != before
@@ -666,7 +666,7 @@ fn edp_needing_escape_loop(parts: Array[Expr], needing: Array[String], ename: St
 /// a `continue(..)` rebinds it, so a parameter a `continue` argument reads a
 /// needing function into is tainted on the next pass; the body is walked again
 /// until no binding changes.
-fn edp_needing_escape_param_loop(pairs: Array[(String, Expr)], body: Expr, needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape_param_loop(pairs: Array[(String, Expr)], body: Expr, needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   let roots: Array[String] = []
   for pair in pairs {
     let (_, v) = pair
@@ -687,7 +687,7 @@ fn edp_needing_escape_param_loop(pairs: Array[(String, Expr)], body: Expr, needi
   let limit = Array::length(edp_escape_tainted) + Array::length(pairs) + 1
   while again && hit == "" && rounds <= limit {
     let before = edp_escape_tainted_count()
-    hit = edp_needing_escape(e = body, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    hit = edp_needing_escape(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
     let mut changed = false
     let mut i = 0
     while i < Array::length(pairs) {
@@ -1036,28 +1036,28 @@ fn edp_needing_escape_or(a: String, b: String) -> String {
   }
 }
 
-fn edp_needing_escape_exprs(es: Array[Expr], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape_exprs(es: Array[Expr], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   let mut hit = ""
   let mut i = 0
   while i < Array::length(es) && hit == "" {
-    hit = edp_needing_escape(e = Array::get(es, at = i), needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    hit = edp_needing_escape(e = Array::get(es, at = i), needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
     i = i + 1
   }
   hit
 }
 
-fn edp_needing_escape_pairs(pairs: Array[(String, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape_pairs(pairs: Array[(String, Expr)], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   let mut hit = ""
   let mut i = 0
   while i < Array::length(pairs) && hit == "" {
     let (_, v) = Array::get(pairs, at = i)
-    hit = edp_needing_escape(e = v, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    hit = edp_needing_escape(e = v, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
     i = i + 1
   }
   hit
 }
 
-fn edp_needing_escape_arms(arms: Array[(Pat, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape_arms(arms: Array[(Pat, Expr)], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   let mut hit = ""
   let mut i = 0
   // Handler arms are not exclusive: a resumed computation can perform
@@ -1074,7 +1074,7 @@ fn edp_needing_escape_arms(arms: Array[(Pat, Expr)], needing: Array[String], ena
     for nm in names {
       Array::push(edp_escape_tainted, value = (nm, "", None))
     }
-    hit = edp_needing_escape(e = ex, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    hit = edp_needing_escape(e = ex, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
     edp_escape_untaint(mark)
     i = i + 1
   }
@@ -1085,16 +1085,16 @@ fn edp_needing_escape_arms(arms: Array[(Pat, Expr)], needing: Array[String], ena
 /// body performs, and `resume` returns into the body), so a store either
 /// makes reaches the other. Both are walked again while a pass taints a
 /// binding the previous pass did not.
-fn edp_needing_escape_handle(body: Expr, arms: Array[(Pat, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+fn edp_needing_escape_handle(body: Expr, arms: Array[(Pat, Expr)], needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], accepts_slot: (String, Int) -> Bool) -> String {
   let mut hit = ""
   let mut again = true
   let mut rounds = 0
   let limit = Array::length(edp_escape_tainted) + 1
   while again && hit == "" && rounds <= limit {
     let before = edp_escape_tainted_count()
-    hit = edp_needing_escape(e = body, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+    hit = edp_needing_escape(e = body, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
     if hit == "" {
-      hit = edp_needing_escape_arms(arms = arms, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+      hit = edp_needing_escape_arms(arms = arms, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
     }
     again = edp_escape_tainted_count() != before
     rounds = rounds + 1
@@ -1229,7 +1229,17 @@ export fn edp_needing_escape_stmts(stmts: Array[Stmt], needing: Array[String], e
 /// (ascending), or every statement for None. Only a bare call argument naming
 /// a needing function is ever reported, so a statement holding none can be
 /// left out without changing the first hit.
-export fn edp_needing_escape_stmts_in(stmts: Array[Stmt], indices: Option[Array[Int]], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+export fn edp_needing_escape_stmts_in(stmts: Array[Stmt], indices: Option[Array[Int]], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]], declared_slots_only: Bool = false) -> String {
+  // A buffer can diagnose a missing row only at a declared row-free slot.
+  // The build also needs an exact dictionary calling convention to lower a
+  // call; that stricter check includes indirect calls and generic rows.
+  let accepts_slot: (String, Int) -> Bool = (callee, pos) -> {
+    if callee == "" {
+      declared_slots_only
+    } else {
+      edp_arg_slot_accepts_needing(stmts = stmts, fn_defs = fn_defs, callee_nm = callee, pos = pos, ename = ename, es_names = es_names, es_members_list = es_members_list, declared_slots_only = declared_slots_only)
+    }
+  }
   let mut hit = ""
   let count = match indices {
     Some(listed) => Array::length(listed),
@@ -1246,19 +1256,19 @@ export fn edp_needing_escape_stmts_in(stmts: Array[Stmt], indices: Option[Array[
     Array::set(edp_escape_limit, at = 0, value = -1)
     match Array::get(stmts, at = i) {
       SLet(_, _, _, _, expr) => {
-        hit = edp_needing_escape(e = expr, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        hit = edp_needing_escape(e = expr, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       },
       SLetMut(_, _, expr) => {
-        hit = edp_needing_escape(e = expr, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        hit = edp_needing_escape(e = expr, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       },
       SExpr(expr) => {
-        hit = edp_needing_escape(e = expr, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        hit = edp_needing_escape(e = expr, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       },
       STest(_, expr) => {
-        hit = edp_needing_escape(e = expr, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        hit = edp_needing_escape(e = expr, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       },
       SBench(_, expr) => {
-        hit = edp_needing_escape(e = expr, needing = needing, ename = ename, stmts = stmts, fn_defs = fn_defs, es_names = es_names, es_members_list = es_members_list)
+        hit = edp_needing_escape(e = expr, needing = needing, stmts = stmts, fn_defs = fn_defs, accepts_slot = accepts_slot)
       },
       _ => ()
     }
