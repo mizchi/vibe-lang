@@ -4,8 +4,8 @@
 // it on the other used to keep the up-front dup on the read path -- the field
 // read counted as a possible view, so the parameter's guarded path drop was
 // declined and the read path leaked one reference. The plan now takes the
-// guarded drop there. A `String` field stays a possible view, so its shape
-// keeps today's plan.
+// guarded drop there. A heap field can also take the guarded drop when an
+// owning return has retained the field before the parameter is released.
 import @vibe/compiler/query {
   rc_plan_source, rc_validate_source, rc_validate_source_edited
 }
@@ -67,9 +67,31 @@ test "rc-validate checks the guarded-drop plan, and it balances" {
   inspect(rc_validate_source(source = shapes, fn_filter = "lam_shape", checked_error_row = false), content = "")
 }
 
-test "a String field read keeps the parameter's ordinary drop" {
+test "a retained String field lets its parameter release the unused reference" {
   let rows = plan_rows(source = shapes, fname = "named_shape")
-  inspect(String::contains(rows, needle = "path_drop"), content = "false")
+  inspect(String::contains(rows, needle = "named_shape c path_drop 1"), content = "true")
+}
+
+test "removing the field owner's guarded release leaks on the borrowed branch" {
+  let src = "struct Row { xs: Array[Int] }\nfn select_row(_ r: Row, _ take: Bool) -> Array[Int] {\n  if take { let held = [r]; Array::get(held, at = 0).xs } else { r.xs }\n}"
+  inspect(rc_validate_source(source = src, fn_filter = "select_row", checked_error_row = false), content = "")
+  let missing = rc_validate_source_edited(source = src, fn_filter = "select_row", edit = (_f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    let kept: Array[PerceusAction] = []
+    for row in p {
+      if !(row.name == "r" && pa_is_path_drop(row)) {
+        Array::push(kept, value = row)
+      } else ()
+    }
+    kept
+  }, checked_error_row = false)
+  inspect(missing, content = "select_row r if1:else: owned value not consumed")
+}
+
+test "a field returned through an alias keeps its unproven reference" {
+  let src = shapes + "\nfn via_alias(_ c: Named, _ take: Bool) -> String {\n  if take { keep_named(c).name } else { let name = c.name; name }\n}"
+  let rows = plan_rows(source = src, fname = "via_alias")
+  inspect(String::contains(rows, needle = "via_alias c dup 1"), content = "true")
+  inspect(String::contains(rows, needle = "via_alias c path_drop"), content = "false")
 }
 
 struct Ctx {
