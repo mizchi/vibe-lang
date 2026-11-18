@@ -255,7 +255,7 @@ test("balanced-token inventory classifies every production EFn site", () => {
     ["parser_expr_dispatch.vibe:distribute_local_fn_ann", [2, "slot-preserving reconstruction"]],
     ["parser_expr_dispatch.vibe:apply_local_let_tp", [2, "slot-preserving reconstruction"]],
     ["parser_expr_dispatch.vibe:apply_block_step", [1, "source-captured"]],
-    ["parser_expr_dispatch.vibe:parse_impl_dispatch_with_binder_context", [2, "source-captured"]],
+    ["parser_expr_dispatch.vibe:parse_impl_dispatch_in_source", [2, "source-captured"]],
     ["parser_expr_primary.vibe:map_expr_offsets", [2, "slot-preserving reconstruction"]],
     ["parser_expr_primary.vibe:desugar_loop_body", [1, "slot-preserving reconstruction"]],
     ["parser_expr_primary.vibe:parse_generic_fn_primary", [2, "source-captured"]],
@@ -286,21 +286,36 @@ test("balanced-token inventory classifies every production EFn site", () => {
   }
 });
 
+test("ordinary parser entries retain binder capture without granting printed syntax", () => {
+  assertNoneWrapper(parserSource, "parse_program", "parse_program_in_source(tokens, printed_formals = None)");
+  assertNoneWrapper(parserSource, "parse_program_spans", "parse_program_spans_in_source(tokens = tokens, starts = starts, ends = ends, printed_formals = None)");
+  assertNoneWrapper(parserSource, "parse_program_preserving_with_cfg", "parse_program_preserving_with_cfg_in_source(tokens, cfg_flags = cfg_flags, printed_formals = None)");
+  assertNoneWrapper(parserSource, "parse_stmt_preserving_with_binder_context", "parse_stmt_preserving_in_source(tokens = tokens, starts = starts, pos = pos, context = context, printed_formals = None)");
+  for (const [entry, core] of [
+    ["parse_let_stmt_with_binder_context", "parse_let_stmt_in_source"],
+    ["parse_fn_stmt_with_binder_context", "parse_fn_stmt_in_source"],
+  ]) {
+    assertNoneWrapper(exprSource, entry, `${core}(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context, printed_formals = None)`);
+  }
+  assertNoneWrapper(dispatchSource, "parse_impl_dispatch_with_binder_context", "parse_impl_dispatch_in_source(tokens = tokens, starts = starts, pos = pos, mode = mode, parse_recur = parse_recur, context = context, printed_formals = None)");
+});
+
 test("B2 expression helper bodies carry context without private duplicate wrappers", () => {
   assertContextual(exprSource, "parse_let_type_params", [], ["parse_let_type_params_with_binder_context"]);
   assertContextual(exprSource, "parse_let_annotation", [
-    "parse_let_type_params(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_let_type_params(tokens = tokens, pos = pos + 1, context = context, printed_formals = printed_formals)",
   ], ["parse_let_type_params_with_binder_context"]);
   assertContextual(exprSource, "parse_value_bracket_header", [
-    "parse_let_type_params(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_let_type_params(tokens = tokens, pos = pos + 1, context = context, printed_formals = printed_formals)",
   ], ["parse_let_type_params_with_binder_context"]);
-  assertContextual(exprSource, "parse_let_stmt_with_binder_context", [
+  assertContextual(exprSource, "parse_let_stmt_in_source", [
     "parse_binding_name_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
     "parse_binding_name_with_binder_context(tokens = tokens, pos = pos, context = context)",
     "parse_pattern_with_binder_context(tokens = tokens, pos = pos, context = context)",
-    "parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context)",
-    "parse_value_bracket_header(tokens = tokens, pos = ep, context = context)",
-    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context)",
+    "parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context, printed_formals = printed_formals)",
+    "parse_value_bracket_header(tokens = tokens, pos = ep, context = context, printed_formals = printed_formals)",
+    "parse_impl_in_source(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context, printed_formals = printed_formals)",
+    "parse_impl_in_source(tokens = tokens, starts = starts, pos = val_start_r, mode = 0, context = context, printed_formals = printed_formals)",
   ], [
     "parse_binding_name(tokens = tokens,",
     "parse_pattern(tokens,",
@@ -313,18 +328,18 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
   // into each parameter and each default expression.
   assertContextual(exprSource, "parse_fn_param_list_with_defaults", [
     "parse_one_param_with_binder_context(tokens = tokens, pos = p, context = context)",
-    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = pn + 1, mode = 0, context = context)",
+    "parse_impl_in_source(tokens = tokens, starts = starts, pos = pn + 1, mode = 0, context = context, printed_formals = printed_formals)",
   ], [
     "parse_param_list(tokens,",
     "parse_impl(tokens = tokens,",
   ]);
   assertContextual(exprSource, "parse_fn_signature_with_binder_context", [
     "parse_fn_name(tokens = tokens, pos = pos, context = context)",
-    "parse_value_bracket_header(tokens = tokens, pos = name_next, context = context)",
-    "parse_fn_param_list_with_defaults(tokens = tokens, starts = starts, pos = lp, context = context)",
+    "parse_value_bracket_header(tokens = tokens, pos = name_next, context = context, printed_formals = printed_formals)",
+    "parse_fn_param_list_with_defaults(tokens = tokens, starts = starts, pos = lp, context = context, printed_formals = printed_formals)",
     // Contract conditions get the token offsets on every parse, like the
     // body: a labeled call in a clause is placed by its offset.
-    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = cp, mode = 0, context = context)",
+    "parse_impl_in_source(tokens = tokens, starts = starts, pos = cp, mode = 0, context = context, printed_formals = printed_formals)",
   ], [
     "cond_starts",
     "parse_fn_name_with_binder_context",
@@ -332,21 +347,21 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_impl(tokens = tokens,",
   ]);
   assertBody(exprSource, "parse_fn_signature", [
-    "parse_fn_signature_with_binder_context(tokens = tokens, starts = no_starts, pos = pos, context = None, contract_rows = None)",
+    "parse_fn_signature_with_binder_context(tokens = tokens, starts = no_starts, pos = pos, context = None, contract_rows = None, printed_formals = None)",
   ], ["Some(ParserBinderContext"]);
   assertContextual(exprSource, "parse_fn_main_stmt", [
-    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context)",
+    "parse_impl_in_source(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context, printed_formals = printed_formals)",
   ], ["parse_impl(tokens = tokens,"]);
-  assertContextual(exprSource, "parse_fn_stmt_with_binder_context", [
-    "parse_fn_main_stmt(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context)",
-    "parse_fn_stmt_general(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context)",
+  assertContextual(exprSource, "parse_fn_stmt_in_source", [
+    "parse_fn_main_stmt(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context, printed_formals = printed_formals)",
+    "parse_fn_stmt_general(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context, printed_formals = printed_formals)",
   ], [
     "parse_fn_main_stmt_with_binder_context",
     "parse_fn_stmt_general_with_binder_context",
   ]);
   assertContextual(exprSource, "parse_fn_stmt_general", [
-    "parse_fn_signature_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context, contract_rows = contract_rows)",
-    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context)",
+    "parse_fn_signature_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context, contract_rows = contract_rows, printed_formals = printed_formals)",
+    "parse_impl_in_source(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context, printed_formals = printed_formals)",
   ], [
     "parse_fn_signature(tokens = tokens,",
     "parse_impl(tokens = tokens,",
@@ -354,9 +369,9 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
 });
 
 test("B2 top-level helper bodies carry context and ordinary entries pass None", () => {
-  assertContextual(parserSource, "parse_test_stmt", ["parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context)"], ["parse_impl(tokens = tokens,"]);
-  assertContextual(parserSource, "parse_example_stmt", ["parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context)"], ["parse_impl(tokens = tokens,"]);
-  assertContextual(parserSource, "parse_bench_stmt", ["parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context)"], ["parse_impl(tokens = tokens,"]);
+  assertContextual(parserSource, "parse_test_stmt", ["parse_impl_in_source(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context, printed_formals = printed_formals)"], ["parse_impl(tokens = tokens,"]);
+  assertContextual(parserSource, "parse_example_stmt", ["parse_impl_in_source(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context, printed_formals = printed_formals)"], ["parse_impl(tokens = tokens,"]);
+  assertContextual(parserSource, "parse_bench_stmt", ["parse_impl_in_source(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context, printed_formals = printed_formals)"], ["parse_impl(tokens = tokens,"]);
   assertContextual(parserSource, "parse_import_items_rest", [
     "parse_import_item_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
     "parse_import_items_rest(tokens = tokens, pos = next, b = b, context = context)",
@@ -386,7 +401,7 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_toplevel_struct_fields_rest(tokens = tokens, pos = next, b = b, mb = mb, context = context)",
   ], ["parse_struct_field(tokens,"]);
   assertContextual(parserSource, "parse_toplevel_struct_stmt", [
-    "parse_tparam_names_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_tparam_names_in_source(tokens = tokens, pos = pos + 1, context = context, printed_formals = printed_formals)",
     "parse_toplevel_struct_fields(tokens = tokens, pos = br, context = context)",
   ], ["parse_tparam_names(tokens,"]);
   assertContextual(parserSource, "parse_effectset_stmt", ["parse_binding_name_with_binder_context(tokens = tokens, pos = pos, context = context)"], ["parse_binding_name(tokens = tokens,"]);
@@ -396,16 +411,16 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   assertContextual(parserSource, "parse_resource_stmt", ["let (kind, end) = parse_binding_name(tokens = tokens, pos = cp)"], ["parse_binding_name(tokens, pos)"]);
 
   assertContextual(parserSource, "parse_export_stmt", [
-    "parse_let_stmt_with_binder_context(tokens = tokens, starts = starts, pos = pos + 1, exported = true, context = context)",
-    "parse_enum_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_let_stmt_in_source(tokens = tokens, starts = starts, pos = pos + 1, exported = true, context = context, printed_formals = printed_formals)",
+    "parse_enum_stmt_in_source(tokens = tokens, pos = pos + 1, exported = true, context = context, printed_formals = printed_formals)",
     "parse_suberror_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
-    "parse_toplevel_struct_stmt(tokens = tokens, pos = pos + 1, exported = true, context = context)",
-    "parse_fn_stmt_with_binder_context(tokens = tokens, starts = starts, pos = pos + 1, exported = true, context = context)",
-    "parse_effect_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_toplevel_struct_stmt(tokens = tokens, pos = pos + 1, exported = true, context = context, printed_formals = printed_formals)",
+    "parse_fn_stmt_in_source(tokens = tokens, starts = starts, pos = pos + 1, exported = true, context = context, printed_formals = printed_formals)",
+    "parse_effect_stmt_in_source(tokens = tokens, pos = pos + 1, exported = true, context = context, printed_formals = printed_formals)",
     "parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = true, context = context)",
-    "parse_type_alias_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
-    "parse_trait_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
-    "parse_effect_stmt_owned(tokens = tokens, pos = pos + 2, exported = true, context = context, owner = HostProvided)",
+    "parse_type_alias_stmt_in_source(tokens = tokens, pos = pos + 1, exported = true, context = context, printed_formals = printed_formals)",
+    "parse_trait_stmt_in_source(tokens = tokens, pos = pos + 1, exported = true, context = context, printed_formals = printed_formals)",
+    "parse_effect_stmt_owned_in_source(tokens = tokens, pos = pos + 2, exported = true, context = context, owner = HostProvided, printed_formals = printed_formals)",
     "parse_import_items(tokens = tokens, pos = br, context = None)",
   ], [
     "parse_let_stmt(tokens,",
@@ -421,24 +436,24 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   assertContextual(parserSource, "parse_percent_symbol_name", [], ["parse_percent_symbol_name_with_binder_context"]);
   assertContextual(parserSource, "parse_extern_let_stmt", ['parse_percent_symbol_name(tokens = tokens, pos = lp, label = "extern symbol name", context = context)'], ["parse_percent_symbol_name_with_binder_context"]);
 
-  assertContextual(parserSource, "parse_stmt_preserving_with_binder_context", [
-    "TLet => parse_let_stmt_with_binder_context",
-    "_ => parse_export_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
+  assertContextual(parserSource, "parse_stmt_preserving_in_source", [
+    "TLet => parse_let_stmt_in_source",
+    "_ => parse_export_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context, printed_formals = printed_formals)",
     "TImport => parse_import_stmt(tokens = tokens, pos = pos + 1, context = context)",
-    "TTest => parse_test_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
-    "TExample => parse_example_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
-    "TBench => parse_bench_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
-    "TFn => parse_fn_stmt_with_binder_context",
-    "TEnum => parse_enum_stmt_with_binder_context",
+    "TTest => parse_test_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context, printed_formals = printed_formals)",
+    "TExample => parse_example_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context, printed_formals = printed_formals)",
+    "TBench => parse_bench_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context, printed_formals = printed_formals)",
+    "TFn => parse_fn_stmt_in_source",
+    "TEnum => parse_enum_stmt_in_source",
     "TSuberror => parse_suberror_stmt_with_binder_context",
-    "TStruct => parse_toplevel_struct_stmt(tokens = tokens, pos = pos + 1, exported = false, context = context)",
-    "TType => parse_type_alias_stmt_with_binder_context",
-    "TTrait => parse_trait_stmt_with_binder_context",
-    '"effect" => parse_effect_stmt_with_binder_context',
+    "TStruct => parse_toplevel_struct_stmt(tokens = tokens, pos = pos + 1, exported = false, context = context, printed_formals = printed_formals)",
+    "TType => parse_type_alias_stmt_in_source",
+    "TTrait => parse_trait_stmt_in_source",
+    '"effect" => parse_effect_stmt_in_source',
     '"effectset" => parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = false, context = context)',
     '"resource" => parse_resource_stmt(tokens = tokens, pos = pos + 1, context = context)',
     // ADR-0124 (#2656): `extern effect` and `extern let` both keep the context.
-    '"extern" => if is_extern_effect_head(tokens = tokens, pos = pos + 1) { parse_effect_stmt_owned(tokens = tokens, pos = pos + 2, exported = false, context = context, owner = HostProvided) } else { parse_extern_let_stmt(tokens = tokens, pos = pos + 1, context = context) }',
+    '"extern" => if is_extern_effect_head(tokens = tokens, pos = pos + 1) { parse_effect_stmt_owned_in_source(tokens = tokens, pos = pos + 2, exported = false, context = context, owner = HostProvided, printed_formals = printed_formals) } else { parse_extern_let_stmt(tokens = tokens, pos = pos + 1, context = context) }',
   ], [
     "parse_let_stmt(tokens,",
     "parse_export_stmt(tokens, starts, pos + 1)",
@@ -458,7 +473,7 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   // body: a labeled call in it is placed by its offset.
   assertContextual(parserSource, "parse_impl_methods", [
     "let method_starts = starts",
-    "parse_impl_with_binder_context(tokens = tokens, starts = method_starts, pos = p + 1, mode = 0, context = context)",
+    "parse_impl_in_source(tokens = tokens, starts = method_starts, pos = p + 1, mode = 0, context = context, printed_formals = printed_formals)",
   ], [
     "Some(_) => starts,",
     "parse_expr(tokens,",
@@ -468,21 +483,21 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   // the `#cfg` directive and the top-level statement -- and both are ordinary
   // entries too.
   // Each hands an impl block the offsets it parses its other statements with.
-  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None)"], ["parse_impl_methods(tokens = tokens, starts = [], pos = hp_d", "parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
-  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None)"], ["parse_impl_methods(tokens = tokens, starts = [], pos = hp", "parse_impl_methods(tokens, [], hp, simpl, context)"]);
+  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None, printed_formals = None)"], ["parse_impl_methods(tokens = tokens, starts = [], pos = hp_d", "parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
+  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None, printed_formals = None)"], ["parse_impl_methods(tokens = tokens, starts = [], pos = hp", "parse_impl_methods(tokens, [], hp, simpl, context)"]);
   assert.equal(normalize(functionBody(parserSource, "parse_program_preserving")), normalize("parse_program_preserving_with_cfg(tokens, cfg_flags = cfg_ambient_flags)"), "legacy preserving entry must delegate exactly to the flag-only core");
   // The tokens-only core has no offsets to hand anything; the recovering
   // parse has them and hands them to impl blocks as to every statement.
-  assertBody(parserSource, "parse_program_preserving_with_cfg", [
-    "parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)",
-    "parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)",
+  assertBody(parserSource, "parse_program_preserving_with_cfg_in_source", [
+    "parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None, printed_formals = printed_formals)",
+    "parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None, printed_formals = printed_formals)",
   ], [
     "parse_impl_methods(tokens, [], hp_d, simpl_d, context)",
     "parse_impl_methods(tokens, [], hp, simpl, context)",
   ]);
   assertBody(parserSource, "parse_program_recovering", [
-    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None)",
-    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None, printed_formals = None)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None, printed_formals = None)",
   ], [
     "parse_impl_methods(tokens = tokens, starts = [], pos = hp",
     "parse_impl_methods(tokens, [], hp_d, simpl_d, context)",
@@ -494,9 +509,9 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
 
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
     "parse_impl_stmt_dispatch_with_binder_context(tokens = tokens, pos = dnext + 1, context = context)",
-    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = context)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = context, printed_formals = None)",
     "parse_impl_stmt_dispatch_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
-    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = context)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = context, printed_formals = None)",
     "parse_stmt_with_binder_context(tokens = tokens, starts = starts, pos = dnext, context = context)",
     "parse_stmt_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context)",
   ], [
@@ -567,7 +582,14 @@ test("atomic binder authority is source-owned, validated, fail-closed, and bundl
     "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = Some(context), cfg_flags = cfg_ambient_flags).0",
   ], ["LocatedProgramBinderAuthority", "build_program_binder_authority", "binder_capture_is_eligible"]);
   assert.equal((toolingBody.match(/lex_with_offsets\(source\)/g) ?? []).length, 1);
-  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only the syntax-only tooling entry may lex source in the ordinary parser module");
+  const prunerBody = functionBody(parserSource, "parse_printed_module_source");
+  assertBody(parserSource, "parse_printed_module_source", [
+    "let syntax = Some(PrintedModuleSyntax::{})",
+    "parse_program_spans_in_source(tokens = tokens, starts = starts, ends = ends, printed_formals = syntax)",
+    "parse_program_in_source(tokens, printed_formals = syntax)",
+  ], ["LocatedProgramBinderAuthority", "build_program_binder_authority", "binder_capture_context"]);
+  assert.equal((prunerBody.match(/lex_with_offsets\(source\)/g) ?? []).length, 1);
+  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 2, "only syntax-only tooling and module pruning lex source in the ordinary parser module");
   assert.equal((binderAuthoritySource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only source-owning authority entry lexes source with exact offsets");
   const storedBlock = binderAuthoritySource.slice(
     binderAuthoritySource.indexOf("enum StoredBinderAuthority"),
@@ -746,7 +768,7 @@ test("malformed binder context failures use guarded poison and fixed append boun
 test("new source EFn slots capture exact header tokens before params and bodies", () => {
   const generic = functionBody(primarySource, "parse_generic_fn_type_params_with_binder_context");
   assert.ok(generic.indexOf("binder_capture_source(context = context, name = name, first_token = p, last_token = p)") < generic.indexOf("parse_generic_type_param_bound_names(tokens = tokens, pos = p + 1)"));
-  const dispatch = functionBody(dispatchSource, "parse_impl_dispatch_with_binder_context");
+  const dispatch = functionBody(dispatchSource, "parse_impl_dispatch_in_source");
   assert.ok(dispatch.indexOf("binder_capture_source(context = context, name = gname, first_token = br, last_token = br)") < dispatch.indexOf("parse_recur(tokens, arrow, 0, context)"));
   assert.ok(dispatch.indexOf("binder_capture_source(context = context, name = rname, first_token = pos, last_token = pos)") < dispatch.lastIndexOf("parse_recur(tokens, br, 20, context)"));
   assertBody(exprSource, "apply_generic_fn_annotation", ["binder_capture_discard_segment(context = context, start = retained_value_header_mark, end = retained_value_header_mark + retained_value_header_count)"]);
@@ -796,7 +818,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
   ], ["lower_fn_decl_stmt(stmt)"]);
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
     "expand_top_level_pattern_lets_with_binder_context(stmts = ArrayBuilder::freeze(b), context = context)",
-    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = context)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = context, printed_formals = None)",
   ], ["expand_top_level_pattern_lets(ArrayBuilder::freeze(b))"]);
 
   assertContextual(coreSource, "wrap_placeholder_arg", ['String::concat("__ph", __to_string(pc))']);
@@ -855,7 +877,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     "ascribe_wrap(val, the_type, value_mark, context)",
     "push_pattern_let_step(tokens, steps, pat, val, next_pos)",
   ]);
-  assertContextual(dispatchSource, "parse_impl_dispatch_with_binder_context", [
+  assertContextual(dispatchSource, "parse_impl_dispatch_in_source", [
     'desugar_guarded(arms = arms3, i = 0, scrut = EIdent(mg, 0 - 1), context = context)',
     "parse_recur(tokens, arrow, 0, context)",
     "parse_recur(tokens, br, 20, context)",

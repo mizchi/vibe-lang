@@ -369,6 +369,21 @@ requests, alternating explicit policies, and a paused outer compile resumed
 after nested checked requests. `invocation_config_error_row_cache_test.vibe`
 covers retained DBs, lowering inputs, and hover tables across a policy change.
 
+## Parser syntax for compiler-printed modules
+
+Old bootstrap compilers printed synthesized comparators with `__Vfp_` type
+parameters. The module pruner must parse these before it can discard dead
+helpers or diagnose a reachable one. Its span and reachability passes share
+one `PrintedModuleSyntax` value, sealed by the parser package. The grammar
+threads it separately from optional binder capture, including into recursive
+expression parsing. Authored-source entries always start without the grant.
+An error unwinds the call stack without changing another parse's syntax.
+
+`printed_formals_test.vibe` runs strict, successful and failing nested parses
+between two reserved binders in an outer expression. It also checks both
+parser passes on declaration and interpolation binders. The CLI support suite
+checks that a client of the package cannot construct the grant.
+
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |

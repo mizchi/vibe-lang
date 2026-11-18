@@ -78,7 +78,7 @@ test "#2654: a string literal spelled like a marked binder is not a marked binde
   assert(String::contains(out, needle = "[__Vfp_T](x)"))
 }
 
-test "#2654: the builder's switch does not leak into an ordinary parse" {
+test "#2654: ordinary parsing refuses the compiler spelling after module pruning" {
   let src = String::concat(marked_helper, "let cli_main = () -> { 42 }\n")
   let _ = build_module_source_from_source(source = src, entry_name = "cli_main")
   let after = handle {
@@ -86,11 +86,13 @@ test "#2654: the builder's switch does not leak into an ordinary parse" {
     ""
   } with { Exception::Throw(m) => m }
   assert(String::contains(after, needle = "uses the reserved `__Vfp_` prefix"))
-  // A parse that throws inside the builder switches the refusal back on too.
+  // A failed pruning attempt leaves ordinary parsing strict too.
   let broken = String::concat(marked_helper, "let cli_main = () -> { (\n")
-  let _ = handle {
-    build_module_source_from_source(source = broken, entry_name = "cli_main")
-  } with { Exception::Throw(_) => "" }
+  let threw = handle {
+    let _ = build_module_source_from_source(source = broken, entry_name = "cli_main")
+    false
+  } with { Exception::Throw(_) => true }
+  assert(threw)
   let again = handle {
     let _ = parse_program(lex(src))
     ""

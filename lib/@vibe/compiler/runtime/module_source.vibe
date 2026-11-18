@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, offset_to_line_col, parse_program, parse_program_spans, set_compiler_spelled_type_params
+  lex_with_offsets, offset_to_line_col, parse_printed_module_source, parse_program_spans
 }
 
 //# Module source emission (port of host `emit-module-source`)
@@ -19,32 +19,7 @@ import @vibe/compiler/syntax {
 /// instead of AST node spans, since the AST does not carry offsets.
 /// Pure: no filesystem or host calls.
 export let build_module_source_from_source: (String, String) -> String with Exception = (source, entry_name) -> {
-  let lexed = lex_with_offsets(source)
-  let tokens = lexed.0
-  let starts = lexed.1
-  let ends = lexed.2
-  // The input is the merged program the compiler printed itself
-  // (scripts/generate_bundle.sh pass 1, `merged_program_source_fs`). A
-  // compiler from before #3331 printed it after the trait-dictionary desugar,
-  // so a synthesized `__arr_equals__` helper arrives with the desugar's
-  // `__Vfp_` spelling on its formal -- the one binder parse_type_param_kind
-  // refuses in authored source (#2141 / #2474). Read it as the compiler's own
-  // for these two parses only; a parse that throws switches the refusal back
-  // on the way out (#2654).
-  set_compiler_spelled_type_params(true)
-  let (stmts, span_start, span_end, full_stmts) = handle {
-    let parsed = parse_program_spans(tokens = tokens, starts = starts, ends = ends)
-    // Reachability over the full parse: `stmts` carries one bodyless `SImpl`
-    // per impl (so the impl text is emitted once), which hides every call an
-    // impl method makes. A helper only a method calls would otherwise be
-    // dropped and the flat source would not compile (#2516).
-    let full = parse_program(tokens)
-    set_compiler_spelled_type_params(false)
-    (parsed.0, parsed.1, parsed.2, full)
-  } with { Exception::Throw(msg) => {
-    set_compiler_spelled_type_params(false)
-    throw(msg)
-  } }
+  let (stmts, span_start, span_end, full_stmts) = parse_printed_module_source(source)
   let keep = dce_keep_flags_via(stmts = stmts, reach_stmts = full_stmts, entry_names = [
     entry_name
   ])
