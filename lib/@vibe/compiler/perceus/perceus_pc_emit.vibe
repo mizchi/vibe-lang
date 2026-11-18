@@ -112,18 +112,19 @@ fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
     } else {
       ()
     }
-    // #1980: a consume no consume mark will count.
-    if Array::length(ctx.dmark_ids) == recorded0 {
-      pe_note_unmarked_consume(ctx = ctx, id = id)
-    } else {
-      ()
-    }
     // #2389: this occurrence spends the binding's INITIAL reference when it
     // moves, or when it is the last owning use and takes the transfer.
     let spends_initial = if move_here {
       true
     } else {
       rem == 1 && !last_view_use && !Array::get(ctx.scalar, at = id)
+    }
+    // A dup-only counter misses this consume. The full parameter budget
+    // can still account for it when it spends the located initial reference.
+    if Array::length(ctx.dmark_ids) == recorded0 {
+      pe_note_unmarked_consume(ctx = ctx, id = id, spends_initial = spends_initial)
+    } else {
+      ()
     }
     pe_note_initial_ref_spent(ctx = ctx, sid = id, name = name, use_offset = use_offset, spends = spends_initial)
     if rem > 0 {
@@ -1062,7 +1063,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
             // source's untouched.
             if alias_transfers {
               pe_cons_bump(ctx = ctx, id = sid)
-              pe_note_unmarked_consume(ctx = ctx, id = sid)
+              pe_note_unmarked_consume(ctx = ctx, id = sid, spends_initial = true)
             } else {
               ()
             }

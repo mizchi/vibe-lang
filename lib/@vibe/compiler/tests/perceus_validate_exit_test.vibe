@@ -223,9 +223,41 @@ test "fresh heap returns release the argument on the non-consuming path" {
   inspect(missing, content = "run xs if1:else,if2:then: owned value not consumed")
 }
 
-test "returning the argument on an early path cannot use a fresh-result proof" {
-  let src = "fn consume(_ xs: Array[Int]) -> Int { let held = [xs]; Array::length(held) }\nfn run(_ xs: Array[Int], _ take: Bool, _ early: Bool) -> Array[Int] {\n  let value = if take { consume(xs) } else { 0 }\n  if early { return xs }\n  [value]\n}"
+test "count the initial transfer and the conditional dup at each parameter exit" {
+  let prefix = "fn consume(_ xs: Array[Int]) -> Int { let held = [xs]; Array::length(held) }\nfn run(_ xs: Array[Int], _ take: Bool, _ early: Bool) -> "
+  for suffix in [
+    "Array[Int] { let value = if take { consume(xs) } else { 0 }; if early { return xs }; [value] }",
+    "Array[Array[Int]] { let value = if take { consume(xs) } else { 0 }; if early { return [xs] }; [[value]] }"
+  ] {
+    let src = prefix + suffix
+    let plan = rc_plan_source(source = src, fn_filter = "run", checked_error_row = false)
+    assert(String::contains(plan, needle = "run xs dup 1"))
+    assert(String::contains(plan, needle = "run xs path_drop 2"))
+    assert(String::contains(plan, needle = "run xs exit_drop:0:-2 1"))
+    inspect(rc_validate_source(source = src, fn_filter = "run", checked_error_row = false), content = "")
+    let excessive = rc_validate_source_edited(source = src, fn_filter = "run", edit = (_f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+      rewrite(plan = p, pick = (a: PerceusAction) -> Bool {
+        pa_is_exit_drop(a) && a.name == "xs"
+      }, change = (a: PerceusAction) -> PerceusAction {
+        with_extra(a = a, extra = a.extra - 1)
+      })
+    }, checked_error_row = false)
+    assert(String::contains(excessive, needle = "owned value released 1 more than held"))
+  }
+}
+
+test "consecutive parameter exits can transfer a dup and the initial reference" {
+  let src = "fn consume(_ xs: Array[Int]) -> Int { let held = [xs]; Array::length(held) }\nfn run(_ xs: Array[Int], _ first: Bool, _ take: Bool, _ last: Bool) -> Array[Int] { if first { return xs }; let value = if take { consume(xs) } else { 0 }; if last { return xs }; [value] }"
   let plan = rc_plan_source(source = src, fn_filter = "run", checked_error_row = false)
-  inspect(String::contains(plan, needle = "run xs dup 1"), content = "true")
-  inspect(String::contains(plan, needle = "run xs path_drop"), content = "false")
+  assert(String::contains(plan, needle = "run xs path_drop 3"))
+  assert(String::contains(plan, needle = "run xs exit_drop:0:-3 1"))
+  assert(String::contains(plan, needle = "run xs exit_drop:1:-3 1"))
+  inspect(rc_validate_source(source = src, fn_filter = "run", checked_error_row = false), content = "")
+}
+
+test "an unproven result on a second exit rules out the complete parameter budget" {
+  let src = "fn consume(_ xs: Array[Int]) -> Int { let held = [xs]; Array::length(held) }\nfn run(_ xs: Array[Int], _ take: Bool, _ early: Bool) -> Array[Int] { let value = if take { consume(xs) } else { 0 }; if early { return xs }; let other = [value]; if take { return other }; [value] }"
+  let plan = rc_plan_source(source = src, fn_filter = "run", checked_error_row = false)
+  assert(String::contains(plan, needle = "run xs dup 1"))
+  inspect(String::contains(plan, needle = "run xs exit_drop:0:-2"), content = "false")
 }
