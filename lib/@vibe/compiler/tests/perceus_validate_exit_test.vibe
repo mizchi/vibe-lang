@@ -207,3 +207,25 @@ test "a let rec closure's self-reference is not a cycle" {
 test "a closure whose parameter shadows the let mut does not capture it" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let mut f = (f: Int) -> f\n  f = (f: Int) -> f + 1\n  f(7)\n}"), content = "run * -: not checked: 0 pattern binders, 1 let mut\nrun * -: not checked: lambda body")
 }
+
+test "fresh heap returns release the argument on the non-consuming path" {
+  let src = "fn consume(_ xs: Array[Int]) -> Int { let held = [xs]; Array::length(held) }\nfn run(_ xs: Array[Int], _ take: Bool, _ early: Bool) -> Array[Int] {\n  let value = if take { consume(xs) } else { 0 }\n  if early { return [value] }\n  [value]\n}"
+  inspect(rc_validate_source(source = src, fn_filter = "run", checked_error_row = false), content = "")
+  let missing = rc_validate_source_edited(source = src, fn_filter = "run", edit = (_f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    let kept: Array[PerceusAction] = []
+    for row in p {
+      if !(row.name == "xs" && pa_is_exit_drop(row)) {
+        Array::push(kept, value = row)
+      } else ()
+    }
+    kept
+  }, checked_error_row = false)
+  inspect(missing, content = "run xs if1:else,if2:then: owned value not consumed")
+}
+
+test "returning the argument on an early path cannot use a fresh-result proof" {
+  let src = "fn consume(_ xs: Array[Int]) -> Int { let held = [xs]; Array::length(held) }\nfn run(_ xs: Array[Int], _ take: Bool, _ early: Bool) -> Array[Int] {\n  let value = if take { consume(xs) } else { 0 }\n  if early { return xs }\n  [value]\n}"
+  let plan = rc_plan_source(source = src, fn_filter = "run", checked_error_row = false)
+  inspect(String::contains(plan, needle = "run xs dup 1"), content = "true")
+  inspect(String::contains(plan, needle = "run xs path_drop"), content = "false")
+}
