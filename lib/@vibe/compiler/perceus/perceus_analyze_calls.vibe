@@ -508,7 +508,8 @@ fn bret_resolve_root(known: MutSet[String], body: Expr, name: String, memo: MutM
 /// such read, and callers release it. Only a read the marker always retains
 /// -- a field read or a borrow-returning call -- declines the verdict.
 fn bret_tail_reads_owned_local(known: MutSet[String], body: Expr, top: Expr) -> Bool {
-  bret_tail_walk(known = known, body = body, top = top, memo = MutMap::new_string())
+  bret_tail_walk(known = known, body = body, top = top, memo = MutMap::new_string(), early_params = [
+  ], early_return = false)
 }
 
 // #4164: an arm may return a bare payload of a scrutinee that leaves
@@ -555,31 +556,71 @@ fn bret_fresh_match_source(e: Expr, ctors: MutSet[String], shadows: Array[String
   }
 }
 
-fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[String, Int]) -> Bool {
+// Only identifier aliases move the whole parameter. A projection or a
+// borrowed call names an interior view and retains the ordinary root proof.
+fn bret_parameter_transfer(known: MutSet[String], body: Expr, name: String, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let seen: Array[String] = []
+  let mut current = name
+  while !array_contains_str_pctx(arr = seen, s = current) {
+    for param in params {
+      let raw = param.0
+      let len = String::length(raw)
+      let normalized = if len > 0 && String::char_code_at(raw, at = len - 1) == '?' {
+        raw[0: len - 1]
+      } else {
+        raw
+      }
+      if normalized == current {
+        return true
+      }
+    }
+    Array::push(seen, value = current)
+    let binding = BretBinder::{ count: 0, kind: bk_unknown, view: EUnit }
+    bret_find_binder(e = body, name = current, known = known, st = binding)
+    if binding.count != 1 {
+      return false
+    }
+    match binding.view {
+      EIdent(source, _) => current = source,
+      _ => return false
+    }
+  }
+  false
+}
+
+fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[String, Int], early_params: Array[(String, Option[TypeExpr])], early_return: Bool) -> Bool {
   match top {
-    ELet(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
-    ELetMut(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
-    ELetRec(_, _, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
-    ESeq(_, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
-    EAssign(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
-    EAssignOp(_, _, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo),
-    EIf(_, t, el) => bret_tail_walk(known = known, body = body, top = t, memo = memo) || bret_tail_walk(known = known, body = body, top = el, memo = memo),
+    ELet(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo, early_params = early_params, early_return = early_return),
+    ELetMut(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo, early_params = early_params, early_return = early_return),
+    ELetRec(_, _, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo, early_params = early_params, early_return = early_return),
+    ESeq(_, b) => bret_tail_walk(known = known, body = body, top = b, memo = memo, early_params = early_params, early_return = early_return),
+    EAssign(_, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo, early_params = early_params, early_return = early_return),
+    EAssignOp(_, _, _, b, _) => bret_tail_walk(known = known, body = body, top = b, memo = memo, early_params = early_params, early_return = early_return),
+    EIf(_, t, el) => bret_tail_walk(known = known, body = body, top = t, memo = memo, early_params = early_params, early_return = early_return) || bret_tail_walk(known = known, body = body, top = el, memo = memo, early_params = early_params, early_return = early_return),
     EMatch(_, arms) => {
       let mut found = false
       let mut i = 0
       while !found && i < Array::length(arms) {
         let (_, arm_body) = Array::get(arms, at = i)
-        found = bret_tail_walk(known = known, body = body, top = arm_body, memo = memo)
+        found = bret_tail_walk(known = known, body = body, top = arm_body, memo = memo, early_params = early_params, early_return = early_return)
         i = i + 1
       }
       found
     },
-    // A bare name never declines here. The owning-return marker retains a
+    // A bare tail name keeps the existing verdict. The owning-return marker retains a
     // name only when codegen knows it as borrowed, so a name handed back
     // through it is not reliably retained (a match binder of a fresh value,
     // a parameter the borrow inference left borrowed). A provably owned
-    // spine binding is already declined by `tail_is_borrow_ret_safe`.
-    EIdent(_, _) => false,
+    // spine binding is already declined by `tail_is_borrow_ret_safe`. An explicit
+    // return must also account for transferred parameters and branch-local owners.
+    EIdent(name, _) => if early_return {
+      if bret_parameter_transfer(known = known, body = body, name = name, params = early_params) {
+        return true
+      }
+      bret_resolve_root(known = known, body = body, name = name, memo = memo) != bk_view
+    } else {
+      false
+    },
     // A field read or a borrow-returning call declines on an owned or a
     // flow-dependent root: the marker retains it whatever it reads into.
     _ => if bret_is_view_expr(known = known, e = top) {
@@ -594,6 +635,37 @@ fn bret_tail_walk(known: MutSet[String], body: Expr, top: Expr, memo: MutMap[Str
       found
     } else {
       false
+    }
+  }
+}
+
+// An early return can occur in a condition, initializer or argument. Its
+// result belongs to this function, while a nested lambda has its own ABI.
+fn bret_early_returns_safe(known: MutSet[String], body: Expr, node: Expr, params: Array[(String, Option[TypeExpr])], ctors: MutSet[String]) -> Bool {
+  match node {
+    EFn(_, _, _, _, _, _) => true,
+    EReturn(value) => {
+      let names: Array[String] = []
+      let values: Array[Expr] = []
+      let excluded: Array[String] = []
+      let _ = collect_spine_let_vals(e0 = body, names = names, vals = values, excluded = excluded)
+      let _ = collect_spine_let_vals(e0 = value, names = names, vals = values, excluded = excluded)
+      tail_is_borrow_ret_safe(known = known, e0 = value, spine_names = names, spine_vals = values, spine_excluded = excluded) &&
+      !bret_owned_match_payload(top = strip_wrappers_for_borrow_ret(value), body = body, spine_names = names, spine_vals = values, excluded = excluded, ctors = ctors) &&
+      !bret_tail_walk(known = known, body = body, top = value, memo = MutMap::new_string(), early_params = params, early_return = true) &&
+      bret_early_returns_safe(known = known, body = body, node = value, params = params, ctors = ctors)
+    },
+    _ => {
+      let mark = expr_children_push(node)
+      let top = expr_children_top()
+      let mut i = mark
+      let mut safe = true
+      while i < top && safe {
+        safe = bret_early_returns_safe(known = known, body = body, node = expr_child_at(i), params = params, ctors = ctors)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      safe
     }
   }
 }
@@ -621,7 +693,7 @@ fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String
       SLet(_, _, name, _, value) =>
       if !MutSet::has(known_set, x = name) {
         match value {
-          EFn(_, _, _, _, _, body) => {
+          EFn(_, _, params, _, _, body) => {
             // A function is borrow-returning only if its (wrapper-stripped)
             // top-level shape is itself a call/if/match reaching a known
             // borrow-return name on every branch -- a BARE identifier tail
@@ -645,7 +717,7 @@ fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String
               let sp_vals: Array[Expr] = []
               let sp_excluded: Array[String] = []
               let _ = collect_spine_let_vals(e0 = body, names = sp_names, vals = sp_vals, excluded = sp_excluded)
-              if tail_is_borrow_ret_safe(known = known_set, e0 = top, spine_names = sp_names, spine_vals = sp_vals, spine_excluded = sp_excluded) && !bret_owned_match_payload(top = top, body = value, spine_names = sp_names, spine_vals = sp_vals, excluded = sp_excluded, ctors = ctors) && !bret_tail_reads_owned_local(known = known_set, body = body, top = top) {
+              if tail_is_borrow_ret_safe(known = known_set, e0 = top, spine_names = sp_names, spine_vals = sp_vals, spine_excluded = sp_excluded) && !bret_owned_match_payload(top = top, body = value, spine_names = sp_names, spine_vals = sp_vals, excluded = sp_excluded, ctors = ctors) && !bret_tail_reads_owned_local(known = known_set, body = body, top = top) && bret_early_returns_safe(known = known_set, body = body, node = body, params = params, ctors = ctors) {
                 Array::push(known, value = name)
                 MutSet::add(known_set, x = name)
                 changed = true

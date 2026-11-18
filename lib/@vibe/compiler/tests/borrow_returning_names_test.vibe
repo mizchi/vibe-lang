@@ -216,3 +216,45 @@ test "a nullary alternative preserves an owned match payload" {
   let src = "enum Slot {\n  Full(Array[Int]);\n  Empty\n}\nfn pick(i: Int, fallback: Array[Int]) -> Array[Int] {\n  let slot = if i > 0 { Full([i]) } else { Empty }\n  match slot {\n    Full(value) => value,\n    Empty => fallback\n  }\n}\n"
   inspect(contains(names = borrow_set_of(src), name = "pick"), "false")
 }
+
+test "owned early returns participate in the borrowed-result contract" {
+  let before = "fn pick(xs: Array[Array[Int]], stop: Bool) -> Array[Int] {\n"
+  let after = "\n  Array::get(xs, 0)\n}\n"
+  let bodies = [
+    "  if stop { return [1] }",
+    "  let unused = if stop { return [1] } else { 0 }",
+    "  let unused = Array::get([0], if stop { return [1] } else { 0 })",
+    "  let mut i = 0\n  while i < 1 { if stop { return [1] }; i = i + 1 }",
+    "  if stop { let value = [1]; return value }"
+  ]
+  for body in bodies {
+    inspect(contains(names = borrow_set_of(before + body + after), name = "pick"), "false")
+  }
+}
+
+test "an early transfer of another parameter is an owned result" {
+  let src = "fn pick(xs: Array[Array[Int]], fallback: Array[Int], stop: Bool) -> Array[Int] {\n  if stop { return fallback }\n  Array::get(xs, 0)\n}\n"
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "false")
+}
+
+test "all borrowed early returns preserve a borrowed-result contract" {
+  let src = "fn pick(xs: Array[Array[Int]], stop: Bool) -> Array[Int] {\n  if stop { return Array::get(xs, 1) }\n  Array::get(xs, 0)\n}\n"
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "true")
+}
+
+test "returns in a nested function belong to its own contract" {
+  let src = "fn pick(xs: Array[Array[Int]], stop: Bool) -> Array[Int] {\n  let inner = () -> { return [1] }\n  Array::get(xs, 0)\n}\n"
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "true")
+}
+
+test "optional parameter transfers keep an owned return contract" {
+  let src = "fn pick(xs: Array[Option[Array[Int]]], stop: Bool, fallback?: Array[Int]) -> Option[Array[Int]] {\n  if stop { return fallback }\n  Array::get(xs, 0)\n}\n"
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "false")
+}
+
+test "whole-value parameter aliases are transfers and interior-view aliases remain borrowed" {
+  let owned = "fn pick(xs: Array[Array[Int]], fallback: Array[Int], stop: Bool) -> Array[Int] {\n  let moved = fallback\n  let again = moved\n  if stop { return again }\n  Array::get(xs, 0)\n}\n"
+  inspect(contains(names = borrow_set_of(owned), name = "pick"), "false")
+  let borrowed = "fn pick(xs: Array[Array[Int]], stop: Bool) -> Array[Int] {\n  let view = Array::get(xs, 1)\n  let again = view\n  if stop { return again }\n  Array::get(xs, 0)\n}\n"
+  inspect(contains(names = borrow_set_of(borrowed), name = "pick"), "true")
+}
