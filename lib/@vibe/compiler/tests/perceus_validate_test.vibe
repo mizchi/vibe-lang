@@ -301,10 +301,15 @@ test "an early return that consumes releases the dup on the path that does not r
   inspect(tagged(tag = "early return", out = validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  if c {\n    return keep(d)\n  } else {\n    ()\n  }\n  len(d)\n}")), content = "early return: clean")
 }
 
-//# Known leaks
-
-test "a binding consumed on one branch and read in place on the other" {
-  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  if c {\n    keep(A(t))\n  } else {\n    Array::get(t, at = 0)\n  }\n}"), content = "run t if1:else: owned value not consumed")
+test "reading in place balances the local owner on the non-consuming branch" {
+  let body = "let run: (Bool) -> Int = (c) -> {\n  let t = [1, 2]\n  if c {\n    keep(A(t))\n  } else {\n    Array::get(t, at = 0)\n  }\n}"
+  inspect(validate(body), content = "")
+  let out = edited(body = body, edit = (f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+    drop_first(plan = p, pick = (a: PerceusAction) -> Bool {
+      pa_is_path_drop(a) && a.name == "t"
+    })
+  })
+  inspect(out, content = "run t if1:else: owned value not consumed")
 }
 
 //# Not checked
