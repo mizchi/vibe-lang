@@ -40,7 +40,7 @@ fn dce_zero_alloc_marker(_ stmt: Stmt) -> Bool {
   }
 }
 
-fn dce_zero_alloc_target(_ stmt: Stmt) -> Option[String] {
+fn dce_function_name(_ stmt: Stmt) -> Option[String] {
   match stmt {
     SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => Some(name),
     SFnDecl(_, name, EFn(_, _, _, _, _, _), _, _) => Some(name),
@@ -75,6 +75,7 @@ fn dce_array_contains_str(arr: Array[String], s: String) -> Bool {
 // escape the pass or participate in serialized cache identities.
 struct DceGraph {
   symbols: MutMap[String, Int];
+  receiver_methods: Option[MutMap[String, Array[String]]];
   heads: Array[Int];
   marks: Array[Int];
   live: Array[Bool];
@@ -89,9 +90,10 @@ struct DceGraph {
   names: Array[String]
 }
 
-fn dce_graph_new(_ capacity: Int) -> DceGraph {
+fn dce_graph_new(_ capacity: Int, receiver_methods: Option[MutMap[String, Array[String]]]) -> DceGraph {
   DceGraph::{
     symbols: MutMap::with_capacity_string(capacity * 2 + 16),
+    receiver_methods: receiver_methods,
     heads: array_empty(),
     marks: array_empty(),
     live: array_empty(),
@@ -221,6 +223,36 @@ fn collect_wat_callee_refs(graph: DceGraph, callee: Expr, args: Array[Expr], bou
   }
 }
 
+// Before method lowering the AST spells a call as either m.value() or
+// value(m). The owner is still implicit. Keep candidates as edges of the
+// caller so methods referenced only by unreachable code can still be pruned.
+fn dce_receiver_call_refs(graph: DceGraph, methods: MutMap[String, Array[String]], callee: Expr, args: Array[Expr], bound: Array[String], out: Array[Int]) -> Unit {
+  let candidates = match callee {
+    EDot(_, method, _, _) => MutMap::get(methods, k = method),
+    EIdent(name, _) => if Array::length(args) > 0 {
+      MutMap::get(methods, k = name)
+    } else {
+      None
+    },
+    _ => None
+  }
+  match candidates {
+    Some(names) => {
+      match callee {
+        EIdent(name, _) => if dce_array_contains_str(arr = bound, s = name) {
+          return ()
+        },
+        _ => ()
+      }
+      for name in names {
+        dce_refs_push_once(graph = graph, out = out, name = name)
+      }
+      ()
+    },
+    None => ()
+  }
+}
+
 fn collect_refs_into(graph: DceGraph, expr: Expr, bound: Array[String], out: Array[Int]) -> Int {
   match expr {
     EIdent(name, _) => add_ref(graph = graph, out = out, bound = bound, name = name),
@@ -275,6 +307,10 @@ fn collect_refs_into(graph: DceGraph, expr: Expr, bound: Array[String], out: Arr
     },
     ECall(callee, args, _, _) => {
       collect_refs_into(graph = graph, expr = callee, bound = bound, out = out)
+      match graph.receiver_methods {
+        Some(methods) => dce_receiver_call_refs(graph = graph, methods = methods, callee = callee, args = args, bound = bound, out = out),
+        None => ()
+      }
       // #2348: an inline-wasm body reaches here as `%wasm("<WAT text>")`, and
       // the text is an EString, which contributes nothing below. A
       // `(call $helper ...)` inside it is a real reference, so without this
@@ -533,8 +569,8 @@ fn dce_definition_refs(graph: DceGraph, stmt: Stmt, bound: Array[String]) -> Arr
   }
 }
 
-fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String]) -> DceGraph {
-  let graph = dce_graph_new(Array::length(stmts))
+fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String], receiver_methods: Option[MutMap[String, Array[String]]]) -> DceGraph {
+  let graph = dce_graph_new(Array::length(stmts), receiver_methods = receiver_methods)
   let bound = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -607,7 +643,7 @@ let dce_scratch_graph: Array[DceGraph] = []
 /// and `dce_keep_flags_from_refs` builds the same graph from it.
 export fn dce_statement_refs(_ stmt: Stmt) -> (Array[String], Bool, Array[String], Bool) {
   if Array::length(dce_scratch_graph) == 0 {
-    Array::push(dce_scratch_graph, value = dce_graph_new(0))
+    Array::push(dce_scratch_graph, value = dce_graph_new(0, receiver_methods = None))
   } else ()
   let graph = Array::get(dce_scratch_graph, at = 0)
   let bound = array_empty()
@@ -640,7 +676,7 @@ fn dce_ids_names(graph: DceGraph, ids: Array[Int]) -> Array[String] {
 
 /// dce_reachable_graph of `stmts`, from each statement's dce_statement_refs.
 fn dce_reachable_graph_from_refs(stmts: Array[Stmt], entry_names: Array[String], refs: Array[(Array[String], Bool, Array[String], Bool)]) -> DceGraph {
-  let graph = dce_graph_new(Array::length(stmts))
+  let graph = dce_graph_new(Array::length(stmts), receiver_methods = None)
   let mut i = 0
   while i < Array::length(stmts) {
     match stmt_name(Array::get(stmts, at = i)) {
@@ -683,10 +719,14 @@ fn dce_reachable_graph_from_refs(stmts: Array[Stmt], entry_names: Array[String],
 }
 
 export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
+  dce_prune(stmts = stmts, entry_names = entry_names, receiver_methods = None)
+}
+
+fn dce_prune(stmts: Array[Stmt], entry_names: Array[String], receiver_methods: Option[MutMap[String, Array[String]]]) -> Array[Stmt] {
   if Array::length(stmts) == 0 {
     Array::slice(stmts, start = 0, end = 0)
   } else {
-    let graph = dce_reachable_graph(stmts = stmts, entry_names = entry_names)
+    let graph = dce_reachable_graph(stmts = stmts, entry_names = entry_names, receiver_methods = receiver_methods)
     if graph.opaque_live {
       return Array::slice(stmts, start = 0, end = Array::length(stmts))
     }
@@ -702,7 +742,7 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
         if i + 1 >= Array::length(stmts) {
           return Array::slice(stmts, start = 0, end = Array::length(stmts))
         }
-        match dce_zero_alloc_target(Array::get(stmts, at = i + 1)) {
+        match dce_function_name(Array::get(stmts, at = i + 1)) {
           Some(_) => {
             let target_id = Array::get(graph.stmt_ids, at = i + 1)
             keep = target_id < 0 || Array::get(graph.live, at = target_id)
@@ -843,14 +883,30 @@ export fn dce_stmts_before_trait_desugar(stmts: Array[Stmt], entry_names: Array[
   let mut m = 0
   while m + 1 < Array::length(stmts) {
     if dce_zero_alloc_marker(Array::get(stmts, at = m)) {
-      match dce_zero_alloc_target(Array::get(stmts, at = m + 1)) {
+      match dce_function_name(Array::get(stmts, at = m + 1)) {
         Some(name) => Array::push(roots, value = name),
         None => ()
       }
     }
     m = m + 1
   }
-  dce_stmts(stmts = stmts, entry_names = roots)
+  let methods: MutMap[String, Array[String]] = MutMap::new_string()
+  for stmt in stmts {
+    match dce_function_name(stmt) {
+      Some(name) => {
+        let sep = String::last_index_of(name, needle = "::")
+        if sep >= 0 {
+          let method = String::substring(name, start = sep + 2, end = String::length(name))
+          match MutMap::get(methods, k = method) {
+            Some(names) => Array::push(names, value = name),
+            None => MutMap::set(methods, k = method, v = [name])
+          }
+        }
+      },
+      None => ()
+    }
+  }
+  dce_prune(stmts = stmts, entry_names = roots, receiver_methods = Some(methods))
 }
 
 fn dce_keep_stmt(stmt: Stmt, graph: DceGraph) -> Bool {
@@ -932,7 +988,7 @@ export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry
       }
       rn = rn + 1
     }
-    dce_flags_of_graph(stmts = stmts, graph = dce_reachable_graph(stmts = reach_stmts, entry_names = roots))
+    dce_flags_of_graph(stmts = stmts, graph = dce_reachable_graph(stmts = reach_stmts, entry_names = roots, receiver_methods = None))
   }
 }
 
@@ -970,7 +1026,7 @@ fn dce_flags_of_graph(stmts: Array[Stmt], graph: DceGraph) -> Array[Bool] {
         if m + 1 >= Array::length(stmts) {
           preserve_all = true
         } else {
-          match dce_zero_alloc_target(Array::get(stmts, at = m + 1)) {
+          match dce_function_name(Array::get(stmts, at = m + 1)) {
             Some(_) => (),
             None => preserve_all = true
           }

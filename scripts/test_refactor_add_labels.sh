@@ -61,9 +61,11 @@ export fn main() -> Int {
 VIBE
 invoke refactor add-labels --positional=none --write "$rel/retry.vibe" > "$work/retry.out"
 grep -Fq 'value(self = m) - shift(self = m, by = 3)' "$rel/retry.vibe"
-invoke compile "$rel/retry.vibe" -o "$rel/retry.wasm" --entry main > "$work/retry-compile.out"
-VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/retry.wasm" > "$work/retry-value.out"
-grep -qx '3' "$work/retry-value.out"
+for rc in 0 1 shadow; do
+  VIBE_RC="$rc" invoke compile "$rel/retry.vibe" -o "$rel/retry-$rc.wasm" --entry main > "$work/retry-$rc-compile.out"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/retry-$rc.wasm" > "$work/retry-$rc-value.out"
+  grep -qx '3' "$work/retry-$rc-value.out"
+done
 sed 's/value(self = m)/value(typo = m)/' "$rel/retry.vibe" > "$rel/retry-wrong.vibe"
 if invoke check "$rel/retry-wrong.vibe" > "$work/retry-wrong.out" 2>&1; then
   echo 'add-labels: a bare method call accepted the wrong receiver label' >&2
