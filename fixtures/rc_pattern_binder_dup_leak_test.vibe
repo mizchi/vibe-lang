@@ -280,7 +280,7 @@ fn kept_alias(ks: Array[Array[Int]], i: Int) -> Int {
   }
 }
 
-// A lambda consumes the binder: no mark can run there, so it declines.
+// The closure stores the captured payload into a collection that outlives the arm.
 fn kept_lambda(ks: Array[Array[Int]], i: Int) -> Int {
   match Some(mka(i)) {
     Some(v) => {
@@ -358,12 +358,29 @@ fn first_sum(ks: Array[Array[Int]]) -> Int {
   s
 }
 
+fn capture_or_consume(_ i: Int) -> Int {
+  match Some(mka(i)) {
+    Some(v) => {
+      let delta = if i % 3 == 0 {
+        let read = () -> sink(v) - i
+        read() + read()
+      } else if i % 3 == 1 {
+        sink(v) - i
+      } else {
+        0
+      }
+      delta + Array::get(v, at = 0) - i
+    },
+    None => 1
+  }
+}
+
 fn main() -> Int {
   let mut acc = 0
   let mut i = 0
   while i < 20000 {
     acc = acc + arm_local(i) + arm_param(Some(mka(i)), i) + is_some(i) + guard_is(i) + tuple_let(i)
-    acc = acc + match_tuple(i) + arm_two(i)
+    acc = acc + match_tuple(i) + arm_two(i) + capture_or_consume(i)
     i = i + 1
   }
   let ks: Array[Array[Int]] = []
@@ -372,7 +389,9 @@ fn main() -> Int {
   let mut j = 0
   while j < 6 {
     acc = acc + kept_arm(ks = ks, o = Some(mka(j)), i = j) + kept_two(ks = ks, i = j + 10) + kept_nested(ks = ks, i = j + 20)
-    acc = acc + kept_tuple_let(ks = ks, i = j + 30) + kept_struct_let(ks = ks, h = H::{ inner: mka(j + 40) }, i = j + 40)
+    acc = acc + kept_tuple_let(ks = ks, i = j + 30) + kept_struct_let(ks = ks, h = H::{
+      inner: mka(j + 40)
+    }, i = j + 40)
     acc = acc + kept_proj_let(ks = ks, h = H::{ inner: mka(j + 50) }, i = j + 50) + kept_loop(ks = ks, i = j + 60) + kept_exit(ks = ks, i = j + 70)
     acc = acc + kept_alias(ks = ks, i = j + 80) + kept_lambda(ks = ks, i = j + 90) + kept_shadow(ks = ks, i = j + 100) + kept_scrut(ks = ks, os = os, i = j + 110)
     let w = kept_view(ks = ks, o = Some([mka(j + 120), mka(j + 130)]), i = j)
