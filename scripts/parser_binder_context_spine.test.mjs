@@ -315,6 +315,7 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context, printed_formals = printed_formals)",
     "parse_value_bracket_header(tokens = tokens, pos = ep, context = context, printed_formals = printed_formals)",
     "parse_impl_in_source(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context, printed_formals = printed_formals)",
+    "parse_impl_in_source(tokens = tokens, starts = starts, pos = val_start_r, mode = 0, context = context, printed_formals = printed_formals)",
   ], [
     "parse_binding_name(tokens = tokens,",
     "parse_pattern(tokens,",

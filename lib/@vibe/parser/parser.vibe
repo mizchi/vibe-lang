@@ -13,7 +13,6 @@ import ./intern.vibe {
 }
 
 import ./parser_base.vibe {
-  struct PrintedModuleSyntax,
   collect_effect_names,
   collect_import_path,
   disarm_lambda_positional,
@@ -29,12 +28,13 @@ import ./parser_base.vibe {
   parse_binding_name_with_binder_context,
   parse_derive_names,
   parse_effect_stmt,
-  parse_effect_stmt_owned_in_source,
   parse_effect_stmt_in_source,
+  parse_effect_stmt_owned_in_source,
   parse_enum_stmt,
   parse_enum_stmt_in_source,
   parse_impl_stmt_dispatch,
   parse_impl_stmt_dispatch_with_binder_context,
+  parse_impl_stmt_in_source,
   parse_import_item,
   parse_import_item_with_binder_context,
   parse_struct_field,
@@ -58,6 +58,7 @@ import ./parser_base.vibe {
   restore_positional_params,
   skip_derive,
   skip_semi,
+  struct PrintedModuleSyntax,
   take_positional_params,
   take_qualified_pattern_refs,
   take_test_effect_rows,
@@ -1138,7 +1139,7 @@ fn zero_alloc_marker_ident(_ mode: String) -> String {
 fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Array[Stmt], Int) with Exception {
   match peek(tokens = tokens, pos = pos) {
     TImpl => {
-      let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1, printed_formals = None)
+      let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1)
       parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None, printed_formals = None)
     },
     _ => {
@@ -1200,7 +1201,7 @@ fn parse_program_preserving_with_cfg_in_source(_ tokens: Array[Token], cfg_flags
           let slot_mark = positional_params_mark()
           match peek(tokens = tokens, pos = dnext) {
             TImpl => {
-              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens = tokens, pos = dnext + 1, printed_formals = printed_formals)
+              let (simpl_d, hp_d) = parse_impl_stmt_in_source(tokens = tokens, pos = dnext + 1, context = None, printed_formals = printed_formals)
               let (_dropped, dn) = parse_impl_methods(tokens = tokens, starts = [
               ], pos = hp_d, simpl = simpl_d, context = None, printed_formals = printed_formals)
               pos = dn
@@ -1216,7 +1217,7 @@ fn parse_program_preserving_with_cfg_in_source(_ tokens: Array[Token], cfg_flags
         }
       },
       TImpl => {
-        let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1, printed_formals = printed_formals)
+        let (simpl, hp) = parse_impl_stmt_in_source(tokens = tokens, pos = pos + 1, context = None, printed_formals = printed_formals)
         let (impl_stmts, next) = parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None, printed_formals = printed_formals)
         let mut ii = 0
         while ii < Array::length(impl_stmts) {
@@ -1226,7 +1227,8 @@ fn parse_program_preserving_with_cfg_in_source(_ tokens: Array[Token], cfg_flags
         pos = next
       },
       _ => {
-        let (stmt, next) = parse_stmt_preserving_in_source(tokens = tokens, starts = [], pos = pos, context = None, printed_formals = printed_formals)
+        let (stmt, next) = parse_stmt_preserving_in_source(tokens = tokens, starts = [
+        ], pos = pos, context = None, printed_formals = printed_formals)
         ArrayBuilder::push(b, value = stmt)
         pos = next
       }
@@ -1271,7 +1273,7 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
     let slot_mark = positional_params_mark()
     let dn = match peek(tokens = tokens, pos = dnext) {
       TImpl => {
-        let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens = tokens, pos = dnext + 1, printed_formals = None)
+        let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens = tokens, pos = dnext + 1)
         let (_dropped, dn) = parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None, printed_formals = None)
         dn
       },
@@ -1344,7 +1346,7 @@ fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], sourc
         // shape: no handler and no per-statement array.
         match peek(tokens = tokens, pos = pos) {
           TImpl => {
-            let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1, printed_formals = None)
+            let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1)
             let (impl_stmts, next) = parse_impl_methods(tokens = tokens, starts = [
             ], pos = hp, simpl = simpl, context = None, printed_formals = None)
             let mut ii = 0
@@ -1802,7 +1804,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             cfg_stmt_start = dnext
             let dn = match peek(tokens = tokens, pos = dnext) {
               TImpl => {
-                let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens = tokens, pos = dnext + 1, printed_formals = None)
+                let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens = tokens, pos = dnext + 1)
                 let (_dropped, dn) = parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = None, printed_formals = None)
                 dn
               },
@@ -1846,7 +1848,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
         let res = handle {
           let (stmts, next) = match peek(tokens = tokens, pos = pos) {
             TImpl => {
-              let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1, printed_formals = None)
+              let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1)
               parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = None, printed_formals = None)
             },
             _ => {
@@ -2016,7 +2018,7 @@ fn parse_program_spans_in_source(tokens: Array[Token], starts: Array[Int], ends:
           (0, 0)
         }
         let slot_mark = positional_params_mark()
-        let (simpl, hp) = parse_impl_stmt_dispatch(tokens = tokens, pos = pos + 1, printed_formals = printed_formals)
+        let (simpl, hp) = parse_impl_stmt_in_source(tokens = tokens, pos = pos + 1, context = None, printed_formals = printed_formals)
         let (_impl_stmts, next) = parse_impl_methods(tokens = tokens, starts = [
         ], pos = hp, simpl = simpl, context = None, printed_formals = printed_formals)
         if drop_next {
