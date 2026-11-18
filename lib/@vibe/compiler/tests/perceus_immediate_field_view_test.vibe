@@ -73,25 +73,34 @@ test "a retained String field lets its parameter release the unused reference" {
 }
 
 test "removing the field owner's guarded release leaks on the borrowed branch" {
-  let src = "struct Row { xs: Array[Int] }\nfn select_row(_ r: Row, _ take: Bool) -> Array[Int] {\n  if take { let held = [r]; Array::get(held, at = 0).xs } else { r.xs }\n}"
-  inspect(rc_validate_source(source = src, fn_filter = "select_row", checked_error_row = false), content = "")
-  let missing = rc_validate_source_edited(source = src, fn_filter = "select_row", edit = (_f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
-    let kept: Array[PerceusAction] = []
-    for row in p {
-      if !(row.name == "r" && pa_is_path_drop(row)) {
-        Array::push(kept, value = row)
-      } else ()
-    }
-    kept
-  }, checked_error_row = false)
-  inspect(missing, content = "select_row r if1:else: owned value not consumed")
+  for tail in ["r.xs", "let values = r.xs; let alias = values; alias"] {
+    let src = "struct Row { xs: Array[Int] }\nfn select_row(_ r: Row, _ take: Bool) -> Array[Int] {\n  if take { let held = [r]; Array::get(held, at = 0).xs } else { " + tail + " }\n}"
+    inspect(String::contains(plan_rows(source = src, fname = "select_row"), needle = "select_row r path_drop 1"), content = "true")
+    inspect(rc_validate_source(source = src, fn_filter = "select_row", checked_error_row = false), content = "")
+    let missing = rc_validate_source_edited(source = src, fn_filter = "select_row", edit = (_f: String, p: Array[PerceusAction]) -> Array[PerceusAction] {
+      let kept: Array[PerceusAction] = []
+      for row in p {
+        if !(row.name == "r" && pa_is_path_drop(row)) {
+          Array::push(kept, value = row)
+        } else ()
+      }
+      kept
+    }, checked_error_row = false)
+    inspect(missing, content = "select_row r if1:else: owned value not consumed")
+  }
 }
 
-test "a field returned through an alias keeps its unproven reference" {
-  let src = shapes + "\nfn via_alias(_ c: Named, _ take: Bool) -> String {\n  if take { keep_named(c).name } else { let name = c.name; name }\n}"
-  let rows = plan_rows(source = src, fname = "via_alias")
-  inspect(String::contains(rows, needle = "via_alias c dup 1"), content = "true")
-  inspect(String::contains(rows, needle = "via_alias c path_drop"), content = "false")
+test "an immutable field alias transfers the result before release and a reassignment keeps the conservative plan" {
+  for sample in [
+    ("let name = c.name; name", true),
+    ("let mut name = c.name; if c.n == 1 { name = \"replacement\" } else (); name", false)
+  ] {
+    let (tail, releases) = sample
+    let src = shapes + "\nfn via_alias(_ c: Named, _ take: Bool) -> String {\n  if take { keep_named(c).name } else { " + tail + " }\n}"
+    let rows = plan_rows(source = src, fname = "via_alias")
+    inspect(String::contains(rows, needle = "via_alias c dup 1"), content = "true")
+    assert(String::contains(rows, needle = "via_alias c path_drop 1") == releases)
+  }
 }
 
 struct Ctx {

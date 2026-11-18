@@ -82,14 +82,17 @@ fn local_view_plan(_ borrowed_arm: String) -> String with Exception {
 test "a retained branch result lets a local owner release its unused dup" {
   // The borrow-returning call holds the element before the guarded drop
   // releases the array. The consuming arm spends its dup through the mark.
-  let plan = local_view_plan("Array::get(t, 0)")
-  assert(String::contains(plan, needle = "run t path_drop 1"))
-  assert(run_t_marks(plan) == 1)
-  assert(String::contains(plan, needle = "run t drop 1"))
+  for arm in ["Array::get(t, 0)", "let element = Array::get(t, 0); element"] {
+    let plan = local_view_plan(arm)
+    assert(String::contains(plan, needle = "run t dup 1"))
+    assert(String::contains(plan, needle = "run t path_drop 1"))
+    assert(run_t_marks(plan) == 1)
+    assert(String::contains(plan, needle = "run t drop 1"))
+  }
 }
 
-test "a view returned through an alias keeps the local owner's unproven dup" {
-  let plan = local_view_plan("let element = Array::get(t, 0); element")
+test "a reassigned view keeps the local owner's unproven dup" {
+  let plan = local_view_plan("let mut element = Array::get(t, 0); if c { element = Leaf(1) } else (); element")
   assert(String::contains(plan, needle = "run t dup 1"))
   assert(!String::contains(plan, needle = "run t path_drop"))
   assert(!String::contains(plan, needle = "run t consume_mark:"))
