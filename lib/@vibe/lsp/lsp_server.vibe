@@ -1126,20 +1126,6 @@ fn lsp_handle_diagnostics(_ source: String, checked_error_row: Bool) -> Json wit
   lsp_handle_diagnostics_with_unstable(source = source, allow_unstable = true, checked_error_row = checked_error_row)
 }
 
-/// #2297: the ADR-0068 opt-in for this server run.
-///
-/// A cell rather than a parameter threaded through `lsp_run_with_handler`:
-/// that function has nine call sites and carries the request shape, while this
-/// value is constant for the whole process. Authority is settled in the
-/// earliest phase and does not change during a run (ADR-0075/0084/0088), so a
-/// per-request parameter would be encoding a variability that does not exist.
-/// Written once by `lsp_main` from the value its caller read at the edge.
-let lsp_unstable_cell: Array[Bool] = [false]
-
-fn lsp_unstable_opt_in() -> Bool {
-  Array::get(lsp_unstable_cell, at = 0)
-}
-
 /// #2297: `publishDiagnostics` was the one surface that did not report the
 /// ADR-0068 opt-in -- it calls this and nothing else, while the adapter spliced
 /// the verdict into the two `vibe check --single-file` forms. Taking it from
@@ -1706,7 +1692,7 @@ fn lsp_op_workspace_symbol() -> Int {
 /// header comment): re-executing the branch on `resume` re-evaluates the
 /// same deterministic `op` comparison and re-reaches the same (memoized)
 /// perform, nothing else.
-fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
+fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String], checked_error_row: Bool, allow_unstable: Bool = false) -> Json with Env + Fs {
   handle {
     if op == lsp_op_hover() {
       perform Lsp::Hover(uri, l, c)
@@ -1739,7 +1725,7 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
   }); Lsp::Rename(u2, l2, c2, nn) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
     lsp_handle_rename(source = src, uri = u2, line0 = l2, char0 = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), new_name = nn)
-  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::Diagnostics(u2) => resume(lsp_document_diagnostics_safe(uri = u2, source = lsp_doc_text(docs = docs, uri = u2), allow_unstable = lsp_unstable_opt_in(), checked_error_row = checked_error_row)); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
+  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::Diagnostics(u2) => resume(lsp_document_diagnostics_safe(uri = u2, source = lsp_doc_text(docs = docs, uri = u2), allow_unstable = allow_unstable, checked_error_row = checked_error_row)); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs = docs, uri = u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs = docs, uri = u2)
     lsp_handle_signature_help(uri = u2, source = src, line0 = l2, byte_col = lsp_pos_to_byte_col(source = src, line0 = l2, utf16_char0 = c2), checked_error_row = checked_error_row)
   }); Lsp::WorkspaceSymbol(q) => resume(lsp_handle_workspace_symbol(query = q, docs = docs)) }
@@ -1858,8 +1844,10 @@ export fn lsp_notify(method: String, params: Json, docs: Map[String, String]) ->
   }
 }
 
-fn lsp_diagnostics_for(uri: String, docs: Map[String, String], checked_error_row: Bool) -> Json with Env + Fs {
-  lsp_run_with_handler(op = lsp_op_diagnostics(), uri = uri, l = 0, c = 0, new_name = "", docs = docs, checked_error_row = checked_error_row)
+/// Server notifications pass their invocation's unstable-import grant. Standalone
+/// diagnostics use the strict default even after another server has opted in.
+fn lsp_diagnostics_for(uri: String, docs: Map[String, String], checked_error_row: Bool, allow_unstable: Bool = false) -> Json with Env + Fs {
+  lsp_run_with_handler(op = lsp_op_diagnostics(), uri = uri, l = 0, c = 0, new_name = "", docs = docs, checked_error_row = checked_error_row, allow_unstable = allow_unstable)
 }
 
 /// The diagnostics the session loop publishes for `uri` after a `didOpen`,
@@ -1973,7 +1961,7 @@ fn lsp_send_diagnostics_notification(uri: String, diags: Json) -> Unit with Cons
 
 /// One iteration: read a message, act on it, write a response if needed.
 /// Returns (new_docs, should_exit).
-fn lsp_step(_ docs: Map[String, String], checked_error_row: Bool) -> (Map[String, String], Bool) with Stdin + Console + Env + Fs {
+fn lsp_step(_ docs: Map[String, String], checked_error_row: Bool, allow_unstable: Bool) -> (Map[String, String], Bool) with Stdin + Console + Env + Fs {
   match lsp_read_message() {
     None => (docs, true),
     Some(body) => {
@@ -2001,17 +1989,17 @@ fn lsp_step(_ docs: Map[String, String], checked_error_row: Bool) -> (Map[String
         } else if method == "textDocument/didOpen" {
           let new_docs = lsp_apply_did_open(docs = docs, params = params)
           let uri = jparam_uri(params)
-          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs, checked_error_row = checked_error_row))
+          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs, checked_error_row = checked_error_row, allow_unstable = allow_unstable))
           (new_docs, false)
         } else if method == "textDocument/didChange" {
           let new_docs = lsp_apply_did_change(docs = docs, params = params)
           let uri = jparam_uri(params)
-          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs, checked_error_row = checked_error_row))
+          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = new_docs, checked_error_row = checked_error_row, allow_unstable = allow_unstable))
           (new_docs, false)
         } else if method == "textDocument/didSave" {
           lsp_hover_fs_invalidate()
           let uri = jparam_uri(params)
-          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = docs, checked_error_row = checked_error_row))
+          lsp_send_diagnostics_notification(uri = uri, diags = lsp_diagnostics_for(uri = uri, docs = docs, checked_error_row = checked_error_row, allow_unstable = allow_unstable))
           (docs, false)
         } else if method == "textDocument/didClose" {
           let new_docs = lsp_apply_did_close(docs = docs, params = params)
@@ -2040,11 +2028,10 @@ fn lsp_step(_ docs: Map[String, String], checked_error_row: Bool) -> (Map[String
 /// hover's (#1960): it walks the document's imports on disk, reading the
 /// same build configuration `vibe check` reads.
 export fn lsp_main(_ allow_unstable: Bool, checked_error_row: Bool) -> Int with Stdin + Console + Env + Fs {
-  Array::set(lsp_unstable_cell, at = 0, value = allow_unstable)
   let mut docs = Map::new()
   let mut running = true
   while running {
-    let (new_docs, should_exit) = lsp_step(docs, checked_error_row = checked_error_row)
+    let (new_docs, should_exit) = lsp_step(docs, checked_error_row = checked_error_row, allow_unstable = allow_unstable)
     docs = new_docs
     running = not(should_exit)
   }

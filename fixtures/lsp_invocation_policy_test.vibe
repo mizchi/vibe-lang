@@ -1,0 +1,29 @@
+import @vibe/lsp {
+  lsp_diagnostics_safe_with_unstable, lsp_main, lsp_published_diagnostics
+}
+import @vibe/json {
+  Json
+}
+
+fn policy_source() -> String {
+  "import @vibe/concurrent/experimental { TaskGroup }\nexport fn main() -> Int { 0 }"
+}
+
+fn published_requires_opt_in() -> Bool with Env + Fs {
+  let uri = "untitled:invocation-policy"
+  let docs = Map::set(Map::new(), key = uri, value = policy_source())
+  let result = lsp_published_diagnostics(uri = uri, docs = docs, checked_error_row = false)
+  String::contains(Json::stringify(result), needle = "VIBE_UNSTABLE=1")
+}
+
+// The late gate supplies an exit frame before checking the same Wasm instance.
+fn main() -> Bool allows Stdin + Console + Env + Fs {
+  let _ = lsp_main(true, checked_error_row = false)
+  published_requires_opt_in()
+}
+
+test "standalone LSP diagnostics stay strict after an opted-in diagnostic" allows Env + Fs {
+  let granted = lsp_diagnostics_safe_with_unstable(source = policy_source(), allow_unstable = true, checked_error_row = false)
+  inspect(String::contains(Json::stringify(granted), needle = "VIBE_UNSTABLE=1"), content = "false")
+  inspect(published_requires_opt_in(), content = "true")
+}
