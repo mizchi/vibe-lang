@@ -1941,6 +1941,21 @@ done
 rm -rf "$sldir"
 echo "[compiler-gate] slice path release guard ok (14000 on bump/rc/shadow/gc, rc heap_used=$sl_used B vs control $sl_ctl B)"
 
+# 40f0z. A skipped consume must release the result of a comprehension or a
+# local callback with an owning return. Re-read shared elements after churn.
+echo "[compiler-gate] 40f0z/40 release partially consumed comprehension and callback results (#2827)"
+gate_workdir compdir "_build/_gate_rc_local_result_path_drop"
+for comp_lane in bump rc shadow gc; do
+  gate_fs_compile_on "$comp_lane" "fixtures/rc_local_result_path_drop_test.vibe" "$compdir/result.wasm" main
+  gate_require_artifact "$compdir/result.wasm" "local result path-drop fixture failed to compile on $comp_lane"
+  gate_run comp_out last "$compdir/result.wasm"
+  gate_require_eq "$comp_out" "0" "local result path-drop fixture returned $comp_out on $comp_lane"
+  if [ "$comp_lane" = rc ] || [ "$comp_lane" = shadow ]; then
+    gate_require_heap_below "$compdir/result.wasm" 0 8000 "local result path drop ($comp_lane)"
+  fi
+done
+rm -rf "$compdir"
+
 # 40f0u. #4165: `Array::slice` / `xs[a:b]` borrows its source. The runtime
 #        body copies the range and retains the copied elements but never
 #        releases the source, and the planner counted the source as consumed

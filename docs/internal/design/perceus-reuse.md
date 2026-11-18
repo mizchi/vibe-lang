@@ -208,9 +208,10 @@ to be owed (`path_value_owned`, `compile_expr_tail_classify_let_value_heap.vibe`
 - every leaf of the value's result spine (through `let` / `;` chains and
   conditional branches) is an allocation made at the site, or a call to a
   named, non-local function whose declared return type is heap and which
-  neither returns a borrow nor may return a view. This is an allow-list:
-  indirect calls, aliases, projections, literals, arithmetic, lambdas, loops
-  and `handle` decline;
+  neither returns a borrow nor may return a view. A value-producing for-in
+  owns its result array. For a direct call through a local callback, the
+  initializer can use the owning-return contract recorded for that slot.
+  An ordinary loop can return a borrowed value through `break`;
 - every marked occurrence has a source offset (a lambda capture has none);
 - the binding is not borrow-bound and not `Int`-valued.
 
@@ -235,8 +236,9 @@ skips its consume leaks the dup, which is the #1980 shape rather than this
 one.
 
 `scripts/path_release_census.sh` classifies every `PaPathDrop` row of a flat
-source by this rule, splitting parameters (`param_heap` / `param_scalar`)
-from the `let` rows.
+source by syntactic shape, splitting parameters (`param_heap` / `param_scalar`)
+from the `let` rows. The census classifies comprehensions as owned. A
+local call needs codegen’s slot facts to determine whether its result is owned.
 
 ### Branch-dependent dups (#1980)
 
