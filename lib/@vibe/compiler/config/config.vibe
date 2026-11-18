@@ -1,8 +1,8 @@
 import @vibe/compiler/cache {
-  set_persistent_cache_cfg_flags
+  persistent_cache_cfg_csv, set_persistent_cache_cfg_flags
 }
 import @vibe/parser {
-  set_cfg_ambient_flags
+  cfg_ambient_flags_snapshot, set_cfg_ambient_flags
 }
 
 /// #2513: the `#cfg` flag set is process-wide. `VIBE_CFG=flag1,flag2` is read
@@ -40,4 +40,19 @@ export fn configure_compiler_cfg_flags() -> Unit with Env {
   let flags = cfg_flags_from_csv(Env::get("VIBE_CFG"))
   set_cfg_ambient_flags(flags)
   set_persistent_cache_cfg_flags(String::join(flags, sep = ","))
+}
+
+/// Save both legacy inputs independently. Embedders can configure the parser
+/// with an exact array and the persistent cache with a different namespace.
+export fn enter_cli_target() -> (Array[String], String) with Env {
+  let (flags, _) = cfg_ambient_flags_snapshot()
+  let cache_flags = persistent_cache_cfg_csv()
+  configure_compiler_cfg_flags()
+  (flags, cache_flags)
+}
+
+export fn leave_cli_target(_ previous: (Array[String], String)) -> Unit {
+  let (flags, cache_flags) = previous
+  set_cfg_ambient_flags(flags)
+  set_persistent_cache_cfg_flags(cache_flags)
 }
