@@ -9,6 +9,7 @@ import @vibe/core {
 // linked_artifacts.vibe, now merged into this one package-form import.
 import @vibe/compiler/entry/source_compile/wasi_only {
   collect_linked_compile_inputs,
+  collect_linked_compile_inputs_with_rows,
   compile_file_wasi_library,
   compile_file_wasi_linked_artifacts,
   compile_file_wasi_only,
@@ -667,4 +668,15 @@ test "linked witness refusal follows a re-export alias to its generic binding" {
   write_source(path = base + "/facade.vibe", text = "export ./lib.vibe { sum as plus }\n")
   write_source(path = base + "/main.vibe", text = "import ./facade.vibe { plus }\nlet _start: () -> Int = () -> { plus(a = 20, b = 22) }\n")
   inspect(String::contains(linked_outcome(label = "reexport", entry_path = base + "/main.vibe"), needle = "export a concrete wrapper"), content = "true")
+}
+
+test "a linked entry refuses source replaced after its check" {
+  let path = "/tmp/vibe_linked_changed_after_check.vibe"
+  let checked = "let answer = () -> Int { 41 }"
+  Fs::write_file(path, contents = "let answer = () -> Int { 42 }")
+  let message = handle {
+    let _ = collect_linked_compile_inputs_with_rows(path, checked_entry = Some((checked, true)))
+    "accepted"
+  } with { Exception::Throw(m) => m }
+  assert_eq(message, "linked debug entry changed after checking: " + path)
 }

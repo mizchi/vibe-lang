@@ -665,8 +665,12 @@ export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: 
   }
 }
 
-export fn build_linked_debug_entry(input_path: String, entry_name: String, checked_error_row: Bool) -> (Bytes, Array[(String, String)]) with Env + Exception + Fs {
-  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(input_path)
+export fn build_linked_debug_entry(input_path: String, entry_name: String, checked_error_row: Bool, checked_entry_source_text: Option[String] = None) -> (Bytes, Array[(String, String)]) with Env + Exception + Fs {
+  let checked_entry = match checked_entry_source_text {
+    Some(text) => Some((text, checked_error_row)),
+    None => None
+  }
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(input_path, checked_entry = checked_entry)
   let main_stmts = array_empty()
   append_stmt_array(dst = main_stmts, src = resolved_type_stmts)
   append_non_import_stmts(dst = main_stmts, src = entry_stmts)
@@ -1793,8 +1797,13 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
   // The compile below reads the files again, so the build is refused unless
   // every checked file is unchanged once it has finished
   // (`refuse_changed_checked_sources`): the bytes written are the bytes checked.
-  let checked = checked_source_tokens(check_linked_file_source_groups(input_path, checked_error_row = checked_error_row))
-  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row)
+  let groups = check_linked_file_source_groups(input_path, checked_error_row = checked_error_row)
+  let checked = checked_source_tokens(groups)
+  let entry_source = match checked_entry_source(input_path = input_path, source_groups = groups, checked_error_row = checked_error_row) {
+    Some(source) => source,
+    None => throw("linked debug entry does not match its checked source: " + input_path)
+  }
+  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path = input_path, entry_name = entry_name, checked_error_row = checked_error_row, checked_entry_source_text = Some(entry_source))
   // STAGE every dependency before the verdict. `compile_debug_library` reads
   // the dependency again, so compiling them after the check would authorize
   // one snapshot and publish another -- a dependency that gains an
