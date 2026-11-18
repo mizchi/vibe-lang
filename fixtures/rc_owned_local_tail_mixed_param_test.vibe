@@ -121,6 +121,27 @@ fn early_alias_view(_ xs: Array[Array[Int]], _ fallback: Array[Int], _ take: Boo
   Array::get(xs, at = 0)
 }
 
+struct Row {
+  values: Array[Int]
+}
+
+fn fresh_row(_ row: Row) -> Row {
+  Row::{ values: [Array::get(row.values, at = 0) + 1] }
+}
+
+fn branch_field(_ row: Row, _ choice: Int) -> Array[Int] {
+  if choice == 0 {
+    row.values
+  } else {
+    let held = [row]
+    if choice == 1 {
+      Array::get(held, at = 0).values
+    } else {
+      fresh_row(Array::get(held, at = 0)).values
+    }
+  }
+}
+
 fn probe(_ i: Int) -> Int {
   let p = mka(i + 4)
   let x = mixed_param_tail(p, i)
@@ -134,7 +155,18 @@ fn probe(_ i: Int) -> Int {
   let early_view = retained_param_early_borrowed([mka(i + 3)], i % 2 == 0)
   let optional = early_optional_view([Some(mka(i + 4))], i % 2 == 0, fallback = mka(i + 4))
   let aliased = early_alias_view([mka(i + 5)], mka(i + 5), i % 2 == 0)
+  let field = branch_field(Row::{ values: mka(i) }, i % 3)
   let fresh = [mka(i + 7), mka(i + 9), mka(i + 11)]
+  let expected_field = if i % 3 == 2 {
+    i + 1
+  } else {
+    i
+  }
+  let field_error = if Array::get(field, at = 0) == expected_field {
+    0
+  } else {
+    1
+  }
   // Even calls return local payloads. Odd calls return the parameter twice.
   let k = if i % 2 == 0 {
     0
@@ -151,7 +183,8 @@ fn probe(_ i: Int) -> Int {
     Some(value) => Array::get(value, at = 0) - i - 4,
     None => 1
   }) +
-  (Array::get(aliased, at = 0) - i - 5) + Array::length(fresh) - 3
+  (Array::get(aliased, at = 0) - i - 5) + field_error +
+  Array::length(fresh) - 3
 }
 
 fn main() -> Int {
