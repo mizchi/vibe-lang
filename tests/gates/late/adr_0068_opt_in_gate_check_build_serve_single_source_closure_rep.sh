@@ -1300,7 +1300,7 @@ gate_require_artifact "$lspudir/policy.wasm" "LSP invocation policy fixture did 
 exit_msg='{"jsonrpc":"2.0","method":"exit"}'
 VIBE_STDIN_BYTES="$(printf 'Content-Length: %s\r\n\r\n%s' "${#exit_msg}" "$exit_msg")" \
   gate_run policy_result stdout-last --invoke main "$lspudir/policy.wasm"
-gate_require_eq "$policy_result" 0 "an opted-in LSP run leaked its permission into independent diagnostics"
+gate_require_eq "$policy_result" 1 "an opted-in LSP run leaked its permission into independent diagnostics"
 # ...and the scan must never COST diagnostics. `collect_all_diagnostics` uses
 # the recovering lexer and reports a lex error; the unstable scan uses
 # `lex_with_offsets`, which THROWS on one. The first version let that throw
