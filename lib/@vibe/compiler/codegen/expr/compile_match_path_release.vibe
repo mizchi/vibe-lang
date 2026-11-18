@@ -468,17 +468,25 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
     ETuple(_) => true,
     EArray(_) => true,
     ERecord(_, _, _) => true,
-    ECall(callee, _, _, _) => match callee {
-      EIdent(cn, _) => if is_ctor_call(value = e, ct = ctx.ctor_table) {
-        true
-      } else if array_contains_str(arr = local_names, s = cn) || array_contains_str(arr = bound, s = cn) {
-        false
-      } else if bsearch_leftmost(sorted = ctx.scalar_ret_names, name = cn) >= 0 {
-        true
-      } else {
-        bsearch_leftmost(sorted = ctx.heap_ret_names, name = cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(sorted = ctx.borrow_ret_names, name = cn) < 0 && bsearch_leftmost(sorted = ctx.borrow_view_ret, name = cn) < 0
-      },
-      _ => false
+    ECall(callee, args, _, _) => {
+      let call = cl_return_operand(e)
+      match call {
+        ECall(EIdent(cn, _), _, _, _) => if array_contains_str(arr = local_names, s = cn) || array_contains_str(arr = bound, s = cn) {
+          false
+        } else if is_ctor_call(value = call, ct = ctx.ctor_table) || bsearch_leftmost(sorted = ctx.scalar_ret_names, name = cn) >= 0 {
+          true
+        } else if is_borrow_ret_builtin(cn) || bsearch_leftmost(sorted = ctx.borrow_ret_names, name = cn) >= 0 {
+          // Codegen retains the result of a borrowed named call at the
+          // owning-return marker, before the arm releases its unspent dups.
+          match callee {
+            EIdent("__lambda_return_owned", off) => off < 0 && Array::length(args) == 1,
+            _ => false
+          }
+        } else {
+          bsearch_leftmost(sorted = ctx.heap_ret_names, name = cn) >= 0 && bsearch_leftmost(sorted = ctx.borrow_view_ret, name = cn) < 0
+        },
+        _ => false
+      }
     },
     EIf(_, t, el) => mpr_tail_safe(e = t, local_names = local_names, bound = bound, ctx = ctx) && mpr_tail_safe(e = el, local_names = local_names, bound = bound, ctx = ctx),
     EMatch(_, arms) => if Array::length(arms) == 0 {
