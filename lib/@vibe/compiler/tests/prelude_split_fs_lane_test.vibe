@@ -244,3 +244,17 @@ test "a standalone source compile ignores a recorded package" {
   inspect(bytes_contain(hay = mvp, needle = "vibe:effect:@acme/xe_stale/Probe"), content = "false")
   inspect(bytes_contain(hay = mvp, needle = "vibe:effect:./Probe"), content = "true")
 }
+
+test "a dependent resolves receiver aliases to private functions with the prelude split" {
+  let dep = "/tmp/vibe_split_receiver_alias_dep.vibe"
+  let main = "/tmp/vibe_split_receiver_alias_main.vibe"
+  Fs::write_file(dep, contents = "export struct Meter { n: Int }\nfn impl_value(_ m: Meter) -> Int { m.n }\nexport let Meter::value = impl_value\n")
+  Fs::write_file(main, contents = "import ./vibe_split_receiver_alias_dep.vibe { struct Meter }\nexport fn main() -> Int { let m = Meter::{ n: 21 }; m.value() + value(m) }\n")
+  let (modules, mapped) = ordinary_lane_split_shape(main, checked_error_row = false)
+  inspect(modules, content = "2")
+  assert(mapped > 0)
+  let whole = compile_file_fs_mode_rc_body_cached(entry_path = main, entry_name = "main", cache_mode = "off", exports_stripped = false, checked_error_row = false)
+  let split = compile_file_fs_mode_rc_body_cached_split(entry_path = main, entry_name = "main", cache_mode = "off", use_split = true, exports_stripped = false, checked_error_row = false)
+  assert(Bytes::length(split) > 1000)
+  assert(split == whole)
+}

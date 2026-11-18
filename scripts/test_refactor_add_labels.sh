@@ -73,7 +73,30 @@ export fn main() -> Int {
   m.value() + value(m) + impl_value(m)
 }
 VIBE
+# A method alias can return an unannotated pull-closure factory's result.
+cat > "$rel/pull.vibe" <<'VIBE'
+struct Meter { n: Int }
+let make_pull = (_ m: Meter) -> {
+  let mut next = Some(m.n)
+  () -> Option[Int] {
+    let got = next
+    next = None
+    got
+  }
+}
+let Meter::items = make_pull
+export fn main() -> Int {
+  let m = Meter::{ n: 21 }
+  let mut sum = 0
+  for x in m.items() { sum = sum + x }
+  for x in items(m) { sum = sum + x }
+  sum
+}
+VIBE
 for rc in 0 1 shadow; do
+  VIBE_RC="$rc" invoke compile "$rel/pull.vibe" -o "$rel/pull-$rc.wasm" --entry main > "$work/pull-$rc-compile.out"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/pull-$rc.wasm" > "$work/pull-$rc-value.out"
+  grep -qx '42' "$work/pull-$rc-value.out"
   VIBE_RC="$rc" invoke compile "$rel/alias.vibe" -o "$rel/alias-$rc.wasm" --entry main > "$work/alias-$rc-compile.out"
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/alias-$rc.wasm" > "$work/alias-$rc-value.out"
   grep -qx '43' "$work/alias-$rc-value.out"
