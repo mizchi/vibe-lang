@@ -7,16 +7,16 @@ import @vibe/core {
   array_empty, struct MutSet
 }
 import @vibe/compiler/incremental {
-  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source, ripple_without_results
+  RippleDb, ripple_get_deps, ripple_new, ripple_set_source, ripple_without_results
 }
 import @vibe/compiler/loader {
   collect_source_groups_fs_with_config, collect_source_groups_fs_with_entry_source
 }
 import @vibe/compiler/runtime {
-  ensure_fingerprint_fs_impl_with_config, load_persistent_type_env, projected_import_env_for_test
+  ensure_env_cache_for_paths_with_config, ensure_fingerprint_fs_impl_with_config, project_query_import_env
 }
 import @vibe/compiler/config {
-  target_cfg_ambient
+  TargetCfg, target_cfg_ambient, target_cfg_namespace
 }
 import @vibe/compiler/cache {
   cache_read_source_fs, cache_source_memo_token
@@ -29,7 +29,7 @@ export struct QueryProjectState {
   env_cache: Array[(String, TypeEnv)];
   rdb: RippleDb;
   dep_sources: Array[(String, String)];
-  checked_error_row: Option[Bool]
+  typing_context: Option[(String, Bool)]
 }
 
 /// Start a query sweep without retained module environments or source rows.
@@ -38,7 +38,7 @@ export fn query_project_state_new() -> QueryProjectState {
     env_cache: array_empty(),
     rdb: ripple_new(),
     dep_sources: array_empty(),
-    checked_error_row: None
+    typing_context: None
   }
 }
 
@@ -51,15 +51,20 @@ export fn query_project_state_new() -> QueryProjectState {
 /// typing. Callers retain their incoming state on failure: array-backed rows
 /// already published for a complete module remain reusable on the next file.
 export fn query_project_context_fs(path: String, source: String, replacement: Option[QueryProjectEdit], state: QueryProjectState, checked_error_row: Bool) -> QueryProjectContext with Env + Exception + Fs {
+  query_project_context_fs_with_config(path = path, source = source, replacement = replacement, state = state, cfg = target_cfg_ambient(), checked_error_row = checked_error_row)
+}
+
+export fn query_project_context_fs_with_config(path: String, source: String, replacement: Option[QueryProjectEdit], state: QueryProjectState, cfg: TargetCfg, checked_error_row: Bool) -> QueryProjectContext with Env + Exception + Fs {
   // Retain source inputs, but never reuse typing derived under another mode.
-  let state = if state.checked_error_row == Some(checked_error_row) {
+  let typing_context = Some((target_cfg_namespace(cfg), checked_error_row))
+  let state = if state.typing_context == typing_context {
     state
   } else {
     QueryProjectState::{
       env_cache: array_empty(),
       rdb: ripple_without_results(state.rdb),
       dep_sources: array_empty(),
-      checked_error_row: Some(checked_error_row)
+      typing_context: typing_context
     }
   }
   if Fs::exists(path) {
@@ -92,7 +97,6 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
       edit.replacement
     }
   }
-  let cfg = target_cfg_ambient()
   // An edit always collects its own text, including a no-op replacement: the
   // FS closure cache can still hold an older same-token disk reading.
   let groups = if !is_edit && disk_source == Some(current) {
@@ -127,17 +131,18 @@ export fn query_project_context_fs(path: String, source: String, replacement: Op
     Some(d) => d,
     None => array_empty()
   }
-  let import_env = projected_import_env_for_test(source = entry_source, path = path, deps = deps, full_cache = query_project_fill_dep_envs(rdb = walked, env_cache = env_cache, deps = deps), checked_error_row = checked_error_row)
+  let hydrated = ensure_env_cache_for_paths_with_config(rdb = walked, env_cache = env_cache, paths = deps, cfg = cfg)
+  let import_env = project_query_import_env(source = entry_source, path = path, deps = deps, full_cache = hydrated, cfg = cfg, checked_error_row = checked_error_row)
   QueryProjectContext::{
     entry_source: entry_source,
     entry_fingerprint: entry_fingerprint,
     closure_tokens: closure_tokens,
     import_env: import_env,
     state: QueryProjectState::{
-      env_cache: env_cache,
+      env_cache: hydrated,
       rdb: walked,
       dep_sources: dep_sources,
-      checked_error_row: Some(checked_error_row)
+      typing_context: typing_context
     }
   }
 }
@@ -213,49 +218,4 @@ export fn query_project_tokens_unchanged(_ tokens: Array[(String, Int)]) -> Bool
     i = i + 1
   }
   same
-}
-
-/// Persistent hits need hydration only when this exact module has no env row.
-fn query_project_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(cache) {
-    let (p, _) = Array::get(cache, at = i)
-    if p == path {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// Fill in the dependency environments the walk did NOT return in-memory.
-///
-/// `ensure_fingerprint_fs_impl` only adds a module to its env cache when it
-/// actually re-checks it; a module whose persistent environment was already on
-/// disk is recorded in the ripple db and skipped. That is the normal (warm)
-/// case, so without this step a repeat run resolves imports against an empty
-/// cache -- `projected_import_env_for_test` then throws and every imported name
-/// types as `CtUnknown`. Reading each missing dependency back from the same
-/// persistent store the walk published to is what makes the typed tier behave
-/// the same warm as cold.
-fn query_project_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], deps: Array[String]) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
-  let mut i = 0
-  while i < Array::length(deps) {
-    let dep = Array::get(deps, at = i)
-    if !query_project_cache_has(cache = env_cache, path = dep) {
-      match ripple_get_fingerprint(db = rdb, path = dep) {
-        Some(fingerprint) => match load_persistent_type_env(fingerprint) {
-          Some(dep_env) => Array::push(env_cache, value = (dep, dep_env)),
-          None => ()
-        },
-        None => ()
-      }
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  env_cache
 }
