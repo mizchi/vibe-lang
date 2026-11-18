@@ -82,13 +82,12 @@ test "a parameter consumed only by a capture gets no path drop" {
   assert(!String::contains(plan, needle = "pick t consume_mark:"))
 }
 
-test "a parameter whose body may hand back a view through a helper gets no path drop" {
-  // The planner's retained-view proof applies to a direct builtin call.
-  // A call that may return an alias through a user function stays conservative.
+test "a retained borrow-returning helper lets the callee release its parameter" {
   let src = String::concat(prelude, "let hold: (Array[Node]) -> Int = (xs) -> Array::length([\n  xs\n])\nlet view: (Array[Node]) -> Node = (xs) -> Array::get(xs, at = 0)\nlet pick: (Array[Node], Bool) -> Node = (xs, c) -> {\n  if c {\n    Leaf(hold(xs))\n  } else {\n    view(xs)\n  }\n}\nlet main: () -> Int = () -> {\n  match pick([\n    Leaf(1)\n  ], false) {\n    _ => 0\n  }\n}")
   let plan = plan_of(src)
-  assert(!String::contains(plan, needle = "pick xs path_drop"))
-  assert(!String::contains(plan, needle = "pick xs consume_mark:"))
+  assert(String::contains(plan, needle = "pick xs path_drop"))
+  assert(String::contains(plan, needle = "pick xs consume_mark:"))
+  inspect(rc_validate_source(source = src, fn_filter = "pick", checked_error_row = false), content = "")
 }
 
 test "a parameter unused by the arm returning a local match payload gets a guarded drop" {
