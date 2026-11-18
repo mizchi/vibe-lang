@@ -53,11 +53,11 @@ VIBE_TEST_QUIET_COMPILER_NOTE=1 bash scripts/vibe_test.sh "$probe" >/dev/null 2>
 ) > "$out_dir/rows.tsv"
 
 echo "[path-release-census] input=$input rows=$(wc -l < "$out_dir/rows.tsv") file=$out_dir/rows.tsv"
-echo "[path-release-census] verdicts (FLAT + SPINE = admitted; SPINE = only the recursive result-spine read reaches it):"
+echo "[path-release-census] verdicts (FLAT + SPINE = owned by the syntactic classifier):"
 awk -F'\t' '{ for (i = 1; i <= NF; i++) if ($i ~ /^verdict=/) print substr($i, 9) }' "$out_dir/rows.tsv" | sort | uniq -c | sort -rn
 echo "[path-release-census] SPINE rows by value node kind:"
 awk -F'\t' '{ v = ""; t = ""; for (i = 1; i <= NF; i++) { if ($i ~ /^verdict=/) v = substr($i, 9); if ($i ~ /^top=/) t = substr($i, 5) } if (v == "SPINE") print t }' "$out_dir/rows.tsv" | sort | uniq -c | sort -rn
-echo "[path-release-census] declined call rows by DECLARED callee contract:"
+echo "[path-release-census] calls unresolved by the census, by callee contract:"
 awk -F'\t' '{ v = ""; c = ""; for (i = 1; i <= NF; i++) { if ($i ~ /^verdict=/) v = substr($i, 9); if ($i ~ /^contract=/) c = substr($i, 10) } if (v == "call" || v == "call_indirect") print c }' "$out_dir/rows.tsv" | sort | uniq -c | sort -rn
-echo "[path-release-census] top 25 callees of the declined call class:"
+echo "[path-release-census] top 25 callees unresolved by the census:"
 awk -F'\t' '{ v = ""; c = ""; for (i = 1; i <= NF; i++) { if ($i ~ /^verdict=/) v = substr($i, 9); if ($i ~ /^callee=/) c = substr($i, 8) } if (v == "call" || v == "call_indirect") print c }' "$out_dir/rows.tsv" | sort | uniq -c | sort -rn | head -25

@@ -6,11 +6,10 @@
 //# what the RC `let` lowering gates the guarded drop on
 //# (compile_expr_tail.vibe's `path_value_ok`).
 //#
-//# The question it answers: how many of those bindings does the admission rule
-//# accept, how much of that the recursive result-spine read is responsible
-//# for, and -- for the ones it declines -- what the disqualifying leaf is, so
-//# the next slice is chosen from a population rather than guessed at.
-//#
+//# The census counts ownership visible from the planner's input and result
+//# spines. Codegen also knows the return contracts of live callback slots and
+//# whether a binding acquired a reference. Verify those cases in emitted code.
+
 //# Row: FN NAME top=<value's own node kind> flat=<y|n> spine=<y|n>
 //#      nleaves=N kinds=<comma-separated leaf kinds, sorted and deduplicated>
 //#      verdict=<FLAT|SPINE|<first leaf kind that is not site-allocated>>
@@ -18,13 +17,11 @@
 //# FLAT  = the value node is itself an owned leaf, so a flat test admits it.
 //# SPINE = every leaf of the result spine is owned but the value node is not
 //#         one, so only the recursive read admits it.
-//# other = the leaf kind that disqualifies it, which is what a further slice
-//#         would have to answer for.
+//# other = the first leaf whose ownership the census could not establish.
 //#
 //# An OWNED leaf is an allocation made at the site (tuple / record / array
-//# literal / constructor call) or a call to a named function whose declared
-//# return type is heap and which neither borrow set claims -- the shipped
-//# admission rule (`path_value_owned`, compile_expr_tail.vibe).
+//# literal / constructor call / array comprehension) or a call to a named function whose declared
+//# return type is heap and which neither borrow set claims.
 //#
 //# Constructor-ness is by declaration here -- every `SEnum` / `SSuberror`
 //# variant name and every `SStruct` name of the input, which is exactly what
@@ -149,7 +146,7 @@ fn leaf_kind(e: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Ar
     EBreak(_) => "xfer",
     EContinue(_) => "xfer",
     EWhile(_, _) => "loop",
-    EForIn(_, _, _, _, _) => "loop",
+    EForIn(_, _, _, _, _) => "comprehension",
     ELoop(_, _) => "loop",
     EHandle(_, _) => "handle",
     _ => "other"
@@ -195,7 +192,7 @@ fn call_contract(e: Expr, bound: Array[String], borrow_ret: Array[String], view_
 }
 
 fn owned_leaf(k: String) -> Bool {
-  k == "tuple" || k == "record" || k == "array" || k == "ctor" || k == "call_heap_ret"
+  k == "tuple" || k == "record" || k == "array" || k == "comprehension" || k == "ctor" || k == "call_heap_ret"
 }
 
 /// Every leaf of the value's RESULT spine, CLASSIFIED WHERE IT SITS: the walk
