@@ -1,10 +1,22 @@
 // Callable names.
 
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, __to_string, collect_top_level_fn_alias_renames
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import ./typed_row_queries.vibe {
+  dtd_is_own_index
+}
+
 import ./env_keys.vibe {
   impl_target_var_key_prefix
 }
 
-/// The pre-lowering index maps a qualified function alias to its resolved function.
+/// Private entry for receiver calls through a qualified value alias.
 export fn receiver_alias_key(_ name: String) -> String {
   String::concat("$receiver_alias$", name)
 }
@@ -17,4 +29,71 @@ export fn impl_target_fn_key(_ name: String) -> String {
 /// encoded with `impl_target_key`.
 export fn impl_target_var_key(_ name: String) -> String {
   String::concat(impl_target_var_key_prefix(), name)
+}
+
+/// Lower receiver aliases through a top-level forwarder. Substituting an alias's
+/// unqualified target at a call site would capture a local of the same name.
+/// The alias itself remains a value for explicit references and host operations.
+export fn prepare_receiver_alias_entries(_ stmts: Array[Stmt]) -> Unit {
+  let sites: MutMap[String, Int] = MutMap::new_string()
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, at = i) {
+      SLet(_, _, name, _, EIdent(_, _)) => if String::index_of(name, needle = "::") >= 0 {
+        MutMap::set(sites, k = name, v = i)
+        found = true
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if !found {
+    return ()
+  }
+  let bodies: MutMap[String, Expr] = MutMap::new_string()
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, body) => if body is EFn(_, _, _, _, _, _) {
+        MutMap::set(bodies, k = name, v = body)
+      },
+      _ => ()
+    }
+  }
+  for pair in collect_top_level_fn_alias_renames(stmts) {
+    let (alias, target) = pair
+    match MutMap::get(sites, k = alias) {
+      Some(site) => {
+        let entry = receiver_alias_key(alias)
+        if !MutMap::has(bodies, k = entry) {
+          match MutMap::get(bodies, k = target) {
+            Some(EFn(formals, bounds, params, ret, eff, _)) => {
+              let inputs: Array[(String, Option[TypeExpr])] = []
+              let args: Array[Expr] = []
+              let mut j = 0
+              while j < Array::length(params) {
+                let (_, ty) = Array::get(params, at = j)
+                let arg = "$receiver_arg$" + __to_string(j)
+                Array::push(inputs, value = (arg, ty))
+                Array::push(args, value = EIdent(arg, -1))
+                j = j + 1
+              }
+              let forward = SLet(false, false, entry, None, EFn(formals, bounds, inputs, ret, eff, ECall(EIdent(target, -1), args, -1, [
+              ])))
+              if dtd_is_own_index(site) {
+                Array::push(stmts, value = forward)
+              } else {
+                // Context rows inform this module but only the alias owner
+                // emits the forwarding function.
+                Array::set(stmts, at = site, value = forward)
+              }
+            },
+            _ => ()
+          }
+        }
+      },
+      None => ()
+    }
+  }
+  ()
 }
