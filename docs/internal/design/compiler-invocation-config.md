@@ -379,10 +379,11 @@ projection. The final entry parse uses the same flags. Retained project state
 keeps source inputs and discards typing results when its namespace or checked
 Exception-row policy changes.
 
-The checker's missing-label suspension, site collector and compatibility cache
-scope still use process state. An independently configured query can select its
-target; overlapping codemods still need invocation-owned checker policy and
-capture.
+Ordinary checks require argument labels. Repair dependency checks accept
+missing labels in their own cache namespace. The entry check owns the array
+of resolved sites and its offset index, including the sites of methods whose
+receiver type becomes known later. Returning or throwing from any of these
+checks requires no restoration of label policy or cache scope.
 
 ## Parser syntax for compiler-printed modules
 

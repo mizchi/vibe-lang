@@ -1,3 +1,6 @@
+import @vibe/core {
+  struct MutMap
+}
 import @vibe/compiler/core {
   BindingOrigin,
   Expr,
@@ -11,11 +14,16 @@ import @vibe/compiler/core {
   env_bind_with_origin
 }
 import @vibe/compiler/checker {
+  LabelCheck,
+  LabelSite,
+  TypedOccurrenceRoleLaneCapture,
   check_expr,
+  check_expr_capture,
   checker_call_header_probe_begin,
   checker_call_header_probe_end,
   checker_capture_resolved_call_placement,
-  checker_record_call_placement
+  checker_record_call_placement,
+  new_call_observation
 }
 
 fn labeled_call(_ value: Expr) -> Expr {
@@ -226,4 +234,38 @@ test "placement validation uses each call's own error boundary" {
   ], 7, []), env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [
   ])
   assert(String::contains(String::join(errors, sep = "\n"), needle = "unknown labeled argument `typo`"))
+}
+
+/// Keep two collectors live across an ordinary check, using the same byte
+/// offset in both sources. Exercise call dispatch through the checker.
+test "nested ordinary and repair checks own their label policy and offsets" {
+  let outer: Array[LabelSite] = []
+  let inner: Array[LabelSite] = []
+  let first = Some(new_call_observation(labels = CollectLabelSites(outer, MutMap::new_int()), lowering_enabled = false))
+  let second = Some(new_call_observation(labels = CollectLabelSites(inner, MutMap::new_int()), lowering_enabled = false))
+  let env = env_bind_with_origin(env = EnvEmpty, name = "first", ty = CtFn([
+    CtInt
+  ], CtInt, None), origin = BindingOriginModuleFunctionHeader("a.vibe", "first", [
+    "left"
+  ], []))
+  let env = env_bind_with_origin(env = env, name = "second", ty = CtFn([CtInt], CtInt, None), origin = BindingOriginModuleFunctionHeader("b.vibe", "second", [
+    "right"
+  ], []))
+  let check = (name: String, offset: Int, capture: Option[TypedOccurrenceRoleLaneCapture]) -> {
+    let errors: Array[String] = []
+    let _ = check_expr_capture(expr = ECall(EIdent(name, offset), [EInt(7)], offset, [
+    ]), env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [], capture = capture, lane = "Primary")
+    String::join(errors, sep = "\n")
+  }
+  assert_eq(check("first", 7, first), "")
+  assert(String::contains(check("second", 7, None), needle = "label the arguments of second: write `right = ` before argument 1"))
+  assert_eq(check("second", 7, second), "")
+  assert_eq(check("first", 7, first), "")
+  assert_eq(check("first", 17, first), "")
+  assert_eq(for row in outer {
+    (row.callee, row.offset, row.names)
+  }, [("first", 7, ["left"]), ("first", 17, ["left"])])
+  assert_eq(for row in inner {
+    (row.callee, row.offset, row.names)
+  }, [("second", 7, ["right"])])
 }

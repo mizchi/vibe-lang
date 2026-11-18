@@ -6,10 +6,11 @@ import @vibe/compiler/config {
   target_cfg_for_label_query,
   target_cfg_from_csv,
   target_cfg_identity,
-  target_cfg_namespace
+  target_cfg_namespace,
+  target_cfg_repairs_labels
 }
 import @vibe/compiler/cache {
-  set_persistent_cache_cfg_flags, set_persistent_cache_scope
+  set_persistent_cache_cfg_flags
 }
 import @vibe/parser {
   cfg_ambient_flags_identity, cfg_flags_identity, lex, parse_program_with_cfg, set_cfg_ambient_flags
@@ -75,16 +76,13 @@ test "captured target configuration survives a later nested handler" {
 
 test "label queries select their own cache namespace while retaining their caller's flags" {
   let strict = target_cfg_from_csv("alpha")
-  set_persistent_cache_scope("other")
-  let other = target_cfg_from_csv("alpha")
-  let repair = target_cfg_for_label_query(other)
-  set_persistent_cache_scope("labels-suspended")
-  let compatibility = target_cfg_from_csv("alpha")
-  set_persistent_cache_scope("")
+  let repair = target_cfg_for_label_query(strict)
+  assert(!target_cfg_repairs_labels(strict))
+  assert(target_cfg_repairs_labels(repair))
   assert_eq(target_cfg_identity(repair), target_cfg_identity(strict))
   assert_eq(target_cfg_flags(repair), target_cfg_flags(strict))
-  assert_eq(target_cfg_namespace(repair), target_cfg_namespace(compatibility))
+  assert_eq(target_cfg_namespace(repair), target_cfg_namespace(strict) + "|scope=labels-suspended")
   assert_eq(target_cfg_namespace(target_cfg_for_label_query(repair)), target_cfg_namespace(repair))
   assert(target_cfg_namespace(strict) != target_cfg_namespace(repair))
-  assert(target_cfg_namespace(other) != target_cfg_namespace(repair))
+  assert_eq(target_cfg_namespace(target_cfg_from_csv("alpha")), target_cfg_namespace(strict))
 }

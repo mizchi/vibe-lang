@@ -5,7 +5,7 @@ import @vibe/compiler/checker/artifacts/module {
   checked_module_input_fingerprint
 }
 import @vibe/compiler/config {
-  Config, target_cfg_from_csv, target_cfg_namespace
+  Config, target_cfg_for_label_query, target_cfg_from_csv, target_cfg_namespace
 }
 import @vibe/compiler/cache {
   compact_source_fingerprint_memo,
@@ -314,4 +314,17 @@ test "legacy in-memory flag checks retain warm reuse and invalidate flag changes
     typecheck_cfg_reset()
     throw(message)
   } }
+}
+
+test "ordinary DBs enforce labels even when supplied the flags of a repair query" {
+  let path = "_build/strict_after_repair_\{Profiler::now_us()}.vibe"
+  let source = "fn left(value: Int) -> Int { value }\nfn main() -> Int { left(1) }\n"
+  Fs::write_file(path, contents = source)
+  let cfg = target_cfg_for_label_query(target_cfg_from_csv("alpha"))
+  let db = db_set_source(db = db_new(checked_error_row = false), path = path, source = source)
+  let message = handle {
+    let _ = db_typecheck_fs_with_config(db = db, path = path, cfg = cfg)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, needle = "label the arguments of left: write `value = ` before argument 1"))
 }

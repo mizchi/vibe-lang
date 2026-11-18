@@ -1,3 +1,7 @@
+import ./checker_label_policy.vibe {
+  LabelCheck, strict_label_check
+}
+
 // lib/@vibe/compiler/checker/checker.vibe — infer binop type.
 
 import @vibe/compiler/checker/annotations {
@@ -2453,7 +2457,10 @@ fn resolve_tparams_in_core(ty: Type, env: TypeEnv) -> Type {
 // legacy `(offset, Type)` table as its only output.
 export struct TypedOccurrenceRoleLaneCapture {
   entries: Array[(String, String)];
-  // #2391/#2425 KPI: with provenance_enabled = false, append_legacy records
+  labels: LabelCheck;
+  // Repair-only checks collect sites without recording lowering or provenance.
+  lowering_enabled: Bool;
+  // #2391/#2425 KPI: with lowering_enabled, append_legacy records
   // into THIS flag array instead of `entries` -- one Int (1 = a primary
   // call result, 0 = anything else) per typed occurrence, so an
   // entries-only capture allocates no per-occurrence tuple block at all.
@@ -2492,6 +2499,14 @@ export struct TypedOccurrenceRoleLaneCapture {
   provenance_enabled: Bool;
   mut frame_depth: Int;
   mut complete: Bool
+}
+
+/// Bare expression checks and ordinary checks enforce required labels.
+export fn call_label_check(_ capture: Option[TypedOccurrenceRoleLaneCapture]) -> LabelCheck {
+  match capture {
+    Some(c) => c.labels,
+    None => strict_label_check
+  }
 }
 
 // The disabled guard is queried for every expression, often several times.
@@ -2743,7 +2758,7 @@ export fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int,
   Array::push(tytab, value = (offset, ty))
   match capture {
     Some(capture_entries) => {
-      if !capture_entries.provenance_enabled {
+      if capture_entries.lowering_enabled {
         // #2391: entries-only mode -- one flag, no tuple, no provenance row,
         // no completeness bookkeeping (see the field's note on the struct).
         Array::push(capture_entries.entries_flags, value = if role == "CallResult" && lane == "Primary" {
@@ -2751,6 +2766,8 @@ export fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int,
         } else {
           0
         })
+      } else if !capture_entries.provenance_enabled {
+        ()
       } else if lane == "SyntheticRewrite" || lane == "AuxiliaryResumeValueRecheck" || capture_entries.frame_depth == 0 {
         Array::push(capture_entries.entries, value = (role, lane))
         capture_entries.complete = false
@@ -2802,7 +2819,7 @@ export fn typed_lowering_binop_anchor(own_off: Int, left: Expr, right: Expr) -> 
 /// instead of a wrong rewrite.
 export fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, own_off: Int, left: Expr, right: Expr, left_ty: Type, right_ty: Type) -> Unit {
   match capture {
-    Some(c) => if !c.provenance_enabled {
+    Some(c) => if c.lowering_enabled {
       let anchor_off = typed_lowering_binop_anchor(own_off = own_off, left = left, right = right)
       let kind = if op == "+" {
         2
@@ -2841,7 +2858,7 @@ export fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCa
 /// records nothing.
 export fn record_float_arith(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, kind: Int) -> Unit {
   match capture {
-    Some(c) => if !c.provenance_enabled && off >= 0 {
+    Some(c) => if c.lowering_enabled && off >= 0 {
       Array::push(c.binop_offsets, value = off)
       Array::push(c.binop_kinds, value = kind)
       Array::push(c.binop_types, value = CtFloat)
@@ -2915,7 +2932,7 @@ fn receiver_formal_var(t: Type, s: Subst) -> Int {
 /// `scheme_formal_constrained` says every caller saw the constraint.
 export fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, kind: Int, s: Subst) -> Unit {
   match capture {
-    Some(c) => if !c.provenance_enabled && bracket_off >= 0 {
+    Some(c) => if c.lowering_enabled && bracket_off >= 0 {
       let settled = match resolved {
         CtArray(_) => true,
         CtString => true,

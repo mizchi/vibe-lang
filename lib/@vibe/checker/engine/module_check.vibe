@@ -1,5 +1,5 @@
 import @vibe/compiler/config {
-  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace, target_cfg_repairs_labels
 }
 
 import @vibe/ast {
@@ -66,9 +66,12 @@ import @vibe/compiler/cache {
 }
 import @vibe/compiler/checker {
   CheckedProgram,
+  LabelCheck,
+  TypedOccurrenceRoleLaneCapture,
   check_program_with_projected_import_env_lowering_placements,
   declaring_module_path_clear,
   declaring_module_path_set,
+  new_call_observation,
   retention_summaries_clear,
   retention_summaries_for_path,
   typing_semantics_seed
@@ -1548,6 +1551,22 @@ fn engine_check_module_diagnostics(job: CheckJob, observe_typing_artifact: Bool,
   engine_check_module_diagnostics_with_config(job = job, observe_typing_artifact = observe_typing_artifact, program_transport = program_transport, artifact_output = artifact_output, interfaces = interfaces, render_diagnostics = render_diagnostics, cfg = target_cfg_ambient())
 }
 
+/// Reuse lowering scratch for each serial step of this repair walk. Nested
+/// walks have their own interface sets, and strict checks use their normal scratch.
+fn repair_lowering_capture(interfaces: DependencyInterfaceSet, cfg: TargetCfg) -> Option[TypedOccurrenceRoleLaneCapture] {
+  if target_cfg_repairs_labels(cfg) {
+    match interfaces.repair_capture {
+      Some(_) => interfaces.repair_capture,
+      None => {
+        interfaces.repair_capture = Some(new_call_observation(labels = RepairLabelDependency, lowering_enabled = true))
+        interfaces.repair_capture
+      }
+    }
+  } else {
+    None
+  }
+}
+
 /// Use this invocation's target flags for parsing and cache identity.
 fn engine_check_module_diagnostics_with_config(job: CheckJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]], artifact_output: Option[(Bytes, Array[CheckedModuleArtifact])], interfaces: Option[DependencyInterfaceSet], render_diagnostics: Bool, cfg: TargetCfg) -> ModuleOutcome with Env + Exception {
   // Parse stays OUTSIDE the handler below: parse errors currently
@@ -1613,7 +1632,7 @@ fn engine_check_module_diagnostics_with_config(job: CheckJob, observe_typing_art
       // A check that throws must not leave this module named as the one
       // being checked: the cells are process-global.
       let (checked_program, located_offsets, eq_offs, eq_keys, placements) = handle {
-        check_program_with_projected_import_env_lowering_placements(stmts = stmts, initial_env = import_env, checked_error_row = job.checked_error_row)
+        check_program_with_projected_import_env_lowering_placements(stmts = stmts, initial_env = import_env, checked_error_row = job.checked_error_row, repair_capture = repair_lowering_capture(interfaces = published, cfg = cfg))
       } with { Exception::Throw(message) => {
         declaring_module_path_clear()
         retention_summaries_clear()

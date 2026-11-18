@@ -14,19 +14,27 @@ import @vibe/compiler/cache {
 /// Target-program flags and their exact parser/cache identity. The package
 /// contract hides the constructor; accessors never expose the retained array.
 export enum TargetCfg {
-  TargetCfg(Array[String], String, String)
+  TargetCfg(Array[String], String, String, Bool)
 }
 
 fn target_cfg_from_flags(_ flags: Array[String]) -> TargetCfg {
   let identity = cfg_flags_identity(flags)
-  TargetCfg(flags, identity, persistent_cache_namespace_for_cfg(identity))
+  TargetCfg(flags, identity, persistent_cache_namespace_for_cfg(identity), false)
 }
 
 /// Preserve the captured flags and choose the label repair namespace even
 /// when the caller supplies a snapshot from another checking mode.
 export fn target_cfg_for_label_query(_ cfg: TargetCfg) -> TargetCfg {
   match cfg {
-    TargetCfg(flags, identity, _) => TargetCfg(flags, identity, persistent_cache_namespace_for_label_query(identity))
+    TargetCfg(flags, identity, _, _) => TargetCfg(flags, identity, persistent_cache_namespace_for_label_query(identity), true)
+  }
+}
+
+/// Ordinary DBs never publish a repair verdict or hydrate its cached environment.
+export fn target_cfg_for_check(_ cfg: TargetCfg) -> TargetCfg {
+  match cfg {
+    TargetCfg(flags, identity, _, true) => TargetCfg(flags, identity, persistent_cache_namespace_for_cfg(identity), false),
+    _ => cfg
   }
 }
 
@@ -50,20 +58,27 @@ export fn target_cfg_ambient() -> TargetCfg {
 /// A parser receives its own copy rather than authority to edit the snapshot.
 export fn target_cfg_flags(_ cfg: TargetCfg) -> Array[String] {
   match cfg {
-    TargetCfg(flags, _, _) => Array::slice(flags, start = 0, end = Array::length(flags))
+    TargetCfg(flags, _, _, _) => Array::slice(flags, start = 0, end = Array::length(flags))
   }
 }
 
 /// Exact identity for parse memos and persistent flag namespaces.
 export fn target_cfg_identity(_ cfg: TargetCfg) -> String {
   match cfg {
-    TargetCfg(_, identity, _) => identity
+    TargetCfg(_, identity, _, _) => identity
   }
 }
 
 /// The compiler/format/flag namespace captured with this invocation's flags.
 export fn target_cfg_namespace(_ cfg: TargetCfg) -> String {
   match cfg {
-    TargetCfg(_, _, namespace) => namespace
+    TargetCfg(_, _, namespace, _) => namespace
+  }
+}
+
+/// Whether this snapshot publishes dependencies for a label repair.
+export fn target_cfg_repairs_labels(_ cfg: TargetCfg) -> Bool {
+  match cfg {
+    TargetCfg(_, _, _, repair) => repair
   }
 }

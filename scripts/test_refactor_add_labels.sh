@@ -49,6 +49,68 @@ invoke refactor add-labels --write "$rel/main.vibe" > "$work/again.out"
 cmp "$rel/main.vibe" "$work/written.vibe"
 grep -q '^add-labels: 0 labels in 0 calls;' "$work/again.out"
 
+# A bare receiver-method call must still resolve after its receiver gains a label.
+cat > "$rel/retry.vibe" <<'VIBE'
+struct Meter { n: Int }
+fn Meter::value(self: Meter) -> Int { self.n }
+fn Meter::shift(self: Meter, by: Int) -> Int { self.n - by }
+export fn main() -> Int {
+  let m = Meter::{ n: 10 }
+  value(m) - shift(m, 3)
+}
+VIBE
+invoke refactor add-labels --positional=none --write "$rel/retry.vibe" > "$work/retry.out"
+grep -Fq 'value(self = m) - shift(self = m, by = 3)' "$rel/retry.vibe"
+# Follow a qualified value alias through to its function under each allocator.
+cat > "$rel/alias.vibe" <<'VIBE'
+struct Meter { n: Int }
+fn impl_value(_ m: Meter) -> Int { m.n }
+let alias_value = impl_value
+let Meter::value = alias_value
+export fn main() -> Int {
+  let m = Meter::{ n: 21 }
+  let impl_value = (unused: Meter) -> Int { 1 }
+  m.value() + value(m) + impl_value(m)
+}
+VIBE
+# A method alias can return an unannotated pull-closure factory's result.
+cat > "$rel/pull.vibe" <<'VIBE'
+struct Meter { n: Int }
+let make_pull = (_ m: Meter) -> {
+  let mut next = Some(m.n)
+  () -> Option[Int] {
+    let got = next
+    next = None
+    got
+  }
+}
+let Meter::items = make_pull
+export fn main() -> Int {
+  let m = Meter::{ n: 21 }
+  let mut sum = 0
+  for x in m.items() { sum = sum + x }
+  for x in items(m) { sum = sum + x }
+  sum
+}
+VIBE
+for rc in 0 1 shadow; do
+  VIBE_RC="$rc" invoke compile "$rel/pull.vibe" -o "$rel/pull-$rc.wasm" --entry main > "$work/pull-$rc-compile.out"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/pull-$rc.wasm" > "$work/pull-$rc-value.out"
+  grep -qx '42' "$work/pull-$rc-value.out"
+  VIBE_RC="$rc" invoke compile "$rel/alias.vibe" -o "$rel/alias-$rc.wasm" --entry main > "$work/alias-$rc-compile.out"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/alias-$rc.wasm" > "$work/alias-$rc-value.out"
+  grep -qx '43' "$work/alias-$rc-value.out"
+  VIBE_RC="$rc" invoke compile "$rel/retry.vibe" -o "$rel/retry-$rc.wasm" --entry main > "$work/retry-$rc-compile.out"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$rel/retry-$rc.wasm" > "$work/retry-$rc-value.out"
+  grep -qx '3' "$work/retry-$rc-value.out"
+done
+sed 's/value(self = m)/value(typo = m)/' "$rel/retry.vibe" > "$rel/retry-wrong.vibe"
+if invoke check "$rel/retry-wrong.vibe" > "$work/retry-wrong.out" 2>&1; then
+  echo 'add-labels: a bare method call accepted the wrong receiver label' >&2
+  exit 1
+fi
+grep -Fq 'unknown labeled argument `typo`' "$work/retry-wrong.out"
+
 # A file that does not check is named, left alone, and fails the run.
 printf 'export fn main() -> Int {\n  let s: String = 1\n  0\n}\n' > "$rel/broken.vibe"
 cp "$rel/broken.vibe" "$work/broken.before"
@@ -66,7 +128,8 @@ mkdir -p "$rel/cached"
 printf 'export fn twice(n: Int) -> Int {\n  n * 2\n}\n\nexport fn quad(n: Int) -> Int {\n  twice(twice(n))\n}\n' > "$rel/cached/dep.vibe"
 printf 'import ./dep.vibe { quad }\n\nexport fn main() -> Int {\n  quad(n = 1)\n}\n' > "$rel/cached/main.vibe"
 export VIBE_BUILD_CACHE_DIR="$work/build-cache"
-invoke refactor add-labels "$rel/cached/main.vibe" > "$work/cached.out" 2>&1 || true
+invoke refactor add-labels "$rel/cached/main.vibe" > "$work/cached.out" 2>&1
+grep -q '^add-labels: 0 labels in 0 calls;' "$work/cached.out"
 if invoke check "$rel/cached/main.vibe" > "$work/cached-check.out" 2>&1; then
   echo 'add-labels: a check after the codemod passed a dependency missing labels' >&2
   cat "$work/cached-check.out" >&2

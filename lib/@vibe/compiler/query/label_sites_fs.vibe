@@ -15,7 +15,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  LabelSite, check_program_with_projected_import_env_result, checker_required_labels_suspend, label_sites_begin, label_sites_end
+  check_projected_label_sites
 }
 
 import @vibe/parser {
@@ -30,9 +30,6 @@ import @vibe/compiler/core {
   TypeEnv
 }
 
-import @vibe/compiler/cache {
-  set_persistent_cache_scope
-}
 import @vibe/compiler/query/project_context {
   QueryProjectEdit, QueryProjectState, query_project_context_fs_with_config, query_project_state_new
 }
@@ -64,19 +61,6 @@ fn label_sites_failed(path: String, source: String, message: String) -> LabelSit
 /// flows through the sweep, including the complete per-module rows retained
 /// when a dependency walk throws. The replacement is never written to disk.
 fn label_sites_file(cfg: TargetCfg, path: String, source: String, replacement: Option[String], state: QueryProjectState, checked_error_row: Bool) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
-  // ADR-0120 Phase 4: the labels the codemod writes are not errors while it
-  // types the program, its import walk included. What that walk publishes
-  // was checked without them, so it goes to a cache namespace of its own: an
-  // ordinary check never reads it back as clean (Codex on #3881).
-  set_persistent_cache_scope("labels-suspended")
-  checker_required_labels_suspend(true)
-  let answer = label_sites_file_typed(cfg = cfg, path = path, source = source, replacement = replacement, state = state, checked_error_row = checked_error_row)
-  checker_required_labels_suspend(false)
-  set_persistent_cache_scope("")
-  answer
-}
-
-fn label_sites_file_typed(cfg: TargetCfg, path: String, source: String, replacement: Option[String], state: QueryProjectState, checked_error_row: Bool) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
   handle {
     let edit = match replacement {
       None => None,
@@ -101,18 +85,11 @@ fn label_sites_typed(cfg: TargetCfg, path: String, source: String, entry_source:
   if delta < 0 {
     label_sites_failed(path = path, source = source, message = "add-labels: refusing to edit this file -- its ingested source is not the file plus a prefix")
   } else {
-    label_sites_begin()
-    let checked = handle {
+    handle {
       // A fresh parse: the checker mutates the statements it is handed.
       let (tokens, starts, _) = lex_with_offsets(entry_source)
       let stmts = parse_program_located_with_cfg(tokens = tokens, starts = starts, source = entry_source, cfg_flags = target_cfg_flags(cfg))
-      let _ = check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env, checked_error_row = checked_error_row)
-      ""
-    } with { Exception::Throw(message) => message }
-    let sites = label_sites_end()
-    if String::length(checked) > 0 {
-      label_sites_failed(path = path, source = source, message = checked)
-    } else {
+      let sites = check_projected_label_sites(stmts = stmts, initial_env = import_env, checked_error_row = checked_error_row)
       LabelSiteFile::{
         path: path,
         source: source,
@@ -120,7 +97,7 @@ fn label_sites_typed(cfg: TargetCfg, path: String, source: String, entry_source:
         sites: sites,
         error: ""
       }
-    }
+    } with { Exception::Throw(message) => label_sites_failed(path = path, source = source, message = message) }
   }
 }
 

@@ -1,5 +1,5 @@
 import @vibe/compiler/config {
-  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace, target_cfg_repairs_labels
 }
 
 import @vibe/ast {
@@ -40,6 +40,7 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo, compact_string_fingerprint, typing_module_fingerprint
 }
 import @vibe/compiler/checker {
+  TypedOccurrenceRoleLaneCapture,
   aliased_builtin_import_type,
   builtin_alias_marker,
   builtin_type_alias_any_marker,
@@ -118,10 +119,12 @@ struct DependencyInterfaceProduct {
   mut view: Option[DependencyInterfaceView]
 }
 export struct DependencyInterfaceSet {
-  rows: Array[(String, DependencyInterfaceProduct)]
+  rows: Array[(String, DependencyInterfaceProduct)];
+  // One dependency walk owns these scratch arrays across its serial steps.
+  mut repair_capture: Option[TypedOccurrenceRoleLaneCapture]
 }
 export fn engine_dependency_interface_set_new() -> DependencyInterfaceSet {
-  DependencyInterfaceSet::{ rows: [] }
+  DependencyInterfaceSet::{ rows: [], repair_capture: None }
 }
 fn engine_dependency_interface_view(_ env: TypeEnv) -> DependencyInterfaceView {
   let bindings = env_flat_bindings(env)
@@ -2526,7 +2529,12 @@ export fn engine_typecheck_fs_build_fingerprint_with_config(path: String, source
   } else {
     compact_string_fingerprint("target-flags-v1:\{String::length(flags)}:\{flags}\{source_fingerprint}")
   }
-  typing_module_fingerprint(source_fingerprint = scoped_source, dep_fps = dep_fps, typing_semantics_seed = semantics_seed)
+  let semantics = if target_cfg_repairs_labels(cfg) {
+    semantics_seed + "|labels-suspended"
+  } else {
+    semantics_seed
+  }
+  typing_module_fingerprint(source_fingerprint = scoped_source, dep_fps = dep_fps, typing_semantics_seed = semantics)
 }
 
 fn engine_identity_has_kind(_ kinds: Array[String]) -> Bool {

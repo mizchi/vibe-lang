@@ -407,3 +407,22 @@ test "#3193: assignment targets keep top-level mutable bindings" {
     "main"
   ])), "2")
 }
+
+test "early DCE follows reachable bare and dot method calls before their owner is known" {
+  let body = EFn([], [], [], no_ty(), None, EInt(1))
+  let m = EIdent("m", -1)
+  let bare = ECall(EIdent("value", -1), [m], -1, [])
+  let dot = ECall(EDot(m, "shift", -1, -1), [], -1, [])
+  let dead = ECall(EDot(m, "dead", -1, -1), [], -1, [])
+  let stmts = [
+    SLet(false, false, "M::value", no_ty(), body),
+    SLet(false, false, "M::shift", no_ty(), EIdent("shift_impl", -1)),
+    SLet(false, false, "shift_impl", no_ty(), body),
+    SLet(false, false, "M::dead", no_ty(), body),
+    SLet(false, false, "unused", no_ty(), dead),
+    SLet(false, false, "main", no_ty(), EBinOp("+", bare, dot, -1))
+  ]
+  inspect(kept_names(dce_stmts_before_trait_desugar(stmts = stmts, entry_names = [
+    "main"
+  ])), "M::value M::shift shift_impl main ")
+}
