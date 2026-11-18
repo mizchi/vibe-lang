@@ -352,11 +352,111 @@ let pf_exit_late: Int = 2048
 
 let pf_cons_unmarked: Int = 4096
 
+// Both the initial reference and its conditional dups have a located transfer.
+// Their single counter covers the entire owned parameter budget at each return.
+let pf_param_return_budget: Int = 8192
+
+// A consume spends neither a located dup nor the initial reference.
+let pf_param_budget_bad: Int = 16384
+
+/// A split of the initial reference can coexist with a split of a dup.
+/// Keep every prologue dup in this case. Mark both kinds of transfer so the
+/// epilogue and every plain return subtract from the same budget.
+export fn pe_emit_param_return_budget(ctx: PCtx, id: Int) -> Unit {
+  if !pe_flag_has(ctx = ctx, id = id, bit = pf_split) || !pe_flag_has(ctx = ctx, id = id, bit = pf_dsplit) {
+    return ()
+  } else ()
+  if pe_flag_has(ctx = ctx, id = id, bit = pf_param_budget_bad) || pe_flag_has(ctx = ctx, id = id, bit = pf_dsplit_bad) || pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) || pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) || !pe_name_unique(ctx = ctx, id = id) {
+    return ()
+  } else ()
+  let mut dups = 0
+  for action in ctx.actions {
+    if action.binding_id == id {
+      if pa_is_dup(action) {
+        dups = dups + 1
+      } else if pa_is_drop(action) {
+        return ()
+      } else ()
+    } else ()
+  }
+  let mut marks = 0
+  for marked in ctx.dmark_ids {
+    if marked == id {
+      marks = marks + 1
+    } else ()
+  }
+  if dups == 0 || marks != dups || !pe_int_array_has(xs = ctx.mark_ids, v = id) {
+    return ()
+  } else ()
+  let body = Array::get(ctx.decl_bodies, at = id)
+  if !pe_owned_return_result(ctx = ctx, e = body, views = [], require_fresh = true, transfer_id = id) {
+    return ()
+  } else ()
+  pe_flag_or(ctx = ctx, id = id, bit = pf_param_return_budget)
+  let name = Array::get(ctx.decl_names, at = id)
+  pe_emit_param_marks(ctx = ctx, id = id, name = name, ids = ctx.mark_ids, offsets = ctx.mark_offs)
+  pe_emit_param_marks(ctx = ctx, id = id, name = name, ids = ctx.dmark_ids, offsets = ctx.dmark_offs)
+  let budget = 1 + dups
+  let mut i = 0
+  while i < budget {
+    let _ = pe_push_for(ctx = ctx, kind = PaPathDrop, name = name, binding_id = id, use_offset = -1)
+    i = i + 1
+  }
+  // The parameter is in scope at every plain return, even when the arm has
+  // spent the last planned use before its enclosing merge records the split.
+  let mut ord = 0
+  while ord < ctx.exit_ord {
+    Array::push(ctx.actions, value = PerceusAction::{
+      kind: PaExitDrop,
+      name: name,
+      binding_id: id,
+      use_offset: ord,
+      extra: 0 - budget
+    })
+    ord = ord + 1
+  }
+}
+
+fn pe_emit_param_marks(ctx: PCtx, id: Int, name: String, ids: Array[Int], offsets: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(ids) {
+    if Array::get(ids, at = i) == id {
+      let _ = pe_push_for(ctx = ctx, kind = PaConsumeMark, name = name, binding_id = id, use_offset = Array::get(offsets, at = i))
+    } else ()
+    i = i + 1
+  }
+}
+
+fn pe_has_transfer_at(ids: Array[Int], offsets: Array[Int], id: Int, off: Int) -> Bool {
+  let mut i = 0
+  while i < Array::length(ids) {
+    if Array::get(ids, at = i) == id && Array::get(offsets, at = i) == off {
+      return true
+    } else ()
+    i = i + 1
+  }
+  false
+}
+
+fn pe_return_transfers_param(ctx: PCtx, e: Expr, id: Int) -> Bool {
+  match e {
+    // Before the last owning use the caller receives a dup. A later return
+    // can transfer the initial reference. Both spend exactly one marked use.
+    EIdent(n, off) => id >= 0 && n == Array::get(ctx.decl_names, at = id) && (pe_has_transfer_at(ids = ctx.mark_ids, offsets = ctx.mark_offs, id = id, off = off) || pe_has_transfer_at(ids = ctx.dmark_ids, offsets = ctx.dmark_offs, id = id, off = off)),
+    _ => false
+  }
+}
+
 /// #1980: binding `id` was consumed by something other than a recorded dup
 /// occurrence, so a consume mark count cannot say what a path reaching a
 /// later exit holds (`pe_exit`).
-export fn pe_note_unmarked_consume(ctx: PCtx, id: Int) -> Unit {
-  pe_flag_or(ctx = ctx, id = id, bit = pf_cons_unmarked)
+export fn pe_note_unmarked_consume(ctx: PCtx, id: Int, spends_initial: Bool) -> Unit {
+  let flags = if spends_initial {
+    pf_cons_unmarked
+  } else {
+    pf_cons_unmarked|pf_param_budget_bad
+  }
+  pe_flag_or(ctx = ctx, id = id, bit = flags)
 }
 
 /// Is `id` a binding whose planned dups codegen takes up front, on every path
@@ -372,7 +472,7 @@ fn pe_dup_upfront(ctx: PCtx, id: Int) -> Bool {
 /// freshly constructed aggregate, or a retained view. The return uses the same
 /// flag as the epilogue for a parameter whose remaining count reached zero.
 export fn pe_split_release_ok(ctx: PCtx, id: Int) -> Bool {
-  if pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) {
+  if pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_param_return_budget) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) {
     if pe_flag_has(ctx = ctx, id = id, bit = pf_param) {
       // The planner stores EUnit as the result spine of an immediate-result
       // function. A literal Unit body cannot contain a split.
@@ -686,26 +786,26 @@ export fn pe_dsplit_marks_ok(ctx: PCtx, id: Int) -> Bool {
 // path, keeping the ordinary view check for aliases and shadowed callees.
 // For a heap result with no known view, check that both fallthrough and
 // every explicit return produce their own aggregate or a retained result.
-fn pe_owned_return_result(ctx: PCtx, e: Expr, views: Array[String], tail: Bool = true, require_fresh: Bool = false) -> Bool {
+fn pe_owned_return_result(ctx: PCtx, e: Expr, views: Array[String], tail: Bool = true, require_fresh: Bool = false, transfer_id: Int = -1) -> Bool {
   match e {
     EFn(_, _, _, _, _, _) => !tail || !require_fresh,
-    EReturn(value) => pe_owned_return_result(ctx = ctx, e = value, views = views, require_fresh = require_fresh),
-    EIf(cond, yes, no) => pe_owned_return_result(ctx = ctx, e = cond, views = views, tail = false, require_fresh = require_fresh) && pe_owned_return_result(ctx = ctx, e = yes, views = views, tail = tail, require_fresh = require_fresh) && pe_owned_return_result(ctx = ctx, e = no, views = views, tail = tail, require_fresh = require_fresh),
-    ESeq(head, body) => pe_owned_return_result(ctx = ctx, e = head, views = views, tail = false, require_fresh = require_fresh) && pe_owned_return_result(ctx = ctx, e = body, views = views, tail = tail, require_fresh = require_fresh),
+    EReturn(value) => pe_owned_return_result(ctx = ctx, e = value, views = views, require_fresh = require_fresh, transfer_id = transfer_id),
+    EIf(cond, yes, no) => pe_owned_return_result(ctx = ctx, e = cond, views = views, tail = false, require_fresh = require_fresh, transfer_id = transfer_id) && pe_owned_return_result(ctx = ctx, e = yes, views = views, tail = tail, require_fresh = require_fresh, transfer_id = transfer_id) && pe_owned_return_result(ctx = ctx, e = no, views = views, tail = tail, require_fresh = require_fresh, transfer_id = transfer_id),
+    ESeq(head, body) => pe_owned_return_result(ctx = ctx, e = head, views = views, tail = false, require_fresh = require_fresh, transfer_id = transfer_id) && pe_owned_return_result(ctx = ctx, e = body, views = views, tail = tail, require_fresh = require_fresh, transfer_id = transfer_id),
     ELet(name, value, body, _) => {
       let mark = Array::length(views)
-      let value_ok = pe_owned_return_result(ctx = ctx, e = value, views = views, tail = false, require_fresh = require_fresh)
+      let value_ok = pe_owned_return_result(ctx = ctx, e = value, views = views, tail = false, require_fresh = require_fresh, transfer_id = transfer_id)
       if pe_tail_may_view(ctx = ctx, e = value, views = views) {
         Array::push(views, value = name)
       } else ()
-      let body_ok = pe_owned_return_result(ctx = ctx, e = body, views = views, tail = tail, require_fresh = require_fresh)
+      let body_ok = pe_owned_return_result(ctx = ctx, e = body, views = views, tail = tail, require_fresh = require_fresh, transfer_id = transfer_id)
       Array::truncate(views, length = mark)
       value_ok && body_ok
     },
     EMatch(source, arms) => {
       // The owning-return marker is on the arm result. Check it with the
       // pattern bindings in scope before deciding whether the parameter can drop.
-      if !pe_owned_return_result(ctx = ctx, e = source, views = views, tail = false, require_fresh = require_fresh) {
+      if !pe_owned_return_result(ctx = ctx, e = source, views = views, tail = false, require_fresh = require_fresh, transfer_id = transfer_id) {
         return false
       } else ()
       let source_view = source is EIdent(_, _) || pe_tail_may_view(ctx = ctx, e = source, views = views)
@@ -714,7 +814,7 @@ fn pe_owned_return_result(ctx: PCtx, e: Expr, views: Array[String], tail: Bool =
         if source_view {
           let _ = pat_names(pat = arm.0, out = views)
         } else ()
-        let safe = pe_owned_return_result(ctx = ctx, e = arm.1, views = views, tail = tail, require_fresh = require_fresh)
+        let safe = pe_owned_return_result(ctx = ctx, e = arm.1, views = views, tail = tail, require_fresh = require_fresh, transfer_id = transfer_id)
         Array::truncate(views, length = mark)
         if !safe {
           return false
@@ -732,6 +832,7 @@ fn pe_owned_return_result(ctx: PCtx, e: Expr, views: Array[String], tail: Bool =
             // EDot on an owned temporary already retains the field. For a
             // borrowed receiver, the owning-return marker retains it instead.
             EDot(_, _, _, _) => true,
+            EIdent(_, _) => pe_return_transfers_param(ctx = ctx, e = Array::get(args, at = 0), id = transfer_id),
             ECall(EIdent(f, _), _, _, _) => (is_borrow_ret_builtin(f) || is_borrow_ret_fname(ctx = ctx, fname = f)) && !array_contains_str_pctx(arr = ctx.decl_names, s = f),
             _ => false
           }
@@ -746,6 +847,7 @@ fn pe_owned_return_result(ctx: PCtx, e: Expr, views: Array[String], tail: Bool =
         // A newly constructed result owns its payload on every return path.
         // A returned name alone does not establish that ownership.
         match e {
+          EIdent(_, _) => !pe_return_transfers_param(ctx = ctx, e = e, id = transfer_id),
           EArray(_) => false,
           ETuple(_) => false,
           ERecord(_, _, _) => false,
@@ -763,7 +865,7 @@ fn pe_owned_return_result(ctx: PCtx, e: Expr, views: Array[String], tail: Bool =
       let mut i = mark
       let mut safe = true
       while i < top && safe {
-        safe = pe_owned_return_result(ctx = ctx, e = expr_child_at(i), views = views, tail = false, require_fresh = require_fresh)
+        safe = pe_owned_return_result(ctx = ctx, e = expr_child_at(i), views = views, tail = false, require_fresh = require_fresh, transfer_id = transfer_id)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -1549,6 +1651,12 @@ export fn pe_emit_exit_rows(_ ctx: PCtx) -> Unit {
     let mut ei = 0
     while ei < Array::length(ctx.exit_ids) {
       let id = Array::get(ctx.exit_ids, at = ei)
+      if pe_flag_has(ctx = ctx, id = id, bit = pf_param_return_budget) {
+        // The complete budget already covers every return, including sites
+        // whose remaining count reached zero before the enclosing merge.
+        ei = ei + 1
+        continue
+      } else ()
       let held = if id >= Array::length(dups) {
         0
       } else if Array::get(dups, at = id) > 0 && pe_flag_has(ctx = ctx, id = id, bit = pf_mut_assigned) {

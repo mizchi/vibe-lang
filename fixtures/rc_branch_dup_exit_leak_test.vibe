@@ -340,16 +340,59 @@ fn param_fresh_return(_ v: Array[Int], _ i: Int, _ take: Bool, _ early: Bool) ->
   [value]
 }
 
+// The call may consume one reference, and the return may independently
+// transfer another, including when the parameter is stored in the result.
+fn return_param(_ v: Array[Int], _ i: Int, _ take: Bool, _ early: Bool) -> Array[Int] {
+  // The first exit transfers a prologue dup. The later one transfers the
+  // last use, and can execute with or without the call's dup already spent.
+  if i % 7 == 0 {
+    return v
+  }
+  let value = if take {
+    sink(v)
+  } else {
+    i
+  }
+  if early {
+    return v
+  }
+  [value + 1]
+}
+
+fn return_param_in_array(_ v: Array[Int], _ i: Int, _ take: Bool, _ early: Bool) -> Array[Array[Int]] {
+  let value = if take {
+    sink(v)
+  } else {
+    i
+  }
+  if early {
+    return [v]
+  }
+  [[value + 1]]
+}
+
 fn fresh_return_probe(_ i: Int) -> Int {
   let early = i % 3 == 0
   let row = param_fresh_return(mka(i), i, i % 2 == 0, early)
+  let direct = return_param(mka(i), i, i % 2 == 0, early)
+  let boxed = return_param_in_array(mka(i), i, i % 2 == 0, early)
   let churn = [mka(i + 7), mka(i + 9)]
+  let forwarded = if early {
+    i
+  } else {
+    i + 1
+  }
+  let direct_expected = if i % 7 == 0 {
+    i
+  } else {
+    forwarded
+  }
   let expected = if early {
     i + 1
   } else {
     i
   }
-  if Array::get(row, at = 0) == expected && Array::length(churn) == 2 {
+  if Array::get(row, at = 0) == expected && Array::get(direct, at = 0) == direct_expected && Array::get(Array::get(boxed, at = 0), at = 0) == forwarded && Array::length(churn) == 2 {
     0
   } else {
     1
