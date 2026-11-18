@@ -1293,6 +1293,14 @@ if grep -q 'VIBE_UNSTABLE=1' "$lspudir/optin.bin" 2>/dev/null; then
   echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not suppress the opt-in diagnostic in the LSP (#2297)" >&2
   exit 1
 fi
+# The same Wasm instance runs an opted-in server, then an independent
+# diagnostics invocation. Only the server was granted the opt-in.
+gate_fs_compile_on bump fixtures/lsp_invocation_policy.vibe "$lspudir/policy.wasm" main
+gate_require_artifact "$lspudir/policy.wasm" "LSP invocation policy fixture did not compile"
+exit_msg='{"jsonrpc":"2.0","method":"exit"}'
+VIBE_STDIN_BYTES="$(printf 'Content-Length: %s\r\n\r\n%s' "${#exit_msg}" "$exit_msg")" \
+  gate_run policy_result stdout-last --invoke main "$lspudir/policy.wasm"
+gate_require_eq "$policy_result" 0 "an opted-in LSP run leaked its permission into independent diagnostics"
 # ...and the scan must never COST diagnostics. `collect_all_diagnostics` uses
 # the recovering lexer and reports a lex error; the unstable scan uses
 # `lex_with_offsets`, which THROWS on one. The first version let that throw
