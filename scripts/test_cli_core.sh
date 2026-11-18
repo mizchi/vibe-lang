@@ -330,7 +330,7 @@ if [ ! -f "$CHECK_COMMAND_CALLSTACK_TSV" ] || ! grep -Eq $'^check\t[0-9]+\t[1-9]
 fi
 
 cat >"$DEBUG_LIB_SOURCE" <<'EOF'
-export let helper = (a: Int, b: Int) -> Int { a + b }
+export let helper = (a: Int, b: Int) -> Int { a * 100 + b }
 EOF
 
 cat >"$DEBUG_MAIN_SOURCE" <<'EOF'
@@ -338,43 +338,60 @@ import ./core_debug_lib.vibe { helper }
 let answer = () -> Int { helper(a = 19, b = 23) }
 EOF
 
-run_stage "stage1 core artifact -> linked debug wasm compile" \
-  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-  --invoke _start \
-  "$STAGE1_CORE_WASM" \
-  "${DEBUG_MAIN_SOURCE#$PROJECT_ROOT/}" \
-  "${DEBUG_OUTPUT_WASM#$PROJECT_ROOT/}" \
-  "$ENTRY_NAME" \
-  debug || exit $?
+# Fresh processes share only the cache. A warm prelude verdict plus a cached
+# TypeEnv used to leave the imported call without its checked argument slots.
+check_linked_debug_replay() {
+  local entry_source=$1 final_main=$2 final_lib=$3
+  local phase main_wasm lib_wasm
+  local debug_cold
+  debug_cold=$(mktemp -d "$OUT_DIR/core_debug_cold.XXXXXX")
+  mkdir -p "$debug_cold/cache"
+  for phase in cold warm; do
+    if [ "$phase" = cold ]; then
+      main_wasm="$debug_cold/entry.wasm"
+      lib_wasm="$debug_cold/entry.debug/core_debug_lib.wasm"
+    else
+      main_wasm="$final_main"
+      lib_wasm="$final_lib"
+    fi
+    run_stage "linked debug compile ($phase)" \
+      env VIBE_BUILD_CACHE_DIR="${debug_cold#$PROJECT_ROOT/}/cache" VIBE_LINKED_OUTPUT_MEMO=on VIBE_DEBUG_ENV=1 \
+      bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "$STAGE1_CORE_WASM" \
+      "${entry_source#$PROJECT_ROOT/}" "${main_wasm#$PROJECT_ROOT/}" "$ENTRY_NAME" debug 2>"$debug_cold/$phase.log" || {
+        grep -vF '[env-get]' "$debug_cold/$phase.log" >&2 || true
+        exit 1
+      }
+    if grep -Fq '[env-get] VIBE_PROFILE_MEMORY_MARK:linked_output_memo_hit=' "$debug_cold/$phase.log"; then
+      [ "$phase" = warm ] || { echo "cold linked debug build unexpectedly hit the memo" >&2; exit 1; }
+    elif [ "$phase" = warm ]; then
+      echo "warm linked debug build did not exercise verdict replay" >&2
+      exit 1
+    fi
+    run_wasm_validate "validate linked debug main ($phase)" "$main_wasm" || exit $?
+    run_wasm_validate "validate linked debug library ($phase)" "$lib_wasm" || exit $?
+    run_stage_capture_stdout "execute linked debug main ($phase)" "$DEBUG_OUTPUT_RUN_LOG" \
+      env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
+      "$WASMTIME_RUN" run --preload core_debug_lib="$lib_wasm" --invoke _start "$main_wasm" || exit $?
+    if ! grep -Fxq '1923' "$DEBUG_OUTPUT_RUN_LOG"; then
+      echo "selfhost cli core gate failed: linked debug $phase expected 1923" >&2
+      exit 1
+    fi
+  done
+  cmp "$debug_cold/entry.wasm" "$final_main" || return 1
+  cmp "$debug_cold/entry.debug/core_debug_lib.wasm" "$final_lib" || return 1
+  rm -rf "$debug_cold"
+}
 
-if [ ! -f "$DEBUG_OUTPUT_WASM" ]; then
-  echo "selfhost cli core gate failed: linked debug wasm not produced" >&2
-  exit 1
-fi
+check_linked_debug_replay "$DEBUG_MAIN_SOURCE" "$DEBUG_OUTPUT_WASM" "$DEBUG_LIB_WASM"
 
-if [ ! -f "$DEBUG_LIB_WASM" ]; then
-  echo "selfhost cli core gate failed: linked debug library wasm not produced" >&2
-  exit 1
-fi
-
-run_wasm_validate "validate linked debug main wasm" "$DEBUG_OUTPUT_WASM" || exit $?
-run_wasm_validate "validate linked debug library wasm" "$DEBUG_LIB_WASM" || exit $?
-
-run_stage_capture_stdout "run linked debug wasm produced by selfhost core cli" \
-  "$DEBUG_OUTPUT_RUN_LOG" \
-  env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
-  "$WASMTIME_RUN" run --preload core_debug_lib="$DEBUG_LIB_WASM" --invoke _start "$DEBUG_OUTPUT_WASM" || exit $?
-
-debug_result="$(grep -E '^-?[0-9]+$' "$DEBUG_OUTPUT_RUN_LOG" | tail -n 1 || true)"
-if [ -z "$debug_result" ]; then
-  echo "selfhost cli core gate failed: linked debug sample returned no numeric result" >&2
-  exit 1
-fi
-
-if [ "$debug_result" != "42" ]; then
-  echo "selfhost cli core gate failed: linked debug sample returned '$debug_result' (expected 42)" >&2
-  exit 1
-fi
+# The checker prepends this package's shared scope to its sibling. The call
+# into the explicit Wasm library now sits at a different byte offset.
+debug_pkg=$(mktemp -d "$OUT_DIR/core_debug_shared.XXXXXX")
+printf 'import @vibe/random { seed }\n' > "$debug_pkg/index.vpkg"
+cp "$DEBUG_LIB_SOURCE" "$debug_pkg/core_debug_lib.vibe"
+cp "$DEBUG_MAIN_SOURCE" "$debug_pkg/entry.vibe"
+check_linked_debug_replay "$debug_pkg/entry.vibe" "$debug_pkg/result.wasm" "$debug_pkg/result.debug/core_debug_lib.wasm"
+rm -rf "$debug_pkg"
 
 cat >"$DEBUG_STRING_LIB_SOURCE" <<'EOF'
 export let helper = () -> String { "Hello" }
