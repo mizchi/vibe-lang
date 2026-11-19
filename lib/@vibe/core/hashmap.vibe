@@ -287,13 +287,16 @@ fn place_rehashed_slot[K, V](m: MutMap[K, V], key: K, keys: Array[Option[K]], va
 fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
   let old_ctrl = m.ctrl
   let n = Bytes::length(old_ctrl)
-  let keys: Array[Option[K]] = alloc_slots(n)
-  let vals: Array[Option[V]] = alloc_slots(n)
+  // Stage only live entries, in the original iteration order.
+  let keys: Array[Option[K]] = alloc_slots(m.size)
+  let vals: Array[Option[V]] = alloc_slots(m.size)
+  let mut staged = 0
   let mut i = 0
   while i < n {
     if Bytes::get(old_ctrl, at = i) >= 128 {
-      swap_slots(src = m.keys, from = i, dst = keys, to = i)
-      swap_slots(src = m.vals, from = i, dst = vals, to = i)
+      swap_slots(src = m.keys, from = i, dst = keys, to = staged)
+      swap_slots(src = m.vals, from = i, dst = vals, to = staged)
+      staged = staged + 1
     }
     i = i + 1
   }
@@ -310,15 +313,13 @@ fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
   m.size = 0
   m.tombs = 0
   i = 0
-  while i < n {
-    if Bytes::get(old_ctrl, at = i) >= 128 {
-      match Array::get(keys, at = i) {
-        Some(k) => match Array::get(vals, at = i) {
-          Some(_) => place_rehashed_slot(m = m, key = k, keys = keys, vals = vals, from = i),
-          None => ()
-        },
+  while i < staged {
+    match Array::get(keys, at = i) {
+      Some(k) => match Array::get(vals, at = i) {
+        Some(_) => place_rehashed_slot(m = m, key = k, keys = keys, vals = vals, from = i),
         None => ()
-      }
+      },
+      None => ()
     }
     i = i + 1
   }
