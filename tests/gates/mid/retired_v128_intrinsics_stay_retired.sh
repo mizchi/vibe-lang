@@ -889,6 +889,16 @@ else
   echo "[compiler-gate] note: wasm-tools absent, skipping the private parser memo count probe"
 fi
 
+echo "[compiler-gate] 40f-b7d/40 module header and contract consumers release parse answers (#2509)"
+gate_workdir padir "_build/_gate_module_parse_answer"
+for pa_lane in rc shadow; do
+  gate_fs_compile_on "$pa_lane" fixtures/module_parse_answer_ownership.vibe "$padir/$pa_lane.wasm" main
+  gate_require_artifact "$padir/$pa_lane.wasm" "module parse answer probe did not compile ($pa_lane)"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/module_parse_answer_ownership.cjs" "$padir/$pa_lane.wasm"
+  echo "[compiler-gate] all 21 module parse answers have one owner ($pa_lane)"
+done
+rm -rf "$padir"
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so
