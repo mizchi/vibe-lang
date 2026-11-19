@@ -879,8 +879,12 @@ if command -v wasm-tools >/dev/null 2>&1; then
       | sed -E 's/^(  \(func \$located_parse_memo_stmts_dep_lib__vibe_compiler_loader_header_cache_vibe \(;[0-9]+;\))/\1 (export "test_ast_memo")/' \
       | wasm-tools parse -o "$pcdir/probe.wasm"
     node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/located_parse_cache_hit_count.cjs" "$pcdir/probe.wasm"
+    echo "[compiler-gate] located parser cache retained one version-list owner ($pc_lane)"
   done
   rm -rf "$pcdir"
+elif [[ "${CI:-}" == true ]]; then
+  echo "[compiler-gate] wasm-tools is required for the parser memo count probe in CI" >&2
+  exit 1
 else
   echo "[compiler-gate] note: wasm-tools absent, skipping the private parser memo count probe"
 fi
