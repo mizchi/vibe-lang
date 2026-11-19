@@ -43,7 +43,8 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
-  make_import_alias_rewriter
+  make_import_alias_rewriter,
+  registry_builtin_arity
 }
 
 //# Module flattening
@@ -860,37 +861,34 @@ fn uq_seen_contains(seen: Array[String], name: String) -> Bool {
 /// name is detected against this occurrence. Both cases are one question to
 /// the seen index: a name bound by an enclosing scope is in it too (#2386).
 fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[String]) -> String {
-  // An optional param (`a?`) is declared with its suffix but its
-  // body references use the STRIPPED name. Keep the declaration spelling, but
-  // register that base name as occupied. Otherwise an inner heap-valued
-  // `let a` is not alpha-renamed, and name-keyed RC epilogue bookkeeping can
-  // mistake the local's retained drop for the borrowed parameter's drop.
+  // Optional declarations carry a suffix, but references in the body use
+  // the base name. Keep that distinction when freshening a builtin shadow.
   let nlen = String::length(name)
-  let lastc = if nlen > 0 {
-    String::char_code_at(name, at = nlen - 1)
+  let optional = nlen > 0 && String::char_code_at(name, at = nlen - 1) == '?'
+  let base = if optional {
+    name[0: nlen - 1]
   } else {
-    0
-  }
-  if lastc == '?' {
-    let base = name[0: nlen - 1]
-    if !uq_seen_contains(seen = seen, name = base) {
-      Array::push(seen, value = base)
-    } else {
-      ()
-    }
-    Array::push(env.names, value = base)
-    Array::push(env.values, value = base)
     name
-  } else if uq_env_has(env = env, name = name) || uq_seen_contains(seen = seen, name = name) {
-    let fresh = fresh_shadow_name(counter = counter, name = name, env = env, seen = seen)
-    Array::push(env.names, value = name)
+  }
+  // A visible builtin is already bound even if the body never reads its
+  // name free. In particular, a local closure named eq takes ownership of
+  // its argument, while the builtin borrows it.
+  if (!optional && (uq_env_has(env = env, name = base) || uq_seen_contains(seen = seen, name = base))) || registry_builtin_arity(base) >= 0 {
+    let fresh = fresh_shadow_name(counter = counter, name = base, env = env, seen = seen)
+    Array::push(env.names, value = base)
     Array::push(env.values, value = fresh)
     uq_mark()
-    fresh
+    if optional {
+      String::concat(fresh, "?")
+    } else {
+      fresh
+    }
   } else {
-    Array::push(seen, value = name)
-    Array::push(env.names, value = name)
-    Array::push(env.values, value = name)
+    if !optional || !uq_seen_contains(seen = seen, name = base) {
+      Array::push(seen, value = base)
+    } else ()
+    Array::push(env.names, value = base)
+    Array::push(env.values, value = base)
     name
   }
 }

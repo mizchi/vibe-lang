@@ -471,12 +471,38 @@ fn predicate_probe(_ i: Int) -> Int {
   }
 }
 
+// A local closure takes the pattern payload even though its name is also
+// the name of a borrowing builtin. The row must survive scrutinee cleanup.
+fn through_local_eq(_ i: Int) -> Array[Int] {
+  let eq = (rows: Array[Array[Int]]) -> Array::get(rows, at = 0)
+  match Some([[i, i + 1]]) {
+    Some(rows) => eq(rows),
+    None => []
+  }
+}
+
+fn local_eq_probe(_ i: Int) -> Int {
+  let row = through_local_eq(i)
+  let churn = [[i + 7, i + 9], [i + 13, i + 15]]
+  // The unshadowed builtin still borrows its arguments. Read the payload
+  // after the comparison and check the closure result after allocation.
+  let genuine = match Some(mka(i)) {
+    Some(xs) => eq(xs, xs) && Array::get(xs, at = 0) == i,
+    None => false
+  }
+  if genuine && Array::get(row, at = 0) == i && Array::get(row, at = 1) == i + 1 && Array::length(churn) == 2 {
+    0
+  } else {
+    1
+  }
+}
+
 fn main() -> Int {
   let mut acc = 0
   let mut i = 0
   while i < 20000 {
     acc = acc + arm_local(i) + arm_param(Some(mka(i)), i) + is_some(i) + guard_is(i) + tuple_let(i)
-    acc = acc + match_tuple(i) + arm_two(i) + capture_or_consume(i) + returned_row_probe(i) + scalar_length_probe(i) + predicate_probe(i)
+    acc = acc + match_tuple(i) + arm_two(i) + capture_or_consume(i) + returned_row_probe(i) + scalar_length_probe(i) + predicate_probe(i) + local_eq_probe(i)
     i = i + 1
   }
   let ks: Array[Array[Int]] = []
