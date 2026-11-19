@@ -6,6 +6,7 @@ import @vibe/compiler/codegen/common_analysis {
   borrow_fixpoint_link_parts,
   compute_borrow_disqualifiers,
   compute_borrow_param_user_fns,
+  compute_borrow_param_user_fns_round0,
   md_consume_count_pre,
   md_consume_count_pre_store,
   md_view_consume_count_pre,
@@ -316,4 +317,23 @@ test "a nested closure accounts for its own captured view consumes" {
   ]), 1)
   assert_eq(md_consume_count_pre(e = body, name = "xs", bfns = [], bmasks_zeroed = [
   ]), 2)
+}
+
+test "local eq owns its argument only within its lexical scope before normalization" {
+  let local_eq = EFn([], [], [("n", None), ("ys", None)], None, None, EArray([
+    EIdent("ys", -1)
+  ]))
+  let cmp = ECall(EIdent("eq", -1), [EInt(0), EIdent("xs", -1)], -1, [])
+  let owned = one_param_fn(name = "owned", param = "xs", body = ELet("eq", local_eq, cmp, -1))
+  let read = one_param_fn(name = "read", param = "xs", body = ESeq(ELet("eq", local_eq, EUnit, -1), cmp))
+  let stmts = [owned, read]
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns(stmts = stmts, exclude = [], out_masks = masks)
+  assert_eq(mask_for(names = names, masks = masks, name = "owned"), 0)
+  assert_eq(mask_for(names = names, masks = masks, name = "read"), 1)
+  let initial_masks: Array[Int] = []
+  let initial_names = compute_borrow_param_user_fns_round0(stmts = stmts, exclude = [
+  ], out_masks = initial_masks)
+  assert_eq(mask_for(names = initial_names, masks = initial_masks, name = "owned"), 0)
+  assert_eq(mask_for(names = initial_names, masks = initial_masks, name = "read"), 1)
 }
