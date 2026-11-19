@@ -861,34 +861,47 @@ fn uq_seen_contains(seen: Array[String], name: String) -> Bool {
 /// name is detected against this occurrence. Both cases are one question to
 /// the seen index: a name bound by an enclosing scope is in it too (#2386).
 fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[String]) -> String {
-  // Optional declarations carry a suffix, but references in the body use
-  // the base name. Keep that distinction when freshening a builtin shadow.
+  // A builtin is implicitly bound even when its spelling never occurs free.
+  // Freshen a local shadow before the name-based ownership passes: a local
+  // eq closure consumes its argument while the builtin borrows it.
+  // An optional param (`a?`) is declared with its suffix but its
+  // body references use the STRIPPED name. Keep the suffix on a fresh name and
+  // register that base name as occupied. Otherwise an inner heap-valued
+  // `let a` is not alpha-renamed, and name-keyed RC epilogue bookkeeping can
+  // mistake the local's retained drop for the borrowed parameter's drop.
   let nlen = String::length(name)
-  let optional = nlen > 0 && String::char_code_at(name, at = nlen - 1) == '?'
-  let base = if optional {
-    name[0: nlen - 1]
+  let lastc = if nlen > 0 {
+    String::char_code_at(name, at = nlen - 1)
   } else {
-    name
+    0
   }
-  // A visible builtin is already bound even if the body never reads its
-  // name free. In particular, a local closure named eq takes ownership of
-  // its argument, while the builtin borrows it.
-  if (!optional && (uq_env_has(env = env, name = base) || uq_seen_contains(seen = seen, name = base))) || registry_builtin_arity(base) >= 0 {
-    let fresh = fresh_shadow_name(counter = counter, name = base, env = env, seen = seen)
-    Array::push(env.names, value = base)
-    Array::push(env.values, value = fresh)
-    uq_mark()
-    if optional {
-      String::concat(fresh, "?")
-    } else {
-      fresh
-    }
-  } else {
-    if !optional || !uq_seen_contains(seen = seen, name = base) {
-      Array::push(seen, value = base)
+  if lastc == '?' {
+    let base = name[0: nlen - 1]
+    if registry_builtin_arity(base) >= 0 {
+      let fresh = fresh_shadow_name(counter = counter, name = base, env = env, seen = seen)
+      Array::push(env.names, value = base)
+      Array::push(env.values, value = fresh)
+      uq_mark()
+      return String::concat(fresh, "?")
     } else ()
+    if !uq_seen_contains(seen = seen, name = base) {
+      Array::push(seen, value = base)
+    } else {
+      ()
+    }
     Array::push(env.names, value = base)
     Array::push(env.values, value = base)
+    name
+  } else if uq_env_has(env = env, name = name) || uq_seen_contains(seen = seen, name = name) || registry_builtin_arity(name) >= 0 {
+    let fresh = fresh_shadow_name(counter = counter, name = name, env = env, seen = seen)
+    Array::push(env.names, value = name)
+    Array::push(env.values, value = fresh)
+    uq_mark()
+    fresh
+  } else {
+    Array::push(seen, value = name)
+    Array::push(env.names, value = name)
+    Array::push(env.values, value = name)
     name
   }
 }
