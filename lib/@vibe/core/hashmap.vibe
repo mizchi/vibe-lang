@@ -256,10 +256,16 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
   }
 }
 
-// Rehash moves entries already known to be distinct into a fresh empty
-// table. Reuse their immutable Some boxes instead of boxing both payloads
-// again; occupied control bytes still determine the probe chain.
-fn place_rehashed_slot[K, V](m: MutMap[K, V], key: K, key_slot: Option[K], value_slot: Option[V]) -> Unit {
+// Exchange the two slot owners. A Some box can also be a lookup result;
+// moving its slot keeps that same box and payload alive.
+fn swap_slots[T](src: Array[Option[T]], from: Int, dst: Array[Option[T]], to: Int) -> Unit {
+  let saved = Array::get(src, at = from)
+  Array::set(src, at = from, value = Array::get(dst, at = to))
+  Array::set(dst, at = to, value = saved)
+}
+
+// Leave the old slot empty and transfer its two boxes to the new bucket.
+fn place_rehashed_slot[K, V](m: MutMap[K, V], key: K, keys: Array[Option[K]], vals: Array[Option[V]], from: Int) -> Unit {
   let cap = Bytes::length(m.ctrl)
   let hash = (m.hash_fn)(key)
   let mut idx = home_of(h = hash, cap = cap)
@@ -268,40 +274,47 @@ fn place_rehashed_slot[K, V](m: MutMap[K, V], key: K, key_slot: Option[K], value
     idx = idx + 1
     if idx >= cap {
       idx = 0
-    } else ()
+    }
     steps = steps + 1
     assert(steps < cap)
   }
-  Array::set(m.keys, at = idx, value = key_slot)
-  Array::set(m.vals, at = idx, value = value_slot)
+  swap_slots(src = keys, from = from, dst = m.keys, to = idx)
+  swap_slots(src = vals, from = from, dst = m.vals, to = idx)
   Bytes::set(m.ctrl, at = idx, value = ctrl_tag(hash))
   m.size = m.size + 1
 }
 
 fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
-  let cap = if new_cap < 8 {
-    8
-  } else {
-    new_cap
-  }
-  let old_keys = m.keys
-  let old_vals = m.vals
   let old_ctrl = m.ctrl
-  m.keys = alloc_slots(cap)
-  m.vals = alloc_slots(cap)
-  m.ctrl = alloc_ctrl(cap)
-  m.size = 0
-  m.tombs = 0
   let n = Bytes::length(old_ctrl)
+  let keys: Array[Option[K]] = alloc_slots(n)
+  let vals: Array[Option[V]] = alloc_slots(n)
   let mut i = 0
   while i < n {
     if Bytes::get(old_ctrl, at = i) >= 128 {
-      let key_slot = Array::get(old_keys, at = i)
-      let value_slot = Array::get(old_vals, at = i)
-      match key_slot {
-        Some(k) =>
-        match value_slot {
-          Some(_) => place_rehashed_slot(m = m, key = k, key_slot = key_slot, value_slot = value_slot),
+      swap_slots(src = m.keys, from = i, dst = keys, to = i)
+      swap_slots(src = m.vals, from = i, dst = vals, to = i)
+    }
+    i = i + 1
+  }
+  // Grow the map's two slot arrays in place. Copying occupied boxes to new
+  // arrays and overwriting the old fields left a second owner for each box.
+  let no_key: Option[K] = None
+  let no_value: Option[V] = None
+  while i < new_cap {
+    Array::push(m.keys, value = no_key)
+    Array::push(m.vals, value = no_value)
+    i = i + 1
+  }
+  m.ctrl = alloc_ctrl(new_cap)
+  m.size = 0
+  m.tombs = 0
+  i = 0
+  while i < n {
+    if Bytes::get(old_ctrl, at = i) >= 128 {
+      match Array::get(keys, at = i) {
+        Some(k) => match Array::get(vals, at = i) {
+          Some(_) => place_rehashed_slot(m = m, key = k, keys = keys, vals = vals, from = i),
           None => ()
         },
         None => ()
