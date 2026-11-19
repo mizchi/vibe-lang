@@ -7,6 +7,9 @@ import @vibe/compiler/codegen/common_base {
 import @vibe/compiler/codegen/common_extractors {
   array_count_str
 }
+import @vibe/compiler/codegen/expr {
+  linemap_enter_call_site, linemap_leave_call_site
+}
 import @vibe/compiler/codegen/wasm_emit {
   emit_call, emit_i64_const, emit_local_get
 }
@@ -39,6 +42,12 @@ fn slot_args(e: Expr, callee: String, owner: String, index: String) -> Array[Exp
     },
     _ => []
   }
+}
+
+fn emit_access(buf: Bytes, access: Expr, target: Int, ctx: CompileCtx) -> Unit {
+  let site = linemap_enter_call_site(buf = buf, expr = access, ctx = ctx)
+  emit_call(buf = buf, func_idx = target)
+  linemap_leave_call_site(buf = buf, ctx = ctx, prev = site)
 }
 
 /// A leaf whose whole body is `let t = a[i]; a[i] = b[j]; b[j] = t`
@@ -86,14 +95,14 @@ export fn emit_slot_exchange(buf: Bytes, body: Expr, params: Array[(String, Opti
       emit_local_get(buf = buf, idx = 3)
       emit_local_get(buf = buf, idx = 0)
       emit_local_get(buf = buf, idx = 1)
-      emit_call(buf = buf, func_idx = get_idx)
+      emit_access(buf = buf, access = saved, target = get_idx, ctx = ctx)
       emit_local_get(buf = buf, idx = 0)
       emit_local_get(buf = buf, idx = 1)
       emit_local_get(buf = buf, idx = 2)
       emit_local_get(buf = buf, idx = 3)
-      emit_call(buf = buf, func_idx = get_idx)
-      emit_call(buf = buf, func_idx = set_idx)
-      emit_call(buf = buf, func_idx = set_idx)
+      emit_access(buf = buf, access = Array::get(put_a, at = 2), target = get_idx, ctx = ctx)
+      emit_access(buf = buf, access = first, target = set_idx, ctx = ctx)
+      emit_access(buf = buf, access = second, target = set_idx, ctx = ctx)
       emit_i64_const(buf = buf, value = 0)
       true
     },
