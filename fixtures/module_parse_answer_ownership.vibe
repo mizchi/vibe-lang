@@ -1,0 +1,60 @@
+import @vibe/compiler/core {
+  Expr, Source, Stmt, TypeExpr
+}
+import @vibe/compiler/loader {
+  ContractIngest, ModuleParse, desugar_contract_source, module_header_source
+}
+
+// Keep one reference to each successful answer for inspection after the consumer returns.
+let answers: Array[Array[Stmt]] = []
+
+fn parse_answer(_ source: String) -> (Array[Stmt], Option[String]) {
+  if source == "invalid" {
+    ([], Some("invalid member"))
+  } else {
+    let rows = [SLet(true, false, "n", Some(TyName("Int")), EInt(1))]
+    Array::push(answers, value = rows)
+    (rows, None)
+  }
+}
+
+fn header(_ source: String) -> Int with Exception {
+  let (_, names, count) = handle {
+    module_header_source(path = "pkg/member.vibe", source = source, parse_count = 0)
+  } with { ModuleParse::Parse(_, text) => resume(parse_answer(text)); Source::Read(_) => resume(""); Source::Exists(_) => resume(false); Source::List(_) => resume([
+  ]); Source::StatToken(_) => resume(0); Env::Get(_) => resume("") }
+  assert_eq(names, ["n"])
+  count
+}
+
+fn contract(_ member_source: String) -> Unit with Exception {
+  let (facade, _, _) = handle {
+    desugar_contract_source(path = "pkg/index.vpkg", source = "let n: Int\n")
+  } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::TypeParams(_) => resume((([
+  ], [], []), None)); ModuleParse::Parse(_, text) => resume(parse_answer(text)); Source::Read(_) => resume(member_source); Source::Exists(path) => resume(path == "pkg/member.vibe"); Source::List(_) => resume([
+    "member.vibe"
+  ]); Source::StatToken(_) => resume(7); Env::Get(_) => resume("") }
+  assert(String::contains(facade, needle = "export ./member.vibe { n }"))
+}
+
+fn main() -> Array[Array[Stmt]] allows Exception {
+  let mut i = 0
+  while i < 20 {
+    assert_eq(header("export let n: Int = 1"), 1)
+    i = i + 1
+  }
+  let failure = handle {
+    let _ = header("invalid")
+    "unexpected success"
+  } with { Exception::Throw(message) => message }
+  assert_eq(failure, "invalid member")
+  assert_eq(Array::length(answers), 20)
+  let contract_failure = handle {
+    contract("invalid")
+    "unexpected success"
+  } with { Exception::Throw(message) => message }
+  assert_eq(contract_failure, "invalid member")
+  contract("export let n: Int = 1")
+  assert_eq(Array::length(answers), 21)
+  answers
+}

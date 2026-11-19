@@ -79,7 +79,7 @@ export ../core {
 /// apart from `Source` because it is not a read: what comes back is a parse.
 ///
 /// A failure comes back as the answer's second half (`Some(message)`), and
-/// the core rethrows it (`source_answer`), so a provider's arm never throws.
+/// the core rethrows it, so a provider's arm never throws.
 /// That is what keeps these handles on evidence passing: an arm that may
 /// throw, performed from inside a call, is lowered through the suspend-CPS
 /// driver instead (so a catch inside the body cannot intercept the arm's
@@ -1157,7 +1157,13 @@ export fn module_header_source_with_config(path: String, source: String, parse_c
     // header is not parsed again for its check. `parse_count` still counts
     // headers computed from source -- the number its callers report as
     // header parse scans -- whether the memo answered or not.
-    let stmts = source_answer(perform ModuleParse::Parse(path, source))
+    // Destructure the provider's answer here so RC releases the owned
+    // statement array after its last use (#2509).
+    let (stmts, failure) = perform ModuleParse::Parse(path, source)
+    match failure {
+      Some(message) => throw(message),
+      None => ()
+    }
     (collect_import_deps_from_stmts_source(stmts = stmts, base_dir = dir_of_path(path), self_path = path, source = source, cfg = cfg), collect_exports(stmts), parse_count + 1)
   }
 }
