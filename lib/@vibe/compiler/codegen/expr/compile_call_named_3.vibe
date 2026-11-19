@@ -32,6 +32,7 @@ import @vibe/compiler/codegen/common_base {
   FuncTable,
   LambdaTable,
   StrTable,
+  ctor_table_index_of,
   emit_ctor_tag,
   emit_heap_grow_after_heap_set,
   emit_i32_eq,
@@ -343,6 +344,19 @@ fn cc_builtin_returns_raw_bool(_ name: String) -> Bool {
   name == "String::equals" || name == "eq"
 }
 
+// A memoized module binding keeps its own reference for the life of the
+// instance. Reading it through the getter hands the caller one extra ref.
+// Local bindings, int constants and constructors take precedence in compile_expr.
+fn cc_reads_memo_thunk(arg: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match arg {
+    EIdent(name, _) => name != "__try_none" && bsearch_leftmost(sorted = ctx.thunk_names, name = name) >= 0 &&
+    find_local_slot(names = local_names, name = name) < 0 &&
+    !array_contains_str(arr = ctx.const_int_names, s = name) &&
+    ctor_table_index_of(ct = ctx.ctor_table, name = name) < 0,
+    _ => false
+  }
+}
+
 /// The call shape a callee takes once no special-case arm of
 /// `compile_call_core` applies: a direct call when the name resolves to a
 /// func_table entry that no in-scope local shadows (#875), else a closure
@@ -396,6 +410,18 @@ export fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr],
       // position -- the callee does not drop that argument, so the
       // caller must not dup it.
       let borrows_this = cc_bmask_has(mask = cc_bmask, i = ci)
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && borrows_this && cc_reads_memo_thunk(arg = carg, local_names = local_names, ctx = ctx) {
+        // Discharge the getter's reference while evaluating this argument.
+        // The memo still owns the receiver, including when the callee returns
+        // a borrowed element or a later argument exits early.
+        Array::push(local_names, value = "")
+        emit_local_tee(buf = buf, idx = nl)
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+        emit_local_get(buf = buf, idx = nl)
+        nl = nl + 1
+      } else {
+        ()
+      }
       let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(e = carg, ctx = ctx) && !borrows_this
       if ctx.enable_rc && (cc_is_borrowed_projection(e = carg, ctx = ctx) || cc_is_ref_cell_read(e = carg, ctx = ctx) || cc_is_borrow_ret_call(e = carg, ctx = ctx) || is_loop_borrow1) && !borrows_this {
         // #706 leak follow-up: this dup's matching consume is INSIDE the loop

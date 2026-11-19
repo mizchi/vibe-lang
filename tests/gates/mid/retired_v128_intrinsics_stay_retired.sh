@@ -848,6 +848,17 @@ done
 rm -rf "$fvdir"
 echo "[compiler-gate] function-value borrow thunk guard ok (7696998 on bump/rc/shadow/gc, rc heap_used=$fv_used B)"
 
+# The heap frontier is flat even on the leaking build. Check the count itself.
+echo "[compiler-gate] 40f-b7a/40 borrowed module thunk references (#2509)"
+gate_workdir tbdir "_build/_gate_rc_memo_thunk_borrow"
+for tb_lane in rc shadow; do
+  gate_fs_compile_on "$tb_lane" "fixtures/rc_memo_thunk_borrow_count.vibe" "$tbdir/$tb_lane.wasm" main
+  gate_require_artifact "$tbdir/$tb_lane.wasm" "memo thunk probe did not compile ($tb_lane)"
+  gate_run tb_out last "$tbdir/$tb_lane.wasm"
+  gate_require_eq "$tb_out" "0" "borrowed thunk count or returned element was wrong ($tb_lane)"
+done
+rm -rf "$tbdir"
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so
