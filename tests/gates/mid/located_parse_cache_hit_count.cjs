@@ -10,7 +10,7 @@ for (const { module, name } of WebAssembly.Module.imports(wasm)) {
   };
 }
 const { main, test_ast_memo, memory } = new WebAssembly.Instance(wasm, imports).exports;
-assert.equal(main(0n), 21n);
+assert.equal(main(0n), 147n);
 const cell = untag(test_ast_memo(0n));
 const view = new DataView(memory.buffer);
 const u32 = p => view.getUint32(p, true);
@@ -29,6 +29,8 @@ for (let i = 0; i < u32(values + 4); i++) {
   assert.equal(u32(box + 4), 1);
   const versions = pointer(box + 8);
   assert.equal(u32(versions + 4), 1, "one source version for this path");
+  const statements = pointer(u32(versions + 8)); // First (and only) version.
+  assert.equal(u32(statements - 4) & 0xffffff, 1, "the version list must own the only statement-array reference");
   counts.push(u32(versions - 4) & 0xffffff);
 }
-assert.deepEqual(counts, [1], "the memo must own the only version-list reference after all hits");
+assert.deepEqual(counts, [1, 1], "the memo must own both version lists after all hits");
