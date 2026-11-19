@@ -21,6 +21,10 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_const, emit_local_set
 }
 
+import ./call_ladder_names.vibe {
+  cc_ladder_tests_name
+}
+
 import ./compile_lambda.vibe {
   cl_return_operand
 }
@@ -519,14 +523,16 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
   }
 }
 
-// Only the generated callee can use the registry's return contract. A
-// program function may share its spelling with a generated table entry.
+// Inline builtins such as Array::any have no generated table entry. With
+// local bindings and constructors handled by the caller, the registry's
+// immediate result applies to a generated function or a canonical inline
+// call only after ruling out a program function with that spelling.
 fn mpr_builtin_returns_immediate(name: String, ctx: CompileCtx) -> Bool {
   match builtin_declared_return(name) {
     Some(ty) => (ty is CtInt || ty is CtBool || ty is CtUnit) &&
     canonical_builtin_name(name) == name &&
     func_table_user_index_of(ft = ctx.func_table, name = name, num_user_funcs = ctx.num_user_funcs) < 0 &&
-    func_table_builtin_pos_of(ft = ctx.func_table, name = name, num_user_funcs = ctx.num_user_funcs) >= 0,
+    (func_table_builtin_pos_of(ft = ctx.func_table, name = name, num_user_funcs = ctx.num_user_funcs) >= 0 || cc_ladder_tests_name(name)),
     None => false
   }
 }
