@@ -894,10 +894,44 @@ gate_workdir padir "_build/_gate_module_parse_answer"
 for pa_lane in rc shadow; do
   gate_fs_compile_on "$pa_lane" fixtures/module_parse_answer_ownership.vibe "$padir/$pa_lane.wasm" main
   gate_require_artifact "$padir/$pa_lane.wasm" "module parse answer probe did not compile ($pa_lane)"
-  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/module_parse_answer_ownership.cjs" "$padir/$pa_lane.wasm"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$padir/$pa_lane.wasm" 21
   echo "[compiler-gate] all 21 module parse answers have one owner ($pa_lane)"
 done
 rm -rf "$padir"
+
+echo "[compiler-gate] 40f-b7e/40 merge parse results transfer one owner on cache hits and misses (#2509)"
+gate_workdir mpdir "_build/_gate_merge_parse_result"
+for mp_lane in rc shadow; do
+  VIBE_WASM_NAMES=1 gate_fs_compile_on "$mp_lane" fixtures/merge_parse_result_ownership.vibe "$mpdir/$mp_lane.wasm" main
+  gate_require_artifact "$mpdir/$mp_lane.wasm" "merge parse result probe did not compile ($mp_lane)"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$mpdir/$mp_lane.wasm" 3 --empty-env
+  echo "[compiler-gate] fresh parse, memo hit and checked artifact each returned one owner ($mp_lane)"
+  if command -v wasm-tools >/dev/null 2>&1; then
+    # Hold one witness at the private parse-to-merge boundary. Its address
+    # stays valid after the merge, including when the allocator reuses blocks.
+    {
+      wasm-tools print "$mpdir/$mp_lane.wasm" | sed -e '/^  (func \$parse_sources_for_merge_/,/^  )/ {
+        /call \$engine_parse_program_with_/a\
+    call $hold_merge_answer
+      }' -e '$d'
+      cat <<'WAT'
+  (memory $answers (export "merge_answers") 1)
+  (func $hold_merge_answer (param $value i64) (result i64) (local $n i32)
+    (local.set $n (i32.load $answers (i32.const 0)))
+    (call $__rt_rc_dup (local.get $value))
+    (i32.store $answers offset=4 (i32.shl (local.get $n) (i32.const 2)) (i32.wrap_i64 (local.get $value)))
+    (i32.store $answers (i32.const 0) (i32.add (local.get $n) (i32.const 1)))
+    (local.get $value))
+)
+WAT
+    } | wasm-tools parse -o "$mpdir/$mp_lane-held.wasm"
+    node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$mpdir/$mp_lane-held.wasm" 3 --empty-env --check-merge
+    echo "[compiler-gate] ordinary and shifted merges released all four inputs ($mp_lane)"
+  else
+    echo "[compiler-gate] note: wasm-tools absent, skipping the merge-lifetime probe ($mp_lane)"
+  fi
+done
+rm -rf "$mpdir"
 
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes

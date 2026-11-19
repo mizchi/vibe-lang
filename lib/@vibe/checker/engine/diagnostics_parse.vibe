@@ -319,22 +319,23 @@ export fn engine_parse_program_with_path_with_config(path: String, source: Strin
   result
 }
 fn engine_parse_program_unrestored(path: String, source: String, cfg: TargetCfg, checked_error_row: Bool) -> Array[Stmt] with Exception {
+  // Both paths hand out a caller-owned array. Return the cache's copy here
+  // so RC can transfer the fresh parse on the fallthrough path (#2509).
   match checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg), checked_error_row = checked_error_row) {
-    Some(stmts) => stmts,
-    None => {
-      let stmts = engine_parse_program_with_path_impl_with_config(path = path, source = source, observe_current_source_parse = false, cfg = cfg)
-      // Asked AFTER the call and of the memo, not of this function: the point
-      // is whether the PARSER ran, so a memo or AST-cache hand-out must not
-      // count. A throwing parse does not reach here, the same way the walk's
-      // own counter treats one.
-      if parse_program_located_shared_ran_parser() {
-        engine_incremental_typecheck_telemetry_add(index = 10, amount = 1)
-      } else {
-        ()
-      }
-      stmts
-    }
+    Some(stmts) => return stmts,
+    None => ()
   }
+  let stmts = engine_parse_program_with_path_impl_with_config(path = path, source = source, observe_current_source_parse = false, cfg = cfg)
+  // Asked AFTER the call and of the memo, not of this function: the point
+  // is whether the PARSER ran, so a memo or AST-cache hand-out must not
+  // count. A throwing parse does not reach here, the same way the walk's
+  // own counter treats one.
+  if parse_program_located_shared_ran_parser() {
+    engine_incremental_typecheck_telemetry_add(index = 10, amount = 1)
+  } else {
+    ()
+  }
+  stmts
 }
 
 /// Restore call identities and placements exclusively from accepted owned rows.

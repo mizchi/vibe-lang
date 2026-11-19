@@ -1,0 +1,67 @@
+import @vibe/checker/engine {
+  engine_parse_program_with_path_with_config
+}
+import @vibe/compiler/checker {
+  check_program_result
+}
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact
+}
+import @vibe/compiler/config {
+  target_cfg_from_csv, target_cfg_namespace
+}
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/compiler/linker/merge {
+  build_grouped_merged_stmts_gc, build_grouped_merged_stmts_with_config
+}
+import @vibe/compiler/loader {
+  parse_program_located_shared_ran_parser
+}
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_cache_reset_in_namespace,
+  checked_module_cache_stats,
+  commit_checked_module_artifact_in_namespace,
+  set_checked_module_cache_mode
+}
+
+fn main() -> Array[Array[Stmt]] allows Env + Fs + Exception {
+  let cfg = target_cfg_from_csv("")
+  let namespace = target_cfg_namespace(cfg)
+  let path = "merge-input.vibe"
+  let source = "let n = 1"
+  set_checked_module_cache_mode("on", checked_error_row = false)
+  checked_module_cache_reset_in_namespace(namespace = namespace, checked_error_row = false)
+  let answers: Array[Array[Stmt]] = []
+  Array::push(answers, value = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg, checked_error_row = false))
+  assert(parse_program_located_shared_ran_parser())
+  Array::push(answers, value = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg, checked_error_row = false))
+  assert(!parse_program_located_shared_ran_parser())
+  assert_eq(checked_module_cache_stats().2, 0)
+  // A different declaration distinguishes an artifact hit from a reparse.
+  let stored = [SLet(false, false, "from_cache", None, EInt(2))]
+  let artifact = CheckedModuleArtifact::{
+    input_identity: Bytes::new(),
+    parsed_stmts: stored,
+    checked_program: check_program_result(stored, checked_error_row = false),
+    lowering_offsets: [],
+    eq_offsets: [],
+    eq_keys: []
+  }
+  commit_checked_module_artifact_in_namespace(path = path, source = source, artifact = artifact, fresh = false, namespace = namespace, checked_error_row = false)
+  Array::push(answers, value = engine_parse_program_with_path_with_config(path = path, source = source, cfg = cfg, checked_error_row = false))
+  assert_eq(checked_module_cache_stats().2, 1)
+  match Array::get(Array::get(answers, at = 2), at = 0) {
+    SLet(_, _, name, _, _) => assert_eq(name, "from_cache"),
+    _ => assert(false)
+  }
+  // Both merge modes consume one checked-artifact copy and one parser result.
+  let groups = [("pkg", [(path, source), ("entry.vibe", "let entry = 7")])]
+  let ordinary = build_grouped_merged_stmts_with_config(groups, cfg = cfg, checked_error_row = false)
+  let shifted = build_grouped_merged_stmts_gc(groups, checked_error_row = false)
+  assert(Array::length(ordinary) > 0)
+  assert_eq(Array::length(shifted), Array::length(ordinary))
+  assert_eq(checked_module_cache_stats().2, 3)
+  answers
+}

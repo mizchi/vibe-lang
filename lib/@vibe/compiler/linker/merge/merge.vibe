@@ -496,7 +496,10 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
   // contribution and alias-collision fallback definitions. The GC variant
   // rebases the whole table up front, so no later helper can accidentally
   // reintroduce source-relative offsets by reparsing a provider.
-  let located_file_stmts = if disjoint_offset_spaces {
+  // Reassign the owned table so RC releases its old reference on the
+  // disjoint path. The rename plan below still reads the source-local AST.
+  let mut located_file_stmts = file_stmts
+  if disjoint_offset_spaces {
     let out = array_empty()
     let mut offset_base = 0
     let mut source_idx = 0
@@ -520,9 +523,7 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
       source_idx = source_idx + 1
     }
     Array::set(fallback_clone_offset_delta, at = 0, value = offset_base)
-    out
-  } else {
-    file_stmts
+    located_file_stmts = out
   }
   let fallback_clone_offset_span = Array::get(fallback_clone_offset_delta, at = 0)
   let plan_entry = if Array::length(file_paths) > 0 {
