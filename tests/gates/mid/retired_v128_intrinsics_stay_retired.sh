@@ -868,6 +868,27 @@ for mr_lane in rc shadow; do
 done
 rm -rf "$mrdir"
 
+echo "[compiler-gate] 40f-b7c/40 located parser cache hits release the version list (#2509)"
+if command -v wasm-tools >/dev/null 2>&1; then
+  gate_workdir pcdir "_build/_gate_parse_cache_hit_count"
+  for pc_lane in rc shadow; do
+    VIBE_WASM_NAMES=1 gate_fs_compile_on "$pc_lane" fixtures/located_parse_cache_hit_count.vibe "$pcdir/cache.wasm" main
+    gate_require_artifact "$pcdir/cache.wasm" "located parser cache probe did not compile ($pc_lane)"
+    # Expose the existing private memo thunk only in the test module.
+    wasm-tools print "$pcdir/cache.wasm" \
+      | sed -E 's/^(  \(func \$located_parse_memo_stmts_dep_lib__vibe_compiler_loader_header_cache_vibe \(;[0-9]+;\))/\1 (export "test_ast_memo")/' \
+      | wasm-tools parse -o "$pcdir/probe.wasm"
+    node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/located_parse_cache_hit_count.cjs" "$pcdir/probe.wasm"
+    echo "[compiler-gate] located parser cache retained one version-list owner ($pc_lane)"
+  done
+  rm -rf "$pcdir"
+elif [[ "${CI:-}" == true ]]; then
+  echo "[compiler-gate] wasm-tools is required for the parser memo count probe in CI" >&2
+  exit 1
+else
+  echo "[compiler-gate] note: wasm-tools absent, skipping the private parser memo count probe"
+fi
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so
