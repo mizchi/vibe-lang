@@ -36,6 +36,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  bsearch_leftmost,
   dce_stmts,
   expr_any_node,
   expr_child_at,
@@ -590,6 +591,7 @@ fn fold_expr(_ expr: Expr) -> Expr {
 /// a later same-name reference — silently wrong, no diagnostic. With every
 /// shadowing binding renamed, that stale entry can never capture a live name.
 struct UqEnv {
+  program_functions: Array[String];
   names: Array[String];
   values: Array[String];
   source: Expr;
@@ -597,8 +599,9 @@ struct UqEnv {
   mut reserved_ready: Bool
 }
 
-fn uq_env_new(_ source: Expr) -> UqEnv {
+fn uq_env_new(source: Expr, program_functions: Array[String]) -> UqEnv {
   UqEnv::{
+    program_functions: program_functions,
     names: array_empty(),
     values: array_empty(),
     source: source,
@@ -702,7 +705,7 @@ fn fresh_shadow_name(counter: Array[Int], name: String, env: UqEnv, seen: Array[
   }
   let mut n = Array::get(counter, at = 0)
   let mut fresh = String::concat(String::concat("__shadow_", __to_string(n)), String::concat("_", name))
-  while uq_seen_contains(seen = env.reserved, name = fresh) || uq_seen_contains(seen = seen, name = fresh) {
+  while uq_seen_contains(seen = env.reserved, name = fresh) || uq_seen_contains(seen = seen, name = fresh) || bsearch_leftmost(sorted = env.program_functions, name = fresh) >= 0 {
     n = n + 1
     fresh = String::concat(String::concat("__shadow_", __to_string(n)), String::concat("_", name))
   }
@@ -861,7 +864,8 @@ fn uq_seen_contains(seen: Array[String], name: String) -> Bool {
 /// name is detected against this occurrence. Both cases are one question to
 /// the seen index: a name bound by an enclosing scope is in it too (#2386).
 fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[String]) -> String {
-  // A builtin is implicitly bound even when its spelling never occurs free.
+  // A program function or builtin can have a name-keyed borrow contract
+  // even when the body never references the outer function.
   // Freshen a local shadow before the name-based ownership passes: a local
   // eq closure consumes its argument while the builtin borrows it.
   // An optional param (`a?`) is declared with its suffix but its
@@ -877,7 +881,7 @@ fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[Strin
   }
   if lastc == '?' {
     let base = name[0: nlen - 1]
-    if registry_builtin_arity(base) >= 0 {
+    if registry_builtin_arity(base) >= 0 || bsearch_leftmost(sorted = env.program_functions, name = base) >= 0 {
       let fresh = fresh_shadow_name(counter = counter, name = base, env = env, seen = seen)
       Array::push(env.names, value = base)
       Array::push(env.values, value = fresh)
@@ -892,7 +896,7 @@ fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[Strin
     Array::push(env.names, value = base)
     Array::push(env.values, value = base)
     name
-  } else if uq_env_has(env = env, name = name) || uq_seen_contains(seen = seen, name = name) || registry_builtin_arity(name) >= 0 {
+  } else if uq_env_has(env = env, name = name) || uq_seen_contains(seen = seen, name = name) || registry_builtin_arity(name) >= 0 || bsearch_leftmost(sorted = env.program_functions, name = name) >= 0 {
     let fresh = fresh_shadow_name(counter = counter, name = name, env = env, seen = seen)
     Array::push(env.names, value = name)
     Array::push(env.values, value = fresh)
@@ -1512,8 +1516,9 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
   }
 }
 
-export fn uniquify_shadowed_bindings_fresh(expr: Expr, counter: Array[Int], seen: Array[String]) -> Expr {
-  uniquify_shadowed_bindings(expr = expr, env = uq_env_new(expr), counter = counter, seen = seen)
+export fn uniquify_shadowed_bindings_fresh(expr: Expr, counter: Array[Int], seen: Array[String], program_functions: Array[String] = [
+]) -> Expr {
+  uniquify_shadowed_bindings(expr = expr, env = uq_env_new(source = expr, program_functions = program_functions), counter = counter, seen = seen)
 }
 
 fn fresh_m_scrut_name(_ counter: Array[Int]) -> String {
