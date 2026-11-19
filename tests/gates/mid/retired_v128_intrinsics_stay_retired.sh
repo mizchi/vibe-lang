@@ -859,6 +859,15 @@ for tb_lane in rc shadow; do
 done
 rm -rf "$tbdir"
 
+echo "[compiler-gate] 40f-b7b/40 MutMap rehash preserves one owner per slot (#2509)"
+gate_workdir mrdir "_build/_gate_rc_mutmap_rehash"
+for mr_lane in rc shadow; do
+  gate_fs_compile_on "$mr_lane" "fixtures/rc_mutmap_rehash_slot_count.vibe" "$mrdir/$mr_lane.wasm" main
+  gate_require_artifact "$mrdir/$mr_lane.wasm" "MutMap rehash probe did not compile ($mr_lane)"
+  node "$ROOT_DIR/tests/gates/mid/mutmap_rehash_slot_count.cjs" "$mrdir/$mr_lane.wasm"
+done
+rm -rf "$mrdir"
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so

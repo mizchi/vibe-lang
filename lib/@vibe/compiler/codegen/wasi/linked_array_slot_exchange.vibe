@@ -1,0 +1,111 @@
+import @vibe/compiler/core {
+  Expr, TypeExpr, builtin_array_set, resolved_callee_operation
+}
+import @vibe/compiler/codegen/common_base {
+  CompileCtx, ctor_table_index_of, func_table_index_of
+}
+import @vibe/compiler/codegen/common_extractors {
+  array_count_str
+}
+import @vibe/compiler/codegen/expr {
+  linemap_enter_call_site, linemap_leave_call_site
+}
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call, emit_i64_const, emit_local_get
+}
+
+fn named(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    _ => false
+  }
+}
+
+// The first two operands must read the specified unchanged formal parameters.
+// Reject a call resolved to a program binding even when its spelling matches.
+fn slot_args(e: Expr, callee: String, owner: String, index: String) -> Array[Expr] {
+  match e {
+    ECall(EIdent(name, _), args, _, resolution) => {
+      let op = resolved_callee_operation(resolution)
+      let arity = if callee == "Array::set" {
+        3
+      } else {
+        2
+      }
+      if name == callee && Array::length(args) == arity &&
+      (op == 0 || (callee == "Array::set" && op == builtin_array_set)) &&
+      named(e = Array::get(args, at = 0), name = owner) && named(e = Array::get(args, at = 1), name = index) {
+        args
+      } else {
+        []
+      }
+    },
+    _ => []
+  }
+}
+
+fn emit_access(buf: Bytes, access: Expr, target: Int, ctx: CompileCtx) -> Unit {
+  let site = linemap_enter_call_site(buf = buf, expr = access, ctx = ctx)
+  emit_call(buf = buf, func_idx = target)
+  linemap_leave_call_site(buf = buf, ctx = ctx, prev = site)
+}
+
+/// A leaf whose whole body is `let t = a[i]; a[i] = b[j]; b[j] = t`
+/// exchanges two existing owners. Retaining each stored element independently
+/// leaves two extra references. The ordinary function epilogue still owns its
+/// parameter cleanup. All other bodies use the regular expression emitter.
+export fn emit_slot_exchange(buf: Bytes, body: Expr, params: Array[(String, Option[TypeExpr])], ctx: CompileCtx) -> Bool {
+  if Array::length(params) != 4 {
+    return false
+  }
+  match body {
+    ELet(tmp, saved, ESeq(first, second), _) => {
+      let a = (Array::get(params, at = 0)).0
+      let i = (Array::get(params, at = 1)).0
+      if Array::length(slot_args(e = saved, callee = "Array::get", owner = a, index = i)) == 0 {
+        return false
+      }
+      let b = (Array::get(params, at = 2)).0
+      let j = (Array::get(params, at = 3)).0
+      let bindings = [a, i, b, j, tmp]
+      for name in bindings {
+        if name == "Array::get" || name == "Array::set" || array_count_str(arr = bindings, s = name) != 1 {
+          return false
+        }
+      }
+      let put_a = slot_args(e = first, callee = "Array::set", owner = a, index = i)
+      let put_b = slot_args(e = second, callee = "Array::set", owner = b, index = j)
+      if Array::length(put_a) == 0 || Array::length(put_b) == 0 ||
+      !named(e = Array::get(put_b, at = 2), name = tmp) ||
+      Array::length(slot_args(e = Array::get(put_a, at = 2), callee = "Array::get", owner = b, index = j)) == 0 {
+        return false
+      }
+      let get = func_table_index_of(ft = ctx.func_table, name = "Array::get")
+      let set = func_table_index_of(ft = ctx.func_table, name = "Array::set")
+      if get < ctx.num_user_funcs || set < ctx.num_user_funcs ||
+      ctor_table_index_of(ct = ctx.ctor_table, name = "Array::get") >= 0 ||
+      ctor_table_index_of(ct = ctx.ctor_table, name = "Array::set") >= 0 {
+        return false
+      }
+      let get_idx = Array::get(ctx.func_table.indices, at = get)
+      let set_idx = Array::get(ctx.func_table.indices, at = set)
+      // Keep the pending second store below the first on the operand stack.
+      // Both bounds-checked reads precede either write, also for equal indices.
+      emit_local_get(buf = buf, idx = 2)
+      emit_local_get(buf = buf, idx = 3)
+      emit_local_get(buf = buf, idx = 0)
+      emit_local_get(buf = buf, idx = 1)
+      emit_access(buf = buf, access = saved, target = get_idx, ctx = ctx)
+      emit_local_get(buf = buf, idx = 0)
+      emit_local_get(buf = buf, idx = 1)
+      emit_local_get(buf = buf, idx = 2)
+      emit_local_get(buf = buf, idx = 3)
+      emit_access(buf = buf, access = Array::get(put_a, at = 2), target = get_idx, ctx = ctx)
+      emit_access(buf = buf, access = first, target = set_idx, ctx = ctx)
+      emit_access(buf = buf, access = second, target = set_idx, ctx = ctx)
+      emit_i64_const(buf = buf, value = 0)
+      true
+    },
+    _ => false
+  }
+}

@@ -323,6 +323,17 @@ fn main allows Console {
   println("\{m["b"]}")
 }
 VEOF
+cat > "$oobdir/exchange.vibe" <<'VEOF'
+fn exchange(a: Array[Int], i: Int, b: Array[Int], j: Int) -> Unit {
+  let saved = Array::get(a, at = i)
+  Array::set(a, at = i, value = Array::get(b, at = j))
+  Array::set(b, at = j, value = saved)
+}
+
+fn main() -> Unit {
+  exchange(a = [1], i = 0, b = [2], j = 1)
+}
+VEOF
 oob_compile_one() {
   local src="$1" out="$2"
   # Production RC: this lane's VIBE_RC=0 pin would compile bump, which has
@@ -339,6 +350,7 @@ oob_compile_one "$oobdir/bytes_get.vibe" "$oobdir/bytes_get.wasm"
 oob_compile_one "$oobdir/bytes_set.vibe" "$oobdir/bytes_set.wasm"
 oob_compile_one "$oobdir/str_byte_at.vibe" "$oobdir/str_byte_at.wasm"
 oob_compile_one "$oobdir/map_get.vibe" "$oobdir/map_get.wasm"
+oob_compile_one "$oobdir/exchange.vibe" "$oobdir/exchange.wasm"
 oob_run_one() {
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$1" 2>&1
 }
@@ -373,6 +385,8 @@ oob_str_out="$(oob_run_one "$oobdir/str_byte_at.wasm")"
 oob_str_rc=$?
 oob_map_out="$(oob_run_one "$oobdir/map_get.wasm")"
 oob_map_rc=$?
+oob_exchange_out="$(oob_run_one "$oobdir/exchange.wasm")"
+oob_exchange_rc=$?
 set -e
 # The expected location carries the DIRECTORY the source was compiled from,
 # not just its file name: `vibe.dbgfiles` holds the path the compiler opened
@@ -385,6 +399,7 @@ oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "$oobdir
 oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "$oobdir/bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
 oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "$oobdir/str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
 oob_check "Map::get" "Map::get: key not found" "$oobdir/map_get.vibe:4" "$oob_map_out" "$oob_map_rc"
+oob_check "slot exchange" "Array::get: index 1 out of bounds for length 1" "$oobdir/exchange.vibe:3" "$oob_exchange_out" "$oob_exchange_rc"
 # #3547: the same miss on the wasm-gc lane (`vibe test`/`vibe run` with
 # VIBE_TEST_BACKEND=gc / --backend gc) trapped with only a backtrace after the
 # linear lane gained the message. That lane carries no production linemap, so
