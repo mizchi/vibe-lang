@@ -933,6 +933,15 @@ WAT
 done
 rm -rf "$mpdir"
 
+echo "[compiler-gate] 40f-b7f/40 offset shifts release rebuilt statements and share unchanged declarations (#2509)"
+gate_workdir shift_dir "_build/_gate_shift_stmt_ownership"
+for shift_lane in rc shadow; do
+  gate_fs_compile_on "$shift_lane" fixtures/shift_stmt_ownership.vibe "$shift_dir/$shift_lane.wasm" main
+  gate_require_artifact "$shift_dir/$shift_lane.wasm" "statement offset probe did not compile ($shift_lane)"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/shift_stmt_ownership.cjs" "$shift_dir/$shift_lane.wasm"
+done
+rm -rf "$shift_dir"
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so
