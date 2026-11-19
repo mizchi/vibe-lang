@@ -504,7 +504,7 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
         let (ap, ab) = Array::get(arms, at = i)
         let mark = Array::length(bound)
         let _ = collect_pattern_bindings(pat = ap, bindings = bound)
-        ok = mpr_tail_safe(e = ab, local_names = local_names, bound = bound, ctx = ctx)
+        ok = mpr_returns_retained_payload(pat = ap, body = ab, ctx = ctx) || mpr_tail_safe(e = ab, local_names = local_names, bound = bound, ctx = ctx)
         Array::truncate(bound, length = mark)
         i = i + 1
       }
@@ -519,6 +519,26 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
     ESeq(_, b) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
     EAssign(_, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
     EAssignOp(_, _, _, b, _) => mpr_tail_safe(e = b, local_names = local_names, bound = bound, ctx = ctx),
+    _ => false
+  }
+}
+
+/// For `Some(row) => row`, bind_match_pat retains the field for its one
+/// owning use. That reference travels with the result, so cleanup of the
+/// enclosing arm need not keep an extra reference to the source array.
+fn mpr_returns_retained_payload(pat: Pat, body: Expr, ctx: CompileCtx) -> Bool {
+  match cl_return_operand(body) {
+    EIdent(n, off) => match pat {
+      PCtor(_, fields) => if Array::length(fields) == 1 {
+        match Array::get(fields, at = 0) {
+          PBind(field) => field == n && off >= 0 && md_view_consume_count_pre_store(e = body, name = n, bfns = ctx.borrow_param_user, bmasks_zeroed = ctx.borrow_param_mask, store_names = ctx.rc_store_dup_names, store_offs = ctx.rc_store_dup_offs) == 1,
+          _ => false
+        }
+      } else {
+        false
+      },
+      _ => false
+    },
     _ => false
   }
 }
