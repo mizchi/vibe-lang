@@ -1,0 +1,217 @@
+import @vibe/compiler/core {
+  bsearch_leftmost, namespace_exported_name, sorted_names_of
+}
+
+/// Every callee name the special-case ladder of `compile_call_core` tests:
+/// each `fname == "..."` arm, the raw-ABI shim names `cc_raw_abi_shim_applies`
+/// tests, and the namespace-exported `to_string` wrapper (#1015). Sorted once
+/// per process for a leftmost binary search. A callee outside the set can
+/// fire none of the arms, so `compile_call_core` sends it to the resolved-call
+/// fallback without walking the ~150 string compares (#2386).
+/// `codegen_call_ladder_names_test.vibe` proves the list complete against the
+/// source text of the call lowering.
+let cc_ladder_names_sorted: Array[String] = []
+
+fn cc_ladder_names() -> Array[String] {
+  if Array::length(cc_ladder_names_sorted) == 0 {
+    let names = [
+      "Array::all",
+      "Array::any",
+      "Array::concat",
+      "Array::filter",
+      "Array::find",
+      "Array::fold",
+      "Array::iter_eager",
+      "Array::map",
+      "Array::reverse",
+      "ByteStream::to_string",
+      "Bytes::blit",
+      "Bytes::fill",
+      "Bytes::new",
+      "Char::from_int",
+      "Char::to_int",
+      "Console::read_char",
+      "Console::read_stream",
+      "Console::write_char",
+      "Console::write_err_char",
+      "Float64::abs",
+      "Float64::ceil",
+      "Float64::floor",
+      "Float64::from_i64_bits",
+      "Float64::from_i64_bits_lohi",
+      "Float64::max",
+      "Float64::min",
+      "Float64::parse",
+      "Float64::to_float32",
+      "Float64::to_i64_bits_hi",
+      "Float64::to_i64_bits_lo",
+      "Float64::to_int",
+      "Float64::to_string",
+      "Env::args_get",
+      "Env::args_len",
+      "FixedArray::blit",
+      "FixedArray::get",
+      "FixedArray::length",
+      "FixedArray::make",
+      "FixedArray::set",
+      "FixedArray::unsafe_set",
+      "Float32::to_float64",
+      "Float32::to_int",
+      "Float32::to_string",
+      "Fs::exists",
+      "Fs::is_dir",
+      "Fs::is_file",
+      "Fs::readdir",
+      "Fs::stat_token",
+      "Future::pending",
+      "Future::ready",
+      "Future::resolve",
+      "Int64Array::get",
+      "Int64Array::length",
+      "Int64Array::make",
+      "Int64Array::set",
+      "Int::parse",
+      "Int::to_float64",
+      "Int::to_float32",
+      "Int::to_string",
+      "Map::__dynamic_delete",
+      "Map::__dynamic_get",
+      "Map::__dynamic_has_key",
+      "Map::__iter_get_unchecked",
+      "Map::__scalar_delete",
+      "Map::__scalar_get",
+      "Map::__scalar_has_key",
+      "Map::__scalar_set",
+      "Map::delete",
+      "Map::get",
+      "Map::has",
+      "Map::has_key",
+      "Map::keys",
+      "Map::remove",
+      "Map::set",
+      "Map::size",
+      "Map::values",
+      "MapBuilder::__scalar_freeze",
+      "MapBuilder::__scalar_get",
+      "MapBuilder::__scalar_has_key",
+      "MapBuilder::__scalar_set",
+      "MapBuilder::freeze",
+      "MapBuilder::get",
+      "MapBuilder::has_key",
+      "MapBuilder::new",
+      "MapBuilder::set",
+      "Path::is_absolute",
+      "Path::ref",
+      "Path::resolve",
+      "Path::to_string",
+      "Profiler::HeapBytes",
+      "Profiler::NowUs",
+      "Profiler::heap_bytes",
+      "Profiler::now_us",
+      "Stderr::write_char",
+      "Stdin::read_char",
+      "Stdin::read_stream",
+      "Stdout::write_char",
+      "String::ends_with",
+      "String::last_index_of",
+      "String::to_bytes",
+      "String::unicode_length",
+      "String::utf16_length",
+      "String::utf8_length",
+      "StringBuilder::freeze",
+      "StringBuilder::new",
+      "StringBuilder::push",
+      "__float_bits",
+      "__index",
+      "__len",
+      "__lambda_return_owned",
+      "__let_refuted",
+      "__loop_tail_retain",
+      "__rec_field",
+      "__set_field",
+      "__slice",
+      "__to_string",
+      "abort",
+      "add",
+      "assert",
+      "assert_eq",
+      "assert_true",
+      "await",
+      "eq",
+      "host_future_get",
+      "host_future_named",
+      // #2934: the namespaced spelling of `host_stream_close`, same signature
+      // (`(HostStream) -> Unit`). The checker admits both, this ladder and the
+      // dispatch below carried only the bare one, so `HostStream::close(s)`
+      // passed `vibe check` clean and then died with
+      // `internal compiler error: ... reached code generation unresolved`,
+      // while the bare twin explained itself. Found by sweeping every
+      // checker-admitted builtin with no registry row (0.1.0-rc.0 bug hunt).
+      "HostStream::close",
+      "host_stream_close",
+      "host_stream_named",
+      "host_stream_next",
+      // #2066: the response surface, lowered inline beside host_future_named.
+      "host_response_named",
+      "host_response_named_with",
+      "HostResponse::body",
+      "HostResponse::status",
+      "lt",
+      "map",
+      // #2913: the bare deprecated alias for `Map::has_key`. It was in
+      // `cc_builtin_call_ret_kind`'s boolean list and in all three gc tables,
+      // but in neither the ladder nor `compile_call_core` -- so the checker
+      // typed it, the classifier called it boolean, and the linear lowering
+      // had nothing, which is `internal compiler error: map_has (local,
+      // @call) reached code generation unresolved`. Its qualified sibling
+      // `Map::has`, deprecated by the same row in `builtin_name.vibe`,
+      // compiled on both lanes the whole time.
+      "map_has",
+      "mul",
+      "not",
+      "path",
+      "perform",
+      "print",
+      "println",
+      "resume",
+      "sh_lines",
+      "simd_skip_ws",
+      "sleep",
+      "sleep_blocking",
+      "sub",
+      "vibe_fs_stat_token_raw",
+      "compiler_lowering_run",
+      "vibe_http_close_raw",
+      "vibe_http_request_raw",
+      "vibe_http_response_body_raw",
+      "vibe_http_response_header_raw",
+      "vibe_http_response_status_raw",
+      "vibe_process_exit_raw",
+      "vibe_sh_capture_close_raw",
+      "vibe_sh_capture_exit_code_raw",
+      "vibe_sh_capture_raw",
+      "vibe_sh_capture_stderr_raw",
+      "vibe_sh_capture_stdout_raw",
+      "vibe_stdin_provider_read_raw",
+      "vibe_tcp_close_raw",
+      "vibe_tcp_connect_raw",
+      "vibe_tcp_read_raw",
+      "vibe_tcp_write_raw"
+    ]
+    Array::push(names, value = namespace_exported_name(path = "lib/@vibe/builtin/builtin_traits.vibe", name = "to_string"))
+    let sorted = sorted_names_of(names)
+    let mut i = 0
+    while i < Array::length(sorted) {
+      Array::push(cc_ladder_names_sorted, value = Array::get(sorted, at = i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  cc_ladder_names_sorted
+}
+
+/// Does an arm of `compile_call_core`'s ladder test `name`?
+export fn cc_ladder_tests_name(_ name: String) -> Bool {
+  bsearch_leftmost(sorted = cc_ladder_names(), name = name) >= 0
+}
