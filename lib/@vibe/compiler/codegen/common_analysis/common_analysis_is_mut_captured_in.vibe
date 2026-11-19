@@ -913,6 +913,23 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
   }
 }
 
+struct BorrowScan {
+  names: Array[String]
+  bfns: Array[String]
+  bmasks: Array[Int]
+  hits: Array[Int]
+  bound: Array[String]
+}
+
+fn md_ca_bind_params(scan: BorrowScan, params: Array[(String, Option[TypeExpr])]) -> Unit {
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, at = i)
+    Array::push(scan.bound, value = bp_param_base_name(name))
+    i = i + 1
+  }
+}
+
 /// The `md_consume_count(e, n) == 0` question for every name of a body in ONE
 /// walk. `hits[i]` becomes 1 when `names[i]` has any counted consume in `e`
 /// under md_cc_go's rules: a bare callee is invoked, a bare ident at a
@@ -928,8 +945,16 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
 /// (md_borrow_mask_of, most of md_cc_go's cost) runs once per call site
 /// instead of once per parameter. The exact count stays with md_cc_go, whose
 /// callers emit one dup per consume.
-export fn md_consumed_any(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
-  md_ca_go(e = e, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+export fn md_consumed_any(e: Expr, params: Array[(String, Option[TypeExpr])], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  let scan = BorrowScan::{
+    names: names,
+    bfns: bfns,
+    bmasks: bmasks,
+    hits: hits,
+    bound: array_empty()
+  }
+  md_ca_bind_params(scan = scan, params = params)
+  md_ca_go(e = e, scan = scan)
 }
 
 fn md_ca_pending(_ hits: Array[Int]) -> Bool {
@@ -958,36 +983,39 @@ fn md_ca_ident(n: String, names: Array[String], hits: Array[Int]) -> Unit {
   }
 }
 
-fn md_ca_list(items: Array[Expr], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+fn md_ca_list(items: Array[Expr], scan: BorrowScan) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
-    md_ca_go(e = Array::get(items, at = i), names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+    md_ca_go(e = Array::get(items, at = i), scan = scan)
     i = i + 1
   }
 }
 
-fn md_ca_fields(fields: Array[(String, Expr)], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+fn md_ca_fields(fields: Array[(String, Expr)], scan: BorrowScan) -> Unit {
   let mut i = 0
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, at = i)
-    md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+    md_ca_go(e = v, scan = scan)
     i = i + 1
   }
 }
 
-fn md_ca_arms(arms: Array[(Pat, Expr)], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+fn md_ca_arms(arms: Array[(Pat, Expr)], scan: BorrowScan) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, v) = Array::get(arms, at = i)
-    md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+    let (pat, v) = Array::get(arms, at = i)
+    let mark = Array::length(scan.bound)
+    collect_pattern_bindings(pat = pat, bindings = scan.bound)
+    md_ca_go(e = v, scan = scan)
+    Array::truncate(scan.bound, length = mark)
     i = i + 1
   }
 }
 
 /// Enumerated like md_cc_go (no `_ =>` for the recursive shapes): a new
 /// `Expr` variant is a compile error here, not a silently unscanned subtree.
-fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
-  if !md_ca_pending(hits) {
+fn md_ca_go(e: Expr, scan: BorrowScan) -> Unit {
+  if !md_ca_pending(scan.hits) {
     ()
   } else {
     match e {
@@ -997,81 +1025,111 @@ fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[In
       EBool(_) => (),
       EUnit => (),
       EStringInterp(_) => (),
-      EIdent(n, _) => md_ca_ident(n = n, names = names, hits = hits),
-      ETuple(items) => md_ca_list(items = items, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
-      EArray(items) => md_ca_list(items = items, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
-      ERecord(_, fields, _) => md_ca_fields(fields = fields, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
+      EIdent(n, _) => md_ca_ident(n = n, names = scan.names, hits = scan.hits),
+      ETuple(items) => md_ca_list(items = items, scan = scan),
+      EArray(items) => md_ca_list(items = items, scan = scan),
+      ERecord(_, fields, _) => md_ca_fields(fields = fields, scan = scan),
       EMap(fields) => {
         let mut i = 0
         while i < Array::length(fields) {
           let (_, v) = Array::get(fields, at = i)
-          md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+          md_ca_go(e = v, scan = scan)
           i = i + 1
         }
       },
       EIf(c, t, el) => {
-        md_ca_go(e = c, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = t, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = el, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_go(e = c, scan = scan)
+        md_ca_go(e = t, scan = scan)
+        md_ca_go(e = el, scan = scan)
       },
-      ELet(_, v, b, _) => {
-        md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+      ELet(n, v, b, _) => {
+        md_ca_go(e = v, scan = scan)
+        let mark = Array::length(scan.bound)
+        Array::push(scan.bound, value = n)
+        md_ca_go(e = b, scan = scan)
+        Array::truncate(scan.bound, length = mark)
       },
-      ELetRec(_, v, b) => {
-        md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+      ELetRec(n, v, b) => {
+        let mark = Array::length(scan.bound)
+        Array::push(scan.bound, value = n)
+        md_ca_go(e = v, scan = scan)
+        md_ca_go(e = b, scan = scan)
+        Array::truncate(scan.bound, length = mark)
       },
-      ELetMut(_, v, b, _) => {
-        md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+      ELetMut(n, v, b, _) => {
+        md_ca_go(e = v, scan = scan)
+        let mark = Array::length(scan.bound)
+        Array::push(scan.bound, value = n)
+        md_ca_go(e = b, scan = scan)
+        Array::truncate(scan.bound, length = mark)
       },
       EAssign(_, v, b, _) => {
-        md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_go(e = v, scan = scan)
+        md_ca_go(e = b, scan = scan)
       },
       EAssignOp(_, _, v, b, _) => {
-        md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_go(e = v, scan = scan)
+        md_ca_go(e = b, scan = scan)
       },
       ESeq(a, b) => {
-        md_ca_go(e = a, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_go(e = a, scan = scan)
+        md_ca_go(e = b, scan = scan)
       },
       EMatch(s, arms) => {
-        md_ca_arms(arms = arms, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_arms(arms = arms, scan = scan)
         match s {
           EIdent(_, _) => (),
-          _ => md_ca_go(e = s, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+          _ => md_ca_go(e = s, scan = scan)
         }
       },
       EHandle(s, arms) => {
-        md_ca_arms(arms = arms, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_arms(arms = arms, scan = scan)
         match s {
           EIdent(_, _) => (),
-          _ => md_ca_go(e = s, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+          _ => md_ca_go(e = s, scan = scan)
         }
       },
       EWhile(c, b) => {
-        md_ca_go(e = c, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_go(e = c, scan = scan)
+        md_ca_go(e = b, scan = scan)
       },
       ELoop(params, b) => {
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_fields(fields = params, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_fields(fields = params, scan = scan)
+        let mark = Array::length(scan.bound)
+        for param in params {
+          Array::push(scan.bound, value = param.0)
+        }
+        md_ca_go(e = b, scan = scan)
+        Array::truncate(scan.bound, length = mark)
       },
-      EForIn(_, _, it, b, _) => {
-        md_ca_go(e = it, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = b, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+      EForIn(n, index, it, b, _) => {
+        md_ca_go(e = it, scan = scan)
+        let mark = Array::length(scan.bound)
+        Array::push(scan.bound, value = n)
+        match index {
+          Some(i) => Array::push(scan.bound, value = i),
+          None => ()
+        }
+        md_ca_go(e = b, scan = scan)
+        Array::truncate(scan.bound, length = mark)
       },
       ECall(callee, args, _, _) => {
         let bmask = match callee {
-          EIdent(f, _) => md_borrow_mask_of(f = f, bfns = bfns, bmasks = bmasks),
+          EIdent(f, _) => {
+            let mask = md_borrow_mask_of(f = f, bfns = scan.bfns, bmasks = scan.bmasks)
+            // Inference sees source names before uniquification. A local
+            // callable has the owning closure ABI, including when named eq.
+            if mask != 0 && array_contains_str(arr = scan.bound, s = f) {
+              0
+            } else {
+              mask
+            }
+          },
           _ => 0
         }
         match callee {
           EIdent(_, _) => (),
-          _ => md_ca_go(e = callee, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+          _ => md_ca_go(e = callee, scan = scan)
         }
         let mut ri = 0
         while ri < Array::length(args) {
@@ -1079,20 +1137,25 @@ fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[In
           if bmask_has(mask = bmask, i = ri) {
             match a {
               EIdent(_, _) => (),
-              _ => md_ca_go(e = a, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+              _ => md_ca_go(e = a, scan = scan)
             }
           } else {
-            md_ca_go(e = a, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+            md_ca_go(e = a, scan = scan)
           }
           ri = ri + 1
         }
       },
       EBinOp(_, l, r, _) => {
-        md_ca_go(e = l, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
-        md_ca_go(e = r, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        md_ca_go(e = l, scan = scan)
+        md_ca_go(e = r, scan = scan)
       },
-      EUnaryOp(_, x) => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
-      EFn(_, _, _, _, _, body) => md_ca_go(e = body, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
+      EUnaryOp(_, x) => md_ca_go(e = x, scan = scan),
+      EFn(_, _, params, _, _, body) => {
+        let mark = Array::length(scan.bound)
+        md_ca_bind_params(scan = scan, params = params)
+        md_ca_go(e = body, scan = scan)
+        Array::truncate(scan.bound, length = mark)
+      },
       // #2827: a projection off a bare name reads the field in place and
       // releases nothing -- the Perceus plan counts it as a borrow of the
       // name (pc_emit's EDot arm), and codegen treats every name-rooted
@@ -1104,16 +1167,16 @@ fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[In
       // it along own it too, which took a dup per use across the codegen.
       EDot(x, _, _, _) => match x {
         EIdent(_, _) => (),
-        _ => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+        _ => md_ca_go(e = x, scan = scan)
       },
-      ELabeledArg(_, _, v) => md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
-      EReturn(x) => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
+      ELabeledArg(_, _, v) => md_ca_go(e = v, scan = scan),
+      EReturn(x) => md_ca_go(e = x, scan = scan),
       EBreak(opt) => match opt {
-        Some(v) => md_ca_go(e = v, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
+        Some(v) => md_ca_go(e = v, scan = scan),
         None => ()
       },
-      EContinue(args) => md_ca_list(items = args, names = names, bfns = bfns, bmasks = bmasks, hits = hits),
-      ESpread(x) => md_ca_go(e = x, names = names, bfns = bfns, bmasks = bmasks, hits = hits)
+      EContinue(args) => md_ca_list(items = args, scan = scan),
+      ESpread(x) => md_ca_go(e = x, scan = scan)
     }
   }
 }
