@@ -131,7 +131,7 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  bmask_has, compute_borrow_param_user_fns, scope_tail_proj_root
+  bmask_has, bp_param_base_name, compute_borrow_param_user_fns, scope_tail_proj_root
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -165,6 +165,7 @@ import @vibe/compiler/codegen/common_base {
   expr_tag,
   fn_type_param_types,
   get_efn_body,
+  get_slet_expr,
   is_efn,
   is_eident,
   linemap_flush_fn_into,
@@ -1587,19 +1588,25 @@ export fn LinkedFunctionPlan::emit_with_cache_policy(_ function_plan: LinkedFunc
           // emits for `local.get $xs` covers exactly the params that carry a
           // possibly-tagged array value.
           let iw_array_params = lc_fresh_string_array()
-          let mut iw_pi = 0
-          while iw_pi < Array::length(lc_norm_params) {
-            let (iw_pn, iw_pt) = Array::get(lc_norm_params, at = iw_pi)
-            Array::push(iw_param_names, value = iw_pn)
-            match iw_pt {
-              Some(iw_ptv) => if TypeExpr::is_array_of_int(iw_ptv) {
-                Array::push(iw_array_params, value = iw_pn)
-              } else {
-                ()
-              },
-              None => ()
+          if iw_found >= 0 {
+            // WAT addresses the declared parameters by spelling. RC may have
+            // renamed the stub's parameters to avoid a top-level collision.
+            let decl = Array::get(input.stmts, at = Array::get(input.fn_stmt_indices, at = bi))
+            for param in get_efn_params(get_slet_expr(decl)) {
+              let (raw_name, iw_pt) = param
+              let iw_pn = bp_param_base_name(raw_name)
+              Array::push(iw_param_names, value = iw_pn)
+              match iw_pt {
+                Some(iw_ptv) => if TypeExpr::is_array_of_int(iw_ptv) {
+                  Array::push(iw_array_params, value = iw_pn)
+                } else {
+                  ()
+                },
+                None => ()
+              }
             }
-            iw_pi = iw_pi + 1
+          } else {
+            ()
           }
           // `(vibe.int.untag x)` / `(vibe.int.tag x)` assemble to this lane's
           // `Int` representation: tagged on RC, raw on the bump lane.

@@ -2,7 +2,15 @@
 // release what a match arm's pattern binder still holds at the arm's end.
 
 import @vibe/compiler/core {
-  Expr, Pat, Type, bsearch_leftmost, builtin_declared_return, canonical_builtin_name, float_operand_unmarked, is_borrow_ret_builtin
+  Expr,
+  Pat,
+  Type,
+  bsearch_leftmost,
+  builtin_declared_return,
+  canonical_builtin_name,
+  float_operand_unmarked,
+  is_borrow_ret_builtin,
+  resolved_callee_operation
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -454,8 +462,9 @@ fn mpr_store_dup(ctx: CompileCtx, name: String, off: Int) -> Bool {
 /// operator (a scalar, or a fresh string), an exit (no value flows on), an
 /// allocation made at the site, or a call to a named function whose declared
 /// result is a scalar or a heap value it neither borrows nor may view
-/// (`path_value_owned`'s rule), unless a local binds that name. Anything else
-/// -- a name, a projection, an indirect call, a `handle` -- answers no.
+/// (`path_value_owned`'s rule). An ordinary call through a lexical local
+/// uses the owning callback ABI. Other leaves, including an unclassified
+/// call, a projection or a bare name, remain conservative.
 fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool {
   match e {
     EInt(_) => true,
@@ -475,8 +484,16 @@ fn mpr_tail_safe(e: Expr, local_names: Array[String], bound: Array[String], ctx:
     ECall(callee, args, _, _) => {
       let call = cl_return_operand(e)
       match call {
-        ECall(EIdent(cn, _), _, _, _) => if array_contains_str(arr = local_names, s = cn) || array_contains_str(arr = bound, s = cn) {
-          false
+        ECall(EIdent(cn, _), _, _, resolution) => if array_contains_str(arr = local_names, s = cn) || array_contains_str(arr = bound, s = cn) {
+          // cc_compile_resolved_call invokes the local closure indirectly.
+          // Lambdas and named functions used as values normalize borrowed
+          // returns before handing them to the caller (#2754). Keep direct
+          // operations and names with a borrowed-argument budget out of
+          // this proof: the marks must count the arguments the closure owns.
+          resolved_callee_operation(resolution) <= 0 &&
+          !cc_ladder_tests_name(cn) &&
+          !is_ctor_call(value = call, ct = ctx.ctor_table) &&
+          md_borrow_mask_of(f = cn, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask) == 0
         } else if is_ctor_call(value = call, ct = ctx.ctor_table) || bsearch_leftmost(sorted = ctx.scalar_ret_names, name = cn) >= 0 {
           true
         } else if mpr_builtin_returns_immediate(name = cn, ctx = ctx) {

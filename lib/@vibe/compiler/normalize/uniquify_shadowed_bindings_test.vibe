@@ -1,9 +1,9 @@
 import @vibe/compiler/core {
-  Expr, Pat
+  Expr, Pat, Stmt
 }
 
 import ./normalize.vibe {
-  uniquify_shadowed_bindings_fresh
+  rc_program_binding_names, uniquify_shadowed_bindings_fresh
 }
 
 fn fresh_counter() -> Array[Int] {
@@ -252,6 +252,23 @@ test "a builtin shadow is scoped to the binding and preserves use offsets" {
       assert_eq(inner, use)
       assert_eq(init, "eq")
       assert_eq(after, "eq")
+    },
+    _ => assert(false)
+  }
+}
+
+test "a local callee cannot inherit a program function's ownership name" {
+  let expr = ELet("first_row", EIdent("first_row", 3), ECall(EIdent("first_row", 9), [
+  ], 9, []), 5)
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ], program_names = rc_program_binding_names([
+    SLet(false, false, "first_row", None, EInt(1)),
+    SEnum(false, "Guard", [], [("__shadow_0_first_row", [])], [])
+  ])) {
+    ELet(local_name, EIdent(initial, 3), ECall(EIdent(callee, 9), _, _, _), _) => {
+      assert_eq(initial, "first_row")
+      assert_eq(callee, local_name)
+      assert(local_name != "first_row" && local_name != "__shadow_0_first_row")
     },
     _ => assert(false)
   }
