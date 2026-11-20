@@ -1,0 +1,47 @@
+import @vibe/ast {
+  TypeExpr, trait_ref_key
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, canonical_program_trait_key, canonicalize_trait_ref_aliases
+}
+
+fn normalize_once(_ original: Array[Stmt]) -> Unit {
+  let program = [Array::get(original, at = 0)]
+  assert_eq(Array::length(canonicalize_trait_ref_aliases(program)), 0)
+  assert_eq(Array::length(program), 1)
+}
+
+fn original_after(_ repeats: Int) -> Array[Stmt] {
+  let original = [SLet(false, false, "value", None, EInt(3))]
+  let mut i = 0
+  while i < repeats {
+    normalize_once(original)
+    i = i + 1
+  }
+  original
+}
+
+fn main() -> Array[Array[Stmt]] allows Exception {
+  [original_after(0), original_after(1), original_after(20)]
+}
+
+test "trait alias normalization preserves a shared source statement" {
+  match Array::get(original_after(20), at = 0) {
+    SLet(_, _, _, _, EInt(n)) => inspect(n, content = "3"),
+    _ => assert(false)
+  }
+}
+
+test "witness lookup uses definitions from the last trait alias pass" {
+  let alias = trait_ref_key(TyApp("Value", [TyName("Scalar")]))
+  let expanded = trait_ref_key(TyApp("Value", [TyName("Int")]))
+  let program = [
+    STypeAlias(false, "Scalar", [], TyName("Int")),
+    SImpl([], [], alias, TyName("Note"))
+  ]
+  assert_eq(Array::length(canonicalize_trait_ref_aliases(program)), 0)
+  assert_eq(canonical_program_trait_key(key = alias, binders = []), expanded)
+  assert_eq(Array::length(canonicalize_trait_ref_aliases([])), 0)
+  assert_eq(canonical_program_trait_key(key = alias, binders = []), alias)
+}

@@ -28,6 +28,11 @@ for (let i = 0; i < expected; i++) {
   distinct.add(array);
   assert.equal(u32(array + 4), 1);
   assert.equal(u32(array - 4) & 0xffffff, 1, `unexpected owner count for result ${i}`);
+  if (process.argv.includes("--check-sole-item")) {
+    const item = view.getBigUint64(u32(array + 8), true);
+    assert.equal(item & 1n, 1n);
+    assert.equal(u32(Number(item - 1n) - 4) & 0xffffff, 1, `unexpected statement owners for result ${i}`);
+  }
 }
 assert.equal(distinct.size, expected, "each result must have a distinct array");
 
