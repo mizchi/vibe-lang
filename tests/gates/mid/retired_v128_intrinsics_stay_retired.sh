@@ -956,7 +956,7 @@ gate_workdir railway_dir "_build/_gate_railway_stmt_ownership"
 for railway_lane in rc shadow; do
   gate_fs_compile_on "$railway_lane" fixtures/rc_railway_stmt_ownership_test.vibe "$railway_dir/$railway_lane.wasm" main
   gate_require_artifact "$railway_dir/$railway_lane.wasm" "railway statement probe did not compile ($railway_lane)"
-  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/reconstructed_stmt_ownership.cjs" "$railway_dir/$railway_lane.wasm"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/reconstructed_stmt_ownership.cjs" "$railway_dir/$railway_lane.wasm" --check-unchanged-slots
 done
 rm -rf "$railway_dir"
 

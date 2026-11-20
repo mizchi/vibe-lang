@@ -22,7 +22,9 @@ function items(array, length) {
     return Number(value - 1n);
   });
 }
-const [released, original, rebuilt] = items(result, 3).map(array => items(array, 2));
+const checkSlots = process.argv.includes("--check-unchanged-slots");
+const arrays = items(result, checkSlots ? 5 : 3);
+const [released, original, rebuilt] = arrays.slice(0, 3).map(array => items(array, 2));
 assert.equal(owners(released[0]), 1, "discarded results release the original let");
 assert.equal(owners(released[1]), 1, "discarded results release the shared enum");
 assert.notEqual(original[0], rebuilt[0], "the rewrite builds a new let");
@@ -30,3 +32,10 @@ assert.equal(owners(original[0]), 1, "repeated rewrites release the original let
 assert.equal(owners(rebuilt[0]), 1, "the result owns the rebuilt let");
 assert.equal(original[1], rebuilt[1], "both arrays contain the unchanged enum");
 assert.equal(owners(original[1]), 2, "each live array owns the enum");
+
+if (checkSlots) {
+  for (const array of arrays.slice(3)) {
+    const [statement] = items(array, 1);
+    assert.equal(owners(statement), 1, "unchanged slot retains only its original owner");
+  }
+}
