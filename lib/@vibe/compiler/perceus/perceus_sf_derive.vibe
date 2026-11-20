@@ -40,7 +40,8 @@ import ./perceus_expr_projects_or_matches.vibe {
   plan_reuse_pairs,
   tr_add,
   tr_add_pat,
-  tr_collect_receivers,
+  tr_blind_slot_writes,
+  tr_collect_array_mutations,
   tr_derive,
   tr_is_ident,
   tr_mentions,
@@ -204,11 +205,51 @@ export fn elaborate_heap_params(_ stmts: Array[Stmt]) -> Array[Stmt] {
   out
 }
 
-/// #2837: append the truncate-release rows for `body` (see the section
-/// comment above). Most bodies truncate nothing, and pay one walk.
-fn plan_truncate_release(body: Expr, actions: Array[PerceusAction]) -> Unit {
+// A fresh array can release its old slots while all writes precede the
+// first observation. Check names once, since the plan refers to bindings
+// by name and the array operations themselves must be the builtins.
+fn plan_unobserved_slot_writes(body: Expr, sets: Array[String], fresh: Array[String], params: Array[(String, Option[TypeExpr])], actions: Array[PerceusAction]) -> Unit {
+  if Array::length(sets) == 0 || Array::length(fresh) == 0 {
+    return ()
+  }
+  let candidates: Array[String] = []
+  for x in sets {
+    if array_contains_str_pctx(arr = fresh, s = x) {
+      Array::push(candidates, value = x)
+    }
+  }
+  if Array::length(candidates) == 0 {
+    return ()
+  }
+  let binders: Array[String] = []
+  sf_collect_binders(e = body, out = binders)
+  for param in params {
+    Array::push(binders, value = param.0)
+  }
+  if array_contains_str_pctx(arr = binders, s = "Array::set") || array_contains_str_pctx(arr = binders, s = "Array::get") || array_contains_str_pctx(arr = binders, s = "Array::length") || array_contains_str_pctx(arr = binders, s = "Array::with_capacity") {
+    return ()
+  }
+  for x in candidates {
+    let mut occurrences = 0
+    for binder in binders {
+      if binder == x {
+        occurrences = occurrences + 1
+      }
+    }
+    if occurrences == 1 && tr_blind_slot_writes(body = body, x = x) {
+      pr_push_reuse(actions = actions, kind = PaTruncRelease, name = x, arity = 0)
+    }
+  }
+  ()
+}
+
+/// Add the array release and view pin rows consumed by the linear backend.
+fn plan_array_release(body: Expr, actions: Array[PerceusAction], params: Array[(String, Option[TypeExpr])]) -> Unit {
   let receivers: Array[String] = []
-  tr_collect_receivers(e = body, out = receivers)
+  let sets: Array[String] = []
+  let fresh: Array[String] = []
+  tr_collect_array_mutations(e = body, truncates = receivers, sets = sets, fresh = fresh)
+  plan_unobserved_slot_writes(body = body, sets = sets, fresh = fresh, params = params, actions = actions)
   let mut ri = 0
   while ri < Array::length(receivers) {
     let x = Array::get(receivers, at = ri)
@@ -1290,7 +1331,7 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, plan_pin: Int, params: Array[(String, Op
   pe_emit_exit_rows(ctx)
   // #2837: the truncate-release rows, after the same suffix -- neither drops
   // nor dups, so every consumer reading `out_param_drop_start` skips them.
-  plan_truncate_release(body = body, actions = ctx.actions)
+  plan_array_release(body = body, actions = ctx.actions, params = params)
   // #3140: the field-release rows, after the same suffix for the same reason.
   plan_setfield_release(ctx = ctx, params = params, body = body, actions = ctx.actions)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later

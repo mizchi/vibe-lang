@@ -942,6 +942,15 @@ for shift_lane in rc shadow; do
 done
 rm -rf "$shift_dir"
 
+echo "[compiler-gate] 40f-b7g/40 overwriting array slots releases displaced owners and preserves borrowed elements (#2509)"
+gate_workdir set_dir "_build/_gate_array_slot_ownership"
+for set_lane in rc shadow; do
+  gate_fs_compile_on "$set_lane" fixtures/rc_array_set_slot_ownership_test.vibe "$set_dir/$set_lane.wasm" main
+  gate_require_artifact "$set_dir/$set_lane.wasm" "array overwrite probe did not compile ($set_lane)"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$set_dir/$set_lane.wasm" 2
+done
+rm -rf "$set_dir"
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so

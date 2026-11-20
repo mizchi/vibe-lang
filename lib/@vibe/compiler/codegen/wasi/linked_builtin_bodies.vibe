@@ -13,6 +13,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_new_body,
   gen_arr_push_all_body,
   gen_arr_push_body,
+  gen_arr_replace_body,
   gen_arr_set_body,
   gen_arr_slice_body,
   gen_arr_truncate_body,
@@ -393,14 +394,16 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
   } else {
     ()
   }
-  // ADR-0090 (#1262): must stay LAST, in this order -- max_builtin_func_idx
-  // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
-  // builtin, and num_generated/func_offset are derived from it.
+  // ADR-0090 (#1262): last named builtins, in the order used by the host plan.
   if need_region_arena {
     push_builtin(gen_region_arr_new_body(region_ptr_addr = region_ptr_addr, region_data_base = region_data_base, region_limit = region_limit), 2, 0, 5)
     push_builtin(gen_region_bytes_new_body(region_ptr_addr = region_ptr_addr, region_data_base = region_data_base, region_limit = region_limit), 2, 0, 5)
   } else {
     ()
+  }
+  // Last private slot, addressed as func_offset - 1 by Array::set lowering.
+  if enable_rc {
+    push_builtin(gen_arr_replace_body(oob_prefix_fat = oob_arr_set_fat, oob_abort_idx = oob_abort_idx), 1, 0, 8)
   }
   LinkedBuiltinBodies::{
     bodies: bodies,
