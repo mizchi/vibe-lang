@@ -186,19 +186,12 @@ fn railway_arm_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)]
   }
 }
 
-fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], changed: Option[Array[Bool]]) -> Expr {
+fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], changed: Array[Bool]) -> Expr {
   match expr {
     ECall(callee, args, off, callee_resolution) => {
       let k = try_sentinel(callee = callee, args = args)
       if k == 0 {
-        match changed {
-          Some(cell) => {
-            Array::set(cell, at = 0, value = true)
-          },
-          None => {
-            ()
-          }
-        }
+        Array::set(changed, at = 0, value = true)
         let val = Array::get(args, at = 0)
         match Array::get(args, at = 1) {
           EFn(_, _, ps, _, _, rest) => {
@@ -227,14 +220,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
           _ => EUnit
         }
       } else if k == 1 {
-        match changed {
-          Some(cell) => {
-            Array::set(cell, at = 0, value = true)
-          },
-          None => {
-            ()
-          }
-        }
+        Array::set(changed, at = 0, value = true)
         let val = Array::get(args, at = 0)
         let rwval = railway_rw(expr = val, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, changed = changed)
         lower_try_op(rwval)
@@ -244,14 +230,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
         }
         match map_index_rewrite(callee = callee, args = args, rwargs = rwargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, typed = false, call_off = off) {
           Some(map_get) => {
-            match changed {
-              Some(cell) => {
-                Array::set(cell, at = 0, value = true)
-              },
-              None => {
-                ()
-              }
-            }
+            Array::set(changed, at = 0, value = true)
             map_get
           },
           None => ECall(railway_rw(expr = callee, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, changed = changed), rwargs, off, callee_resolution)
@@ -345,14 +324,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
       let robj = railway_rw(expr = obj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, changed = changed)
       match anon_dot_rewrite(obj = obj, field = field, field_off = fdoff, robj = robj, var_types = var_types) {
         Some(rw) => {
-          match changed {
-            Some(cell) => {
-              Array::set(cell, at = 0, value = true)
-            },
-            None => {
-              ()
-            }
-          }
+          Array::set(changed, at = 0, value = true)
           rw
         },
         None => EDot(robj, field, off, fdoff)
@@ -454,7 +426,7 @@ export fn collect_toplevel_constructor_vars(stmts: Array[Stmt], gens: Array[Dict
 /// `collect_toplevel_anon_records` — so `EFn`/`ELet`'s existing var_types
 /// threading (which already covers a SINGLE statement's own nested scopes)
 /// extends across top-level statement boundaries too.
-fn railway_rw_stmt(s: Stmt, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)], changed: Option[Array[Bool]]) -> Stmt {
+fn railway_rw_stmt(s: Stmt, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)], changed: Array[Bool]) -> Stmt {
   match s {
     SLet(exp, isrec, fname, ann, body) => SLet(exp, isrec, fname, ann, railway_rw(expr = body, struct_sets = struct_sets, var_types = toplevel_vars, fn_returns = fn_returns, changed = changed)),
     SLetMut(name, ty, e) => SLetMut(name, ty, railway_rw(expr = e, struct_sets = struct_sets, var_types = toplevel_vars, fn_returns = fn_returns, changed = changed)),
@@ -469,23 +441,26 @@ fn railway_rw_stmt(s: Stmt, struct_sets: Array[(String, Array[String])], fn_retu
   }
 }
 
-fn desugar_railway_binds_impl(stmts: Array[Stmt], changed: Option[Array[Bool]]) -> Unit {
+export fn desugar_railway_binds_reporting_change(_ stmts: Array[Stmt]) -> Bool {
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
   let toplevel_vars = collect_toplevel_anon_records(stmts = stmts, struct_sets = struct_sets)
+  let changed = [false]
+  let mut any_changed = false
   let mut i = 0
   while i < Array::length(stmts) {
-    Array::set(stmts, at = i, value = railway_rw_stmt(s = Array::get(stmts, at = i), struct_sets = struct_sets, fn_returns = fn_returns, toplevel_vars = toplevel_vars, changed = changed))
+    Array::set(changed, at = 0, value = false)
+    let rewritten = railway_rw_stmt(s = Array::get(stmts, at = i), struct_sets = struct_sets, fn_returns = fn_returns, toplevel_vars = toplevel_vars, changed = changed)
+    if Array::get(changed, at = 0) {
+      Array::set(stmts, at = i, value = rewritten)
+      any_changed = true
+    }
     i = i + 1
   }
-}
-
-export fn desugar_railway_binds_reporting_change(_ stmts: Array[Stmt]) -> Bool {
-  let changed = [false]
-  desugar_railway_binds_impl(stmts = stmts, changed = Some(changed))
-  Array::get(changed, at = 0)
+  any_changed
 }
 
 export fn desugar_railway_binds(_ stmts: Array[Stmt]) -> Unit {
-  desugar_railway_binds_impl(stmts = stmts, changed = None)
+  let _changed = desugar_railway_binds_reporting_change(stmts)
+  ()
 }

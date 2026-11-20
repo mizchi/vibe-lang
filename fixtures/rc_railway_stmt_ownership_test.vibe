@@ -1,12 +1,21 @@
-import @vibe/compiler/core { Expr, Stmt }
-import @vibe/compiler/normalize { desugar_railway_binds, desugar_railway_binds_reporting_change }
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/compiler/normalize {
+  desugar_railway_binds, desugar_railway_binds_reporting_change
+}
 
 // Rewriting a module builds a fresh body. Its child statements are never
 // overwritten in the original array, so their counts isolate reconstruction.
+fn try_statement() -> Stmt {
+  SLet(false, false, "value", None, ECall(EIdent("__try_op", -1), [EInt(3)], -1, [
+  ]))
+}
+
 fn rewrite_module(_ nested: Array[Stmt], report: Bool) -> Array[Stmt] {
   let program = [Array::get(nested, at = 0)]
   if report {
-    assert_eq(desugar_railway_binds_reporting_change(program), false)
+    assert_eq(desugar_railway_binds_reporting_change(program), true)
   } else {
     desugar_railway_binds(program)
   }
@@ -17,13 +26,13 @@ fn rewrite_module(_ nested: Array[Stmt], report: Bool) -> Array[Stmt] {
 }
 
 fn original_after(_ rounds: Int, report: Bool) -> Array[Stmt] {
-  let original = [SLet(false, false, "value", None, EInt(3)), SEnum(false, "Flag", [], [], [])]
+  let original = [try_statement(), SEnum(false, "Flag", [], [], [])]
   let nested = [SModule(false, "Nested", original)]
   let mut i = 0
   while i < rounds {
     let rewritten = rewrite_module(nested, report = report)
     match Array::get(rewritten, at = 0) {
-      SLet(_, _, _, _, EInt(n)) => assert_eq(n, 3),
+      SLet(_, _, _, _, EMatch(EInt(n), _)) => assert_eq(n, 3),
       _ => assert(false)
     }
     match Array::get(rewritten, at = 1) {
@@ -35,13 +44,50 @@ fn original_after(_ rounds: Int, report: Bool) -> Array[Stmt] {
   original
 }
 
+// A changed sibling before an inert let must not replace the inert slot.
+// Retain the pre-rewrite view across the call and read it afterwards.
+fn unchanged_after(_ report: Bool) -> Array[Stmt] {
+  let original = [SLet(false, false, "keep", None, EInt(7))]
+  let mut i = 0
+  while i < 20 {
+    let program = [try_statement(), Array::get(original, at = 0)]
+    let saved = Array::get(program, at = 0)
+    if report {
+      assert_eq(desugar_railway_binds_reporting_change(program), true)
+    } else {
+      desugar_railway_binds(program)
+    }
+    match saved {
+      SLet(_, _, _, _, ECall(EIdent(name, _), _, _, _)) => assert_eq(name, "__try_op"),
+      _ => assert(false)
+    }
+    match Array::get(program, at = 0) {
+      SLet(_, _, _, _, EMatch(EInt(n), _)) => assert_eq(n, 3),
+      _ => assert(false)
+    }
+    assert_eq(desugar_railway_binds_reporting_change(program), false)
+    i = i + 1
+  }
+  original
+}
+
 fn main() -> Array[Array[Stmt]] allows Exception {
   let reporting = original_after(20, report = true)
   let ordinary = original_after(20, report = false)
   let rewritten = rewrite_module([SModule(false, "Nested", ordinary)], report = true)
-  [reporting, ordinary, rewritten]
+  [
+    reporting,
+    ordinary,
+    rewritten,
+    unchanged_after(true),
+    unchanged_after(false)
+  ]
 }
 
 test "railway normalization preserves nested let and enum values" {
   inspect(Array::length(original_after(20, report = true)), content = "2")
+}
+
+test "railway normalization preserves earlier views in mixed programs" {
+  inspect(Array::length(unchanged_after(true)), content = "1")
 }
