@@ -1,0 +1,49 @@
+import @vibe/compiler/checker {
+  check_program, retention_summaries_clear, retention_summaries_enabled, retention_summaries_for_path
+}
+import @vibe/compiler/core {
+  Expr, Stmt, Type, env_lookup
+}
+
+fn check_once(_ original: Array[Stmt]) -> Unit with Exception {
+  let program = [Array::get(original, at = 0)]
+  let env = check_program(program, checked_error_row = false)
+  match env_lookup(env = env, name = "value") {
+    Some(CtInt) => (),
+    _ => assert(false)
+  }
+  assert_eq(Array::length(program), 1)
+}
+
+fn original_after(_ repeats: Int, publish: Bool) -> Array[Stmt] with Exception {
+  if publish {
+    retention_summaries_for_path("src/value.vibe")
+  } else {
+    retention_summaries_clear()
+  }
+  assert_eq(retention_summaries_enabled(), publish)
+  let original = [SLet(false, false, "value", None, EInt(3))]
+  let mut i = 0
+  while i < repeats {
+    check_once(original)
+    i = i + 1
+  }
+  retention_summaries_clear()
+  original
+}
+
+fn main() -> Array[Array[Stmt]] allows Exception {
+  [
+    original_after(0, publish = false),
+    original_after(1, publish = false),
+    original_after(20, publish = false),
+    original_after(0, publish = true),
+    original_after(1, publish = true),
+    original_after(20, publish = true)
+  ]
+}
+
+test "a checked binding is visible with and without retention summaries" {
+  inspect(Array::length(original_after(1, publish = false)), content = "1")
+  inspect(Array::length(original_after(1, publish = true)), content = "1")
+}

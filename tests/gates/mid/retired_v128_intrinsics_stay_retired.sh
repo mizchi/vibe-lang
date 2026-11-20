@@ -969,6 +969,15 @@ for trait_alias_lane in rc shadow; do
 done
 rm -rf "$trait_alias_dir"
 
+# Checking a module must release the scheduled statements in both summary modes.
+gate_workdir summary_dir "_build/_gate_retention_summary_ownership"
+for summary_lane in rc shadow; do
+  gate_fs_compile_on "$summary_lane" fixtures/rc_retention_summary_ownership_test.vibe "$summary_dir/$summary_lane.wasm" main
+  gate_require_artifact "$summary_dir/$summary_lane.wasm" "retention summary ownership probe did not compile ($summary_lane)"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$summary_dir/$summary_lane.wasm" 6 --empty-env --check-sole-item
+done
+rm -rf "$summary_dir"
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so
