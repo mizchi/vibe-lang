@@ -974,7 +974,20 @@ gate_workdir summary_dir "_build/_gate_retention_summary_ownership"
 for summary_lane in rc shadow; do
   gate_fs_compile_on "$summary_lane" fixtures/rc_retention_summary_ownership_test.vibe "$summary_dir/$summary_lane.wasm" main
   gate_require_artifact "$summary_dir/$summary_lane.wasm" "retention summary ownership probe did not compile ($summary_lane)"
-  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$summary_dir/$summary_lane.wasm" 6 --empty-env --check-sole-item
+  summary_probe="$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs"
+  node --experimental-wasm-exnref "$summary_probe" "$summary_dir/$summary_lane.wasm" 6 --empty-env --check-sole-item
+
+  shared_wasm="$summary_dir/shared-$summary_lane.wasm"
+  gate_fs_compile_on "$summary_lane" fixtures/rc_shared_stmt_ownership.vibe "$shared_wasm" main
+  gate_require_artifact "$shared_wasm" "shared-statement control did not compile ($summary_lane)"
+  if node --experimental-wasm-exnref "$summary_probe" "$shared_wasm" 2 --check-sole-item > "$summary_dir/shared.log" 2>&1; then
+    echo "shared-statement control unexpectedly passed ($summary_lane)" >&2
+    exit 1
+  fi
+  if ! grep -Fq "unexpected statement owners for result 0" "$summary_dir/shared.log"; then
+    cat "$summary_dir/shared.log" >&2
+    exit 1
+  fi
 done
 rm -rf "$summary_dir"
 
