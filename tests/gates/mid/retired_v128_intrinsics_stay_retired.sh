@@ -977,6 +977,11 @@ for summary_lane in rc shadow; do
   summary_probe="$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs"
   node --experimental-wasm-exnref "$summary_probe" "$summary_dir/$summary_lane.wasm" 6 --empty-env --check-sole-item
 
+  forward_wasm="$summary_dir/forward-import-$summary_lane.wasm"
+  gate_fs_compile_on "$summary_lane" fixtures/rc_forward_import_ownership_test.vibe "$forward_wasm" main
+  gate_require_artifact "$forward_wasm" "forward import ownership probe did not compile ($summary_lane)"
+  node --experimental-wasm-exnref "$summary_probe" "$forward_wasm" 6 --empty-env --check-sole-item
+
   shared_wasm="$summary_dir/shared-$summary_lane.wasm"
   gate_fs_compile_on "$summary_lane" fixtures/rc_shared_stmt_ownership.vibe "$shared_wasm" main
   gate_require_artifact "$shared_wasm" "shared-statement control did not compile ($summary_lane)"

@@ -1,0 +1,49 @@
+import @vibe/compiler/checker {
+  check_program
+}
+import @vibe/compiler/core {
+  Stmt
+}
+
+fn check_once(_ original: Array[Stmt]) -> Unit with Exception {
+  let program = [Array::get(original, at = 0)]
+  let check = check_program
+  let _env = check(program, false)
+  assert_eq(Array::length(program), 1)
+}
+
+fn original_after(_ repeats: Int, reexport: Bool) -> Array[Stmt] with Exception {
+  let original = if reexport {
+    [SReExport("./provider.vibe", [])]
+  } else {
+    [SImport("./provider.vibe", [])]
+  }
+  let mut i = 0
+  while i < repeats {
+    check_once(original)
+    i = i + 1
+  }
+  original
+}
+
+fn main() -> Array[Array[Stmt]] allows Exception {
+  [
+    original_after(0, reexport = false),
+    original_after(1, reexport = false),
+    original_after(20, reexport = false),
+    original_after(0, reexport = true),
+    original_after(1, reexport = true),
+    original_after(20, reexport = true)
+  ]
+}
+
+test "the checker preserves import and re-export statements" {
+  match Array::get(original_after(1, reexport = false), at = 0) {
+    SImport(path, _) => assert_eq(path, "./provider.vibe"),
+    _ => assert(false)
+  }
+  match Array::get(original_after(1, reexport = true), at = 0) {
+    SReExport(path, _) => assert_eq(path, "./provider.vibe"),
+    _ => assert(false)
+  }
+}
