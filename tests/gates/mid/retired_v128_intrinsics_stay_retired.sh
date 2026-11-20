@@ -960,6 +960,15 @@ for railway_lane in rc shadow; do
 done
 rm -rf "$railway_dir"
 
+# A completed trait-key pass releases each temporary one-statement program.
+gate_workdir trait_alias_dir "_build/_gate_trait_alias_source_ownership"
+for trait_alias_lane in rc shadow; do
+  gate_fs_compile_on "$trait_alias_lane" fixtures/rc_trait_alias_source_ownership_test.vibe "$trait_alias_dir/$trait_alias_lane.wasm" main
+  gate_require_artifact "$trait_alias_dir/$trait_alias_lane.wasm" "trait alias ownership probe did not compile ($trait_alias_lane)"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$trait_alias_dir/$trait_alias_lane.wasm" 3 --check-sole-item
+done
+rm -rf "$trait_alias_dir"
+
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
 #         (`direct_known_fn_params`). An indirect call owns its arguments, so
