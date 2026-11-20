@@ -1,0 +1,47 @@
+import @vibe/compiler/core { Expr, Stmt }
+import @vibe/compiler/normalize { desugar_railway_binds, desugar_railway_binds_reporting_change }
+
+// Rewriting a module builds a fresh body. Its child statements are never
+// overwritten in the original array, so their counts isolate reconstruction.
+fn rewrite_module(_ nested: Array[Stmt], report: Bool) -> Array[Stmt] {
+  let program = [Array::get(nested, at = 0)]
+  if report {
+    assert_eq(desugar_railway_binds_reporting_change(program), false)
+  } else {
+    desugar_railway_binds(program)
+  }
+  match Array::get(program, at = 0) {
+    SModule(_, _, body) => body,
+    _ => []
+  }
+}
+
+fn original_after(_ rounds: Int, report: Bool) -> Array[Stmt] {
+  let original = [SLet(false, false, "value", None, EInt(3)), SEnum(false, "Flag", [], [], [])]
+  let nested = [SModule(false, "Nested", original)]
+  let mut i = 0
+  while i < rounds {
+    let rewritten = rewrite_module(nested, report = report)
+    match Array::get(rewritten, at = 0) {
+      SLet(_, _, _, _, EInt(n)) => assert_eq(n, 3),
+      _ => assert(false)
+    }
+    match Array::get(rewritten, at = 1) {
+      SEnum(_, name, _, _, _) => assert_eq(name, "Flag"),
+      _ => assert(false)
+    }
+    i = i + 1
+  }
+  original
+}
+
+fn main() -> Array[Array[Stmt]] allows Exception {
+  let reporting = original_after(20, report = true)
+  let ordinary = original_after(20, report = false)
+  let rewritten = rewrite_module([SModule(false, "Nested", ordinary)], report = true)
+  [reporting, ordinary, rewritten]
+}
+
+test "railway normalization preserves nested let and enum values" {
+  inspect(Array::length(original_after(20, report = true)), content = "2")
+}

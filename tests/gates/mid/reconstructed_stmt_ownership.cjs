@@ -22,11 +22,11 @@ function items(array, length) {
     return Number(value - 1n);
   });
 }
-const [once, many, shifted] = items(result, 3).map(array => items(array, 2));
-assert.equal(owners(once[0]), 1, "one shift releases the original let");
-assert.equal(owners(once[1]), 1, "dropping the shifted array releases the enum");
-assert.notEqual(many[0], shifted[0], "the shift builds a new let");
-assert.equal(owners(many[0]), 1, "repeated shifts release the original let");
-assert.equal(owners(shifted[0]), 1, "the shifted array owns the rebuilt let");
-assert.equal(many[1], shifted[1], "both arrays contain the unchanged enum");
-assert.equal(owners(many[1]), 2, "each live array owns the enum");
+const [released, original, rebuilt] = items(result, 3).map(array => items(array, 2));
+assert.equal(owners(released[0]), 1, "discarded results release the original let");
+assert.equal(owners(released[1]), 1, "discarded results release the shared enum");
+assert.notEqual(original[0], rebuilt[0], "the rewrite builds a new let");
+assert.equal(owners(original[0]), 1, "repeated rewrites release the original let");
+assert.equal(owners(rebuilt[0]), 1, "the result owns the rebuilt let");
+assert.equal(original[1], rebuilt[1], "both arrays contain the unchanged enum");
+assert.equal(owners(original[1]), 2, "each live array owns the enum");

@@ -938,7 +938,7 @@ gate_workdir shift_dir "_build/_gate_shift_stmt_ownership"
 for shift_lane in rc shadow; do
   gate_fs_compile_on "$shift_lane" fixtures/shift_stmt_ownership.vibe "$shift_dir/$shift_lane.wasm" main
   gate_require_artifact "$shift_dir/$shift_lane.wasm" "statement offset probe did not compile ($shift_lane)"
-  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/shift_stmt_ownership.cjs" "$shift_dir/$shift_lane.wasm"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/reconstructed_stmt_ownership.cjs" "$shift_dir/$shift_lane.wasm"
 done
 rm -rf "$shift_dir"
 
@@ -950,6 +950,15 @@ for set_lane in rc shadow; do
   node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$set_dir/$set_lane.wasm" 2
 done
 rm -rf "$set_dir"
+
+echo "[compiler-gate] 40f-b7h/40 railway statement reconstruction releases the original node (#2509)"
+gate_workdir railway_dir "_build/_gate_railway_stmt_ownership"
+for railway_lane in rc shadow; do
+  gate_fs_compile_on "$railway_lane" fixtures/rc_railway_stmt_ownership_test.vibe "$railway_dir/$railway_lane.wasm" main
+  gate_require_artifact "$railway_dir/$railway_lane.wasm" "railway statement probe did not compile ($railway_lane)"
+  node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/reconstructed_stmt_ownership.cjs" "$railway_dir/$railway_lane.wasm"
+done
+rm -rf "$railway_dir"
 
 # 40f-b8. #2827: a function-typed parameter that every call binds to the same
 #         function is called as that function directly on the RC lanes
