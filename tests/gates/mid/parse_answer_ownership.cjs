@@ -27,9 +27,9 @@ for (let i = 0; i < expected; i++) {
   const array = Number(tagged - 1n);
   distinct.add(array);
   assert.equal(u32(array + 4), 1);
-  assert.equal(u32(array - 4) & 0xffffff, 1, `unexpected owner count for parse answer ${i}`);
+  assert.equal(u32(array - 4) & 0xffffff, 1, `unexpected owner count for result ${i}`);
 }
-assert.equal(distinct.size, expected, "each parse hands out its own outer array");
+assert.equal(distinct.size, expected, "each result must have a distinct array");
 
 if (process.argv.includes("--check-merge")) {
   const held = new DataView(merge_answers.buffer);

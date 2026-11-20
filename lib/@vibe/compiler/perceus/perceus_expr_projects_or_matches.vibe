@@ -662,11 +662,97 @@ fn tr_fresh_array_value(_ e: Expr) -> Bool {
   }
 }
 
-/// The receiver of a truncate call, or "" when `e` is not one.
-fn tr_truncate_receiver(_ e: Expr) -> String {
+// Summarize uses of a fresh array. A receiver may be overwritten until its
+// first read or escape. Only straight-line sequencing orders two uses;
+// loops, branches, calls and handlers may mix them in other orders.
+let slot_observed = 1
+let slot_written = 2
+let slot_unsafe = 4
+
+fn slot_sequence(first: Int, second: Int) -> Int {
+  if (first&slot_observed) != 0 && (second&slot_written) != 0 {
+    slot_unsafe
+  } else {
+    first|second
+  }
+}
+
+fn slot_access(e: Expr, x: String, fresh: Bool) -> Int {
+  match e {
+    EIdent(n, _) => if n == x {
+      slot_unsafe
+    } else {
+      0
+    },
+    ELet(n, value, rest, _) => {
+      let first = slot_access(e = value, x = x, fresh = fresh)
+      if n == x && tr_fresh_array_value(value) {
+        // Each execution starts a new lifetime, even inside a loop.
+        first|(slot_access(e = rest, x = x, fresh = true)&slot_unsafe)
+      } else {
+        slot_sequence(first = first, second = slot_access(e = rest, x = x, fresh = fresh))
+      }
+    },
+    ELetMut(_, value, rest, _) => slot_sequence(first = slot_access(e = value, x = x, fresh = fresh), second = slot_access(e = rest, x = x, fresh = fresh)),
+    ESeq(a, b) => slot_sequence(first = slot_access(e = a, x = x, fresh = fresh), second = slot_access(e = b, x = x, fresh = fresh)),
+    _ => {
+      let receiver = tr_mutation_receiver(e)
+      let mut uses = 0
+      let start = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = start
+      match e {
+        ECall(EIdent(f, _), args, _, _) => if Array::length(args) > 0 && tr_is_ident(e = Array::get(args, at = 0), x = x) {
+          if receiver == x && f == "Array::set" {
+            uses = if fresh {
+              slot_written
+            } else {
+              slot_unsafe
+            }
+          } else if f == "Array::get" || f == "Array::length" {
+            uses = slot_observed
+          } else {
+            // This includes truncate, which shares the plan row but has
+            // its own proof, and calls that could alias the receiver.
+            uses = slot_unsafe
+          }
+          // Callee and receiver occupy the first two child positions.
+          i = i + 2
+        },
+        _ => ()
+      }
+      while i < end && uses < slot_unsafe {
+        uses = uses|slot_access(e = expr_child_at(i), x = x, fresh = fresh)
+        i = i + 1
+      }
+      expr_children_pop(start)
+      if (uses&slot_written) == 0 {
+        uses
+      } else if uses != slot_written {
+        slot_unsafe
+      } else {
+        // Only synchronous writes in this lexical lifetime are covered. A
+        // closure, for example, may run after a later read or escape.
+        match e {
+          EWhile(_, _) => slot_written,
+          EIf(_, _, _) => slot_written,
+          ECall(_, _, _, _) => if receiver == x {
+            slot_written
+          } else {
+            slot_unsafe
+          },
+          _ => slot_unsafe
+        }
+      }
+    }
+  }
+}
+
+/// The local array whose elements this truncation or replacement could release.
+fn tr_mutation_receiver(_ e: Expr) -> String {
   match e {
     ECall(callee, args, _, _) => match callee {
-      EIdent(f, _) => if f == "Array::truncate" && Array::length(args) == 2 {
+      EIdent(f, _) => if (f == "Array::truncate" && Array::length(args) == 2) || (f == "Array::set" && Array::length(args) == 3) {
         match Array::get(args, at = 0) {
           EIdent(x, _) => x,
           _ => ""
@@ -680,23 +766,43 @@ fn tr_truncate_receiver(_ e: Expr) -> String {
   }
 }
 
-/// Every truncate receiver named in `e`, lambdas included (a truncate inside
-/// a lambda disqualifies its receiver through rule 2 later).
-export fn tr_collect_receivers(e: Expr, out: Array[String]) -> Unit {
-  let r = tr_truncate_receiver(e)
-  if r != "" && !array_contains_str_pctx(arr = out, s = r) {
-    Array::push(out, value = r)
-  } else {
-    ()
+/// A local with only writes before its first read has no outstanding view
+/// to pin. Callers check unique binders and the identity of Array::set.
+export fn tr_blind_slot_writes(body: Expr, x: String) -> Bool {
+  (slot_access(e = body, x = x, fresh = false)&slot_unsafe) == 0
+}
+
+/// Collect mutation receivers and fresh bindings in a single walk. Most sets
+/// target parameters or shared tables and need no per-receiver analysis.
+export fn tr_collect_array_mutations(e: Expr, truncates: Array[String], sets: Array[String], fresh: Array[String]) -> Unit {
+  match e {
+    ELet(n, value, _, _) => if tr_fresh_array_value(value) {
+      tr_add(d = fresh, n = n)
+    },
+    ECall(EIdent(f, _), _, _, _) => {
+      let x = tr_mutation_receiver(e)
+      if x != "" {
+        if f == "Array::set" {
+          tr_add(d = sets, n = x)
+        } else {
+          tr_add(d = truncates, n = x)
+        }
+      }
+    },
+    _ => ()
   }
   let mark = expr_children_push(e)
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    tr_collect_receivers(e = expr_child_at(i), out = out)
+    tr_collect_array_mutations(e = expr_child_at(i), truncates = truncates, sets = sets, fresh = fresh)
     i = i + 1
   }
   expr_children_pop(mark)
+}
+
+export fn tr_collect_receivers(e: Expr, out: Array[String]) -> Unit {
+  tr_collect_array_mutations(e = e, truncates = out, sets = [], fresh = [])
 }
 
 /// Rule 2: every mention of `x` is the receiver of a receiver builtin,
@@ -1091,7 +1197,7 @@ export fn tr_walk(w: TrWalk, e: Expr, stmt: Bool, tail: Bool) -> Unit {
         tr_walk(w = w, e = b, stmt = stmt, tail = tail)
       },
       ECall(callee, args, _, _) => {
-        if tr_truncate_receiver(e) == w.x {
+        if tr_mutation_receiver(e) == w.x {
           tr_site(w = w, count_arg = Array::get(args, at = 1), stmt = stmt)
         } else {
           ()

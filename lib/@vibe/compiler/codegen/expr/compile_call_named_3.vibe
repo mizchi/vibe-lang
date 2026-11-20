@@ -276,40 +276,39 @@ fn cc_setf_release_store(buf: Bytes, args: Array[Expr], off: Int, local_names: A
   nl + 2
 }
 
-/// #2837: may this `Array::truncate(x, n)` release the elements it removes?
-/// Only when the Perceus plan approved `x` (see `plan_truncate_release`) AND
-/// every binding the plan pinned for `x` is live around this site -- a pin
-/// the lowering did not honour withdraws the release rather than letting it
-/// free a view. Returns the untagged-count source: 1 for a literal, 2 for a
-/// local, 0 for "do not release".
+// A release row is usable only for its local receiver, with every required
+// view pin active in this lowering.
+fn cc_array_release_proven(receiver: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if !ctx.enable_rc || !ctx.rc_trunc_builtin || ctx.rc_drop_func_idx < 0 || !is_eident(receiver) {
+    return false
+  }
+  let x = get_eident_name(receiver)
+  if !array_contains_str(arr = ctx.rc_trunc_release, s = x) || find_local_slot(names = local_names, name = x) < 0 || array_contains_str(arr = ctx.ref_cell_names, s = x) {
+    return false
+  }
+  let mut i = 0
+  while i < Array::length(ctx.rc_trunc_pin_arrays) {
+    if Array::get(ctx.rc_trunc_pin_arrays, at = i) == x && !array_contains_str(arr = ctx.rc_pins_live, s = Array::get(ctx.rc_trunc_pin_names, at = i)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// #2837: return the count operand kind for a proven truncation: 1 for a
+/// literal, 2 for a local. A zero result keeps the ordinary truncate.
 export fn cc_truncate_release_kind(args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Int with Exception {
-  if !ctx.enable_rc || !ctx.rc_trunc_builtin || ctx.rc_drop_func_idx < 0 || Array::length(args) != 2 || !is_eident(Array::get(args, at = 0)) {
-    0
+  if Array::length(args) != 2 || !cc_array_release_proven(receiver = Array::get(args, at = 0), local_names = local_names, ctx = ctx) {
+    return 0
+  }
+  let n = Array::get(args, at = 1)
+  if expr_tag(n) == 0 {
+    1
+  } else if is_eident(n) && find_local_slot(names = local_names, name = get_eident_name(n)) >= 0 && !array_contains_str(arr = ctx.ref_cell_names, s = get_eident_name(n)) {
+    2
   } else {
-    let x = get_eident_name(Array::get(args, at = 0))
-    let x_ok = array_contains_str(arr = ctx.rc_trunc_release, s = x) && find_local_slot(names = local_names, name = x) >= 0 && !array_contains_str(arr = ctx.ref_cell_names, s = x)
-    let mut pins_live = x_ok
-    let mut i = 0
-    while pins_live && i < Array::length(ctx.rc_trunc_pin_arrays) {
-      if Array::get(ctx.rc_trunc_pin_arrays, at = i) == x && !array_contains_str(arr = ctx.rc_pins_live, s = Array::get(ctx.rc_trunc_pin_names, at = i)) {
-        pins_live = false
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    if !pins_live {
-      0
-    } else {
-      let n = Array::get(args, at = 1)
-      if expr_tag(n) == 0 {
-        1
-      } else if is_eident(n) && find_local_slot(names = local_names, name = get_eident_name(n)) >= 0 && !array_contains_str(arr = ctx.ref_cell_names, s = get_eident_name(n)) {
-        2
-      } else {
-        0
-      }
-    }
+    0
   }
 }
 
@@ -396,6 +395,8 @@ export fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr],
     // position, released after the call (see cc_is_owned_temp).
     let tmp_drops: Array[Int] = []
     let callee_views = cc_callee_may_return_view(f = fname, ctx = ctx)
+    let builtin_set = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && fn_idx_in_list >= ctx.num_user_funcs && fname == "Array::set" && Array::length(args) == 3
+    let mut retained_element = -1
     let mut ci = 0
     while ci < Array::length(args) {
       let carg = Array::get(args, at = ci)
@@ -436,6 +437,9 @@ export fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr],
           ()
         }
         Array::push(local_names, value = "__argdup")
+        if builtin_set && ci == 2 {
+          retained_element = nl
+        }
         emit_local_tee(buf = buf, idx = nl)
         emit_rc_dup_guarded(buf = buf, local_idx = nl, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         nl = nl + 1
@@ -464,7 +468,23 @@ export fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr],
     if needs_env {
       emit_i64_const(buf = buf, value = 0)
     }
-    emit_call(buf = buf, func_idx = fidx)
+    if builtin_set && cc_array_release_proven(receiver = Array::get(args, at = 0), local_names = local_names, ctx = ctx) {
+      // The local receiver and its views passed the same proof as truncate.
+      emit_call(buf = buf, func_idx = fidx + 1)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+    } else if retained_element >= 0 {
+      // A write of the same object leaves the slot's previous owner intact.
+      // Cancel only the retain we emitted for this incoming operand.
+      emit_call(buf = buf, func_idx = fidx + 1)
+      emit_local_get(buf = buf, idx = retained_element)
+      emit_i64_eq(buf)
+      emit_if_void(buf)
+      emit_local_get(buf = buf, idx = retained_element)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+      emit_end(buf)
+    } else {
+      emit_call(buf = buf, func_idx = fidx)
+    }
     if has_ret == 0 {
       emit_i64_const(buf = buf, value = 0)
     }

@@ -365,6 +365,16 @@ export fn gen_region_bytes_new_body(region_ptr_addr: Int, region_data_base: Int,
 }
 
 export fn gen_arr_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
+  gen_arr_store_body(enable_rc = enable_rc, return_old = false, oob_prefix_fat = oob_prefix_fat, oob_abort_idx = oob_abort_idx)
+}
+
+/// RC-only exchange. The bounds check and evaluation order are the same as
+/// Array::set; the caller receives the reference displaced by the write.
+export fn gen_arr_replace_body(oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
+  gen_arr_store_body(enable_rc = true, return_old = true, oob_prefix_fat = oob_prefix_fat, oob_abort_idx = oob_abort_idx)
+}
+
+fn gen_arr_store_body(enable_rc: Bool, return_old: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: same unsigned bounds check as gen_arr_get_body — an OOB set
   // silently corrupted adjacent memory. #2199: same formatted abort as
@@ -425,6 +435,11 @@ export fn gen_arr_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: 
   emit_i32_const(buf = b, value = 3)
   bytebuf_push(buf = b, byte = 116)
   emit_i32_add(b)
+  if return_old {
+    emit_local_tee(buf = b, idx = 3)
+    emit_i64_load(buf = b, align = 3, offset = 0)
+    emit_local_get(buf = b, idx = 3)
+  }
   emit_local_get(buf = b, idx = 2)
   emit_i64_store(buf = b, align = 3, offset = 0)
   b
