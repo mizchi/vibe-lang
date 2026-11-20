@@ -945,7 +945,7 @@ rm -rf "$shift_dir"
 echo "[compiler-gate] 40f-b7g/40 overwriting array slots releases displaced owners and preserves borrowed elements (#2509)"
 gate_workdir set_dir "_build/_gate_array_slot_ownership"
 for set_lane in rc shadow; do
-  gate_fs_compile_on "$set_lane" fixtures/rc_array_set_slot_ownership.vibe "$set_dir/$set_lane.wasm" main
+  gate_fs_compile_on "$set_lane" fixtures/rc_array_set_slot_ownership_test.vibe "$set_dir/$set_lane.wasm" main
   gate_require_artifact "$set_dir/$set_lane.wasm" "array overwrite probe did not compile ($set_lane)"
   node --experimental-wasm-exnref "$ROOT_DIR/tests/gates/mid/parse_answer_ownership.cjs" "$set_dir/$set_lane.wasm" 2
 done
